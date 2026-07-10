@@ -1,0 +1,239 @@
+{
+  "analyzed_at": "2026-07-02T17:18:35.398009+00:00",
+  "source": "openai",
+  "candidate_summary": "Name: Gal Lifshitz\nLocation preference: Israel\nOpen to remote: True\nTarget roles (profile): Junior Backend Developer, IT Support, SOC Analyst\nSeniority: junior\nYears of experience (est.): 1\nRecent titles: Technical Support Specialist, Python Programming Tutor\nCompanies: Comax Smart ERP, Tel Hai University\nEducation: B.Sc. — Computer Science\nSkills: Python, SQL, React, React Native, Angular, Node.js, FastAPI, Laravel, SQLAlchemy, WebSockets, PostgreSQL, MongoDB, Firebase, SQLite, AWS, Git, CI/CD, Machine Learning, LLM, Generative AI, Artificial Intelligence, Large Language Models, Networking, TCP/IP, Cybersecurity, ERP, Problem Solving, collaboration, Expo\nStrengths: Hands-on experience in software development, Strong troubleshooting skills, Proficient in SQL analysis, Experience with cloud-based systems, Collaborative team player, Passionate about cybersecurity technologies\nSummary: Computer Science graduate with hands-on experience in software development, production troubleshooting, SQL analysis, and cloud-based systems. Experienced in building backend applications with Python and FastAPI, investigating complex technical issues through log analysis and network diagnostics, and collaborating with cross-functional teams to deliver reliable solutions. Passionate about software engineering, system monitoring, and cybersecurity technologies.\nProjects: Capstone Project Lead – Tribe Platform: Designed backend architecture using FastAPI, SQLAlchemy and PostgreSQL. Implemented CRUD services, validation logic and relational data models. Built WebSocket-based real-time activity updates and participation tracking. Integrated Generative AI for automatic event image generation. Deployed cloud infrastructure using AWS and implemented automated integration testing with pytest.; Server Monitor System: Developed a server monitoring platform for tracking service availability and system health. Built RESTful APIs using FastAPI and PostgreSQL for monitoring data management. Implemented concurrent HTTP, FTP and SSH health checks using ThreadPoolExecutor. Designed monitoring history and incident-tracking data models for proactive issue detection.; Capsto\n[... truncated ...]",
+  "career_notes": "Gal should focus on roles that leverage his backend development skills while also considering opportunities in IT support and cybersecurity. Gaining experience with Docker and other cloud technologies will enhance his profile.",
+  "best_fit_roles": [
+    {
+      "role": "Junior Backend Developer",
+      "score": 90,
+      "reason": "Gal has relevant experience in backend development using Python and FastAPI, making him a strong fit for this role.",
+      "missing_skills": [
+        "Docker"
+      ],
+      "realistic_for_application": true
+    },
+    {
+      "role": "IT Support Specialist",
+      "score": 85,
+      "reason": "His background as a Technical Support Specialist aligns well with this role, leveraging his troubleshooting skills.",
+      "missing_skills": [],
+      "realistic_for_application": true
+    },
+    {
+      "role": "SOC Analyst",
+      "score": 80,
+      "reason": "Gal's passion for cybersecurity and knowledge of networking make him a suitable candidate for this role.",
+      "missing_skills": [],
+      "realistic_for_application": true
+    }
+  ],
+  "job_categories": [
+    {
+      "category": "backend",
+      "titles": [
+        "Junior Backend Developer",
+        "Backend Developer",
+        "Python Developer",
+        "FastAPI Developer",
+        "מפתח Backend"
+      ],
+      "must_have_keywords": [
+        "python",
+        "api",
+        "sql",
+        "backend",
+        "צד שרת",
+        "מפתח"
+      ],
+      "nice_to_have_keywords": [
+        "fastapi",
+        "aws",
+        "docker"
+      ],
+      "negative_keywords": [
+        "senior",
+        "lead",
+        "principal",
+        "manager",
+        "בכיר",
+        "ראש צוות"
+      ],
+      "score_weight": 1.0
+    },
+    {
+      "category": "it support",
+      "titles": [
+        "IT Support Specialist",
+        "Technical Support Specialist",
+        "Help Desk Technician",
+        "מומחה תמיכה טכנית"
+      ],
+      "must_have_keywords": [
+        "support",
+        "troubleshooting",
+        "technical",
+        "תמיכה",
+        "פתרון בעיות"
+      ],
+      "nice_to_have_keywords": [
+        "cybersecurity",
+        "networking"
+      ],
+      "negative_keywords": [
+        "senior",
+        "lead",
+        "principal",
+        "manager",
+        "בכיר",
+        "ראש צוות"
+      ],
+      "score_weight": 0.8
+    },
+    {
+      "category": "cybersecurity",
+      "titles": [
+        "SOC Analyst",
+        "Security Analyst",
+        "Cybersecurity Specialist",
+        "אנליסט SOC"
+      ],
+      "must_have_keywords": [
+        "cybersecurity",
+        "networking",
+        "incident response",
+        "סייבר",
+        "תגובה לאירועים"
+      ],
+      "nice_to_have_keywords": [
+        "aws",
+        "python"
+      ],
+      "negative_keywords": [
+        "senior",
+        "lead",
+        "principal",
+        "manager",
+        "בכיר",
+        "ראש צוות"
+      ],
+      "score_weight": 0.7
+    }
+  ],
+  "collection_queries": [
+    {
+      "category": "backend",
+      "priority": 95,
+      "primary_role": "Junior Backend Developer",
+      "queries": [
+        "Junior Backend Developer",
+        "Backend Developer",
+        "Python Developer",
+        "FastAPI Developer",
+        "Junior Software Developer",
+        "מפתח Backend",
+        "מפתח Python",
+        "מפתח תוכנה ג׳וניור",
+        "Software Developer",
+        "Server Developer"
+      ],
+      "exclude_keywords": [
+        "senior",
+        "lead",
+        "manager",
+        "ראש צוות",
+        "בכיר"
+      ]
+    },
+    {
+      "category": "it support",
+      "priority": 90,
+      "primary_role": "IT Support Specialist",
+      "queries": [
+        "IT Support Specialist",
+        "Technical Support Specialist",
+        "Help Desk Technician",
+        "מומחה תמיכה טכנית",
+        "טכנאי תמיכה",
+        "תמיכה טכנית",
+        "Technical Support Engineer",
+        "Support Technician"
+      ],
+      "exclude_keywords": [
+        "senior",
+        "lead",
+        "manager",
+        "ראש צוות",
+        "בכיר"
+      ]
+    },
+    {
+      "category": "cybersecurity",
+      "priority": 85,
+      "primary_role": "SOC Analyst",
+      "queries": [
+        "SOC Analyst",
+        "Security Analyst",
+        "Cybersecurity Specialist",
+        "אנליסט SOC",
+        "אנליסט אבטחת מידע",
+        "מומחה סייבר",
+        "Information Security Analyst"
+      ],
+      "exclude_keywords": [
+        "senior",
+        "lead",
+        "manager",
+        "ראש צוות",
+        "בכיר"
+      ]
+    }
+  ],
+  "global_reject_rules": [
+    "Reject jobs requiring 3+ years if candidate has no direct experience",
+    "Reject senior/lead/manager roles",
+    "Reject unrelated sales/customer success jobs unless technical"
+  ],
+  "seniority_filters": {
+    "reject_keywords": [
+      "senior",
+      "lead",
+      "principal",
+      "manager",
+      "director",
+      "head of"
+    ],
+    "prefer_keywords": [
+      "junior",
+      "entry",
+      "graduate",
+      "student"
+    ],
+    "max_years_required_if_no_experience": 2
+  },
+  "skill_weights": {
+    "must_have_match": 8,
+    "nice_to_have_match": 3,
+    "missing_must_have_penalty": 5,
+    "negative_keyword_penalty": 15
+  },
+  "location_preferences": {
+    "preferred_locations": [
+      "Israel",
+      "Tel Aviv"
+    ],
+    "remote_ok": true,
+    "remote_keywords": [
+      "remote",
+      "hybrid",
+      "work from home"
+    ],
+    "location_bonus": 10,
+    "remote_bonus": 8
+  },
+  "application_priority_rules": [
+    "Prioritize roles matching best_fit_roles with realistic_for_application=true",
+    "Deprioritize roles with many missing must-have skills",
+    "Skip roles with strong negative keyword matches"
+  ]
+}

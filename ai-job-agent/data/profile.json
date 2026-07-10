@@ -1,0 +1,9 @@
+{
+  "full_name": "Gal Lifshiz",
+  "email": "your_email@gmail.com",
+  "phone": "your_phone",
+  "target_roles": ["Junior Backend Developer", "IT Support", "SOC Analyst"],
+  "location": "Israel",
+  "remote": true,
+  "min_match_score": 60
+}

@@ -1,0 +1,612 @@
+"""HTTP API for the AI Job Agent — lets the web client run the pipeline.
+
+Run with:
+    python src/api_server.py            # starts on http://localhost:8000 (or API_PORT from .env)
+    python src/api_server.py --port 8001
+
+Multi-CV endpoints (each CV has isolated data):
+    GET    /cvs                             list uploaded CVs + metadata
+    POST   /cvs/upload                      upload a CV (dedup by content hash)
+    GET    /cvs/{cv_id}                     one CV + its latest scan
+    DELETE /cvs/{cv_id}                     delete a CV and all its data
+    POST   /cvs/{cv_id}/run-agent           run the agent for a single CV
+    GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
+    GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
+    PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
+
+Legacy (single global CV) endpoints, kept for backward compatibility:
+    GET  /api/health            server + pipeline/scan availability
+    GET  /api/jobs              jobs with match scores (query: min_score, all)
+    POST /api/pipeline/run      start the legacy pipeline in the background
+    GET  /api/pipeline/status   current pipeline progress + log tail
+    GET  /api/cv                info about the legacy global CV
+    POST /api/cv                upload/replace the legacy global CV (resumes/cv.*)
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+import cv_service
+import db
+from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
+
+SRC = PROJECT_ROOT / "src"
+PYTHON = sys.executable
+
+ALLOWED_CV_EXTENSIONS = cv_service.ALLOWED_CV_EXTENSIONS
+MAX_CV_SIZE = cv_service.MAX_CV_SIZE
+
+app = FastAPI(title="AI Job Agent API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # local tool — the web client runs on a different port
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Pipeline runner (background thread; one run at a time)
+# ---------------------------------------------------------------------------
+
+PIPELINE_STEPS = [
+    ("parse_cv", "ניתוח קורות החיים", "parse_cv.py", ["--yes"]),
+    ("analyze_roles", "בניית אסטרטגיית תפקידים (AI)", "analyze_roles.py", []),
+    ("collect", "איסוף משרות מדרושים ולינקדאין", "collect_jobs.py", []),
+    ("enrich", "שליפת תיאורי משרה מלאים", "enrich_jobs.py", []),
+    ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
+]
+
+# Steps that abort the pipeline when they fail (same behavior as run_all.py).
+CRITICAL_STEPS = {"parse_cv", "analyze_roles", "match"}
+
+_state_lock = threading.Lock()
+_pipeline_state: dict = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+    "steps": [],
+    "log": [],
+}
+
+
+def _append_log(line: str) -> None:
+    with _state_lock:
+        log = _pipeline_state["log"]
+        log.append(line)
+        if len(log) > 300:
+            del log[: len(log) - 300]
+
+
+def _set_step_status(key: str, status: str) -> None:
+    with _state_lock:
+        for step in _pipeline_state["steps"]:
+            if step["key"] == key:
+                step["status"] = status
+
+
+def _run_pipeline(skip_collect: bool, skip_enrich: bool) -> None:
+    try:
+        for key, name, script, extra in PIPELINE_STEPS:
+            with _state_lock:
+                skipped = (key == "collect" and skip_collect) or (
+                    key == "enrich" and skip_enrich
+                )
+            if skipped:
+                _set_step_status(key, "skipped")
+                _append_log(f"-- מדלג על: {name}")
+                continue
+
+            _set_step_status(key, "running")
+            _append_log(f">> {name}")
+
+            proc = subprocess.Popen(
+                [PYTHON, str(SRC / script), *extra],
+                cwd=str(PROJECT_ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    _append_log(line)
+            code = proc.wait()
+
+            if code != 0:
+                _set_step_status(key, "failed")
+                _append_log(f"!! {name} נכשל (קוד {code})")
+                if key in CRITICAL_STEPS:
+                    with _state_lock:
+                        _pipeline_state["error"] = f"השלב '{name}' נכשל"
+                    return
+            else:
+                _set_step_status(key, "success")
+    except Exception as exc:  # noqa: BLE001 — surface any crash to the client
+        with _state_lock:
+            _pipeline_state["error"] = str(exc)
+        _append_log(f"!! שגיאה: {exc}")
+    finally:
+        with _state_lock:
+            _pipeline_state["running"] = False
+            _pipeline_state["finished_at"] = _utc_now()
+
+
+class RunRequest(BaseModel):
+    skip_collect: bool = False
+    skip_enrich: bool = False
+
+
+@app.post("/api/pipeline/run")
+def run_pipeline(req: RunRequest):
+    with _state_lock:
+        if _pipeline_state["running"]:
+            raise HTTPException(status_code=409, detail="הפייפליין כבר רץ")
+        _pipeline_state.update(
+            {
+                "running": True,
+                "started_at": _utc_now(),
+                "finished_at": None,
+                "error": None,
+                "log": [],
+                "steps": [
+                    {"key": key, "name": name, "status": "pending"}
+                    for key, name, _, _ in PIPELINE_STEPS
+                ],
+            }
+        )
+    thread = threading.Thread(
+        target=_run_pipeline,
+        args=(req.skip_collect, req.skip_enrich),
+        daemon=True,
+    )
+    thread.start()
+    return {"started": True}
+
+
+@app.get("/api/pipeline/status")
+def pipeline_status():
+    with _state_lock:
+        return {
+            "running": _pipeline_state["running"],
+            "started_at": _pipeline_state["started_at"],
+            "finished_at": _pipeline_state["finished_at"],
+            "error": _pipeline_state["error"],
+            "steps": [dict(s) for s in _pipeline_state["steps"]],
+            "log": list(_pipeline_state["log"][-40:]),
+        }
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/jobs")
+def get_jobs(min_score: int = 55, all: bool = False):
+    db.init_db()
+    jobs = db.get_jobs(min_score=None if all else min_score, exclude_handled=False)
+    fields = [
+        "id", "title", "company", "location", "job_url", "source",
+        "match_score", "match_reason", "match_category",
+        "ai_decision", "ai_strengths", "ai_missing_skills", "ai_explanation",
+        "matched_at", "first_seen_at", "application_status",
+    ]
+    return {"jobs": [{f: job.get(f) for f in fields} for job in jobs]}
+
+
+# ---------------------------------------------------------------------------
+# CV upload / info
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/cv")
+def get_cv_info():
+    current = None
+    if RESUMES_DIR.exists():
+        for path in sorted(RESUMES_DIR.iterdir()):
+            if path.is_file() and path.stem.lower() == "cv":
+                stat = path.stat()
+                current = {
+                    "name": path.name,
+                    "size": stat.st_size,
+                    "modified_at": datetime.fromtimestamp(
+                        stat.st_mtime, tz=timezone.utc
+                    ).isoformat(),
+                }
+                break
+
+    analyzed = None
+    if CV_PROFILE_PATH.exists():
+        try:
+            profile = json.loads(CV_PROFILE_PATH.read_text(encoding="utf-8"))
+            analyzed = {
+                "name": profile.get("contact", {}).get("name"),
+                "parsed_at": profile.get("parsed_at") or profile.get("generated_at"),
+                "skills_count": sum(
+                    len(v) for v in (profile.get("skills") or {}).values()
+                ) if isinstance(profile.get("skills"), dict) else None,
+            }
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return {"cv": current, "analysis": analyzed}
+
+
+@app.post("/api/cv")
+async def upload_cv(file: UploadFile = File(...)):
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_CV_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"סוג קובץ לא נתמך: {ext}")
+
+    data = await file.read()
+    if len(data) > MAX_CV_SIZE:
+        raise HTTPException(status_code=400, detail="הקובץ גדול מדי (מקסימום 15MB)")
+    if not data:
+        raise HTTPException(status_code=400, detail="הקובץ ריק")
+
+    RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+    # Remove previous cv.* files so the agent has a single unambiguous resume.
+    for path in RESUMES_DIR.iterdir():
+        if path.is_file() and path.stem.lower() == "cv":
+            path.unlink()
+
+    target = RESUMES_DIR / f"cv{ext}"
+    target.write_bytes(data)
+    return {"saved": True, "name": target.name, "size": len(data)}
+
+
+# ---------------------------------------------------------------------------
+# Multi-CV management
+# ---------------------------------------------------------------------------
+
+# Per-CV scan runner (one scan at a time; separate from the legacy pipeline).
+_scan_lock = threading.Lock()
+_scan_state: dict = {
+    "running": False,
+    "cv_id": None,
+    "scan_id": None,
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+    "steps": [],
+    "log": [],
+    "current_detail": None,
+}
+
+
+def _scan_log(line: str) -> None:
+    with _scan_lock:
+        log = _scan_state["log"]
+        log.append(line)
+        if len(log) > 300:
+            del log[: len(log) - 300]
+        stripped = line.strip()
+        if stripped and not stripped.startswith(">>") and not stripped.startswith("--"):
+            _scan_state["current_detail"] = stripped
+
+
+def _scan_set_step(key: str, status: str) -> None:
+    with _scan_lock:
+        for step in _scan_state["steps"]:
+            if step["key"] == key:
+                step["status"] = status
+                if status == "running":
+                    _scan_state["current_detail"] = step["name"]
+                break
+
+
+def _running_step_key_from_steps(steps: list[dict]) -> str | None:
+    for step in steps:
+        if step["status"] == "running":
+            return step["key"]
+    return None
+
+
+def _scan_running_step_key() -> str | None:
+    with _scan_lock:
+        return _running_step_key_from_steps(_scan_state["steps"])
+
+
+def _run_scan_thread(cv_id: str, skip_collect: bool, skip_enrich: bool) -> None:
+    error: str | None = None
+    try:
+        scan = cv_service.run_scan(
+            cv_id,
+            skip_collect=skip_collect,
+            skip_enrich=skip_enrich,
+            log=_scan_log,
+            set_step_status=_scan_set_step,
+        )
+        if scan.get("status") == db.SCAN_FAILED:
+            error = scan.get("error_message") or "הסריקה נכשלה"
+    except Exception as exc:  # noqa: BLE001 — surface any crash to the client
+        error = str(exc)
+        _scan_log(f"!! שגיאה: {exc}")
+    finally:
+        with _scan_lock:
+            _scan_state["running"] = False
+            _scan_state["finished_at"] = _utc_now()
+            _scan_state["error"] = error
+
+
+def _cv_public(cv: dict) -> dict:
+    """Shape a CV row for the API (without the large parsed_profile blob)."""
+    profile = None
+    raw = cv.get("parsed_profile")
+    if raw:
+        try:
+            data = json.loads(raw)
+            profile = {
+                "name": (data.get("contact") or {}).get("name"),
+                "seniority": (data.get("experience") or {}).get("seniority_level"),
+                "best_fit_roles": (data.get("best_fit_roles") or [])[:5],
+                "skills_count": sum(
+                    len(v) for v in (data.get("skills") or {}).values()
+                ) if isinstance(data.get("skills"), dict) else None,
+            }
+        except (json.JSONDecodeError, TypeError):
+            profile = None
+    return {
+        "id": cv["id"],
+        "file_name": cv.get("file_name"),
+        "display_name": cv.get("display_name"),
+        "file_ext": cv.get("file_ext"),
+        "file_size": cv.get("file_size"),
+        "created_at": cv.get("created_at"),
+        "updated_at": cv.get("updated_at"),
+        "last_scan_at": cv.get("last_scan_at"),
+        "match_count": cv.get("match_count"),
+        "scan_count": cv.get("scan_count"),
+        "profile": profile,
+    }
+
+
+def _parse_json_list(value) -> list:
+    if not value:
+        return []
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _match_public(match: dict) -> dict:
+    return {
+        "match_id": match.get("match_id"),
+        "job_id": match.get("job_id"),
+        "scan_id": match.get("scan_id"),
+        "title": match.get("title"),
+        "company": match.get("company"),
+        "location": match.get("location"),
+        "job_url": match.get("job_url"),
+        "source": match.get("source"),
+        "match_score": match.get("match_score"),
+        "match_reason": match.get("match_reason"),
+        "explanation": match.get("ai_explanation") or match.get("match_reason"),
+        "matched_skills": _parse_json_list(match.get("matched_skills"))
+        or _parse_json_list(match.get("ai_strengths")),
+        "missing_skills": _parse_json_list(match.get("missing_skills"))
+        or _parse_json_list(match.get("ai_missing_skills")),
+        "score_label": match.get("ats_score_label"),
+        "missing_mandatory": _parse_json_list(match.get("ats_missing_mandatory")),
+        "relevant_experience": _parse_json_list(match.get("ats_relevant_experience")),
+        "score_reasons": _parse_json_list(match.get("ats_reasons")),
+        "cv_improvements": _parse_json_list(match.get("ats_improvements")),
+        "application_status": match.get("application_status") or db.CV_APP_NOT_SENT,
+        "application_notes": match.get("application_notes"),
+        "updated_at": match.get("match_updated_at"),
+    }
+
+
+@app.get("/cvs")
+def list_cvs():
+    db.ensure_multi_cv_storage()
+    # Import any pre-existing single-CV setup so it appears as the first CV.
+    try:
+        cv_service.adopt_legacy_cv()
+    except Exception:  # noqa: BLE001 — adoption is best-effort
+        pass
+    return {"cvs": [_cv_public(cv) for cv in db.list_cvs()]}
+
+
+@app.post("/cvs/upload")
+async def upload_cv_multi(
+    file: UploadFile = File(...),
+    as_new_version: bool = Form(False),
+    display_name: str | None = Form(None),
+):
+    db.ensure_multi_cv_storage()
+    data = await file.read()
+    try:
+        cv = cv_service.upload_cv(
+            file.filename or "cv",
+            data,
+            display_name=display_name,
+            as_new_version=as_new_version,
+        )
+    except cv_service.DuplicateCvError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "קובץ זהה כבר הועלה",
+                "existing": _cv_public(exc.existing),
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"cv": _cv_public(cv)}
+
+
+@app.get("/cvs/{cv_id}")
+def get_cv(cv_id: str):
+    db.ensure_multi_cv_storage()
+    cv = db.get_cv(cv_id)
+    if cv is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    public = _cv_public(cv)
+    public["latest_scan"] = db.get_latest_scan(cv_id, db_path=cv_db_path(cv_id))
+    return {"cv": public}
+
+
+@app.delete("/cvs/{cv_id}")
+def delete_cv(cv_id: str):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    with _scan_lock:
+        if _scan_state["running"] and _scan_state["cv_id"] == cv_id:
+            raise HTTPException(status_code=409, detail="לא ניתן למחוק בזמן סריקה")
+    summary = cv_service.delete_cv(cv_id)
+    return {"deleted": True, **summary}
+
+
+class RunAgentRequest(BaseModel):
+    skip_collect: bool = False
+    skip_enrich: bool = False
+
+
+@app.post("/cvs/{cv_id}/run-agent")
+def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+        _scan_state.update(
+            {
+                "running": True,
+                "cv_id": cv_id,
+                "scan_id": None,
+                "started_at": _utc_now(),
+                "finished_at": None,
+                "error": None,
+                "log": [],
+                "current_detail": "מתחיל סריקה…",
+                "steps": [
+                    {"key": key, "name": name, "status": "pending"}
+                    for key, name, _, _ in cv_service.SCAN_STEPS
+                ],
+            }
+        )
+
+    thread = threading.Thread(
+        target=_run_scan_thread,
+        args=(cv_id, req.skip_collect, req.skip_enrich),
+        daemon=True,
+    )
+    thread.start()
+    return {"started": True, "cv_id": cv_id}
+
+
+@app.get("/cvs/{cv_id}/scan-status")
+def cv_scan_status(cv_id: str):
+    cv_db = cv_db_path(cv_id)
+    with _scan_lock:
+        # Only report the live runner state when it belongs to this CV.
+        if _scan_state["cv_id"] == cv_id:
+            steps = [dict(s) for s in _scan_state["steps"]]
+            live = {
+                "running": _scan_state["running"],
+                "started_at": _scan_state["started_at"],
+                "finished_at": _scan_state["finished_at"],
+                "error": _scan_state["error"],
+                "current_step": _running_step_key_from_steps(steps),
+                "detail": _scan_state.get("current_detail"),
+                "steps": steps,
+                "log": list(_scan_state["log"][-20:]),
+            }
+        else:
+            live = {
+                "running": False,
+                "started_at": None,
+                "finished_at": None,
+                "error": None,
+                "current_step": None,
+                "detail": None,
+                "steps": [],
+                "log": [],
+            }
+    live["latest_scan"] = db.get_latest_scan(cv_id, db_path=cv_db)
+    return live
+
+
+@app.get("/cvs/{cv_id}/matches")
+def get_cv_matches(cv_id: str, latest: bool = True, min_score: int | None = None):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    cv_db = cv_db_path(cv_id)
+    matches = db.get_cv_matches(cv_id, latest_only=latest, min_score=min_score, db_path=cv_db)
+    return {"matches": [_match_public(m) for m in matches]}
+
+
+class MatchStatusRequest(BaseModel):
+    status: str
+    notes: str | None = None
+
+
+@app.patch("/cvs/{cv_id}/matches/{match_id}/status")
+def update_match_status(cv_id: str, match_id: int, req: MatchStatusRequest):
+    db.ensure_multi_cv_storage()
+    if req.status not in db.CV_APP_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"סטטוס לא חוקי: {req.status}",
+        )
+    updated = db.update_cv_match_status(
+        cv_id, match_id, req.status, notes=req.notes, db_path=cv_db_path(cv_id)
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="התאמה לא נמצאה")
+    return {"updated": True, "match": _match_public(_reshape_match_row(updated))}
+
+
+def _reshape_match_row(row: dict) -> dict:
+    """Adapt a raw cv_job_matches row to the shape _match_public expects."""
+    row = dict(row)
+    row.setdefault("match_id", row.get("id"))
+    row.setdefault("match_updated_at", row.get("updated_at"))
+    return row
+
+
+@app.get("/api/health")
+async def health():
+    # Lightweight async handler — stays responsive even while scans hold DB locks.
+    return {
+        "ok": True,
+        "pipeline_running": _pipeline_state["running"],
+        "scan_running": _scan_state["running"],
+    }
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AI Job Agent HTTP API")
+    parser.add_argument("--host", default=API_HOST, help=f"bind address (default: {API_HOST})")
+    parser.add_argument("--port", type=int, default=API_PORT, help=f"listen port (default: {API_PORT})")
+    args = parser.parse_args()
+    uvicorn.run(app, host=args.host, port=args.port)

@@ -1,0 +1,62 @@
+{
+  "nurse": {
+    "canonical": "Nurse",
+    "synonyms_en": ["RN", "registered nurse", "nursing"],
+    "synonyms_he": ["אחות", "אח/ות", "סיעוד", "אחות מוסמכת"]
+  },
+  "accountant": {
+    "canonical": "Accountant",
+    "synonyms_en": ["bookkeeper", "accounting"],
+    "synonyms_he": ["רואה חשבון", "הנהלת חשבונות", "חשב"]
+  },
+  "teacher": {
+    "canonical": "Teacher",
+    "synonyms_en": ["educator", "instructor", "lecturer"],
+    "synonyms_he": ["מורה", "מדריך", "מרצה", "מחנך"]
+  },
+  "lawyer": {
+    "canonical": "Lawyer",
+    "synonyms_en": ["attorney", "legal counsel"],
+    "synonyms_he": ["עורך דין", "עו\"ד", "משפטן"]
+  },
+  "marketing": {
+    "canonical": "Marketing",
+    "synonyms_en": ["digital marketing", "brand marketing"],
+    "synonyms_he": ["שיווק", "שיווק דיגיטלי"]
+  },
+  "sales": {
+    "canonical": "Sales",
+    "synonyms_en": ["account executive", "business development"],
+    "synonyms_he": ["מכירות", "אחראי מכירות", "פיתוח עסקי"]
+  },
+  "hr": {
+    "canonical": "Human Resources",
+    "synonyms_en": ["HR", "recruiter", "talent acquisition"],
+    "synonyms_he": ["משאבי אנוש", "גיוס", "מגייס"]
+  },
+  "logistics": {
+    "canonical": "Logistics",
+    "synonyms_en": ["supply chain", "warehouse"],
+    "synonyms_he": ["לוגיסטיקה", "שרשרת אספקה", "מחסן"]
+  },
+  "chef": {
+    "canonical": "Chef",
+    "synonyms_en": ["cook", "culinary"],
+    "synonyms_he": ["שף", "טבח", "טבחית"]
+  },
+  "developer": {
+    "canonical": "Developer",
+    "synonyms_en": ["software developer", "programmer", "engineer"],
+    "synonyms_he": ["מפתח", "מפתחת", "תוכניתן", "מהנדס תוכנה"]
+  },
+  "technical_support": {
+    "canonical": "Technical Support",
+    "synonyms_en": ["help desk", "helpdesk", "IT support"],
+    "synonyms_he": ["תמיכה טכנית", "תמיכה"]
+  },
+  "cybersecurity": {
+    "canonical": "Cybersecurity",
+    "synonyms_en": ["cyber security", "information security"],
+    "synonyms_he": ["סייבר", "אבטחת מידע", "אבטחה"]
+  }
+}

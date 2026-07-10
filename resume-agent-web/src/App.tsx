@@ -1,0 +1,316 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import CvManager from "./components/CvManager";
+import CvDetails from "./components/CvDetails";
+import JobsPage from "./components/JobsPage";
+import {
+  checkHealth,
+  deleteServerCv,
+  DuplicateCvError,
+  getCvScanStatus,
+  listServerCvs,
+  runAgentForCv,
+  uploadCv,
+  type Cv,
+  type CvScanStatus,
+} from "./lib/api";
+
+type Tab = "cv" | "jobs";
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("cv");
+  const [serverUp, setServerUp] = useState(false);
+  const [healthChecking, setHealthChecking] = useState(true);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const [cvs, setCvs] = useState<Cv[]>([]);
+  const [cvsLoading, setCvsLoading] = useState(false);
+  const [cvsError, setCvsError] = useState<string | null>(null);
+  const [selectedCvId, setSelectedCvId] = useState<string | null>(null);
+
+  const [scanCvId, setScanCvId] = useState<string | null>(null);
+  const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const scanRunningRef = useRef(false);
+  const healthFailCount = useRef(0);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(null), 4000);
+  };
+
+  const refreshCvs = useCallback(async () => {
+    setCvsLoading(true);
+    setCvsError(null);
+    try {
+      const data = await listServerCvs();
+      setCvs(data.cvs);
+    } catch (e) {
+      setCvsError(e instanceof Error ? e.message : "שגיאה בטעינת קורות החיים");
+    } finally {
+      setCvsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    scanRunningRef.current = scanStatus?.running ?? false;
+  }, [scanStatus?.running]);
+
+  const applyHealthResult = useCallback(
+    (up: boolean) => {
+      if (up) {
+        healthFailCount.current = 0;
+        setServerUp(true);
+        return;
+      }
+      // During an active scan the server may be slow — don't flip to "down" immediately.
+      if (scanRunningRef.current) return;
+      healthFailCount.current += 1;
+      if (healthFailCount.current >= 3) setServerUp(false);
+    },
+    []
+  );
+  const pingServer = useCallback(async () => {
+    setHealthChecking(true);
+    const up = await checkHealth();
+    applyHealthResult(up);
+    if (up) refreshCvs();
+    setHealthChecking(false);
+    return up;
+  }, [refreshCvs, applyHealthResult]);
+
+  // Server health polling — faster while disconnected.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const schedule = (up: boolean) => {
+      if (cancelled) return;
+      timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        const next = await checkHealth();
+        if (!cancelled) {
+          applyHealthResult(next);
+          if (next) refreshCvs();
+          setHealthChecking(false);
+          schedule(next || scanRunningRef.current);
+        }
+      }, up ? 10000 : 3000);
+    };
+
+    setHealthChecking(true);
+    checkHealth().then((up) => {
+      if (cancelled) return;
+      applyHealthResult(up);
+      setHealthChecking(false);
+      if (up) refreshCvs();
+      schedule(up || scanRunningRef.current);
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [refreshCvs, applyHealthResult]);
+
+  useEffect(() => {
+    if (serverUp) refreshCvs();
+  }, [serverUp, refreshCvs]);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current != null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(
+    (cvId: string) => {
+      stopPolling();
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const s = await getCvScanStatus(cvId);
+          setScanStatus(s);
+          if (!s.running) {
+            stopPolling();
+            refreshCvs();
+          }
+        } catch {
+          /* server temporarily unreachable — keep polling */
+        }
+      }, 2500);
+    },
+    [stopPolling, refreshCvs]
+  );
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  const handleUpload = async (files: File[]) => {
+    let uploaded = 0;
+    for (const file of files) {
+      try {
+        await uploadCv(file);
+        uploaded += 1;
+      } catch (e) {
+        if (e instanceof DuplicateCvError) {
+          const asNew = window.confirm(
+            `הקובץ "${file.name}" כבר הועלה בעבר. להעלות אותו כגרסה נפרדת?`
+          );
+          if (asNew) {
+            await uploadCv(file, { asNewVersion: true });
+            uploaded += 1;
+          }
+        } else {
+          showToast(
+            `העלאת "${file.name}" נכשלה: ${e instanceof Error ? e.message : ""}`
+          );
+        }
+      }
+    }
+    await refreshCvs();
+    if (uploaded > 0) {
+      showToast(
+        uploaded === 1 ? "קורות החיים הועלו" : `${uploaded} קבצים הועלו`
+      );
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await deleteServerCv(id);
+      if (selectedCvId === id) setSelectedCvId(null);
+      await refreshCvs();
+      showToast("קורות החיים וכל הנתונים הקשורים נמחקו");
+    } catch (e) {
+      showToast(`מחיקה נכשלה: ${e instanceof Error ? e.message : ""}`);
+    }
+  };
+
+  const handleRun = async (id: string) => {
+    try {
+      await runAgentForCv(id);
+      setScanCvId(id);
+      setScanStatus({
+        running: true,
+        started_at: new Date().toISOString(),
+        finished_at: null,
+        error: null,
+        current_step: null,
+        detail: "מתחיל סריקה…",
+        steps: [],
+        log: [],
+        latest_scan: null,
+      });
+      startPolling(id);
+    } catch (e) {
+      showToast(
+        `הרצת הסוכן נכשלה: ${e instanceof Error ? e.message : ""}`
+      );
+    }
+  };
+
+  const selectedCv = cvs.find((c) => c.id === selectedCvId);
+  const scanActive = scanStatus?.running ?? false;
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div className="header-inner">
+          <div className="logo">
+            <span className="logo-icon">📄</span>
+            <span className="logo-text">
+              Resume<b>Agent</b>
+            </span>
+          </div>
+
+          <nav className="tabs">
+            <button
+              className={`tab ${tab === "cv" ? "active" : ""}`}
+              onClick={() => setTab("cv")}
+            >
+              קורות חיים
+            </button>
+            <button
+              className={`tab ${tab === "jobs" ? "active" : ""}`}
+              onClick={() => setTab("jobs")}
+            >
+              משרות (כללי)
+            </button>
+          </nav>
+
+          <span
+            className={`server-status ${serverUp ? "up" : "down"}`}
+            title={
+              serverUp
+                ? "השרת מחובר"
+                : healthChecking
+                  ? "בודק חיבור..."
+                  : "השרת לא זמין — לחץ לניסיון חוזר"
+            }
+            onClick={() => pingServer()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") pingServer();
+            }}
+          >
+            <span className="status-dot" />
+            {healthChecking
+              ? "בודק חיבור..."
+              : serverUp
+                ? "סוכן מחובר"
+                : "סוכן לא זמין"}
+          </span>
+        </div>
+      </header>
+
+      <main className="main">
+        {tab === "cv" ? (
+          !serverUp && !scanActive ? (
+            <div className="empty-state">
+              <div className="empty-icon">🔌</div>
+              <p>השרת של הסוכן לא זמין.</p>
+              <p className="empty-hint">
+                הרץ בתיקיית <code>ai-job-agent</code>:{" "}
+                <code>python src/api_server.py --port 8001</code>
+              </p>
+              <button
+                className="btn btn-primary"
+                disabled={healthChecking}
+                onClick={() => pingServer()}
+              >
+                {healthChecking ? "בודק..." : "נסה שוב"}
+              </button>
+            </div>
+          ) : selectedCvId ? (
+            <CvDetails
+              cvId={selectedCvId}
+              cv={selectedCv}
+              scanCvId={scanCvId}
+              scanStatus={scanStatus}
+              onBack={() => setSelectedCvId(null)}
+              onRun={handleRun}
+            />
+          ) : (
+            <CvManager
+              cvs={cvs}
+              loading={cvsLoading}
+              error={cvsError}
+              scanCvId={scanCvId}
+              scanStatus={scanStatus}
+              onUpload={handleUpload}
+              onDelete={handleDelete}
+              onRun={handleRun}
+              onOpen={(id) => setSelectedCvId(id)}
+            />
+          )
+        ) : (
+          <JobsPage serverUp={serverUp} />
+        )}
+      </main>
+
+      <footer className="footer">Resume Agent · צד לקוח · React + Vite</footer>
+
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}

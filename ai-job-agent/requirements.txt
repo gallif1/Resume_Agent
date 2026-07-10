@@ -1,0 +1,15 @@
+playwright
+python-dotenv
+pypdf
+python-dateutil
+openai
+pymupdf
+pdfplumber
+python-docx
+Pillow
+requests
+beautifulsoup4
+fastapi
+uvicorn
+python-multipart
+pytest
