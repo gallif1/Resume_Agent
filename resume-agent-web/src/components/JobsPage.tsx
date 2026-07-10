@@ -196,20 +196,20 @@ export default function JobsPage({ serverUp }: Props) {
                   className="job-row"
                   onClick={() => setExpandedId(expanded ? null : job.id)}
                 >
-                  <span className={`job-score ${scoreClass(job.match_score)}`}>
-                    {job.match_score ?? "—"}
-                  </span>
-                  <div className="cv-info">
-                    <div className="cv-name">
-                      {job.title}
+                  <div className="job-row-main">
+                    <span className={`job-score ${scoreClass(job.match_score)}`}>
+                      <span className="job-score-value">{job.match_score ?? "—"}</span>
+                    </span>
+                    <div className="cv-info">
+                      <div className="cv-name">{job.title}</div>
+                      <div className="cv-meta">
+                        {[job.company, job.location, job.source]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
                       {job.application_status === "sent" && (
                         <span className="badge">נשלחו קו"ח</span>
                       )}
-                    </div>
-                    <div className="cv-meta">
-                      {[job.company, job.location, job.source]
-                        .filter(Boolean)
-                        .join(" · ")}
                     </div>
                   </div>
                   <div className="cv-actions">

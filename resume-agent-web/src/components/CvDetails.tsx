@@ -165,21 +165,21 @@ export default function CvDetails({
                   className="job-row"
                   onClick={() => setExpandedId(expanded ? null : m.match_id)}
                 >
-                  <span className={`job-score ${scoreClass(m.match_score)}`}>
-                    {m.match_score ?? "—"}
-                    {m.score_label && (
-                      <span className="score-label"> {m.score_label}</span>
-                    )}
-                  </span>
-                  <div className="cv-info">
-                    <div className="cv-name">
-                      {m.title}
+                  <div className="job-row-main">
+                    <span className={`job-score ${scoreClass(m.match_score)}`}>
+                      <span className="job-score-value">{m.match_score ?? "—"}</span>
+                      {m.score_label && (
+                        <span className="score-label">{m.score_label}</span>
+                      )}
+                    </span>
+                    <div className="cv-info">
+                      <div className="cv-name">{m.title}</div>
+                      <div className="cv-meta">
+                        {[m.company, m.location, m.source].filter(Boolean).join(" · ")}
+                      </div>
                       <span className={`status-pill status-${m.application_status}`}>
                         {STATUS_LABEL[m.application_status]}
                       </span>
-                    </div>
-                    <div className="cv-meta">
-                      {[m.company, m.location, m.source].filter(Boolean).join(" · ")}
                     </div>
                   </div>
                   <div className="cv-actions" onClick={(e) => e.stopPropagation()}>

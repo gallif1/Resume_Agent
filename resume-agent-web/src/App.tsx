@@ -215,51 +215,73 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="header-inner">
-          <div className="logo">
-            <span className="logo-icon">📄</span>
-            <span className="logo-text">
-              Resume<b>Agent</b>
+          <div className="header-top">
+            <div className="logo">
+              <span className="logo-icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M14 2v6h6M8 13h8M8 17h5"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </span>
+              <span className="logo-text">
+                Resume<b>Agent</b>
+              </span>
+            </div>
+
+            <span
+              className={`server-status ${serverUp ? "up" : "down"}`}
+              title={
+                serverUp
+                  ? "השרת מחובר"
+                  : healthChecking
+                    ? "בודק חיבור..."
+                    : "השרת לא זמין — לחץ לניסיון חוזר"
+              }
+              onClick={() => pingServer()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") pingServer();
+              }}
+            >
+              <span className="status-dot" />
+              <span className="server-status-text">
+                {healthChecking
+                  ? "בודק חיבור..."
+                  : serverUp
+                    ? "סוכן מחובר"
+                    : "סוכן לא זמין"}
+              </span>
             </span>
           </div>
 
-          <nav className="tabs">
+          <nav className="tabs" aria-label="ניווט ראשי">
             <button
               className={`tab ${tab === "cv" ? "active" : ""}`}
               onClick={() => setTab("cv")}
             >
-              קורות חיים
+              <span className="tab-icon" aria-hidden="true">📋</span>
+              <span>קורות חיים</span>
             </button>
             <button
               className={`tab ${tab === "jobs" ? "active" : ""}`}
               onClick={() => setTab("jobs")}
             >
-              משרות (כללי)
+              <span className="tab-icon" aria-hidden="true">💼</span>
+              <span>משרות</span>
             </button>
           </nav>
-
-          <span
-            className={`server-status ${serverUp ? "up" : "down"}`}
-            title={
-              serverUp
-                ? "השרת מחובר"
-                : healthChecking
-                  ? "בודק חיבור..."
-                  : "השרת לא זמין — לחץ לניסיון חוזר"
-            }
-            onClick={() => pingServer()}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") pingServer();
-            }}
-          >
-            <span className="status-dot" />
-            {healthChecking
-              ? "בודק חיבור..."
-              : serverUp
-                ? "סוכן מחובר"
-                : "סוכן לא זמין"}
-          </span>
         </div>
       </header>
 
@@ -308,7 +330,11 @@ export default function App() {
         )}
       </main>
 
-      <footer className="footer">Resume Agent · צד לקוח · React + Vite</footer>
+      <footer className="footer">
+        <span>Resume Agent</span>
+        <span className="footer-sep">·</span>
+        <span>סוכן חיפוש עבודה חכם</span>
+      </footer>
 
       {toast && <div className="toast">{toast}</div>}
     </div>
