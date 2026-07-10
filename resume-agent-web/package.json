@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:public": "bash ../scripts/share-dev.sh",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
