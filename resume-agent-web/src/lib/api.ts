@@ -17,38 +17,10 @@ function fetchWithTimeout(
   );
 }
 
-export interface Job {
-  id: number;
-  title: string;
-  company: string | null;
-  location: string | null;
-  job_url: string;
-  source: string | null;
-  match_score: number | null;
-  match_reason: string | null;
-  match_category: string | null;
-  ai_decision: string | null;
-  ai_strengths: string | null;
-  ai_missing_skills: string | null;
-  ai_explanation: string | null;
-  matched_at: string | null;
-  first_seen_at: string | null;
-  application_status: string | null;
-}
-
 export interface PipelineStep {
   key: string;
   name: string;
   status: "pending" | "running" | "success" | "failed" | "skipped";
-}
-
-export interface PipelineStatus {
-  running: boolean;
-  started_at: string | null;
-  finished_at: string | null;
-  error: string | null;
-  steps: PipelineStep[];
-  log: string[];
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -73,25 +45,6 @@ export async function checkHealth(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-export function getJobs(minScore: number): Promise<{ jobs: Job[] }> {
-  return request(`/api/jobs?min_score=${minScore}`);
-}
-
-export function runPipeline(options?: {
-  skip_collect?: boolean;
-  skip_enrich?: boolean;
-}): Promise<{ started: boolean }> {
-  return request(`/api/pipeline/run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(options ?? {}),
-  });
-}
-
-export function getPipelineStatus(): Promise<PipelineStatus> {
-  return request(`/api/pipeline/status`);
 }
 
 export function uploadCvToServer(

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
-import JobsPage from "./components/JobsPage";
 import {
   checkHealth,
   deleteServerCv,
@@ -14,10 +13,7 @@ import {
   type CvScanStatus,
 } from "./lib/api";
 
-type Tab = "cv" | "jobs";
-
 export default function App() {
-  const [tab, setTab] = useState<Tab>("cv");
   const [serverUp, setServerUp] = useState(false);
   const [healthChecking, setHealthChecking] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
@@ -215,118 +211,97 @@ export default function App() {
     <div className="app">
       <header className="header">
         <div className="header-inner">
-          <div className="header-top">
-            <div className="logo">
-              <span className="logo-icon" aria-hidden="true">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="M14 2v6h6M8 13h8M8 17h5"
-                    stroke="currentColor"
-                    strokeWidth="1.75"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
-              <span className="logo-text">
-                Resume<b>Agent</b>
-              </span>
-            </div>
-
-            <span
-              className={`server-status ${serverUp ? "up" : "down"}`}
-              title={
-                serverUp
-                  ? "השרת מחובר"
-                  : healthChecking
-                    ? "בודק חיבור..."
-                    : "השרת לא זמין — לחץ לניסיון חוזר"
-              }
-              onClick={() => pingServer()}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") pingServer();
-              }}
-            >
-              <span className="status-dot" />
-              <span className="server-status-text">
-                {healthChecking
-                  ? "בודק חיבור..."
-                  : serverUp
-                    ? "סוכן מחובר"
-                    : "סוכן לא זמין"}
-              </span>
+          <div className="logo">
+            <span className="logo-icon" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M14 2v6h6M8 13h8M8 17h5"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+            <span className="logo-text">
+              Resume<b>Agent</b>
             </span>
           </div>
 
-          <nav className="tabs" aria-label="ניווט ראשי">
-            <button
-              className={`tab ${tab === "cv" ? "active" : ""}`}
-              onClick={() => setTab("cv")}
-            >
-              <span className="tab-icon" aria-hidden="true">📋</span>
-              <span>קורות חיים</span>
-            </button>
-            <button
-              className={`tab ${tab === "jobs" ? "active" : ""}`}
-              onClick={() => setTab("jobs")}
-            >
-              <span className="tab-icon" aria-hidden="true">💼</span>
-              <span>משרות</span>
-            </button>
-          </nav>
+          <span
+            className={`server-status ${serverUp ? "up" : "down"}`}
+            title={
+              serverUp
+                ? "השרת מחובר"
+                : healthChecking
+                  ? "בודק חיבור..."
+                  : "השרת לא זמין — לחץ לניסיון חוזר"
+            }
+            onClick={() => pingServer()}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") pingServer();
+            }}
+          >
+            <span className="status-dot" />
+            <span className="server-status-text">
+              {healthChecking
+                ? "בודק חיבור..."
+                : serverUp
+                  ? "סוכן מחובר"
+                  : "סוכן לא זמין"}
+            </span>
+          </span>
         </div>
       </header>
 
       <main className="main">
-        {tab === "cv" ? (
-          !serverUp && !scanActive ? (
-            <div className="empty-state">
-              <div className="empty-icon">🔌</div>
-              <p>השרת של הסוכן לא זמין.</p>
-              <p className="empty-hint">
-                הרץ בתיקיית <code>ai-job-agent</code>:{" "}
-                <code>python src/api_server.py --port 8001</code>
-              </p>
-              <button
-                className="btn btn-primary"
-                disabled={healthChecking}
-                onClick={() => pingServer()}
-              >
-                {healthChecking ? "בודק..." : "נסה שוב"}
-              </button>
-            </div>
-          ) : selectedCvId ? (
-            <CvDetails
-              cvId={selectedCvId}
-              cv={selectedCv}
-              scanCvId={scanCvId}
-              scanStatus={scanStatus}
-              onBack={() => setSelectedCvId(null)}
-              onRun={handleRun}
-            />
-          ) : (
-            <CvManager
-              cvs={cvs}
-              loading={cvsLoading}
-              error={cvsError}
-              scanCvId={scanCvId}
-              scanStatus={scanStatus}
-              onUpload={handleUpload}
-              onDelete={handleDelete}
-              onRun={handleRun}
-              onOpen={(id) => setSelectedCvId(id)}
-            />
-          )
+        {!serverUp && !scanActive ? (
+          <div className="empty-state">
+            <div className="empty-icon">🔌</div>
+            <p>השרת של הסוכן לא זמין.</p>
+            <p className="empty-hint">
+              הרץ מהשורש: <code>./scripts/share-dev.sh</code>
+              <br />
+              או ידנית בתיקיית <code>ai-job-agent</code>:{" "}
+              <code>python src/api_server.py</code>
+            </p>
+            <button
+              className="btn btn-primary"
+              disabled={healthChecking}
+              onClick={() => pingServer()}
+            >
+              {healthChecking ? "בודק..." : "נסה שוב"}
+            </button>
+          </div>
+        ) : selectedCvId ? (
+          <CvDetails
+            cvId={selectedCvId}
+            cv={selectedCv}
+            scanCvId={scanCvId}
+            scanStatus={scanStatus}
+            onBack={() => setSelectedCvId(null)}
+            onRun={handleRun}
+          />
         ) : (
-          <JobsPage serverUp={serverUp} />
+          <CvManager
+            cvs={cvs}
+            loading={cvsLoading}
+            error={cvsError}
+            scanCvId={scanCvId}
+            scanStatus={scanStatus}
+            onUpload={handleUpload}
+            onDelete={handleDelete}
+            onRun={handleRun}
+            onOpen={(id) => setSelectedCvId(id)}
+          />
         )}
       </main>
 

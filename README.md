@@ -30,6 +30,25 @@ npm install
 npm run dev   # http://localhost:5173
 ```
 
+### שיתוף לפלאפון (קישור ציבורי זמני)
+
+מהשורש של הפרויקט, פקודה אחת מפעילה הכל ומדפיסה קישור:
+
+```bash
+./scripts/share-dev.sh
+```
+
+או מתוך `resume-agent-web`:
+
+```bash
+npm run dev:public
+```
+
+הסקריפט מפעיל את ה-Backend, את ה-Frontend, ויוצר קישור `trycloudflare.com` שאפשר לפתוח בפלאפון.  
+השאר את הטרמינל פתוח — `Ctrl+C` עוצר הכל.
+
+> **הערה:** הקישור זמני ומשתנה בכל הפעלה. לשימוש קבוע כדאי לפרוס ל-Vercel/Netlify או להגדיר tunnel קבוע ב-Cloudflare.
+
 ## תיעוד מפורט
 
 - [ai-job-agent/README.md](ai-job-agent/README.md) — פייפליין איסוף משרות, ניתוח קו"ח והגשה
