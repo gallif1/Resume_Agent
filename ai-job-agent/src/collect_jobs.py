@@ -1,4 +1,5 @@
 import argparse
+import re
 import sys
 import time
 from datetime import datetime
@@ -14,6 +15,7 @@ from playwright.sync_api import Page, sync_playwright
 
 from config import (
     DRUSHIM_BASE_URL,
+    DRUSHIM_MAX_SCROLL_ROUNDS,
     GOTFRIENDS_ENABLED,
     HEADLESS,
     LINKEDIN_BASE_URL,
@@ -28,6 +30,7 @@ from gotfriends_collector import collect_gotfriends_jobs
 from job_identity import (
     compute_candidate_strategy_hash,
     compute_job_identity_key,
+    extract_drushim_job_id,
     extract_linkedin_job_id,
     normalize_job_url,
 )
@@ -48,6 +51,8 @@ DRUSHIM_HTTP_HEADERS = {
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
 }
 
+DRUSHIM_JOB_URL_RE = re.compile(r"/job/(\d+)/[a-f0-9]+/?", re.IGNORECASE)
+
 EXTRACT_JOBS_JS = """
 () => {
     const items = [...document.querySelectorAll(".job-item")];
@@ -55,7 +60,9 @@ EXTRACT_JOBS_JS = """
 
     for (const item of items) {
         const title =
-            item.querySelector("h3 .job-url, h3 span")?.innerText?.trim() || "";
+            item.querySelector(
+                "h3 .job-url, h3 span, .job-url, [class*='job-title'] span"
+            )?.innerText?.trim() || "";
         const company =
             item.querySelector(".job-details-top a span")?.innerText?.trim() || "";
         const location = (
@@ -92,6 +99,39 @@ def build_drushim_search_url(query: str) -> str:
     return f"{DRUSHIM_BASE_URL}/jobs/search/?searchterm={quote(query)}"
 
 
+def build_drushim_search_urls(query: str) -> list[str]:
+    """Return Drushim search URL variants to try (querystring + path style)."""
+    trimmed = query.strip()
+    if not trimmed:
+        return []
+
+    encoded = quote(trimmed)
+    slug = quote(trimmed.replace(" ", "-"))
+    urls = [
+        f"{DRUSHIM_BASE_URL}/jobs/search/?searchterm={encoded}",
+        f"{DRUSHIM_BASE_URL}/jobs/search/{encoded}/",
+        f"{DRUSHIM_BASE_URL}/jobs/search/{slug}/",
+    ]
+    seen: set[str] = set()
+    unique: list[str] = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
+def _drushim_http_session() -> requests.Session:
+    """HTTP session warmed against the Drushim homepage (helps some bot filters)."""
+    session = requests.Session()
+    session.headers.update(DRUSHIM_HTTP_HEADERS)
+    try:
+        session.get(DRUSHIM_BASE_URL, timeout=20)
+    except requests.RequestException:
+        pass
+    return session
+
+
 def _interactive_terminal() -> bool:
     """True when the process can prompt the user on stdin."""
     try:
@@ -100,55 +140,134 @@ def _interactive_terminal() -> bool:
         return False
 
 
+def _parse_drushim_job_item(item: Any, *, page_url: str) -> dict | None:
+    """Parse one Drushim search-result card."""
+    title_el = item.select_one(
+        "h3 .job-url, h3 span, .job-url, [class*='job-title'] span"
+    )
+    title = title_el.get_text(strip=True) if title_el else ""
+    company_el = item.select_one(".job-details-top a span, .job-details-top span")
+    company = company_el.get_text(strip=True) if company_el else ""
+    location_el = item.select_one(".job-details-sub .display-18 span, .job-details-sub span")
+    location = (location_el.get_text(strip=True) if location_el else "").rstrip(" |")
+    description_el = item.select_one(".job-intro p, .vacancyMain p, .job-intro")
+    description = description_el.get_text(strip=True) if description_el else ""
+    link = item.select_one('a[href*="/job/"]')
+    href = urljoin(page_url, link.get("href", "")) if link else ""
+
+    if not title or not href:
+        return None
+
+    return {
+        "title": title,
+        "company": company,
+        "location": location,
+        "job_url": href,
+        "source": "drushim",
+        "description": description or "",
+    }
+
+
+def _parse_drushim_jobs_from_links(soup: BeautifulSoup, *, page_url: str) -> list[dict]:
+    """Fallback parser: collect job links when card markup is incomplete."""
+    jobs: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for link in soup.select('a[href*="/job/"]'):
+        href = urljoin(page_url, (link.get("href") or "").strip())
+        job_id = extract_drushim_job_id(href)
+        if not job_id or job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
+
+        title = link.get_text(strip=True) or (link.get("title") or "").strip()
+        if len(title) < 3:
+            continue
+
+        jobs.append({
+            "title": title,
+            "company": "",
+            "location": "",
+            "job_url": normalize_job_url(href) or href,
+            "source": "drushim",
+            "description": "",
+        })
+
+    return jobs
+
+
+def _dedupe_drushim_jobs(jobs: list[dict]) -> list[dict]:
+    """Deduplicate Drushim jobs by canonical job id."""
+    unique: list[dict] = []
+    seen_ids: set[str] = set()
+    for job in jobs:
+        job_id = extract_drushim_job_id(job.get("job_url", ""))
+        if not job_id or job_id in seen_ids:
+            continue
+        seen_ids.add(job_id)
+        unique.append(job)
+    return unique
+
+
 def parse_drushim_search_html(html: str, *, page_url: str) -> list[dict]:
     """Parse Drushim search-result cards from raw HTML."""
     soup = BeautifulSoup(html, "html.parser")
     jobs: list[dict] = []
 
     for item in soup.select(".job-item"):
-        title_el = item.select_one("h3 .job-url, h3 span")
-        title = title_el.get_text(strip=True) if title_el else ""
-        company_el = item.select_one(".job-details-top a span")
-        company = company_el.get_text(strip=True) if company_el else ""
-        location_el = item.select_one(".job-details-sub .display-18 span")
-        location = (location_el.get_text(strip=True) if location_el else "").rstrip(" |")
-        description_el = item.select_one(".job-intro p, .vacancyMain p")
-        description = description_el.get_text(strip=True) if description_el else ""
-        link = item.select_one('a[href*="/job/"]')
-        href = urljoin(page_url, link.get("href", "")) if link else ""
+        parsed = _parse_drushim_job_item(item, page_url=page_url)
+        if parsed is not None:
+            jobs.append(parsed)
 
-        if not title or not href:
-            continue
+    if not jobs:
+        jobs = _parse_drushim_jobs_from_links(soup, page_url=page_url)
 
-        jobs.append({
-            "title": title,
-            "company": company,
-            "location": location,
-            "job_url": href,
-            "source": "drushim",
-            "description": description or "",
-        })
+    return _dedupe_drushim_jobs(jobs)
 
-    return jobs
+
+def _log_drushim_http_diagnostics(html: str, *, page_url: str, status_code: int) -> None:
+    """Print parse diagnostics when Drushim HTTP returns no jobs."""
+    soup = BeautifulSoup(html, "html.parser")
+    card_count = len(soup.select(".job-item"))
+    link_count = len(DRUSHIM_JOB_URL_RE.findall(html))
+    print(
+        f"  Drushim HTTP diagnostics ({page_url}): "
+        f"status={status_code}, html={len(html)} bytes, "
+        f".job-item={card_count}, /job/ links={link_count}"
+    )
 
 
 def collect_drushim_jobs_http(query: str) -> list[dict]:
     """Fetch Drushim search results over plain HTTP (no browser)."""
-    search_url = build_drushim_search_url(query)
-    try:
-        response = requests.get(search_url, headers=DRUSHIM_HTTP_HEADERS, timeout=30)
-    except requests.RequestException as error:
-        print(f"  Drushim HTTP request failed: {error}")
-        return []
+    session = _drushim_http_session()
+    all_jobs: list[dict] = []
 
-    if response.status_code >= 400:
-        print(f"  Drushim HTTP returned status {response.status_code}")
-        return []
+    for search_url in build_drushim_search_urls(query):
+        try:
+            response = session.get(search_url, timeout=30)
+        except requests.RequestException as error:
+            print(f"  Drushim HTTP request failed ({search_url}): {error}")
+            continue
 
-    jobs = parse_drushim_search_html(response.text, page_url=search_url)
-    if jobs:
-        print(f"  Drushim HTTP returned {len(jobs)} job card(s)")
-    return jobs
+        if response.status_code >= 400:
+            print(f"  Drushim HTTP returned status {response.status_code} ({search_url})")
+            continue
+
+        jobs = parse_drushim_search_html(response.text, page_url=response.url)
+        if jobs:
+            all_jobs.extend(jobs)
+            break
+
+        _log_drushim_http_diagnostics(
+            response.text,
+            page_url=response.url,
+            status_code=response.status_code,
+        )
+
+    all_jobs = _dedupe_drushim_jobs(all_jobs)
+    if all_jobs:
+        print(f"  Drushim HTTP returned {len(all_jobs)} job card(s)")
+    return all_jobs
 
 
 def save_debug_artifacts(page: Page, reason: str) -> Path:
@@ -212,14 +331,30 @@ def page_looks_blocked(page: Page) -> bool:
     return any(marker in html for marker in challenge_markers)
 
 
+def _scroll_drushim_results(page: Page, *, max_rounds: int = DRUSHIM_MAX_SCROLL_ROUNDS) -> None:
+    """Scroll the search page to load additional Drushim job cards."""
+    previous_count = 0
+    for _ in range(max_rounds):
+        current_count = page.locator(".job-item").count()
+        if current_count <= previous_count:
+            break
+        previous_count = current_count
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.wait_for_timeout(1500)
+
+
 def extract_jobs_from_page(page: Page) -> list[dict]:
     """Extract job cards from the current Drushim search page."""
-    return page.evaluate(EXTRACT_JOBS_JS)
+    jobs = page.evaluate(EXTRACT_JOBS_JS)
+    if jobs:
+        return jobs
+    return parse_drushim_search_html(page.content(), page_url=page.url)
 
 
 def collect_drushim_jobs_playwright(query: str, *, headless: bool) -> list[dict]:
     """Open Drushim in Playwright and extract job cards."""
-    search_url = build_drushim_search_url(query)
+    search_urls = build_drushim_search_urls(query)
+    search_url = search_urls[0] if search_urls else build_drushim_search_url(query)
     print(f"  Drushim browser mode: {'headless' if headless else 'visible'}")
 
     with sync_playwright() as playwright:
@@ -227,11 +362,17 @@ def collect_drushim_jobs_playwright(query: str, *, headless: bool) -> list[dict]
         browser = context.browser
 
         try:
+            try:
+                page.goto(DRUSHIM_BASE_URL, wait_until="domcontentloaded", timeout=45000)
+                page.wait_for_timeout(1000)
+            except Exception:
+                pass
+
             page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(3000)
 
             try:
-                page.wait_for_selector(".job-item", timeout=15000)
+                page.wait_for_selector(".job-item, a[href*='/job/']", timeout=15000)
             except Exception:
                 if page_looks_blocked(page):
                     reason = "Page may be blocked by captcha or anti-bot protection"
@@ -249,11 +390,12 @@ def collect_drushim_jobs_playwright(query: str, *, headless: bool) -> list[dict]
                     jobs = extract_jobs_from_page(page)
                     if not jobs:
                         save_debug_artifacts(page, "Extraction still failed after manual inspection")
-                    return jobs
+                    return _dedupe_drushim_jobs(jobs)
 
                 return []
 
-            jobs = extract_jobs_from_page(page)
+            _scroll_drushim_results(page)
+            jobs = _dedupe_drushim_jobs(extract_jobs_from_page(page))
             if not jobs:
                 reason = "Job cards were present but fields could not be parsed"
                 save_debug_artifacts(page, reason)
@@ -265,7 +407,7 @@ def collect_drushim_jobs_playwright(query: str, *, headless: bool) -> list[dict]
                 if _interactive_terminal():
                     print("Inspect the browser window, then press Enter to retry extraction.")
                     input()
-                    jobs = extract_jobs_from_page(page)
+                    jobs = _dedupe_drushim_jobs(extract_jobs_from_page(page))
                     if not jobs:
                         save_debug_artifacts(page, "Extraction still failed after manual inspection")
 
@@ -578,6 +720,7 @@ def main() -> None:
     total_touched = 0
     total_excluded = 0
     total_queries = 0
+    source_totals: dict[str, int] = {"drushim": 0, "linkedin": 0, "gotfriends": 0}
 
     for entry in plan:
         category = entry.get("category", "")
@@ -625,6 +768,7 @@ def main() -> None:
                 total_inserted += inserted
                 total_touched += touched
                 total_excluded += excluded
+                source_totals[site_name] = source_totals.get(site_name, 0) + inserted
 
                 print(
                     f"  [{site_name}] '{query}': raw {raw}, unique {unique}, duplicates {duplicates}, "
@@ -643,6 +787,10 @@ def main() -> None:
     print(f"  New jobs inserted: {total_inserted}")
     print(f"  Existing jobs touched once: {total_touched}")
     print(f"  Excluded by keyword: {total_excluded}")
+    print("  New jobs by source:")
+    for site_name, count in sorted(source_totals.items()):
+        if count:
+            print(f"    {site_name}: {count}")
 
 
 if __name__ == "__main__":
