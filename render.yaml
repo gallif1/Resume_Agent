@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: resume-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: HEADLESS
+        value: true
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DRUSHIM_EMAIL
+        sync: false
+      - key: DRUSHIM_PASSWORD
+        sync: false

@@ -25,6 +25,7 @@ Legacy (single global CV) endpoints, kept for backward compatibility:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -36,6 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import cv_service
@@ -604,9 +607,44 @@ async def health():
     }
 
 
+# ---------------------------------------------------------------------------
+# Frontend (production) — serve built React app from the same origin
+# ---------------------------------------------------------------------------
+
+FRONTEND_DIST = PROJECT_ROOT.parent / "resume-agent-web" / "dist"
+
+if FRONTEND_DIST.is_dir():
+    _assets = FRONTEND_DIST / "assets"
+    if _assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=_assets), name="frontend-assets")
+
+    @app.get("/")
+    async def frontend_index():
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+    @app.get("/favicon.svg")
+    async def frontend_favicon():
+        return FileResponse(FRONTEND_DIST / "favicon.svg")
+
+    @app.get("/icons.svg")
+    async def frontend_icons():
+        return FileResponse(FRONTEND_DIST / "icons.svg")
+
+    @app.get("/{page_path:path}")
+    async def frontend_spa(page_path: str):
+        if page_path.startswith(("api/", "cvs", "cvs/")):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = FRONTEND_DIST / page_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AI Job Agent HTTP API")
     parser.add_argument("--host", default=API_HOST, help=f"bind address (default: {API_HOST})")
     parser.add_argument("--port", type=int, default=API_PORT, help=f"listen port (default: {API_PORT})")
     args = parser.parse_args()
-    uvicorn.run(app, host=args.host, port=args.port)
+    host = os.getenv("API_HOST", args.host)
+    port = int(os.getenv("PORT", os.getenv("API_PORT", str(args.port))))
+    uvicorn.run(app, host=host, port=port)
