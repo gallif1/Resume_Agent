@@ -27,7 +27,8 @@ python src/api_server.py   # http://localhost:8000
 ```bash
 cd resume-agent-web
 npm install
-npm run dev   # http://localhost:5173
+npm run dev        # http://localhost:5173
+npm run dev:lan    # גישה גם מהטלפון (אותה Wi‑Fi) — ראה resume-agent-web/README.md
 ```
 
 ## תיעוד מפורט
