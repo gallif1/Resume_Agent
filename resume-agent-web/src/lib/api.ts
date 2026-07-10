@@ -38,12 +38,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function checkHealth(): Promise<boolean> {
+export interface HealthStatus {
+  ok: boolean;
+  scan_running: boolean;
+  scan_cv_id: string | null;
+}
+
+export async function checkHealth(): Promise<HealthStatus> {
   try {
     const res = await fetchWithTimeout(`${BASE_URL}/api/health`, {}, 15000);
-    return res.ok;
+    if (!res.ok) return { ok: false, scan_running: false, scan_cv_id: null };
+    const body = (await res.json()) as {
+      scan_running?: boolean;
+      scan_cv_id?: string | null;
+    };
+    return {
+      ok: true,
+      scan_running: body.scan_running ?? false,
+      scan_cv_id: body.scan_cv_id ?? null,
+    };
   } catch {
-    return false;
+    return { ok: false, scan_running: false, scan_cv_id: null };
   }
 }
 
