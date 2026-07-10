@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
     server: {
       // 127.0.0.1 for desktop-only dev; 0.0.0.0 (npm run dev:lan) for phone on same Wi‑Fi
       host: lan ? true : "127.0.0.1",
+      allowedHosts: lan ? true : undefined,
       proxy: {
         "/api": apiTarget,
         "/cvs": apiTarget,
