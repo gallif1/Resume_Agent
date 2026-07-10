@@ -130,6 +130,8 @@ AI_RERANK_TOP_N = int(os.getenv("AI_RERANK_TOP_N", "25"))
 AI_RERANK_MIN_LOCAL_SCORE = int(os.getenv("AI_RERANK_MIN_LOCAL_SCORE", "40"))
 
 DRUSHIM_BASE_URL = "https://www.drushim.co.il"
+# How many scroll rounds to attempt on Drushim search pages (loads more job cards).
+DRUSHIM_MAX_SCROLL_ROUNDS = int(os.getenv("DRUSHIM_MAX_SCROLL_ROUNDS", "4"))
 
 # LinkedIn job search (public guest endpoints — no login required)
 LINKEDIN_BASE_URL = "https://www.linkedin.com"
