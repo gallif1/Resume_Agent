@@ -600,10 +600,14 @@ def _reshape_match_row(row: dict) -> dict:
 @app.get("/api/health")
 async def health():
     # Lightweight async handler — stays responsive even while scans hold DB locks.
+    with _scan_lock:
+        scan_running = _scan_state["running"]
+        scan_cv_id = _scan_state["cv_id"] if scan_running else None
     return {
         "ok": True,
         "pipeline_running": _pipeline_state["running"],
-        "scan_running": _scan_state["running"],
+        "scan_running": scan_running,
+        "scan_cv_id": scan_cv_id,
     }
 
 

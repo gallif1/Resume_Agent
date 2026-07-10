@@ -11,7 +11,11 @@ import {
   uploadCv,
   type Cv,
   type CvScanStatus,
+  type HealthStatus,
 } from "./lib/api";
+
+const ACTIVE_SCAN_KEY = "resume-agent:activeScanCvId";
+const SELECTED_CV_KEY = "resume-agent:selectedCvId";
 
 export default function App() {
   const [serverUp, setServerUp] = useState(false);
@@ -21,7 +25,13 @@ export default function App() {
   const [cvs, setCvs] = useState<Cv[]>([]);
   const [cvsLoading, setCvsLoading] = useState(false);
   const [cvsError, setCvsError] = useState<string | null>(null);
-  const [selectedCvId, setSelectedCvId] = useState<string | null>(null);
+  const [selectedCvId, setSelectedCvId] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem(SELECTED_CV_KEY);
+    } catch {
+      return null;
+    }
+  });
 
   const [scanCvId, setScanCvId] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
@@ -51,66 +61,40 @@ export default function App() {
     scanRunningRef.current = scanStatus?.running ?? false;
   }, [scanStatus?.running]);
 
-  const applyHealthResult = useCallback(
-    (up: boolean) => {
-      if (up) {
-        healthFailCount.current = 0;
-        setServerUp(true);
-        return;
+  useEffect(() => {
+    try {
+      if (selectedCvId) {
+        sessionStorage.setItem(SELECTED_CV_KEY, selectedCvId);
+      } else {
+        sessionStorage.removeItem(SELECTED_CV_KEY);
       }
-      // During an active scan the server may be slow — don't flip to "down" immediately.
-      if (scanRunningRef.current) return;
-      healthFailCount.current += 1;
-      if (healthFailCount.current >= 3) setServerUp(false);
-    },
-    []
-  );
-  const pingServer = useCallback(async () => {
-    setHealthChecking(true);
-    const up = await checkHealth();
-    applyHealthResult(up);
-    if (up) refreshCvs();
-    setHealthChecking(false);
-    return up;
-  }, [refreshCvs, applyHealthResult]);
+    } catch {
+      /* private browsing / quota */
+    }
+  }, [selectedCvId]);
 
-  // Server health polling — faster while disconnected.
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | undefined;
+  const setActiveScanCvId = useCallback((cvId: string | null) => {
+    setScanCvId(cvId);
+    try {
+      if (cvId) sessionStorage.setItem(ACTIVE_SCAN_KEY, cvId);
+      else sessionStorage.removeItem(ACTIVE_SCAN_KEY);
+    } catch {
+      /* private browsing / quota */
+    }
+  }, []);
 
-    const schedule = (up: boolean) => {
-      if (cancelled) return;
-      timer = window.setTimeout(async () => {
-        if (cancelled) return;
-        const next = await checkHealth();
-        if (!cancelled) {
-          applyHealthResult(next);
-          if (next) refreshCvs();
-          setHealthChecking(false);
-          schedule(next || scanRunningRef.current);
-        }
-      }, up ? 10000 : 3000);
-    };
-
-    setHealthChecking(true);
-    checkHealth().then((up) => {
-      if (cancelled) return;
-      applyHealthResult(up);
-      setHealthChecking(false);
-      if (up) refreshCvs();
-      schedule(up || scanRunningRef.current);
-    });
-
-    return () => {
-      cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, [refreshCvs, applyHealthResult]);
-
-  useEffect(() => {
-    if (serverUp) refreshCvs();
-  }, [serverUp, refreshCvs]);
+  const applyHealthResult = useCallback((health: HealthStatus) => {
+    if (health.scan_running) scanRunningRef.current = true;
+    if (health.ok) {
+      healthFailCount.current = 0;
+      setServerUp(true);
+      return;
+    }
+    // During an active scan the server may be slow — don't flip to "down" immediately.
+    if (scanRunningRef.current) return;
+    healthFailCount.current += 1;
+    if (healthFailCount.current >= 3) setServerUp(false);
+  }, []);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current != null) {
@@ -128,6 +112,7 @@ export default function App() {
           setScanStatus(s);
           if (!s.running) {
             stopPolling();
+            setActiveScanCvId(null);
             refreshCvs();
           }
         } catch {
@@ -135,8 +120,102 @@ export default function App() {
         }
       }, 2500);
     },
-    [stopPolling, refreshCvs]
+    [stopPolling, refreshCvs, setActiveScanCvId]
   );
+
+  const reconnectScan = useCallback(
+    async (cvId: string) => {
+      if (pollRef.current) return;
+      try {
+        const status = await getCvScanStatus(cvId);
+        if (!status.running) {
+          setActiveScanCvId(null);
+          return;
+        }
+        setActiveScanCvId(cvId);
+        setScanStatus(status);
+        scanRunningRef.current = true;
+        startPolling(cvId);
+      } catch {
+        /* server temporarily unreachable — health loop will retry */
+      }
+    },
+    [startPolling, setActiveScanCvId]
+  );
+
+  const tryReconnectActiveScan = useCallback(
+    async (health: HealthStatus) => {
+      if (!health.ok) return;
+      const cvId =
+        health.scan_cv_id ??
+        (() => {
+          try {
+            return sessionStorage.getItem(ACTIVE_SCAN_KEY);
+          } catch {
+            return null;
+          }
+        })();
+      if (!cvId) return;
+      await reconnectScan(cvId);
+    },
+    [reconnectScan]
+  );
+
+  const pingServer = useCallback(async () => {
+    setHealthChecking(true);
+    const health = await checkHealth();
+    applyHealthResult(health);
+    if (health.ok) {
+      await refreshCvs();
+      await tryReconnectActiveScan(health);
+    }
+    setHealthChecking(false);
+    return health.ok;
+  }, [refreshCvs, applyHealthResult, tryReconnectActiveScan]);
+
+  // Server health polling — faster while disconnected.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const schedule = (up: boolean) => {
+      if (cancelled) return;
+      timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        const health = await checkHealth();
+        if (!cancelled) {
+          applyHealthResult(health);
+          if (health.ok) {
+            refreshCvs();
+            await tryReconnectActiveScan(health);
+          }
+          setHealthChecking(false);
+          schedule(health.ok || scanRunningRef.current);
+        }
+      }, up ? 10000 : 3000);
+    };
+
+    setHealthChecking(true);
+    checkHealth().then(async (health) => {
+      if (cancelled) return;
+      applyHealthResult(health);
+      setHealthChecking(false);
+      if (health.ok) {
+        await refreshCvs();
+        await tryReconnectActiveScan(health);
+      }
+      schedule(health.ok || scanRunningRef.current);
+    });
+
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [refreshCvs, applyHealthResult, tryReconnectActiveScan]);
+
+  useEffect(() => {
+    if (serverUp) refreshCvs();
+  }, [serverUp, refreshCvs]);
 
   useEffect(() => stopPolling, [stopPolling]);
 
@@ -184,7 +263,7 @@ export default function App() {
   const handleRun = async (id: string) => {
     try {
       await runAgentForCv(id);
-      setScanCvId(id);
+      setActiveScanCvId(id);
       setScanStatus({
         running: true,
         started_at: new Date().toISOString(),
