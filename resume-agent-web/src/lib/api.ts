@@ -1,9 +1,9 @@
 // HTTP client for the ai-job-agent backend (FastAPI, separate repository).
 
 // In dev, Vite proxies /api and /cvs to the FastAPI server (see vite.config.ts).
+// In production on the same host (Docker/Render), leave VITE_API_URL unset for relative URLs.
 const BASE_URL: string =
-  (import.meta.env.VITE_API_URL as string | undefined) ??
-  (import.meta.env.DEV ? "" : "http://127.0.0.1:8000");
+  (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
 function fetchWithTimeout(
   url: string,

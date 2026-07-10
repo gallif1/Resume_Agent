@@ -25,6 +25,7 @@ Legacy (single global CV) endpoints, kept for backward compatibility:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -36,13 +37,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import cv_service
 import db
-from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
-
-SRC = PROJECT_ROOT / "src"
+from config import API_HOST, API_PORT, CVS_DIR, CV_PROFILE_PATH, DATA_DIR, LOGS_DIR, PROJECT_ROOT, RESUMES_DIR, STATIC_DIR, cv_db_path
 PYTHON = sys.executable
 
 ALLOWED_CV_EXTENSIONS = cv_service.ALLOWED_CV_EXTENSIONS
@@ -56,6 +56,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _ensure_runtime_dirs() -> None:
+    for path in (DATA_DIR, LOGS_DIR, CVS_DIR, RESUMES_DIR):
+        path.mkdir(parents=True, exist_ok=True)
+    db.init_registry_db()
 
 
 def _utc_now() -> str:
@@ -602,6 +609,29 @@ async def health():
         "pipeline_running": _pipeline_state["running"],
         "scan_running": _scan_state["running"],
     }
+
+
+def _mount_static_frontend() -> None:
+    """Serve the built Vite app when STATIC_DIR is set (production / Docker)."""
+    static_root = Path(STATIC_DIR) if STATIC_DIR else None
+    if static_root is None or not static_root.is_dir():
+        return
+
+    @app.get("/")
+    async def spa_index():
+        return FileResponse(static_root / "index.html")
+
+    @app.get("/{full_path:path}")
+    async def spa_assets(full_path: str):
+        if full_path.startswith(("api/", "cvs/")):
+            raise HTTPException(status_code=404, detail="Not found")
+        file_path = static_root / full_path
+        if file_path.is_file():
+            return FileResponse(file_path)
+        return FileResponse(static_root / "index.html")
+
+
+_mount_static_frontend()
 
 
 if __name__ == "__main__":

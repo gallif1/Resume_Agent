@@ -9,10 +9,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Load environment variables from .env in the project root
 load_dotenv(PROJECT_ROOT / ".env")
 
-# Paths
-DATA_DIR = PROJECT_ROOT / "data"
-RESUMES_DIR = PROJECT_ROOT / "resumes"
-LOGS_DIR = PROJECT_ROOT / "logs"
+# Paths — override DATA_DIR on cloud hosts (e.g. Render persistent disk at /data)
+_data_dir_env = os.getenv("DATA_DIR", "").strip()
+DATA_DIR = Path(_data_dir_env).resolve() if _data_dir_env else PROJECT_ROOT / "data"
+
+_logs_dir_env = os.getenv("LOGS_DIR", "").strip()
+LOGS_DIR = Path(_logs_dir_env).resolve() if _logs_dir_env else DATA_DIR / "logs"
+
+_resumes_dir_env = os.getenv("RESUMES_DIR", "").strip()
+RESUMES_DIR = Path(_resumes_dir_env).resolve() if _resumes_dir_env else PROJECT_ROOT / "resumes"
 SYNONYM_DICTIONARY_PATH = DATA_DIR / "synonym_dictionary.json"
 
 # Per-CV working data lives under data/cvs/<cv_id>/.
@@ -145,5 +150,11 @@ GOTFRIENDS_ENABLED = os.getenv("GOTFRIENDS_ENABLED", "true").lower() in ("1", "t
 GOTFRIENDS_MAX_PAGES = int(os.getenv("GOTFRIENDS_MAX_PAGES", "2"))
 
 # HTTP API server (api_server.py)
+# Render and similar platforms inject PORT; API_PORT overrides when set explicitly.
 API_HOST = os.getenv("API_HOST", "127.0.0.1").strip()
-API_PORT = int(os.getenv("API_PORT", "8000"))
+_api_port_env = os.getenv("API_PORT", "").strip()
+_port_env = os.getenv("PORT", "").strip()
+API_PORT = int(_api_port_env or _port_env or "8000")
+
+# Optional directory for the built web client (resume-agent-web/dist)
+STATIC_DIR = os.getenv("STATIC_DIR", "").strip()

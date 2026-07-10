@@ -34,3 +34,4 @@ npm run dev   # http://localhost:5173
 
 - [ai-job-agent/README.md](ai-job-agent/README.md) — פייפליין איסוף משרות, ניתוח קו"ח והגשה
 - [resume-agent-web/README.md](resume-agent-web/README.md) — ממשק המשתמש בעברית
+- [DEPLOY.md](DEPLOY.md) — פריסה ל-Render עם כתובת קבועה ואחסון בענן
