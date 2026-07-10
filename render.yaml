@@ -1,0 +1,34 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: Dashboard → Blueprints → New Blueprint Instance → connect this repo
+
+services:
+  - type: web
+    name: resume-agent
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: frankfurt
+    # Persistent disk requires Starter plan ($7/mo) or higher
+    plan: starter
+    disk:
+      name: resume-agent-data
+      mountPath: /data
+      sizeGB: 1
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: LOGS_DIR
+        value: /data/logs
+      - key: STATIC_DIR
+        value: /app/static
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: HEADLESS
+        value: true
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: OPENAI_API_KEY
+        sync: false

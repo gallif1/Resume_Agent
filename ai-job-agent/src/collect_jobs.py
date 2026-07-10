@@ -22,6 +22,7 @@ from config import (
     LINKEDIN_MAX_PAGES,
     LOGS_DIR,
 )
+from console_utils import is_server_mode
 from db import get_known_job_identity_keys, init_db, upsert_collected_job
 from gotfriends_collector import collect_gotfriends_jobs
 from job_identity import (
@@ -151,10 +152,15 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
                 save_debug_artifacts(page, reason)
 
                 if headless:
+                    if is_server_mode():
+                        print("Headless extraction failed (server mode — skipping visible retry).")
+                        return []
                     print("Headless extraction failed. Retrying with a visible browser...")
                     browser.close()
                     return collect_drushim_jobs(query, headless=False)
 
+                if is_server_mode():
+                    return []
                 print("Inspect the browser window, then press Enter to retry extraction.")
                 input()
                 jobs = extract_jobs_from_page(page)
@@ -168,10 +174,15 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
                 save_debug_artifacts(page, reason)
 
                 if headless:
+                    if is_server_mode():
+                        print("Could not parse jobs in headless mode (server mode).")
+                        return []
                     print("Could not parse jobs in headless mode. Retrying visibly...")
                     browser.close()
                     return collect_drushim_jobs(query, headless=False)
 
+                if is_server_mode():
+                    return []
                 print("Inspect the browser window, then press Enter to retry extraction.")
                 input()
                 jobs = extract_jobs_from_page(page)

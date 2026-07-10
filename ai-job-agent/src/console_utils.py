@@ -14,6 +14,11 @@ def configure_console() -> None:
         pass
 
 
+def is_server_mode() -> bool:
+    """True when running without an interactive terminal (cloud / CI)."""
+    return not sys.stdin.isatty()
+
+
 def safe_print(*args, **kwargs) -> None:
     """Print without raising UnicodeEncodeError on legacy Windows code pages."""
     stream = kwargs.get("file") or sys.stdout
