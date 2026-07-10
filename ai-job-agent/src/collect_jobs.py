@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -22,6 +22,7 @@ from config import (
     LINKEDIN_MAX_PAGES,
     LOGS_DIR,
 )
+from enrich_jobs import BROWSER_USER_AGENT, create_browser_context
 from db import get_known_job_identity_keys, init_db, upsert_collected_job
 from gotfriends_collector import collect_gotfriends_jobs
 from job_identity import (
@@ -40,6 +41,12 @@ from role_analyzer import (
 )
 
 DEFAULT_MAX_QUERIES_PER_CATEGORY = 6
+
+DRUSHIM_HTTP_HEADERS = {
+    "User-Agent": BROWSER_USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+}
 
 EXTRACT_JOBS_JS = """
 () => {
@@ -85,6 +92,65 @@ def build_drushim_search_url(query: str) -> str:
     return f"{DRUSHIM_BASE_URL}/jobs/search/?searchterm={quote(query)}"
 
 
+def _interactive_terminal() -> bool:
+    """True when the process can prompt the user on stdin."""
+    try:
+        return sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+def parse_drushim_search_html(html: str, *, page_url: str) -> list[dict]:
+    """Parse Drushim search-result cards from raw HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    jobs: list[dict] = []
+
+    for item in soup.select(".job-item"):
+        title_el = item.select_one("h3 .job-url, h3 span")
+        title = title_el.get_text(strip=True) if title_el else ""
+        company_el = item.select_one(".job-details-top a span")
+        company = company_el.get_text(strip=True) if company_el else ""
+        location_el = item.select_one(".job-details-sub .display-18 span")
+        location = (location_el.get_text(strip=True) if location_el else "").rstrip(" |")
+        description_el = item.select_one(".job-intro p, .vacancyMain p")
+        description = description_el.get_text(strip=True) if description_el else ""
+        link = item.select_one('a[href*="/job/"]')
+        href = urljoin(page_url, link.get("href", "")) if link else ""
+
+        if not title or not href:
+            continue
+
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": location,
+            "job_url": href,
+            "source": "drushim",
+            "description": description or "",
+        })
+
+    return jobs
+
+
+def collect_drushim_jobs_http(query: str) -> list[dict]:
+    """Fetch Drushim search results over plain HTTP (no browser)."""
+    search_url = build_drushim_search_url(query)
+    try:
+        response = requests.get(search_url, headers=DRUSHIM_HTTP_HEADERS, timeout=30)
+    except requests.RequestException as error:
+        print(f"  Drushim HTTP request failed: {error}")
+        return []
+
+    if response.status_code >= 400:
+        print(f"  Drushim HTTP returned status {response.status_code}")
+        return []
+
+    jobs = parse_drushim_search_html(response.text, page_url=search_url)
+    if jobs:
+        print(f"  Drushim HTTP returned {len(jobs)} job card(s)")
+    return jobs
+
+
 def save_debug_artifacts(page: Page, reason: str) -> Path:
     """Save a screenshot and log file when extraction fails."""
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,17 +174,42 @@ def save_debug_artifacts(page: Page, reason: str) -> Path:
 
 
 def page_looks_blocked(page: Page) -> bool:
-    """Detect common captcha, login, or anti-bot pages."""
-    content = page.content().lower()
+    """Detect captcha / anti-bot pages without false positives on search results."""
+    if page.locator(".job-item").count() > 0:
+        return False
+
+    title = (page.title() or "").lower()
+    try:
+        visible = (page.evaluate("() => document.body.innerText || ''") or "")[:2000].lower()
+    except Exception:
+        visible = ""
+    combined = f"{title}\n{visible}"
+
     blocked_signals = [
-        "captcha",
-        "recaptcha",
-        "cloudflare",
-        "access denied",
         "verify you are human",
-        "robot",
+        "אימות אנושי",
+        "access denied",
+        "request blocked",
+        "unusual traffic",
+        "checking your browser",
+        "cf-browser-verification",
+        "just a moment",
     ]
-    return any(signal in content for signal in blocked_signals)
+    if any(signal in combined for signal in blocked_signals):
+        return True
+
+    try:
+        html = page.content().lower()
+    except Exception:
+        return False
+
+    challenge_markers = (
+        "cf-challenge",
+        "challenge-platform",
+        "cf-turnstile",
+        "g-recaptcha",
+    )
+    return any(marker in html for marker in challenge_markers)
 
 
 def extract_jobs_from_page(page: Page) -> list[dict]:
@@ -126,16 +217,14 @@ def extract_jobs_from_page(page: Page) -> list[dict]:
     return page.evaluate(EXTRACT_JOBS_JS)
 
 
-def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
+def collect_drushim_jobs_playwright(query: str, *, headless: bool) -> list[dict]:
     """Open Drushim in Playwright and extract job cards."""
     search_url = build_drushim_search_url(query)
-    print(f"Searching Drushim for: {query}")
-    print(f"URL: {search_url}")
-    print(f"Browser mode: {'headless' if headless else 'visible'}")
+    print(f"  Drushim browser mode: {'headless' if headless else 'visible'}")
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
-        page = browser.new_page()
+        context, page = create_browser_context(playwright, headless=headless)
+        browser = context.browser
 
         try:
             page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
@@ -150,37 +239,61 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
                     reason = "No job cards found on the page"
                 save_debug_artifacts(page, reason)
 
-                if headless:
+                if headless and _interactive_terminal():
                     print("Headless extraction failed. Retrying with a visible browser...")
-                    browser.close()
-                    return collect_drushim_jobs(query, headless=False)
+                    return collect_drushim_jobs_playwright(query, headless=False)
 
-                print("Inspect the browser window, then press Enter to retry extraction.")
-                input()
-                jobs = extract_jobs_from_page(page)
-                if not jobs:
-                    save_debug_artifacts(page, "Extraction still failed after manual inspection")
-                return jobs
+                if _interactive_terminal():
+                    print("Inspect the browser window, then press Enter to retry extraction.")
+                    input()
+                    jobs = extract_jobs_from_page(page)
+                    if not jobs:
+                        save_debug_artifacts(page, "Extraction still failed after manual inspection")
+                    return jobs
+
+                return []
 
             jobs = extract_jobs_from_page(page)
             if not jobs:
                 reason = "Job cards were present but fields could not be parsed"
                 save_debug_artifacts(page, reason)
 
-                if headless:
+                if headless and _interactive_terminal():
                     print("Could not parse jobs in headless mode. Retrying visibly...")
-                    browser.close()
-                    return collect_drushim_jobs(query, headless=False)
+                    return collect_drushim_jobs_playwright(query, headless=False)
 
-                print("Inspect the browser window, then press Enter to retry extraction.")
-                input()
-                jobs = extract_jobs_from_page(page)
-                if not jobs:
-                    save_debug_artifacts(page, "Extraction still failed after manual inspection")
+                if _interactive_terminal():
+                    print("Inspect the browser window, then press Enter to retry extraction.")
+                    input()
+                    jobs = extract_jobs_from_page(page)
+                    if not jobs:
+                        save_debug_artifacts(page, "Extraction still failed after manual inspection")
 
             return jobs
         finally:
-            browser.close()
+            context.close()
+            if browser is not None:
+                browser.close()
+
+
+def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
+    """Collect Drushim job cards — HTTP first, Playwright as fallback."""
+    search_url = build_drushim_search_url(query)
+    print(f"Searching Drushim for: {query}")
+    print(f"URL: {search_url}")
+
+    jobs = collect_drushim_jobs_http(query)
+    if jobs:
+        return jobs
+
+    print("  Drushim HTTP returned no jobs — trying browser...")
+    jobs = collect_drushim_jobs_playwright(query, headless=headless)
+    if jobs:
+        print(f"  Drushim browser returned {len(jobs)} job card(s)")
+        return jobs
+
+    print("  Drushim returned no jobs (HTTP and browser both failed)")
+    return []
 
 
 LINKEDIN_JOBS_PER_PAGE = 25
