@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       host: "127.0.0.1",
+      allowedHosts: [".trycloudflare.com"],
       proxy: {
         "/api": apiTarget,
         "/cvs": apiTarget,
