@@ -11,8 +11,15 @@ from playwright.sync_api import BrowserContext, Page
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from browser_utils import (
+    BROWSER_USER_AGENT,
+    STRONG_BLOCK_SIGNALS,
+    browser_http_headers,
+    create_browser_context as _create_browser_context,
+)
 from config import ENRICH_BLOCKED_DEBUG_DIR, HEADLESS, LINKEDIN_BASE_URL
 from console_utils import configure_console, safe_print
+from gotfriends_collector import fetch_gotfriends_html
 from job_identity import extract_linkedin_job_id
 from db import (
     ENRICH_BLOCKED,
@@ -60,28 +67,6 @@ DESCRIPTION_SELECTORS = [
 GOTO_TIMEOUT_MS = 45000
 WAIT_AFTER_LOAD_MS = 2500
 DEFAULT_TIMEOUT_MS = 20000
-
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-)
-
-# Strong anti-bot indicators only — avoid generic words like "security" or "robot".
-STRONG_BLOCK_SIGNALS = [
-    "verify you are human",
-    "אימות אנושי",
-    "human verification",
-    "access denied",
-    "request blocked",
-    "unusual traffic",
-    "bot detection",
-    "checking your browser",
-    "cf-browser-verification",
-    "please complete the security check",
-    "attention required! | cloudflare",
-    "just a moment",
-    "enable javascript and cookies",
-]
 
 
 def _visible_text(page: Page, limit: int = 3000) -> str:
@@ -198,11 +183,7 @@ def fetch_description_http(url: str) -> str:
     except ImportError:
         return ""
 
-    headers = {
-        "User-Agent": BROWSER_USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
+    headers = browser_http_headers()
     try:
         response = requests.get(url, headers=headers, timeout=30)
         if response.status_code >= 400:
@@ -234,13 +215,8 @@ def enrich_linkedin_one(job: dict) -> tuple[str, str | None, str | None]:
     if not linkedin_id:
         return ENRICH_FAILED, None, f"could not extract LinkedIn job id from {url}"
 
-    headers = {
-        "User-Agent": BROWSER_USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7",
-    }
+    headers = browser_http_headers()
 
-    # Guest detail endpoint first, then the regular job page as fallback.
     candidate_urls = [
         f"{LINKEDIN_BASE_URL}/jobs-guest/jobs/api/jobPosting/{linkedin_id}",
         f"{LINKEDIN_BASE_URL}/jobs/view/{linkedin_id}",
@@ -270,7 +246,6 @@ def enrich_linkedin_one(job: dict) -> tuple[str, str | None, str | None]:
             if len(text) > 80:
                 return ENRICH_SUCCESS, text[:12000], None
 
-        # Fallback: whole visible text if it looks like a job page.
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
         text = soup.get_text("\n", strip=True)
@@ -308,32 +283,21 @@ def extract_gotfriends_description(text: str) -> str:
 
 
 def enrich_gotfriends_one(job: dict) -> tuple[str, str | None, str | None]:
-    """Fetch a GotFriends job description over plain HTTP."""
+    """Fetch a GotFriends job description, with browser fallback on HTTP blocks."""
     try:
-        import requests
         from bs4 import BeautifulSoup
     except ImportError:
-        return ENRICH_FAILED, None, "requests/beautifulsoup4 not installed"
+        return ENRICH_FAILED, None, "beautifulsoup4 not installed"
 
     url = job.get("job_url", "")
     if not url:
         return ENRICH_FAILED, None, "missing job_url"
 
-    headers = {
-        "User-Agent": BROWSER_USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-    }
+    status, html = fetch_gotfriends_html(url)
+    if status >= 400:
+        return ENRICH_FAILED, None, f"HTTP {status}"
 
-    try:
-        response = requests.get(url, headers=headers, timeout=30)
-    except requests.RequestException as error:
-        return ENRICH_FAILED, None, f"request failed: {str(error)[:200]}"
-
-    if response.status_code >= 400:
-        return ENRICH_FAILED, None, f"HTTP {response.status_code}"
-
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
@@ -419,17 +383,7 @@ def create_browser_context(
     headless: bool,
     slowmo: int = 0,
 ) -> tuple[BrowserContext, Page]:
-    browser = playwright.chromium.launch(headless=headless, slow_mo=slowmo)
-    context = browser.new_context(
-        locale="he-IL",
-        timezone_id="Asia/Jerusalem",
-        viewport={"width": 1366, "height": 900},
-        user_agent=BROWSER_USER_AGENT,
-        extra_http_headers={
-            "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-        },
-    )
-    page = context.new_page()
+    context, page = _create_browser_context(playwright, headless=headless, slowmo=slowmo)
     page.set_default_timeout(DEFAULT_TIMEOUT_MS)
     return context, page
 

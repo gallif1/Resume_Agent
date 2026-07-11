@@ -10,17 +10,19 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 from bs4 import BeautifulSoup
 
-from config import GOTFRIENDS_BASE_URL, GOTFRIENDS_MAX_PAGES
+from browser_utils import (
+    browser_http_headers,
+    fetch_html_with_playwright,
+    is_cloudflare_blocked_html,
+    is_http_blocked,
+)
+from config import (
+    GOTFRIENDS_BASE_URL,
+    GOTFRIENDS_BROWSER_PROFILE_DIR,
+    GOTFRIENDS_MAX_PAGES,
+    HEADLESS,
+)
 from job_identity import normalize_job_url
-
-GOTFRIENDS_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-}
 
 # Lobby categories on GotFriends (software is the default dev search).
 GOTFRIENDS_CATEGORIES = (
@@ -73,6 +75,76 @@ _QUERY_STOP_WORDS = frozenset({
 })
 
 _profession_slugs_cache: dict[str, list[str]] | None = None
+_gotfriends_access_blocked: bool | None = None
+
+
+def _mark_gotfriends_blocked(blocked: bool) -> None:
+    global _gotfriends_access_blocked
+    _gotfriends_access_blocked = blocked
+
+
+def _gotfriends_known_blocked() -> bool:
+    return _gotfriends_access_blocked is True
+
+
+def _fetch_gotfriends_html_http(url: str, *, referer: str | None = None) -> tuple[int, str]:
+    headers = browser_http_headers(referer=referer or GOTFRIENDS_BASE_URL)
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+    except requests.RequestException as error:
+        print(f"  GotFriends HTTP request failed for {url}: {error}")
+        return 0, ""
+    return response.status_code, response.text
+
+
+def fetch_gotfriends_html(
+    url: str,
+    *,
+    headless: bool = HEADLESS,
+    referer: str | None = None,
+) -> tuple[int, str]:
+    """Fetch a GotFriends page, falling back to Playwright when HTTP is blocked."""
+    if _gotfriends_known_blocked():
+        return 403, ""
+
+    status, html = _fetch_gotfriends_html_http(url, referer=referer)
+    if status == 200 and not is_cloudflare_blocked_html(html):
+        _mark_gotfriends_blocked(False)
+        return status, html
+
+    if status and not is_http_blocked(status, html):
+        return status, html
+
+    if status in (403, 429, 503) or is_cloudflare_blocked_html(html):
+        print(
+            f"  GotFriends HTTP {status or 'error'} / Cloudflare block for {url} — "
+            "retrying with browser..."
+        )
+
+    GOTFRIENDS_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    browser_status, html = fetch_html_with_playwright(
+        url,
+        headless=headless,
+        user_data_dir=str(GOTFRIENDS_BROWSER_PROFILE_DIR),
+    )
+    if is_cloudflare_blocked_html(html) and headless:
+        print("  GotFriends still blocked in headless mode — retrying with a visible browser...")
+        browser_status, html = fetch_html_with_playwright(
+            url,
+            headless=False,
+            user_data_dir=str(GOTFRIENDS_BROWSER_PROFILE_DIR),
+        )
+
+    if is_cloudflare_blocked_html(html):
+        _mark_gotfriends_blocked(True)
+        print(
+            "  GotFriends is blocked by Cloudflare. "
+            "Open the site once in the agent browser profile, complete the challenge, then retry."
+        )
+    else:
+        _mark_gotfriends_blocked(False)
+
+    return browser_status, html
 
 
 def _absolute_gotfriends_url(href: str) -> str:
@@ -124,22 +196,24 @@ def _title_matches_query(title: str, query: str) -> bool:
 
 
 def fetch_profession_slugs() -> dict[str, list[str]]:
-    """Fetch profession slugs from each GotFriends lobby category."""
+    """Fetch profession slugs from each GotFriends lobby category (HTTP only)."""
     global _profession_slugs_cache
     if _profession_slugs_cache is not None:
+        return _profession_slugs_cache
+    if _gotfriends_known_blocked():
+        _profession_slugs_cache = {}
         return _profession_slugs_cache
 
     slugs_by_category: dict[str, list[str]] = {}
     for category in GOTFRIENDS_CATEGORIES:
         listing_url = f"{GOTFRIENDS_BASE_URL}/jobslobby/{category}/"
-        try:
-            response = requests.get(listing_url, headers=GOTFRIENDS_HEADERS, timeout=30)
-            if response.status_code >= 400:
-                continue
-        except requests.RequestException:
+        status, html = _fetch_gotfriends_html_http(listing_url)
+        if status == 403 or is_cloudflare_blocked_html(html):
+            break
+        if status >= 400 or not html:
             continue
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
         slugs: list[str] = []
         for anchor in soup.select("a[href]"):
             href = anchor.get("href", "")
@@ -174,8 +248,6 @@ def resolve_gotfriends_listing_urls(query: str) -> list[str]:
                 urls.append(f"{GOTFRIENDS_BASE_URL}/jobslobby/{category}/{slug}/")
 
     if not urls:
-        # Generic fallback: search all lobby categories with query token filtering
-        # instead of forcing software-only slugs for non-IT professions.
         for category in GOTFRIENDS_CATEGORIES:
             urls.append(f"{GOTFRIENDS_BASE_URL}/jobslobby/{category}/")
 
@@ -241,33 +313,38 @@ def collect_gotfriends_jobs(
     query: str,
     *,
     max_pages: int = GOTFRIENDS_MAX_PAGES,
+    headless: bool = HEADLESS,
 ) -> list[dict[str, Any]]:
     """Fetch job cards from GotFriends listing pages for a search query."""
     listing_urls = resolve_gotfriends_listing_urls(query)
     print(f"Searching GotFriends for: {query}")
     print(f"  Listing URLs: {', '.join(listing_urls)}")
 
-    broad_search = any(url.rstrip("/").endswith("/software") for url in listing_urls)
+    broad_search = any(
+        url.rstrip("/").endswith(f"/{category}")
+        for url in listing_urls
+        for category in GOTFRIENDS_CATEGORIES
+    )
     all_jobs: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
 
     for listing_url in listing_urls:
         for page_index in range(max_pages):
             page_url = build_gotfriends_page_url(listing_url, page_index + 1)
-            try:
-                response = requests.get(page_url, headers=GOTFRIENDS_HEADERS, timeout=30)
-            except requests.RequestException as error:
-                print(f"  GotFriends request failed ({listing_url}, page {page_index + 1}): {error}")
-                break
+            status, html = fetch_gotfriends_html(
+                page_url,
+                headless=headless,
+                referer=listing_url,
+            )
 
-            if response.status_code >= 400:
+            if status >= 400 or is_cloudflare_blocked_html(html):
                 print(
-                    f"  GotFriends returned HTTP {response.status_code} "
+                    f"  GotFriends returned HTTP {status} "
                     f"({listing_url}, page {page_index + 1})"
                 )
                 break
 
-            page_jobs = parse_gotfriends_listing(response.text)
+            page_jobs = parse_gotfriends_listing(html)
             if not page_jobs:
                 break
 
