@@ -680,6 +680,21 @@ def apply_to_job(cv_id: str, job_id: int, req: ApplyJobRequest | None = None):
     db.ensure_multi_cv_storage()
     if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    browser_ok, browser_error = _playwright_browser_ready()
+    if not browser_ok:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": (
+                    "דפדפן האוטומציה אינו זמין בשרת. "
+                    "לא ניתן להגיש קורות חיים אוטומטית כרגע."
+                ),
+                "code": "playwright_unavailable",
+                "detail": browser_error,
+            },
+        )
+
     cv_db = cv_db_path(cv_id)
     force = req.force if req else False
     try:

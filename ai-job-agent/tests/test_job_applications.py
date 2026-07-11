@@ -208,6 +208,7 @@ def test_api_apply_endpoint(db_path, cvs_dir, monkeypatch):
     monkeypatch.setattr(config, "REGISTRY_DB_PATH", db_path)
     monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
     monkeypatch.setattr(api_server, "enqueue_application", lambda *a, **k: True)
+    monkeypatch.setattr(api_server, "_playwright_browser_ready", lambda: (True, None))
 
     cv_id = _create_cv(db_path, cvs_dir)
     job_id = db.insert_job("Dev", "https://example.com/job/6", db_path=db.cv_db_path(cv_id))
@@ -228,6 +229,7 @@ def test_api_apply_rejects_unauthorized_job(db_path, cvs_dir, monkeypatch):
     import config
     monkeypatch.setattr(config, "REGISTRY_DB_PATH", db_path)
     monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    monkeypatch.setattr(api_server, "_playwright_browser_ready", lambda: (True, None))
     cv_id = _create_cv(db_path, cvs_dir)
     job_id = db.insert_job("Dev", "https://example.com/job/7", db_path=db.cv_db_path(cv_id))
 
@@ -333,3 +335,25 @@ def test_rate_limiting():
     with pytest.raises(application_service.ApplicationError) as exc:
         application_service.check_rate_limit(cv_id)
     assert exc.value.status_code == 429
+
+
+def test_api_apply_rejects_when_playwright_unavailable(db_path, cvs_dir, monkeypatch):
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+    import config
+    monkeypatch.setattr(config, "REGISTRY_DB_PATH", db_path)
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    monkeypatch.setattr(
+        api_server,
+        "_playwright_browser_ready",
+        lambda: (False, "chromium missing"),
+    )
+
+    cv_id = _create_cv(db_path, cvs_dir)
+    job_id = db.insert_job("Dev", "https://example.com/job/8", db_path=db.cv_db_path(cv_id))
+    _link_match(db_path, cv_id, job_id)
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(api_server.app)
+    res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
+    assert res.status_code == 503

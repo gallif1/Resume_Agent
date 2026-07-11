@@ -22,6 +22,7 @@ COPY --from=frontend /web/dist /app/resume-agent-web/dist
 
 ENV API_HOST=0.0.0.0
 ENV HEADLESS=true
+ENV APPLY_HEADLESS=true
 ENV PYTHONUNBUFFERED=1
 ENV DRUSHIM_HTTP_FIRST=true
 ENV DRUSHIM_BROWSER_FALLBACK=false
