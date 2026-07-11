@@ -26,7 +26,7 @@ from apply_jobs import (
     _click_first,
     _page_shows_success,
 )
-from application_providers.provider_utils import click_submit
+from site_auth import drushim_credentials_configured, ensure_drushim_session
 
 
 class DrushimProvider(GenericProvider):
@@ -43,6 +43,7 @@ class DrushimProvider(GenericProvider):
         job: dict[str, Any],
         *,
         cover_letter: str | None = None,
+        cv_id: str | None = None,
     ) -> ApplicationResult:
         if _page_shows_success(page):
             ok, snippet = detect_submission_success(page)
@@ -79,14 +80,32 @@ class DrushimProvider(GenericProvider):
         page.wait_for_timeout(2500)
 
         if detect_login_required(page):
-            return ApplicationResult(
-                success=False,
-                status="requires_user_action",
-                message=hebrew_failure_message("login_required"),
-                failure_category="login_required",
-                current_url=page.url,
-                provider_name=self.name,
-            )
+            if cv_id and ensure_drushim_session(page, cv_id):
+                if not _click_first(page, APPLY_BUTTON_SELECTORS, APPLY_BUTTON_TEXTS):
+                    return ApplicationResult(
+                        success=False,
+                        status="failed",
+                        message=hebrew_failure_message("application_form_not_found"),
+                        failure_category="application_form_not_found",
+                        current_url=page.url,
+                        provider_name=self.name,
+                    )
+                page.wait_for_timeout(2500)
+            if detect_login_required(page):
+                message = (
+                    "הגדר DRUSHIM_EMAIL ו-DRUSHIM_PASSWORD בהגדרות השרת "
+                    "כדי שהמערכת תתחבר לדרושים אוטומטית."
+                    if not drushim_credentials_configured()
+                    else hebrew_failure_message("login_required")
+                )
+                return ApplicationResult(
+                    success=False,
+                    status="failed",
+                    message=message,
+                    failure_category="login_required",
+                    current_url=page.url,
+                    provider_name=self.name,
+                )
 
         filled, skipped, uncertain = fill_mapped_fields(page, user_profile)
         cv_ok = upload_cv_file(page, cv_file_path)

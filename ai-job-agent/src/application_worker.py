@@ -27,6 +27,12 @@ from application_service import (
 )
 from browser_utils import create_browser_context, format_browser_launch_error, page_looks_blocked
 from config import APPLY_HEADLESS, AUTO_SUBMIT, LOGS_DIR, PROJECT_ROOT
+from site_auth import (
+    bootstrap_site_sessions,
+    cv_browser_profile_dir,
+    ensure_drushim_session,
+    ensure_linkedin_session,
+)
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -161,12 +167,19 @@ def run_application_attempt(
     url = job.get("job_url") or ""
 
     try:
+        profile_dir = str(cv_browser_profile_dir(cv_id))
         with sync_playwright() as playwright:
-            context, page = create_browser_context(playwright, headless=APPLY_HEADLESS)
+            context, page = create_browser_context(
+                playwright,
+                headless=APPLY_HEADLESS,
+                user_data_dir=profile_dir,
+            )
+            bootstrap_site_sessions(context, cv_id)
             try:
                 _run_on_page(
                     page,
                     application_id,
+                    cv_id,
                     url,
                     profile,
                     str(cv_path),
@@ -197,6 +210,7 @@ def run_application_attempt(
 def _run_on_page(
     page: Page,
     application_id: str,
+    cv_id: str,
     url: str,
     profile: dict[str, Any],
     cv_file_path: str,
@@ -251,6 +265,32 @@ def _run_on_page(
         _save_debug_screenshot(page, application_id, "blocked")
         return
 
+    url_lower = url.lower()
+    if "linkedin.com" in url_lower:
+        _log_step(application_id, "site_authentication", db.STEP_SUCCESS, "LinkedIn", db_path)
+        if ensure_linkedin_session(page, cv_id):
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
+            _log_step(
+                application_id,
+                "site_authentication",
+                db.STEP_SUCCESS,
+                "LinkedIn session ready",
+                db_path,
+            )
+    elif "drushim.co.il" in url_lower:
+        _log_step(application_id, "site_authentication", db.STEP_SUCCESS, "Drushim", db_path)
+        if ensure_drushim_session(page, cv_id):
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2000)
+            _log_step(
+                application_id,
+                "site_authentication",
+                db.STEP_SUCCESS,
+                "Drushim session ready",
+                db_path,
+            )
+
     # Step: detecting_application_provider
     provider = select_provider(url, page)
     provider_name = provider.name
@@ -267,7 +307,7 @@ def _run_on_page(
 
     # Step: opening_application_form + filling
     fill_result = provider.fill_application(
-        page, profile, cv_file_path, job, cover_letter=cover_letter
+        page, profile, cv_file_path, job, cover_letter=cover_letter, cv_id=cv_id
     )
     active_page = provider.application_page(page)
     if fill_result.provider_name:

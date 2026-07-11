@@ -19,6 +19,7 @@ from application_providers.provider_utils import (
     page_has_application_form,
     url_matches,
 )
+from site_auth import ensure_linkedin_session, linkedin_credentials_configured
 
 LINKEDIN_APPLY_TEXTS = [
     "הגשת מועמדות",
@@ -79,6 +80,7 @@ class LinkedInProvider(GenericProvider):
         job: dict[str, Any],
         *,
         cover_letter: str | None = None,
+        cv_id: str | None = None,
     ) -> ApplicationResult:
         if detect_captcha(page):
             return ApplicationResult(
@@ -93,24 +95,45 @@ class LinkedInProvider(GenericProvider):
         app_page = self._resolve_application_page(page)
 
         if app_page is None and detect_linkedin_auth_wall(page):
+            if cv_id and ensure_linkedin_session(page, cv_id):
+                page.goto(job.get("job_url") or page.url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000)
+                app_page = self._resolve_application_page(page)
+
+        if app_page is None and detect_linkedin_auth_wall(page):
+            message_key = (
+                "linkedin_credentials_missing"
+                if not linkedin_credentials_configured()
+                else "linkedin_login_required"
+            )
             return ApplicationResult(
                 success=False,
-                status="requires_user_action",
-                message=hebrew_failure_message("linkedin_login_required"),
+                status="failed",
+                message=hebrew_failure_message(message_key),
                 failure_category="login_required",
                 current_url=page.url,
                 provider_name=self.name,
             )
 
         if detect_login_required(page) and app_page is None:
-            return ApplicationResult(
-                success=False,
-                status="requires_user_action",
-                message=hebrew_failure_message("linkedin_login_required"),
-                failure_category="login_required",
-                current_url=page.url,
-                provider_name=self.name,
-            )
+            if cv_id and ensure_linkedin_session(page, cv_id):
+                page.goto(job.get("job_url") or page.url, wait_until="domcontentloaded", timeout=60000)
+                page.wait_for_timeout(2000)
+                app_page = self._resolve_application_page(page)
+            if app_page is None:
+                message_key = (
+                    "linkedin_credentials_missing"
+                    if not linkedin_credentials_configured()
+                    else "linkedin_login_required"
+                )
+                return ApplicationResult(
+                    success=False,
+                    status="failed",
+                    message=hebrew_failure_message(message_key),
+                    failure_category="login_required",
+                    current_url=page.url,
+                    provider_name=self.name,
+                )
 
         if app_page is None:
             return ApplicationResult(
@@ -128,16 +151,35 @@ class LinkedInProvider(GenericProvider):
 
         if url_matches(app_page.url, "linkedin.com"):
             if detect_linkedin_auth_wall(app_page):
-                return ApplicationResult(
-                    success=False,
-                    status="requires_user_action",
-                    message=hebrew_failure_message("linkedin_login_required"),
-                    failure_category="login_required",
-                    current_url=app_page.url,
-                    provider_name=self.name,
-                )
+                if cv_id and ensure_linkedin_session(app_page, cv_id):
+                    app_page.goto(
+                        job.get("job_url") or app_page.url,
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
+                    app_page.wait_for_timeout(2000)
+                    app_page = self._resolve_application_page(app_page) or app_page
+                if detect_linkedin_auth_wall(app_page):
+                    message_key = (
+                        "linkedin_credentials_missing"
+                        if not linkedin_credentials_configured()
+                        else "linkedin_login_required"
+                    )
+                    return ApplicationResult(
+                        success=False,
+                        status="failed",
+                        message=hebrew_failure_message(message_key),
+                        failure_category="login_required",
+                        current_url=app_page.url,
+                        provider_name=self.name,
+                    )
             result = super().fill_application(
-                app_page, user_profile, cv_file_path, job, cover_letter=cover_letter
+                app_page,
+                user_profile,
+                cv_file_path,
+                job,
+                cover_letter=cover_letter,
+                cv_id=cv_id,
             )
             result.provider_name = self.name
             if (
@@ -145,14 +187,23 @@ class LinkedInProvider(GenericProvider):
                 and result.failure_category == "application_form_not_found"
                 and detect_linkedin_auth_wall(app_page)
             ):
-                result.status = "requires_user_action"
+                result.status = "failed"
                 result.failure_category = "login_required"
-                result.message = hebrew_failure_message("linkedin_login_required")
+                result.message = hebrew_failure_message(
+                    "linkedin_credentials_missing"
+                    if not linkedin_credentials_configured()
+                    else "linkedin_login_required"
+                )
             return result
 
         external = _select_provider(app_page.url, app_page)
         result = external.fill_application(
-            app_page, user_profile, cv_file_path, job, cover_letter=cover_letter
+            app_page,
+            user_profile,
+            cv_file_path,
+            job,
+            cover_letter=cover_letter,
+            cv_id=cv_id,
         )
         result.provider_name = f"{self.name}->{external.name}"
         if result.current_url:

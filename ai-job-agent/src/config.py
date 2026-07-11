@@ -120,6 +120,10 @@ AUTO_GENERATE_COVER_LETTER = os.getenv(
 DRUSHIM_EMAIL = os.getenv("DRUSHIM_EMAIL", "").strip()
 DRUSHIM_PASSWORD = os.getenv("DRUSHIM_PASSWORD", "")
 
+# LinkedIn apply automation — required for Easy Apply jobs on LinkedIn.
+LINKEDIN_EMAIL = os.getenv("LINKEDIN_EMAIL", "").strip()
+LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")
+
 # OpenAI — smart CV analysis (falls back to rule-based parsing if unset)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
