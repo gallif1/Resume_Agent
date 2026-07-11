@@ -52,7 +52,6 @@ STRONG_BLOCK_SIGNALS = (
 CLOUDFLARE_HTML_MARKERS = (
     "cf-challenge",
     "challenge-platform",
-    "cf-turnstile",
     "cf-browser-verification",
 )
 
@@ -143,7 +142,10 @@ def page_looks_blocked(page: Page, *, job_page_url_fragment: str | None = None) 
     except Exception:
         return False
 
-    return any(marker in html for marker in CLOUDFLARE_HTML_MARKERS)
+    if is_cloudflare_blocked_html(html):
+        return True
+
+    return False
 
 
 def create_browser_context(

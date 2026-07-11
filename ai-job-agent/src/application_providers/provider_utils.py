@@ -10,15 +10,6 @@ from playwright.sync_api import Locator, Page
 from browser_utils import page_looks_blocked
 from field_mapper import FIELD_SYNONYMS, build_profile_values, field_blob_from_element, match_field_key
 
-CAPTCHA_MARKERS = (
-    "captcha",
-    "recaptcha",
-    "hcaptcha",
-    "g-recaptcha",
-    "h-captcha",
-    "cf-turnstile",
-)
-
 LOGIN_MARKERS = (
     "sign in",
     "log in",
@@ -50,14 +41,49 @@ def page_text(page: Page, limit: int = 8000) -> str:
 
 
 def detect_captcha(page: Page) -> bool:
+    """True only when a visible CAPTCHA challenge blocks progress.
+
+    Many job sites embed reCAPTCHA/hCaptcha scripts in every page for spam
+    protection. Matching those script tags causes false positives on every job.
+    """
     if page_looks_blocked(page):
         return True
-    try:
-        html = (page.content() or "").lower()
-    except Exception:
-        html = ""
-    combined = f"{page_text(page).lower()}\n{html}"
-    return any(marker in combined for marker in CAPTCHA_MARKERS)
+
+    captcha_selectors = (
+        "iframe[src*='recaptcha']",
+        "iframe[src*='hcaptcha']",
+        "iframe[title*='recaptcha' i]",
+        "iframe[title*='hcaptcha' i]",
+        ".g-recaptcha:visible",
+        ".h-captcha:visible",
+        "#cf-turnstile:visible",
+        "[class*='captcha']:visible",
+    )
+    for selector in captcha_selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.count() and locator.is_visible():
+                return True
+        except Exception:
+            continue
+
+    visible = page_text(page).lower()
+    if visible.strip():
+        challenge_phrases = (
+            "verify you are human",
+            "complete the captcha",
+            "please complete the security check",
+            "אימות שאינך רובוט",
+            "אנא השלם את האימות",
+            "השלם את ה-captcha",
+        )
+        if any(phrase in visible for phrase in challenge_phrases):
+            return True
+        # Short pages with explicit captcha instructions (not script references).
+        if len(visible.strip()) < 800 and "captcha" in visible:
+            return True
+
+    return False
 
 
 def detect_login_required(page: Page) -> bool:
