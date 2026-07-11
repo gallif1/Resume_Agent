@@ -98,6 +98,73 @@ def test_provider_selection_drushim():
     assert provider.name == "drushim"
 
 
+def test_provider_selection_bullhorn():
+    provider = select_provider("https://www.bullhorn.com/apply/job-123")
+    assert provider.name == "bullhorn"
+
+
+def test_bullhorn_form_fill(playwright_page, tmp_path):
+    from application_providers.bullhorn_provider import BullhornProvider
+
+    cv_file = tmp_path / "cv.pdf"
+    cv_file.write_bytes(b"%PDF-1.4")
+
+    html = (FIXTURES / "bullhorn_apply_form.html").read_text(encoding="utf-8")
+    playwright_page.set_content(html)
+
+    profile = {
+        "contact": {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "phone": "0501234567",
+            "portfolio": "https://jane.dev",
+        }
+    }
+    provider = BullhornProvider()
+    job = {"title": "Backend Developer", "company": "888", "job_url": "https://www.bullhorn.com/apply/x"}
+    result = provider.fill_application(
+        playwright_page, profile, str(cv_file), job
+    )
+    assert result.success is True
+    assert "full_name" in result.filled_fields or "email" in result.filled_fields
+
+
+def test_linkedin_external_apply_navigation(playwright_page, tmp_path):
+    from application_providers.linkedin_provider import LinkedInProvider
+
+    cv_file = tmp_path / "cv.pdf"
+    cv_file.write_bytes(b"%PDF-1.4")
+    bullhorn_html = (FIXTURES / "bullhorn_apply_form.html").read_text(encoding="utf-8")
+
+    def handle_route(route):
+        route.fulfill(body=bullhorn_html, content_type="text/html")
+
+    playwright_page.route("**/apply.test.example/**", handle_route)
+
+    linkedin_html = (FIXTURES / "linkedin_external_apply.html").read_text(encoding="utf-8")
+    playwright_page.set_content(linkedin_html)
+
+    profile = {
+        "contact": {
+            "name": "Jane Doe",
+            "email": "jane@example.com",
+            "phone": "0501234567",
+        }
+    }
+    provider = LinkedInProvider()
+    job = {
+        "title": "Backend Developer",
+        "company": "888",
+        "job_url": "https://www.linkedin.com/jobs/view/123",
+    }
+    result = provider.fill_application(
+        playwright_page, profile, str(cv_file), job
+    )
+    assert result.success is True
+    assert result.provider_name and result.provider_name.startswith("linkedin->")
+    assert "email" in result.filled_fields or "full_name" in result.filled_fields
+
+
 def test_greenhouse_can_handle():
     assert GreenhouseProvider().can_handle("https://boards.greenhouse.io/x")
 

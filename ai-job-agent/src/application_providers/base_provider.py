@@ -51,6 +51,13 @@ class ValidationResult:
 class ApplicationProvider(ABC):
     name: str = "base"
 
+    def __init__(self) -> None:
+        self._application_page: Page | None = None
+
+    def application_page(self, fallback: Page) -> Page:
+        """Return the page where the application form lives (may differ after redirects)."""
+        return self._application_page or fallback
+
     @abstractmethod
     def can_handle(self, url: str, page: Page | None = None) -> bool:
         ...

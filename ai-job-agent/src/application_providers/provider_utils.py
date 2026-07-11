@@ -269,6 +269,72 @@ def fill_cover_letter(page: Page, cover_letter: str | None) -> bool:
     return False
 
 
+def page_has_application_form(page: Page) -> bool:
+    """True when the page has a plausible job application form."""
+    try:
+        if page.locator("input[type='file']").count() > 0:
+            return True
+        inputs = page.locator(
+            "input:visible:not([type='hidden']):not([type='submit']):not([type='button'])"
+        )
+        textareas = page.locator("textarea:visible")
+        return inputs.count() >= 2 or textareas.count() >= 1
+    except Exception:
+        return False
+
+
+def open_application_page(
+    page: Page,
+    apply_texts: list[str],
+    *,
+    selectors: list[str] | None = None,
+    wait_ms: int = 3000,
+) -> Page | None:
+    """Click an apply button and return the page that contains the application form.
+
+    Handles same-tab navigation and new-tab popups.
+    """
+    context = page.context
+    start_url = page.url
+
+    def _try_click(target: Page) -> bool:
+        return click_apply_entry(target, apply_texts, selectors)
+
+    # Attempt 1: apply opens a new tab.
+    try:
+        with context.expect_page(timeout=8000) as popup_info:
+            if not _try_click(page):
+                return None
+        new_page = popup_info.value
+        new_page.wait_for_load_state("domcontentloaded", timeout=30000)
+        new_page.wait_for_timeout(wait_ms)
+        return new_page
+    except Exception:
+        # Same-tab navigation during the popup wait is common.
+        if page.url != start_url or page_has_application_form(page):
+            page.wait_for_timeout(wait_ms)
+            return page
+
+    # Attempt 2: same-tab navigation.
+    if not _try_click(page):
+        if page_has_application_form(page):
+            return page
+        return None
+    page.wait_for_timeout(wait_ms)
+    try:
+        page.wait_for_function(
+            "(start) => window.location.href !== start",
+            start_url,
+            timeout=15000,
+        )
+    except Exception:
+        pass
+    if page.url != start_url or page_has_application_form(page):
+        return page
+
+    return page if page_has_application_form(page) else None
+
+
 def click_apply_entry(page: Page, texts: list[str], selectors: list[str] | None = None) -> bool:
     for selector in selectors or []:
         try:

@@ -16,12 +16,12 @@ from application_providers.provider_utils import (
     fill_cover_letter,
     fill_mapped_fields,
     hebrew_failure_message,
+    page_has_application_form,
     upload_cv_file,
     validate_form,
 )
 
 APPLY_TEXTS = [
-    "apply",
     "apply now",
     "submit application",
     "הגש מועמדות",
@@ -33,6 +33,7 @@ SUBMIT_TEXTS = [
     "submit",
     "submit application",
     "send application",
+    "apply for this job",
     "apply",
     "שליחה",
     "שלח",
@@ -75,27 +76,28 @@ class GenericProvider(ApplicationProvider):
                 provider_name=self.name,
             )
 
-        clicked = click_apply_entry(page, APPLY_TEXTS)
-        if clicked:
-            page.wait_for_timeout(2000)
-            if detect_captcha(page):
-                return ApplicationResult(
-                    success=False,
-                    status="requires_user_action",
-                    message=hebrew_failure_message("captcha_detected"),
-                    failure_category="captcha_detected",
-                    current_url=page.url,
-                    provider_name=self.name,
-                )
-            if detect_login_required(page):
-                return ApplicationResult(
-                    success=False,
-                    status="requires_user_action",
-                    message=hebrew_failure_message("login_required"),
-                    failure_category="login_required",
-                    current_url=page.url,
-                    provider_name=self.name,
-                )
+        if not page_has_application_form(page):
+            clicked = click_apply_entry(page, APPLY_TEXTS)
+            if clicked:
+                page.wait_for_timeout(2000)
+                if detect_captcha(page):
+                    return ApplicationResult(
+                        success=False,
+                        status="requires_user_action",
+                        message=hebrew_failure_message("captcha_detected"),
+                        failure_category="captcha_detected",
+                        current_url=page.url,
+                        provider_name=self.name,
+                    )
+                if detect_login_required(page):
+                    return ApplicationResult(
+                        success=False,
+                        status="requires_user_action",
+                        message=hebrew_failure_message("login_required"),
+                        failure_category="login_required",
+                        current_url=page.url,
+                        provider_name=self.name,
+                    )
 
         filled, skipped, uncertain = fill_mapped_fields(page, user_profile)
         cv_ok = upload_cv_file(page, cv_file_path)
