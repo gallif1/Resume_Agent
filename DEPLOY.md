@@ -49,7 +49,7 @@ PR ממוזג ל-master → בדיקות → פריסה אוטומטית ל-Rend
 
 - בתוכנית החינמית השרת «נרדם» אחרי דקות ללא שימוש — הטעינה הראשונה אחרי הפסקה לוקחת ~30 שניות.
 - אם הפריסה נכשלת ב-GitHub Actions, בדוק ש-`RENDER_DEPLOY_HOOK` הוגדר נכון.
-- אפשר לעקוב אfterי הפריסה ב-GitHub → **Actions** וב-Render → **Events**.
+- אפשר לעקוב אחרי הפריסה ב-GitHub → **Actions** וב-Render → **Events**.
 - איסוף משרות מדרושים משתמש ב-Playwright Chromium. ה-Dockerfile מתקין אותו אוטומטית; אם מופיעה שגיאה `Executable doesn't exist`, פרוס מחדש מ-`master` אחרי עדכון Docker.
 
 ## Zeabur — פריסה מחדש (חובה אחרי merge)
