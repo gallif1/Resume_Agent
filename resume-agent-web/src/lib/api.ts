@@ -114,6 +114,45 @@ export interface CollectionSummary {
   gotfriends?: SiteCollectionSummary;
 }
 
+export type JobApplicationStatus =
+  | "pending"
+  | "in_progress"
+  | "submitted"
+  | "failed"
+  | "requires_user_action";
+
+export interface JobApplicationStep {
+  id: number;
+  application_id: string;
+  step_name: string;
+  status: string;
+  message: string | null;
+  created_at: string | null;
+}
+
+export interface JobApplication {
+  application_id: string;
+  cv_id: string;
+  job_id: number;
+  status: JobApplicationStatus;
+  application_url: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  submitted_at: string | null;
+  failure_reason: string | null;
+  failure_category: string | null;
+  requires_user_action_reason: string | null;
+  external_confirmation_text: string | null;
+  external_confirmation_url: string | null;
+  attempt_number: number | null;
+  provider_name: string | null;
+  current_step_url: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  steps?: JobApplicationStep[];
+  active?: boolean;
+}
+
 export interface CvMatch {
   match_id: number;
   job_id: number;
@@ -135,6 +174,7 @@ export interface CvMatch {
   cv_improvements: string[];
   application_status: ApplicationStatus;
   application_notes: string | null;
+  job_application: JobApplication | null;
   updated_at: string | null;
 }
 
@@ -282,4 +322,78 @@ export function updateMatchStatus(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status, notes: notes ?? null }),
   });
+}
+
+export class DuplicateApplicationError extends Error {
+  code = "duplicate_application";
+  constructor(message: string) {
+    super(message);
+    this.name = "DuplicateApplicationError";
+  }
+}
+
+export class ApplicationInProgressError extends Error {
+  code = "application_in_progress";
+  constructor(message: string) {
+    super(message);
+    this.name = "ApplicationInProgressError";
+  }
+}
+
+function parseApplicationError(res: Response, body: unknown): Error {
+  const detail = (body as { detail?: unknown })?.detail;
+  if (detail && typeof detail === "object" && detail !== null) {
+    const code = (detail as { code?: string }).code;
+    const message = (detail as { message?: string }).message ?? `שגיאה ${res.status}`;
+    if (code === "duplicate_application") return new DuplicateApplicationError(message);
+    if (code === "application_in_progress") return new ApplicationInProgressError(message);
+    return new Error(message);
+  }
+  if (typeof detail === "string") return new Error(detail);
+  return new Error(`שגיאה ${res.status}`);
+}
+
+export async function applyToJob(
+  cvId: string,
+  jobId: number,
+  options?: { force?: boolean }
+): Promise<{ application_id: string; status: JobApplicationStatus; application: JobApplication }> {
+  const res = await fetch(`${BASE_URL}/cvs/${cvId}/jobs/${jobId}/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force: options?.force ?? false }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw parseApplicationError(res, body);
+  }
+  return res.json();
+}
+
+export function getJobApplication(
+  cvId: string,
+  applicationId: string
+): Promise<JobApplication> {
+  return request(`/cvs/${cvId}/job-applications/${applicationId}`);
+}
+
+export function getJobApplicationStatus(
+  cvId: string,
+  jobId: number
+): Promise<{ status: JobApplicationStatus | null; application: JobApplication | null }> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/application-status`);
+}
+
+export async function retryJobApplication(
+  cvId: string,
+  applicationId: string
+): Promise<{ application_id: string; status: JobApplicationStatus; application: JobApplication }> {
+  const res = await fetch(`${BASE_URL}/cvs/${cvId}/job-applications/${applicationId}/retry`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw parseApplicationError(res, body);
+  }
+  return res.json();
 }

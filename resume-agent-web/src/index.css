@@ -1334,3 +1334,140 @@ code {
     order: -1;
   }
 }
+
+/* Job application UI */
+.apply-status-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.apply-status {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.apply-status-success {
+  color: var(--success);
+}
+
+.apply-status-failed {
+  color: var(--danger);
+}
+
+.apply-status-warning {
+  color: var(--warning);
+}
+
+.apply-status-date,
+.apply-attempt-date {
+  font-size: 0.75rem;
+  color: var(--text-subtle);
+}
+
+.apply-pill {
+  display: inline-block;
+  margin-inline-start: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.apply-pill-pending,
+.apply-pill-in_progress {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.apply-pill-submitted {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.apply-pill-failed {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.apply-pill-requires_user_action {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.apply-confirm-modal p {
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.apply-confirm-details {
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.apply-confirm-warning {
+  color: var(--warning) !important;
+}
+
+.apply-log-modal {
+  max-width: 560px;
+  width: 100%;
+}
+
+.apply-log-error {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.apply-log-steps {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.apply-log-step {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.apply-log-step-name {
+  font-weight: 600;
+}
+
+.apply-log-step-status {
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  font-size: 0.72rem;
+}
+
+.apply-log-step-message {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+}
+
+.apply-log-step-time {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  color: var(--text-subtle);
+}
+
+.step-success .apply-log-step-status {
+  color: var(--success);
+}
+
+.step-failed .apply-log-step-status {
+  color: var(--danger);
+}
+
+.step-requires_user_action .apply-log-step-status {
+  color: var(--warning);
+}
