@@ -657,7 +657,7 @@ def _reshape_match_row(row: dict) -> dict:
 
 
 def _playwright_browser_ready() -> tuple[bool, str | None]:
-    """Check whether Playwright Chromium is installed for job scraping."""
+    """Check whether Playwright Chromium is installed (without launching a browser)."""
     import os
     from pathlib import Path
 
@@ -667,16 +667,9 @@ def _playwright_browser_ready() -> tuple[bool, str | None]:
             browsers_path.glob("chromium_headless_shell*")
         ):
             return True, None
+        return False, f"No chromium binaries under {browsers_path}"
 
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            browser.close()
-        return True, None
-    except Exception as error:
-        return False, str(error)[:300]
+    return False, "PLAYWRIGHT_BROWSERS_PATH not set or missing"
 
 
 @app.get("/api/health")
