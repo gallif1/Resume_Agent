@@ -97,6 +97,23 @@ export interface CvScan {
   error_message: string | null;
 }
 
+export interface SiteCollectionSummary {
+  raw: number;
+  new: number;
+  already_in_db: number;
+  excluded: number;
+  queries: number;
+  queries_with_raw: number;
+  issues: string[];
+}
+
+export interface CollectionSummary {
+  warnings?: string[];
+  drushim?: SiteCollectionSummary;
+  linkedin?: SiteCollectionSummary;
+  gotfriends?: SiteCollectionSummary;
+}
+
 export interface CvMatch {
   match_id: number;
   job_id: number;
@@ -126,11 +143,37 @@ export interface CvScanStatus {
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
+  warnings?: string[];
+  collection?: CollectionSummary | null;
   current_step: string | null;
   detail: string | null;
   steps: PipelineStep[];
   log: string[];
   latest_scan: CvScan | null;
+}
+
+export function parseScanSummary(summary: string | null | undefined): {
+  matches: number | null;
+  warnings: string[];
+  collection: CollectionSummary | null;
+} {
+  if (!summary) {
+    return { matches: null, warnings: [], collection: null };
+  }
+  try {
+    const data = JSON.parse(summary) as {
+      matches?: number;
+      warnings?: string[];
+      collection?: CollectionSummary;
+    };
+    return {
+      matches: typeof data.matches === "number" ? data.matches : null,
+      warnings: Array.isArray(data.warnings) ? data.warnings : [],
+      collection: data.collection ?? null,
+    };
+  } catch {
+    return { matches: null, warnings: [], collection: null };
+  }
 }
 
 export class DuplicateCvError extends Error {

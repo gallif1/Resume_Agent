@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,14 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import Page, sync_playwright
 
 from browser_utils import browser_http_headers, create_browser_context, page_looks_blocked
+from collection_report import (
+    CollectionOutcome,
+    emit_agent_warning,
+    emit_collect_summary,
+    outcome_to_dict,
+)
 from config import (
+    AGENT_CV_ID,
     DRUSHIM_BASE_URL,
     HEADLESS,
     LINKEDIN_BASE_URL,
@@ -40,6 +48,71 @@ from role_analyzer import (
 )
 
 DEFAULT_MAX_QUERIES_PER_CATEGORY = 6
+
+SITE_LABELS_HE = {
+    "drushim": "דרושים",
+    "linkedin": "לינקדאין",
+    "gotfriends": "GotFriends",
+}
+
+
+def _interactive_retry_enabled() -> bool:
+    """Allow manual browser retry only in an interactive terminal (not from the web UI)."""
+    return sys.stdin.isatty() and not AGENT_CV_ID
+
+
+def _site_label(site_name: str) -> str:
+    return SITE_LABELS_HE.get(site_name, site_name)
+
+
+@dataclass
+class _SiteTotals:
+    raw: int = 0
+    new: int = 0
+    already_in_db: int = 0
+    excluded: int = 0
+    queries: int = 0
+    queries_with_raw: int = 0
+    issues: list[str] = field(default_factory=list)
+
+
+def _note_site_issue(totals: dict[str, _SiteTotals], site_name: str, message: str) -> None:
+    site = totals.setdefault(site_name, _SiteTotals())
+    if message not in site.issues:
+        site.issues.append(message)
+
+
+def _finalize_site_warnings(totals: dict[str, _SiteTotals]) -> list[str]:
+    warnings: list[str] = []
+    for site_name, site in totals.items():
+        label = _site_label(site_name)
+        if site.queries == 0:
+            continue
+        if site.raw == 0:
+            if site.issues:
+                warnings.append(f"{label}: לא נמצאו משרות. {site.issues[0]}")
+            else:
+                warnings.append(
+                    f"{label}: לא נמצאו משרות בכל {site.queries} החיפושים. "
+                    "ייתכן שהאתר חסם את הגישה או שאין תוצאות לשאילתות."
+                )
+            continue
+        if site.new == 0 and site.already_in_db > 0:
+            warnings.append(
+                f"{label}: נמצאו {site.raw} משרות, אך כולן כבר קיימות במסד הנתונים "
+                f"({site.already_in_db}). לא נוספו משרות חדשות בסריקה זו."
+            )
+        elif site.new == 0 and site.excluded > 0 and site.raw == site.excluded:
+            warnings.append(
+                f"{label}: נמצאו {site.raw} משרות, אך כולן סוננו לפי מילות מפתח שליליות."
+            )
+        elif site.new == 0:
+            warnings.append(
+                f"{label}: נמצאו {site.raw} משרות בחיפוש, אך לא נוספה אף משרה חדשה."
+            )
+        for issue in site.issues[1:]:
+            warnings.append(f"{label}: {issue}")
+    return warnings
 
 EXTRACT_JOBS_JS = """
 () => {
@@ -117,7 +190,7 @@ def extract_jobs_from_page(page: Page) -> list[dict]:
     return page.evaluate(EXTRACT_JOBS_JS)
 
 
-def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
+def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> CollectionOutcome:
     """Open Drushim in Playwright and extract job cards."""
     search_url = build_drushim_search_url(query)
     print(f"Searching Drushim for: {query}")
@@ -130,53 +203,87 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
         try:
             response = page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(3000)
+            http_status = response.status if response is not None else None
 
-            if response is not None and response.status >= 400:
-                reason = f"Drushim returned HTTP {response.status}"
-                save_debug_artifacts(page, reason)
+            if http_status is not None and http_status >= 400:
+                reason = f"Drushim returned HTTP {http_status}"
+                debug = save_debug_artifacts(page, reason)
                 if headless:
                     print(f"{reason}. Retrying with a visible browser...")
                     context.close()
                     return collect_drushim_jobs(query, headless=False)
+                return CollectionOutcome(
+                    status="http_error",
+                    reason=reason,
+                    reason_he=f"דרושים החזיר שגיאת HTTP {http_status}",
+                    http_status=http_status,
+                    debug_artifact=str(debug),
+                )
 
             try:
                 page.wait_for_selector(".job-item", timeout=15000)
             except Exception:
                 if page_looks_blocked_drushim(page):
                     reason = "Page may be blocked by captcha or anti-bot protection"
+                    reason_he = "דרושים חסם את הגישה (captcha / anti-bot)"
+                    status = "blocked"
                 else:
                     reason = "No job cards found on the page"
-                save_debug_artifacts(page, reason)
+                    reason_he = f"דרושים: לא נמצאו כרטיסי משרות לחיפוש '{query}'"
+                    status = "empty"
+                debug = save_debug_artifacts(page, reason)
+                emit_agent_warning(reason_he)
 
                 if headless:
                     print("Headless extraction failed. Retrying with a visible browser...")
                     context.close()
                     return collect_drushim_jobs(query, headless=False)
 
-                print("Inspect the browser window, then press Enter to retry extraction.")
-                input()
-                jobs = extract_jobs_from_page(page)
-                if not jobs:
+                if _interactive_retry_enabled():
+                    print("Inspect the browser window, then press Enter to retry extraction.")
+                    input()
+                    jobs = extract_jobs_from_page(page)
+                    if jobs:
+                        return CollectionOutcome(jobs=jobs, status="ok")
                     save_debug_artifacts(page, "Extraction still failed after manual inspection")
-                return jobs
+                return CollectionOutcome(
+                    status=status,
+                    reason=reason,
+                    reason_he=reason_he,
+                    http_status=http_status,
+                    debug_artifact=str(debug),
+                )
 
             jobs = extract_jobs_from_page(page)
-            if not jobs:
-                reason = "Job cards were present but fields could not be parsed"
-                save_debug_artifacts(page, reason)
+            if jobs:
+                print(f"  Drushim extracted {len(jobs)} job card(s) for '{query}'")
+                return CollectionOutcome(jobs=jobs, status="ok")
 
-                if headless:
-                    print("Could not parse jobs in headless mode. Retrying visibly...")
-                    context.close()
-                    return collect_drushim_jobs(query, headless=False)
+            reason = "Job cards were present but fields could not be parsed"
+            reason_he = "דרושים: נמצאו כרטיסי משרות אך לא ניתן לחלץ את הנתונים (ייתכן שהאתר שינה מבנה)"
+            debug = save_debug_artifacts(page, reason)
+            emit_agent_warning(reason_he)
 
+            if headless:
+                print("Could not parse jobs in headless mode. Retrying visibly...")
+                context.close()
+                return collect_drushim_jobs(query, headless=False)
+
+            if _interactive_retry_enabled():
                 print("Inspect the browser window, then press Enter to retry extraction.")
                 input()
                 jobs = extract_jobs_from_page(page)
-                if not jobs:
-                    save_debug_artifacts(page, "Extraction still failed after manual inspection")
+                if jobs:
+                    return CollectionOutcome(jobs=jobs, status="ok")
+                save_debug_artifacts(page, "Extraction still failed after manual inspection")
 
-            return jobs
+            return CollectionOutcome(
+                status="parse_error",
+                reason=reason,
+                reason_he=reason_he,
+                http_status=http_status,
+                debug_artifact=str(debug),
+            )
         finally:
             context.close()
 
@@ -388,6 +495,13 @@ def build_collection_plan(
     return plan, None, "profile.json target_roles (last-resort fallback)"
 
 
+def _unwrap_collection_result(result: Any) -> tuple[list[dict], CollectionOutcome | None]:
+    if isinstance(result, CollectionOutcome):
+        return result.jobs, result
+    jobs = result or []
+    return jobs, CollectionOutcome(jobs=jobs, status="ok" if jobs else "empty")
+
+
 def _job_collectors() -> dict[str, Any]:
     return {
         "drushim": collect_drushim_jobs,
@@ -464,6 +578,8 @@ def main() -> None:
     total_touched = 0
     total_excluded = 0
     total_queries = 0
+    site_totals: dict[str, _SiteTotals] = {}
+    site_outcomes: dict[str, list[dict[str, Any]]] = {}
 
     for entry in plan:
         category = entry.get("category", "")
@@ -485,14 +601,43 @@ def main() -> None:
             searches = collection_searches(selected_sites, _job_collectors())
 
             for site_name, collect_fn in searches:
+                site = site_totals.setdefault(site_name, _SiteTotals())
+                site.queries += 1
                 try:
-                    jobs = collect_fn(query)
+                    raw_result = collect_fn(query)
+                    jobs, outcome = _unwrap_collection_result(raw_result)
                 except KeyboardInterrupt:
                     print("\nInterrupted by user — stopping collection.")
                     raise
                 except Exception as error:
+                    message = f"חיפוש '{query}' נכשל: {error}"
                     print(f"  [{site_name}] Search failed for '{query}': {error}")
+                    emit_agent_warning(f"{_site_label(site_name)}: {message}")
+                    _note_site_issue(site_totals, site_name, message)
+                    site_outcomes.setdefault(site_name, []).append(
+                        {"query": query, "status": "failed", "reason": str(error)}
+                    )
                     continue
+
+                if outcome and outcome.reason_he and outcome.status != "ok":
+                    _note_site_issue(site_totals, site_name, outcome.reason_he)
+                    site_outcomes.setdefault(site_name, []).append(
+                        {"query": query, **outcome_to_dict(outcome)}
+                    )
+                elif not jobs:
+                    empty_message = (
+                        outcome.reason_he
+                        if outcome and outcome.reason_he
+                        else f"לא נמצאו משרות לחיפוש '{query}'"
+                    )
+                    _note_site_issue(site_totals, site_name, empty_message)
+                    site_outcomes.setdefault(site_name, []).append(
+                        {
+                            "query": query,
+                            "status": outcome.status if outcome else "empty",
+                            "reason_he": empty_message,
+                        }
+                    )
 
                 raw, unique, duplicates, already_in_db, excluded, inserted, touched = save_jobs_to_db(
                     jobs,
@@ -512,11 +657,26 @@ def main() -> None:
                 total_touched += touched
                 total_excluded += excluded
 
+                total_touched += touched
+                total_excluded += excluded
+                site.raw += raw
+                site.new += inserted
+                site.already_in_db += already_in_db
+                site.excluded += excluded
+                if raw > 0:
+                    site.queries_with_raw += 1
+
                 print(
                     f"  [{site_name}] '{query}': raw {raw}, unique {unique}, duplicates {duplicates}, "
                     f"already in db {already_in_db}, new {inserted}, touched {touched}, "
                     f"excluded {excluded}"
                 )
+                if raw == 0:
+                    print(f"  [{site_name}] WARNING: no jobs found for query '{query}'")
+                elif inserted == 0 and already_in_db > 0:
+                    print(
+                        f"  [{site_name}] NOTE: {raw} jobs found but all already exist in database"
+                    )
 
     print(f"\n{'=' * 60}")
     print("Overall:")
@@ -529,6 +689,26 @@ def main() -> None:
     print(f"  New jobs inserted: {total_inserted}")
     print(f"  Existing jobs touched once: {total_touched}")
     print(f"  Excluded by keyword: {total_excluded}")
+
+    warnings = _finalize_site_warnings(site_totals)
+    for warning in warnings:
+        emit_agent_warning(warning)
+
+    collection_summary = {
+        site_name: {
+            "raw": site.raw,
+            "new": site.new,
+            "already_in_db": site.already_in_db,
+            "excluded": site.excluded,
+            "queries": site.queries,
+            "queries_with_raw": site.queries_with_raw,
+            "issues": site.issues,
+            "outcomes": site_outcomes.get(site_name, []),
+        }
+        for site_name, site in site_totals.items()
+    }
+    collection_summary["warnings"] = warnings
+    emit_collect_summary(collection_summary)
 
 
 if __name__ == "__main__":

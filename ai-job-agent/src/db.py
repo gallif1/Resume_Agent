@@ -264,25 +264,39 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _apply_cv_match_migrations(conn)
 
 
-def _cv_data_counts(cv_id: str) -> tuple[int, int]:
-    path = cv_db_path(cv_id)
-    if not path.exists():
-        return 0, 0
-    with get_connection(path) as conn:
+def _cv_data_counts(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> tuple[int, int]:
+    data_db = _resolve_cv_data_db(cv_id, registry_db)
+    with get_connection(data_db) as conn:
         scan_count = conn.execute(
             "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
         ).fetchone()["n"]
-        latest_scan_id = conn.execute(
-            "SELECT id FROM cv_scans WHERE cv_id = ? ORDER BY id DESC LIMIT 1",
-            (cv_id,),
-        ).fetchone()
-        if latest_scan_id is None:
-            return 0, int(scan_count)
         match_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ? AND scan_id = ?",
-            (cv_id, latest_scan_id["id"]),
+            "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
         ).fetchone()["n"]
     return int(match_count), int(scan_count)
+
+
+def _resolve_cv_data_db(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> Path:
+    """Return the database file that stores a CV's jobs/scans/matches."""
+    with get_connection(registry_db) as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if "cv_job_matches" in tables:
+            has_rows = conn.execute(
+                "SELECT 1 FROM cv_job_matches WHERE cv_id = ? LIMIT 1",
+                (cv_id,),
+            ).fetchone()
+            if has_rows is not None:
+                return registry_db
+
+    per_cv = cv_db_path(cv_id)
+    if per_cv.exists():
+        return per_cv
+    return registry_db
 
 
 def migrate_legacy_shared_database() -> bool:
@@ -1414,18 +1428,61 @@ def set_cv_last_scan(cv_id: str, when: str | None = None, db_path: Path = REGIST
 
 
 def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
-    """Delete a CV registry row. Caller removes the per-CV data directory."""
-    match_count, scan_count = _cv_data_counts(cv_id)
+    """Delete a CV registry row and clean up its matches, scans, and orphan jobs."""
+    data_db = _resolve_cv_data_db(cv_id, db_path)
+    deleted_matches = 0
+    deleted_scans = 0
+    deleted_jobs = 0
+    orphaned_job_ids: list[int] = []
+
+    with get_connection(data_db) as conn:
+        deleted_matches = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?",
+                (cv_id,),
+            ).fetchone()["n"]
+        )
+        deleted_scans = int(
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?",
+                (cv_id,),
+            ).fetchone()["n"]
+        )
+        job_ids = [
+            int(row["job_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT job_id FROM cv_job_matches WHERE cv_id = ?",
+                (cv_id,),
+            ).fetchall()
+        ]
+
+        conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
+        conn.execute("DELETE FROM cv_scans WHERE cv_id = ?", (cv_id,))
+
+        for job_id in job_ids:
+            still_referenced = conn.execute(
+                "SELECT 1 FROM cv_job_matches WHERE job_id = ? LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if still_referenced is not None:
+                continue
+            conn.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            orphaned_job_ids.append(job_id)
+            deleted_jobs += 1
+
+        conn.commit()
+
     with get_connection(db_path) as conn:
         conn.execute("DELETE FROM cvs WHERE id = ?", (cv_id,))
         conn.commit()
 
     return {
         "cv_id": cv_id,
-        "deleted_matches": match_count,
-        "deleted_scans": scan_count,
-        "deleted_jobs": 0,
-        "orphaned_job_ids": [],
+        "deleted_matches": deleted_matches,
+        "deleted_scans": deleted_scans,
+        "deleted_jobs": deleted_jobs,
+        "orphaned_job_ids": orphaned_job_ids,
     }
 
 

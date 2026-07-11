@@ -264,6 +264,8 @@ export default function App() {
         started_at: new Date().toISOString(),
         finished_at: null,
         error: null,
+        warnings: [],
+        collection: null,
         current_step: null,
         detail: "מתחיל סריקה…",
         steps: [],
