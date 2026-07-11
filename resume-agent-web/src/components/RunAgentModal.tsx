@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { type JobSite } from "../lib/api";
 
 interface Props {
@@ -9,6 +10,30 @@ interface Props {
   onCancel: () => void;
 }
 
+const DEFAULT_SITES: JobSite[] = [
+  {
+    id: "drushim",
+    label: "Drushim",
+    label_he: "דרושים",
+    description_he: "drushim.co.il",
+    enabled: true,
+  },
+  {
+    id: "linkedin",
+    label: "LinkedIn",
+    label_he: "לינקדאין",
+    description_he: "משרות ציבוריות בישראל",
+    enabled: true,
+  },
+  {
+    id: "gotfriends",
+    label: "GotFriends",
+    label_he: "גוטפרנדס",
+    description_he: "gotfriends.co.il",
+    enabled: true,
+  },
+];
+
 export default function RunAgentModal({
   cvName,
   sites,
@@ -16,12 +41,22 @@ export default function RunAgentModal({
   onConfirm,
   onCancel,
 }: Props) {
-  const enabledIds = sites.filter((s) => s.enabled).map((s) => s.id);
+  const openedAtRef = useRef(Date.now());
+  const displaySites = sites.length > 0 ? sites : DEFAULT_SITES;
+  const enabledIds = displaySites.filter((s) => s.enabled).map((s) => s.id);
   const [selected, setSelected] = useState<string[]>(enabledIds);
 
   useEffect(() => {
-    setSelected(sites.filter((s) => s.enabled).map((s) => s.id));
-  }, [sites]);
+    openedAtRef.current = Date.now();
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelected(displaySites.filter((s) => s.enabled).map((s) => s.id));
+  }, [displaySites]);
 
   const toggle = (id: string) => {
     setSelected((prev) =>
@@ -32,19 +67,25 @@ export default function RunAgentModal({
   const selectAll = () => setSelected(enabledIds);
   const clearAll = () => setSelected([]);
 
-  return (
-    <div className="modal-overlay" onClick={onCancel}>
+  const handleOverlayClick = () => {
+    // Ignore the click that opened the modal (common on touch devices).
+    if (Date.now() - openedAtRef.current < 350) return;
+    onCancel();
+  };
+
+  return createPortal(
+    <div className="modal-overlay" onClick={handleOverlayClick}>
       <div className="modal run-agent-modal" onClick={(e) => e.stopPropagation()}>
         <h3>מאיזה אתרים לחפש משרות?</h3>
         <p>
           בחר אתר אחד או יותר לסריקה של <b>{cvName}</b>. ניתן לסמן כמה אתרים במקביל.
         </p>
 
-        {loading ? (
+        {loading && sites.length === 0 ? (
           <p className="site-loading">טוען אתרים זמינים…</p>
         ) : (
           <div className="site-options" role="group" aria-label="בחירת אתרי חיפוש">
-            {sites.map((site) => {
+            {displaySites.map((site) => {
               const checked = selected.includes(site.id);
               return (
                 <label
@@ -93,10 +134,11 @@ export default function RunAgentModal({
         )}
 
         <div className="modal-actions">
-          <button className="btn btn-ghost" onClick={onCancel}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel}>
             ביטול
           </button>
           <button
+            type="button"
             className="btn btn-primary"
             disabled={loading || selected.length === 0}
             onClick={() => onConfirm(selected)}
@@ -105,6 +147,7 @@ export default function RunAgentModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

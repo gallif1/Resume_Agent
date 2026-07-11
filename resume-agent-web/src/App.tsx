@@ -28,7 +28,29 @@ export default function App() {
 
   const [scanCvId, setScanCvId] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
-  const [jobSites, setJobSites] = useState<JobSite[]>([]);
+  const [jobSites, setJobSites] = useState<JobSite[]>([
+    {
+      id: "drushim",
+      label: "Drushim",
+      label_he: "דרושים",
+      description_he: "drushim.co.il",
+      enabled: true,
+    },
+    {
+      id: "linkedin",
+      label: "LinkedIn",
+      label_he: "לינקדאין",
+      description_he: "משרות ציבוריות בישראל",
+      enabled: true,
+    },
+    {
+      id: "gotfriends",
+      label: "GotFriends",
+      label_he: "גוטפרנדס",
+      description_he: "gotfriends.co.il",
+      enabled: true,
+    },
+  ]);
   const [jobSitesLoading, setJobSitesLoading] = useState(false);
   const [runModalCvId, setRunModalCvId] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -226,7 +248,8 @@ export default function App() {
   };
 
   const handleRun = (id: string) => {
-    setRunModalCvId(id);
+    // Defer opening so the same click/tap cannot immediately dismiss the modal.
+    window.setTimeout(() => setRunModalCvId(id), 0);
   };
 
   const confirmRun = async (siteIds: string[]) => {

@@ -128,6 +128,7 @@ export default function CvDetails({
           )}
         </div>
         <button
+          type="button"
           className="btn btn-primary"
           disabled={scanStatus?.running ?? false}
           onClick={() => onRun(cvId)}

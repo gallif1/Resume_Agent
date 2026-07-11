@@ -205,9 +205,13 @@ export default function CvManager({
                   פרטים ותוצאות
                 </button>
                 <button
+                  type="button"
                   className="btn btn-primary btn-sm"
                   disabled={anyScanning}
-                  onClick={() => onRun(cv.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRun(cv.id);
+                  }}
                 >
                   {isScanning(cv.id) ? "רץ…" : "▶ הרץ סוכן"}
                 </button>

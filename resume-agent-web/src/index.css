@@ -975,7 +975,7 @@ code {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  z-index: 200;
+  z-index: 1000;
   padding: 16px;
   padding-bottom: calc(16px + var(--safe-bottom));
   animation: fade-in 0.2s ease-out;
