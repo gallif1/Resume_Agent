@@ -1,4 +1,4 @@
-playwright
+playwright==1.61.0
 python-dotenv
 pypdf
 python-dateutil

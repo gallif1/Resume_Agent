@@ -7,11 +7,13 @@ COPY resume-agent-web/ ./
 ENV VITE_API_URL=
 RUN npm run build
 
-FROM mcr.microsoft.com/playwright/python:v1.49.1-jammy
+# Playwright Python image version must match the pinned playwright package.
+FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
 WORKDIR /app/ai-job-agent
 
 COPY ai-job-agent/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -m playwright install chromium
 
 COPY ai-job-agent/ ./
 COPY --from=frontend /web/dist /app/resume-agent-web/dist
@@ -19,6 +21,7 @@ COPY --from=frontend /web/dist /app/resume-agent-web/dist
 ENV API_HOST=0.0.0.0
 ENV HEADLESS=true
 ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 EXPOSE 8000
 CMD ["python", "src/api_server.py", "--host", "0.0.0.0"]
