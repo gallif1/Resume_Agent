@@ -1016,6 +1016,78 @@ code {
   min-width: 100px;
 }
 
+.run-agent-modal {
+  max-width: 480px;
+}
+
+.site-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.site-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.site-option:hover:not(.site-option-disabled) {
+  border-color: rgba(107, 159, 255, 0.45);
+  background: var(--accent-soft);
+}
+
+.site-option input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.site-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.site-option-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.site-option-desc {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.site-option-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.site-quick-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.site-loading {
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.site-error {
+  margin-bottom: 16px;
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;

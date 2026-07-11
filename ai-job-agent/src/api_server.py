@@ -44,6 +44,7 @@ from pydantic import BaseModel
 import cv_service
 import db
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
+from job_boards import list_job_boards, normalize_job_board_ids
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -332,13 +333,19 @@ def _scan_running_step_key() -> str | None:
         return _running_step_key_from_steps(_scan_state["steps"])
 
 
-def _run_scan_thread(cv_id: str, skip_collect: bool, skip_enrich: bool) -> None:
+def _run_scan_thread(
+    cv_id: str,
+    skip_collect: bool,
+    skip_enrich: bool,
+    job_sites: list[str] | None,
+) -> None:
     error: str | None = None
     try:
         scan = cv_service.run_scan(
             cv_id,
             skip_collect=skip_collect,
             skip_enrich=skip_enrich,
+            job_sites=job_sites,
             log=_scan_log,
             set_step_status=_scan_set_step,
         )
@@ -489,6 +496,12 @@ def delete_cv(cv_id: str):
 class RunAgentRequest(BaseModel):
     skip_collect: bool = False
     skip_enrich: bool = False
+    job_sites: list[str] | None = None
+
+
+@app.get("/api/job-sites")
+def get_job_sites():
+    return {"sites": list_job_boards()}
 
 
 @app.post("/cvs/{cv_id}/run-agent")
@@ -496,6 +509,11 @@ def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
     db.ensure_multi_cv_storage()
     if db.get_cv(cv_id) is None:
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    try:
+        normalize_job_board_ids(req.job_sites)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     with _scan_lock:
         if _scan_state["running"]:
@@ -519,7 +537,7 @@ def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
 
     thread = threading.Thread(
         target=_run_scan_thread,
-        args=(cv_id, req.skip_collect, req.skip_enrich),
+        args=(cv_id, req.skip_collect, req.skip_enrich, req.job_sites),
         daemon=True,
     )
     thread.start()

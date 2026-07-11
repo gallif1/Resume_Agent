@@ -1,3 +1,6 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: Dashboard → Blueprints → New Blueprint Instance → connect this repo
+
 services:
   - type: web
     name: resume-agent
@@ -5,6 +8,14 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
+    branch: master
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - Dockerfile
+        - render.yaml
+        - ai-job-agent/**
+        - resume-agent-web/**
     envVars:
       - key: API_HOST
         value: 0.0.0.0

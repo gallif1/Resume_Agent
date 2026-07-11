@@ -187,9 +187,25 @@ export function deleteServerCv(cvId: string): Promise<{ deleted: boolean }> {
   return request(`/cvs/${cvId}`, { method: "DELETE" });
 }
 
+export interface JobSite {
+  id: string;
+  label: string;
+  label_he: string;
+  description_he: string;
+  enabled: boolean;
+}
+
+export function listJobSites(): Promise<{ sites: JobSite[] }> {
+  return request(`/api/job-sites`);
+}
+
 export function runAgentForCv(
   cvId: string,
-  options?: { skip_collect?: boolean; skip_enrich?: boolean }
+  options?: {
+    skip_collect?: boolean;
+    skip_enrich?: boolean;
+    job_sites?: string[];
+  }
 ): Promise<{ started: boolean; cv_id: string }> {
   return request(`/cvs/${cvId}/run-agent`, {
     method: "POST",

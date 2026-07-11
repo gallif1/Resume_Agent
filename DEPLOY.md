@@ -23,6 +23,16 @@
 
 אחרי החיבור הראשון, כל מיזוג ל-`master` מעדכן את האתר אוטומטית — **בלי לבקש קישור חדש**.
 
+הפרויקט כולל:
+
+- `render.yaml` עם `autoDeploy: true` ו-`branch: master` — Render מפריס אוטומטית בכל push ל-master (כשהריפו מחובר ב-Render).
+- `.github/workflows/render-deploy.yml` — אופציונלי: אם תוסיף ב-GitHub את הסוד `RENDER_DEPLOY_HOOK` (מ-Render → השירות → Settings → Deploy Hook), ה-workflow יפעיל פריסה גם דרך GitHub Actions.
+
+### הגדרת Deploy Hook (אופציונלי)
+
+1. ב-Render: **resume-agent** → **Settings** → **Deploy Hook** → העתק את ה-URL.
+2. ב-GitHub: **Settings** → **Secrets and variables** → **Actions** → הוסף `RENDER_DEPLOY_HOOK` עם ה-URL.
+
 ## מפתחות API (אופציונלי)
 
 בלוח הבקרה של Render → **Environment** → הוסף לפי הצורך:

@@ -215,6 +215,7 @@ def run_scan(
     *,
     skip_collect: bool = False,
     skip_enrich: bool = False,
+    job_sites: list[str] | None = None,
     log: Callable[[str], None] | None = None,
     set_step_status: Callable[[str, str], None] | None = None,
     db_path: Path = db.REGISTRY_DB_PATH,
@@ -226,6 +227,8 @@ def run_scan(
     CV id and never mixes with another CV's results.
     """
     import os
+
+    from job_boards import normalize_job_board_ids
 
     cv_db = cv_db_path(cv_id)
     db.init_db(cv_db)
@@ -246,6 +249,11 @@ def run_scan(
     db.reset_cv_job_pool(cv_id)
     env = {**os.environ, "AGENT_CV_ID": cv_id, "AGENT_SCAN_ID": str(scan_id)}
 
+    try:
+        selected_sites = normalize_job_board_ids(job_sites)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
     error: str | None = None
     for key, name, script, extra in SCAN_STEPS:
         skipped = (key == "collect" and skip_collect) or (
@@ -259,8 +267,12 @@ def run_scan(
         _step(key, "running")
         _log(f">> {name}")
 
+        extra_args = list(extra)
+        if key == "collect" and selected_sites:
+            extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
+
         proc = subprocess.Popen(
-            [PYTHON, str(SRC / script), *extra],
+            [PYTHON, str(SRC / script), *extra_args],
             cwd=str(PROJECT_ROOT),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

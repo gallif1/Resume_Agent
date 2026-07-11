@@ -14,16 +14,15 @@ from playwright.sync_api import Page, sync_playwright
 
 from config import (
     DRUSHIM_BASE_URL,
-    GOTFRIENDS_ENABLED,
     HEADLESS,
     LINKEDIN_BASE_URL,
-    LINKEDIN_ENABLED,
     LINKEDIN_LOCATION,
     LINKEDIN_MAX_PAGES,
     LOGS_DIR,
 )
 from db import get_known_job_identity_keys, init_db, upsert_collected_job
 from gotfriends_collector import collect_gotfriends_jobs
+from job_boards import collection_searches, job_boards_label, normalize_job_board_ids
 from job_identity import (
     compute_candidate_strategy_hash,
     compute_job_identity_key,
@@ -397,22 +396,19 @@ def build_collection_plan(
     return plan, None, "profile.json target_roles (last-resort fallback)"
 
 
-def _enabled_job_boards_label() -> str:
-    sites = ["drushim"]
-    if LINKEDIN_ENABLED:
-        sites.append("linkedin")
-    if GOTFRIENDS_ENABLED:
-        sites.append("gotfriends")
-    return " + ".join(sites)
+def _job_collectors() -> dict[str, Any]:
+    return {
+        "drushim": collect_drushim_jobs,
+        "linkedin": collect_linkedin_jobs,
+        "gotfriends": collect_gotfriends_jobs,
+    }
 
 
-def _collection_searches() -> list[tuple[str, Any]]:
-    searches: list[tuple[str, Any]] = [("drushim", collect_drushim_jobs)]
-    if LINKEDIN_ENABLED:
-        searches.append(("linkedin", collect_linkedin_jobs))
-    if GOTFRIENDS_ENABLED:
-        searches.append(("gotfriends", collect_gotfriends_jobs))
-    return searches
+def _parse_sites_arg(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    parts = [part.strip() for part in raw.split(",")]
+    return [part for part in parts if part]
 
 
 def main() -> None:
@@ -426,6 +422,12 @@ def main() -> None:
     parser.add_argument(
         "--max-queries", type=int, default=DEFAULT_MAX_QUERIES_PER_CATEGORY,
         help=f"Max query variations per category (default: {DEFAULT_MAX_QUERIES_PER_CATEGORY})",
+    )
+    parser.add_argument(
+        "--sites",
+        type=str,
+        default=None,
+        help="Comma-separated job boards to search (drushim, linkedin, gotfriends)",
     )
     args = parser.parse_args()
 
@@ -447,8 +449,13 @@ def main() -> None:
     if known_db_keys:
         print(f"Jobs already in database: {len(known_db_keys)} (will skip re-processing)")
 
-    enabled_sites = _enabled_job_boards_label()
-    print(f"Job boards: {enabled_sites}")
+    try:
+        selected_sites = normalize_job_board_ids(_parse_sites_arg(args.sites))
+    except ValueError as exc:
+        print(f"Invalid --sites value: {exc}")
+        sys.exit(1)
+
+    print(f"Job boards: {job_boards_label(selected_sites)}")
     print(f"Search source: {source_label}")
     if strategy_hash:
         print(f"Strategy hash: {strategy_hash[:12]}...")
@@ -483,7 +490,7 @@ def main() -> None:
 
             print(f"\n{'-' * 50}")
 
-            searches = _collection_searches()
+            searches = collection_searches(selected_sites, _job_collectors())
 
             for site_name, collect_fn in searches:
                 try:

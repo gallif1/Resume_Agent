@@ -13,7 +13,7 @@ interface Props {
   scanStatus: CvScanStatus | null;
   onUpload: (files: File[]) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onRun: (id: string) => Promise<void>;
+  onRun: (id: string) => void;
   onOpen: (id: string) => void;
 }
 

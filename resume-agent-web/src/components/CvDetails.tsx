@@ -15,7 +15,7 @@ interface Props {
   scanCvId: string | null;
   scanStatus: CvScanStatus | null;
   onBack: () => void;
-  onRun: (id: string) => Promise<void>;
+  onRun: (id: string) => void;
 }
 
 const STATUS_OPTIONS: { value: ApplicationStatus; label: string }[] = [

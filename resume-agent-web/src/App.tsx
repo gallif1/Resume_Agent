@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
+import RunAgentModal from "./components/RunAgentModal";
 import {
   checkHealth,
   deleteServerCv,
   DuplicateCvError,
   getCvScanStatus,
+  listJobSites,
   listServerCvs,
   runAgentForCv,
   uploadCv,
   type Cv,
   type CvScanStatus,
+  type JobSite,
 } from "./lib/api";
 
 export default function App() {
@@ -25,6 +28,9 @@ export default function App() {
 
   const [scanCvId, setScanCvId] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
+  const [jobSites, setJobSites] = useState<JobSite[]>([]);
+  const [jobSitesLoading, setJobSitesLoading] = useState(false);
+  const [runModalCvId, setRunModalCvId] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
   const scanRunningRef = useRef(false);
   const healthFailCount = useRef(0);
@@ -112,6 +118,44 @@ export default function App() {
     if (serverUp) refreshCvs();
   }, [serverUp, refreshCvs]);
 
+  const refreshJobSites = useCallback(async () => {
+    setJobSitesLoading(true);
+    try {
+      const data = await listJobSites();
+      setJobSites(data.sites);
+    } catch {
+      setJobSites([
+        {
+          id: "drushim",
+          label: "Drushim",
+          label_he: "דרושים",
+          description_he: "drushim.co.il",
+          enabled: true,
+        },
+        {
+          id: "linkedin",
+          label: "LinkedIn",
+          label_he: "לינקדאין",
+          description_he: "משרות ציבוריות בישראל",
+          enabled: true,
+        },
+        {
+          id: "gotfriends",
+          label: "GotFriends",
+          label_he: "גוטפרנדס",
+          description_he: "gotfriends.co.il",
+          enabled: true,
+        },
+      ]);
+    } finally {
+      setJobSitesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (serverUp) refreshJobSites();
+  }, [serverUp, refreshJobSites]);
+
   const stopPolling = useCallback(() => {
     if (pollRef.current != null) {
       window.clearInterval(pollRef.current);
@@ -181,9 +225,16 @@ export default function App() {
     }
   };
 
-  const handleRun = async (id: string) => {
+  const handleRun = (id: string) => {
+    setRunModalCvId(id);
+  };
+
+  const confirmRun = async (siteIds: string[]) => {
+    const id = runModalCvId;
+    if (!id) return;
+    setRunModalCvId(null);
     try {
-      await runAgentForCv(id);
+      await runAgentForCv(id, { job_sites: siteIds });
       setScanCvId(id);
       setScanStatus({
         running: true,
@@ -205,6 +256,7 @@ export default function App() {
   };
 
   const selectedCv = cvs.find((c) => c.id === selectedCvId);
+  const runModalCv = cvs.find((c) => c.id === runModalCvId);
   const scanActive = scanStatus?.running ?? false;
 
   return (
@@ -312,6 +364,16 @@ export default function App() {
       </footer>
 
       {toast && <div className="toast">{toast}</div>}
+
+      {runModalCvId && (
+        <RunAgentModal
+          cvName={runModalCv?.display_name || runModalCv?.file_name || "קורות חיים"}
+          sites={jobSites}
+          loading={jobSitesLoading}
+          onConfirm={confirmRun}
+          onCancel={() => setRunModalCvId(null)}
+        />
+      )}
     </div>
   );
 }
