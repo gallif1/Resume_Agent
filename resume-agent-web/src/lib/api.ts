@@ -248,6 +248,7 @@ export function runAgentForCv(
     skip_collect?: boolean;
     skip_enrich?: boolean;
     job_sites?: string[];
+    match_only?: boolean;
   }
 ): Promise<{ started: boolean; cv_id: string }> {
   return request(`/cvs/${cvId}/run-agent`, {
@@ -255,6 +256,27 @@ export function runAgentForCv(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(options ?? {}),
   });
+}
+
+export function prepareLocalScan(
+  cvId: string
+): Promise<{ started: boolean; cv_id: string; mode: string }> {
+  return request(`/cvs/${cvId}/prepare-local-scan`, {
+    method: "POST",
+  });
+}
+
+export function isRemoteHostedServer(): boolean {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  return host !== "localhost" && host !== "127.0.0.1" && !host.endsWith(".local");
+}
+
+export function localCollectCommand(cvId: string, siteIds: string[]): string {
+  const origin =
+    typeof window !== "undefined" ? window.location.origin.replace(/\/$/, "") : "https://YOUR-SERVER";
+  const sites = siteIds.length > 0 ? siteIds.join(",") : "drushim,linkedin";
+  return `python ai-job-agent/scripts/local_collect.py --cv-id ${cvId} --api-url ${origin} --sites ${sites}`;
 }
 
 export function getCvScanStatus(cvId: string): Promise<CvScanStatus> {

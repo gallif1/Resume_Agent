@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
+import LocalScanBanner from "./components/LocalScanBanner";
 import RunAgentModal from "./components/RunAgentModal";
 import {
   checkHealth,
   deleteServerCv,
   DuplicateCvError,
   getCvScanStatus,
+  isRemoteHostedServer,
   listJobSites,
   listServerCvs,
+  prepareLocalScan,
   runAgentForCv,
   uploadCv,
   type Cv,
@@ -252,7 +255,7 @@ export default function App() {
     window.setTimeout(() => setRunModalCvId(id), 0);
   };
 
-  const confirmRun = async (siteIds: string[]) => {
+  const confirmRunCloud = async (siteIds: string[]) => {
     const id = runModalCvId;
     if (!id) return;
     setRunModalCvId(null);
@@ -278,6 +281,28 @@ export default function App() {
         `הרצת הסוכן נכשלה: ${e instanceof Error ? e.message : ""}`
       );
     }
+  };
+
+  const prepareLocalRun = async (siteIds: string[]) => {
+    const id = runModalCvId;
+    if (!id) return;
+    await prepareLocalScan(id);
+    setScanCvId(id);
+    setScanStatus({
+      running: true,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      error: null,
+      warnings: [],
+      collection: null,
+      current_step: null,
+      detail: "מכין סריקה מקומית…",
+      steps: [],
+      log: [],
+      latest_scan: null,
+    });
+    startPolling(id);
+    void siteIds;
   };
 
   const selectedCv = cvs.find((c) => c.id === selectedCvId);
@@ -340,6 +365,9 @@ export default function App() {
       </header>
 
       <main className="main">
+        {serverUp && isRemoteHostedServer() && !scanActive ? (
+          <LocalScanBanner onOpenLocalGuide={() => showToast("בחר קו״ח ולחץ «הרץ סוכן» → «מחשב שלי»")} />
+        ) : null}
         {!serverUp && !scanActive ? (
           <div className="empty-state">
             <div className="empty-icon">🔌</div>
@@ -392,10 +420,12 @@ export default function App() {
 
       {runModalCvId && (
         <RunAgentModal
+          cvId={runModalCvId}
           cvName={runModalCv?.display_name || runModalCv?.file_name || "קורות חיים"}
           sites={jobSites}
           loading={jobSitesLoading}
-          onConfirm={confirmRun}
+          onConfirmCloud={confirmRunCloud}
+          onPrepareLocal={prepareLocalRun}
           onCancel={() => setRunModalCvId(null)}
         />
       )}

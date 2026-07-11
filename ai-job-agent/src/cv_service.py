@@ -217,6 +217,8 @@ def run_scan(
     skip_collect: bool = False,
     skip_enrich: bool = False,
     job_sites: list[str] | None = None,
+    only_steps: list[str] | None = None,
+    reset_job_pool: bool = True,
     log: Callable[[str], None] | None = None,
     set_step_status: Callable[[str, str], None] | None = None,
     db_path: Path = db.REGISTRY_DB_PATH,
@@ -247,7 +249,8 @@ def run_scan(
             set_step_status(key, status)
 
     scan_id = db.create_scan(cv_id, db_path=cv_db)
-    db.reset_cv_job_pool(cv_id)
+    if reset_job_pool:
+        db.reset_cv_job_pool(cv_id)
     env = {**os.environ, "AGENT_CV_ID": cv_id, "AGENT_SCAN_ID": str(scan_id)}
 
     try:
@@ -255,10 +258,14 @@ def run_scan(
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
 
+    allowed_steps = set(only_steps) if only_steps is not None else None
     error: str | None = None
     warnings: list[str] = []
     collection_summary: dict[str, Any] | None = None
     for key, name, script, extra in SCAN_STEPS:
+        if allowed_steps is not None and key not in allowed_steps:
+            _step(key, "skipped")
+            continue
         skipped = (key == "collect" and skip_collect) or (
             key == "enrich" and skip_enrich
         )
@@ -338,3 +345,23 @@ def run_scan(
     if collection_summary:
         scan_record["collection"] = collection_summary
     return scan_record
+
+
+def run_scan_prepare(cv_id: str, **kwargs: Any) -> dict[str, Any]:
+    """Parse CV and build search strategy — no collection (for local scan on user's PC)."""
+    return run_scan(
+        cv_id,
+        only_steps=["parse_cv", "analyze_roles"],
+        reset_job_pool=False,
+        **kwargs,
+    )
+
+
+def run_scan_match_only(cv_id: str, **kwargs: Any) -> dict[str, Any]:
+    """Score uploaded jobs after local collection."""
+    return run_scan(
+        cv_id,
+        only_steps=["match"],
+        reset_job_pool=False,
+        **kwargs,
+    )

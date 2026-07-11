@@ -46,6 +46,7 @@ import db
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
+from local_agent import export_local_agent_bundle, ingest_collected_jobs
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -357,9 +358,12 @@ def _scan_running_step_key() -> str | None:
 
 def _run_scan_thread(
     cv_id: str,
-    skip_collect: bool,
-    skip_enrich: bool,
-    job_sites: list[str] | None,
+    *,
+    skip_collect: bool = False,
+    skip_enrich: bool = False,
+    job_sites: list[str] | None = None,
+    only_steps: list[str] | None = None,
+    reset_job_pool: bool = True,
 ) -> None:
     error: str | None = None
     try:
@@ -368,6 +372,8 @@ def _run_scan_thread(
             skip_collect=skip_collect,
             skip_enrich=skip_enrich,
             job_sites=job_sites,
+            only_steps=only_steps,
+            reset_job_pool=reset_job_pool,
             log=_scan_log,
             set_step_status=_scan_set_step,
         )
@@ -526,24 +532,23 @@ class RunAgentRequest(BaseModel):
     skip_collect: bool = False
     skip_enrich: bool = False
     job_sites: list[str] | None = None
+    match_only: bool = False
 
 
-@app.get("/api/job-sites")
-def get_job_sites():
-    return {"sites": list_job_boards()}
+class JobIngestRequest(BaseModel):
+    jobs: list[dict]
+    reset_pool: bool = True
 
 
-@app.post("/cvs/{cv_id}/run-agent")
-def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
-    db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
-
-    try:
-        normalize_job_board_ids(req.job_sites)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
+def _start_scan_thread(
+    cv_id: str,
+    *,
+    skip_collect: bool = False,
+    skip_enrich: bool = False,
+    job_sites: list[str] | None = None,
+    only_steps: list[str] | None = None,
+    reset_job_pool: bool = True,
+) -> None:
     with _scan_lock:
         if _scan_state["running"]:
             raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
@@ -568,10 +573,89 @@ def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
 
     thread = threading.Thread(
         target=_run_scan_thread,
-        args=(cv_id, req.skip_collect, req.skip_enrich, req.job_sites),
+        kwargs={
+            "cv_id": cv_id,
+            "skip_collect": skip_collect,
+            "skip_enrich": skip_enrich,
+            "job_sites": job_sites,
+            "only_steps": only_steps,
+            "reset_job_pool": reset_job_pool,
+        },
         daemon=True,
     )
     thread.start()
+
+
+@app.get("/cvs/{cv_id}/local-agent-bundle")
+def get_local_agent_bundle(cv_id: str):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    try:
+        return export_local_agent_bundle(cv_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/cvs/{cv_id}/jobs/ingest")
+def ingest_jobs_for_cv(cv_id: str, req: JobIngestRequest):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    if not req.jobs:
+        raise HTTPException(status_code=400, detail="לא התקבלו משרות")
+    if len(req.jobs) > 500:
+        raise HTTPException(status_code=400, detail="יותר מדי משרות בבקשה אחת (מקסימום 500)")
+    summary = ingest_collected_jobs(cv_id, req.jobs, reset_pool=req.reset_pool)
+    return {"ok": True, **summary}
+
+
+@app.post("/cvs/{cv_id}/prepare-local-scan")
+def prepare_local_scan(cv_id: str):
+    """Parse CV + build strategy on server; collection runs on user's PC."""
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _start_scan_thread(cv_id, only_steps=["parse_cv", "analyze_roles"], reset_job_pool=False)
+    return {"started": True, "cv_id": cv_id, "mode": "prepare"}
+
+
+@app.post("/cvs/{cv_id}/complete-local-scan")
+def complete_local_scan(cv_id: str):
+    """Match jobs after local collection + ingest."""
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _start_scan_thread(cv_id, only_steps=["match"], reset_job_pool=False)
+    return {"started": True, "cv_id": cv_id, "mode": "match"}
+
+
+@app.get("/api/job-sites")
+def get_job_sites():
+    return {"sites": list_job_boards()}
+
+
+@app.post("/cvs/{cv_id}/run-agent")
+def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    try:
+        normalize_job_board_ids(req.job_sites)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    only_steps = ["match"] if req.match_only else None
+    reset_job_pool = not req.match_only
+    _start_scan_thread(
+        cv_id,
+        skip_collect=req.skip_collect or req.match_only,
+        skip_enrich=req.skip_enrich or req.match_only,
+        job_sites=req.job_sites,
+        only_steps=only_steps,
+        reset_job_pool=reset_job_pool,
+    )
     return {"started": True, "cv_id": cv_id}
 
 
