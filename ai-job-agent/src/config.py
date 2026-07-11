@@ -146,18 +146,29 @@ GOTFRIENDS_ENABLED = os.getenv("GOTFRIENDS_ENABLED", "true").lower() in ("1", "t
 GOTFRIENDS_MAX_PAGES = int(os.getenv("GOTFRIENDS_MAX_PAGES", "2"))
 
 # Job collection limits — tighter defaults when running from the web UI (AGENT_CV_ID set).
-_DEFAULT_COLLECT_MAX_QUERIES = "3" if AGENT_CV_ID else "6"
+_DEFAULT_COLLECT_MAX_QUERIES = "2" if AGENT_CV_ID else "6"
 COLLECT_MAX_QUERIES = int(os.getenv("COLLECT_MAX_QUERIES", _DEFAULT_COLLECT_MAX_QUERIES))
-_DEFAULT_COLLECT_MAX_CATEGORIES = "2" if AGENT_CV_ID else ""
+_DEFAULT_COLLECT_MAX_CATEGORIES = "1" if AGENT_CV_ID else ""
 _collect_max_categories_raw = os.getenv("COLLECT_MAX_CATEGORIES", _DEFAULT_COLLECT_MAX_CATEGORIES)
 COLLECT_MAX_CATEGORIES = (
     int(_collect_max_categories_raw) if _collect_max_categories_raw.strip() else None
 )
 
+# Drushim collection mode — on server, plain HTTP is fast and avoids Chromium RAM usage.
+_DEFAULT_DRUSHIM_HTTP_FIRST = "true" if AGENT_CV_ID else "false"
+DRUSHIM_HTTP_FIRST = os.getenv("DRUSHIM_HTTP_FIRST", _DEFAULT_DRUSHIM_HTTP_FIRST).lower() in (
+    "1", "true", "yes",
+)
+_DEFAULT_DRUSHIM_BROWSER_FALLBACK = "false" if AGENT_CV_ID else "true"
+DRUSHIM_BROWSER_FALLBACK = os.getenv(
+    "DRUSHIM_BROWSER_FALLBACK", _DEFAULT_DRUSHIM_BROWSER_FALLBACK
+).lower() in ("1", "true", "yes")
+
 # Drushim Playwright timing (ms) — shorter waits on server to keep scans fast.
 DRUSHIM_PAGE_WAIT_MS = int(os.getenv("DRUSHIM_PAGE_WAIT_MS", "1500"))
 DRUSHIM_SELECTOR_TIMEOUT_MS = int(os.getenv("DRUSHIM_SELECTOR_TIMEOUT_MS", "10000"))
 DRUSHIM_GOTO_TIMEOUT_MS = int(os.getenv("DRUSHIM_GOTO_TIMEOUT_MS", "45000"))
+DRUSHIM_HTTP_TIMEOUT_SEC = int(os.getenv("DRUSHIM_HTTP_TIMEOUT_SEC", "25"))
 
 # HTTP API server (api_server.py)
 API_HOST = os.getenv("API_HOST", "127.0.0.1").strip()

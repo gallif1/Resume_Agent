@@ -23,6 +23,11 @@ COPY --from=frontend /web/dist /app/resume-agent-web/dist
 ENV API_HOST=0.0.0.0
 ENV HEADLESS=true
 ENV PYTHONUNBUFFERED=1
+ENV DRUSHIM_HTTP_FIRST=true
+ENV DRUSHIM_BROWSER_FALLBACK=false
+ENV COLLECT_MAX_QUERIES=2
+ENV COLLECT_MAX_CATEGORIES=1
+ENV GOTFRIENDS_ENABLED=false
 
 EXPOSE 8000
 CMD ["python", "src/api_server.py", "--host", "0.0.0.0"]

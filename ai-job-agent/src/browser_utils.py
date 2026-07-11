@@ -58,6 +58,14 @@ CLOUDFLARE_HTML_MARKERS = (
 
 STEALTH_LAUNCH_ARGS = (
     "--disable-blink-features=AutomationControlled",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--no-sandbox",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--mute-audio",
 )
 
 STEALTH_INIT_SCRIPT = (

@@ -15,7 +15,12 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import Page, sync_playwright
 
-from browser_utils import browser_http_headers, create_browser_context, page_looks_blocked
+from browser_utils import (
+    browser_http_headers,
+    create_browser_context,
+    is_cloudflare_blocked_html,
+    page_looks_blocked,
+)
 from collection_report import (
     CollectionOutcome,
     emit_agent_warning,
@@ -27,7 +32,10 @@ from config import (
     COLLECT_MAX_CATEGORIES,
     COLLECT_MAX_QUERIES,
     DRUSHIM_BASE_URL,
+    DRUSHIM_BROWSER_FALLBACK,
     DRUSHIM_GOTO_TIMEOUT_MS,
+    DRUSHIM_HTTP_FIRST,
+    DRUSHIM_HTTP_TIMEOUT_SEC,
     DRUSHIM_PAGE_WAIT_MS,
     DRUSHIM_SELECTOR_TIMEOUT_MS,
     HEADLESS,
@@ -163,6 +171,105 @@ EXTRACT_JOBS_JS = """
 def build_drushim_search_url(query: str) -> str:
     """Build a Drushim search URL for the given query."""
     return f"{DRUSHIM_BASE_URL}/jobs/search/?searchterm={quote(query)}"
+
+
+def parse_drushim_search_html(html: str) -> list[dict]:
+    """Parse job cards from a Drushim search results HTML page."""
+    if not html or is_cloudflare_blocked_html(html):
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    jobs: list[dict] = []
+
+    for item in soup.select(".job-item"):
+        title_el = item.select_one("h3 .job-url, h3 span")
+        company_el = item.select_one(".job-details-top a span")
+        location_el = item.select_one(".job-details-sub .display-18 span")
+        description_el = item.select_one(".job-intro p, .vacancyMain p")
+        link_el = item.select_one('a[href*="/job/"]')
+
+        title = title_el.get_text(strip=True) if title_el else ""
+        href = (link_el.get("href") or "").strip() if link_el else ""
+        if not title or not href:
+            continue
+
+        if href.startswith("/"):
+            job_url = f"{DRUSHIM_BASE_URL}{href}"
+        elif href.startswith("http"):
+            job_url = href
+        else:
+            job_url = f"{DRUSHIM_BASE_URL}/{href.lstrip('/')}"
+
+        location = location_el.get_text(strip=True) if location_el else ""
+        location = location.rstrip("|").strip()
+
+        jobs.append({
+            "title": title,
+            "company": company_el.get_text(strip=True) if company_el else "",
+            "location": location,
+            "job_url": job_url,
+            "source": "drushim",
+            "description": description_el.get_text(strip=True) if description_el else "",
+        })
+
+    return jobs
+
+
+def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
+    """Fetch Drushim search results with plain HTTP (no browser)."""
+    search_url = build_drushim_search_url(query)
+    print(f"Searching Drushim (HTTP) for: {query}")
+    print(f"URL: {search_url}")
+
+    try:
+        response = requests.get(
+            search_url,
+            headers=browser_http_headers(),
+            timeout=DRUSHIM_HTTP_TIMEOUT_SEC,
+        )
+    except requests.RequestException as error:
+        reason = f"Drushim HTTP request failed: {error}"
+        return CollectionOutcome(
+            status="http_error",
+            reason=reason,
+            reason_he=f"דרושים: שגיאת רשת — {error}",
+        )
+
+    http_status = response.status_code
+    if http_status >= 400:
+        return CollectionOutcome(
+            status="http_error",
+            reason=f"Drushim returned HTTP {http_status}",
+            reason_he=f"דרושים החזיר שגיאת HTTP {http_status}",
+            http_status=http_status,
+        )
+
+    if is_cloudflare_blocked_html(response.text):
+        return CollectionOutcome(
+            status="blocked",
+            reason="Cloudflare block page",
+            reason_he="דרושים חסם את הגישה (Cloudflare)",
+            http_status=http_status,
+        )
+
+    jobs = parse_drushim_search_html(response.text)
+    if jobs:
+        print(f"  Drushim HTTP extracted {len(jobs)} job card(s) for '{query}'")
+        return CollectionOutcome(jobs=jobs, status="ok")
+
+    return CollectionOutcome(
+        status="empty",
+        reason="No job cards found in HTTP response",
+        reason_he=f"דרושים: לא נמצאו משרות לחיפוש '{query}'",
+        http_status=http_status,
+    )
+
+
+def _drushim_uses_browser() -> bool:
+    """True when Drushim collection may launch Playwright."""
+    if DRUSHIM_HTTP_FIRST and not DRUSHIM_BROWSER_FALLBACK:
+        return False
+    return True
 
 
 def save_debug_artifacts(page: Page, reason: str) -> Path:
@@ -330,7 +437,17 @@ def collect_drushim_jobs(
     *,
     page: Page | None = None,
 ) -> CollectionOutcome:
-    """Open Drushim in Playwright and extract job cards."""
+    """Collect Drushim jobs — HTTP first on server, browser fallback on desktop."""
+    if page is None and DRUSHIM_HTTP_FIRST:
+        http_outcome = collect_drushim_jobs_http(query)
+        if http_outcome.status == "ok":
+            return http_outcome
+        if not DRUSHIM_BROWSER_FALLBACK:
+            if http_outcome.reason_he:
+                emit_agent_warning(http_outcome.reason_he)
+            return http_outcome
+        print(f"  Drushim HTTP {http_outcome.status} — falling back to browser...")
+
     if page is not None:
         return _collect_drushim_with_page(page, query, headless=headless)
 
@@ -643,10 +760,12 @@ def main() -> None:
     site_outcomes: dict[str, list[dict[str, Any]]] = {}
 
     drushim_session: DrushimBrowserSession | None = None
-    if "drushim" in selected_sites:
+    if "drushim" in selected_sites and _drushim_uses_browser():
         print("Starting shared Drushim browser session (one browser for all queries)...")
         drushim_session = DrushimBrowserSession(headless=HEADLESS)
         drushim_session.__enter__()
+    elif "drushim" in selected_sites:
+        print("Drushim: using HTTP mode (no browser — saves server memory)")
 
     try:
         for entry in plan:

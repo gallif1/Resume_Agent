@@ -8,8 +8,53 @@ from collect_jobs import (
     EXTRACT_JOBS_JS,
     DrushimBrowserSession,
     _collect_drushim_with_page,
+    _drushim_uses_browser,
+    collect_drushim_jobs_http,
     page_looks_blocked_drushim,
+    parse_drushim_search_html,
 )
+
+SAMPLE_DRUSHIM_HTML = """
+<html><body>
+  <div class="job-item preferred">
+    <h3><span class="job-url">Python Developer</span></h3>
+    <div class="job-details-top"><a><span>Acme Ltd</span></a></div>
+    <div class="job-details-sub"><span class="display-18"><span>Tel Aviv|</span></span></div>
+    <div class="job-intro"><p>Great role</p></div>
+    <a href="/job/12345/abc/">link</a>
+  </div>
+</body></html>
+"""
+
+
+def test_parse_drushim_search_html_extracts_job_fields():
+    jobs = parse_drushim_search_html(SAMPLE_DRUSHIM_HTML)
+
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "Python Developer"
+    assert jobs[0]["company"] == "Acme Ltd"
+    assert jobs[0]["location"] == "Tel Aviv"
+    assert jobs[0]["job_url"] == "https://www.drushim.co.il/job/12345/abc/"
+    assert jobs[0]["source"] == "drushim"
+    assert jobs[0]["description"] == "Great role"
+
+
+def test_collect_drushim_jobs_http_returns_jobs():
+    with patch("collect_jobs.requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.text = SAMPLE_DRUSHIM_HTML
+
+        outcome = collect_drushim_jobs_http("python")
+
+    assert outcome.status == "ok"
+    assert len(outcome.jobs) == 1
+
+
+def test_drushim_uses_browser_false_on_server_http_only():
+    with patch("collect_jobs.DRUSHIM_HTTP_FIRST", True), patch(
+        "collect_jobs.DRUSHIM_BROWSER_FALLBACK", False
+    ):
+        assert _drushim_uses_browser() is False
 
 
 def test_page_looks_blocked_drushim_does_not_flag_search_results_with_meta_robots():
