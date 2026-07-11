@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import Page, sync_playwright
 
+from browser_utils import browser_http_headers, create_browser_context, page_looks_blocked
 from config import (
     DRUSHIM_BASE_URL,
     HEADLESS,
@@ -106,18 +107,9 @@ def save_debug_artifacts(page: Page, reason: str) -> Path:
     return log_path
 
 
-def page_looks_blocked(page: Page) -> bool:
-    """Detect common captcha, login, or anti-bot pages."""
-    content = page.content().lower()
-    blocked_signals = [
-        "captcha",
-        "recaptcha",
-        "cloudflare",
-        "access denied",
-        "verify you are human",
-        "robot",
-    ]
-    return any(signal in content for signal in blocked_signals)
+def page_looks_blocked_drushim(page: Page) -> bool:
+    """Detect Drushim anti-bot pages without false positives from meta robots."""
+    return page_looks_blocked(page)
 
 
 def extract_jobs_from_page(page: Page) -> list[dict]:
@@ -133,17 +125,24 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
     print(f"Browser mode: {'headless' if headless else 'visible'}")
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=headless)
-        page = browser.new_page()
+        context, page = create_browser_context(playwright, headless=headless)
 
         try:
-            page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+            response = page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(3000)
+
+            if response is not None and response.status >= 400:
+                reason = f"Drushim returned HTTP {response.status}"
+                save_debug_artifacts(page, reason)
+                if headless:
+                    print(f"{reason}. Retrying with a visible browser...")
+                    context.close()
+                    return collect_drushim_jobs(query, headless=False)
 
             try:
                 page.wait_for_selector(".job-item", timeout=15000)
             except Exception:
-                if page_looks_blocked(page):
+                if page_looks_blocked_drushim(page):
                     reason = "Page may be blocked by captcha or anti-bot protection"
                 else:
                     reason = "No job cards found on the page"
@@ -151,7 +150,7 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
 
                 if headless:
                     print("Headless extraction failed. Retrying with a visible browser...")
-                    browser.close()
+                    context.close()
                     return collect_drushim_jobs(query, headless=False)
 
                 print("Inspect the browser window, then press Enter to retry extraction.")
@@ -168,7 +167,7 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
 
                 if headless:
                     print("Could not parse jobs in headless mode. Retrying visibly...")
-                    browser.close()
+                    context.close()
                     return collect_drushim_jobs(query, headless=False)
 
                 print("Inspect the browser window, then press Enter to retry extraction.")
@@ -179,19 +178,12 @@ def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> list[dict]:
 
             return jobs
         finally:
-            browser.close()
+            context.close()
 
 
 LINKEDIN_JOBS_PER_PAGE = 25
 
-LINKEDIN_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,he-IL;q=0.8,he;q=0.7",
-}
+LINKEDIN_HEADERS = browser_http_headers()
 
 
 def build_linkedin_search_url(query: str, start: int = 0) -> str:

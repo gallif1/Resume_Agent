@@ -99,6 +99,7 @@ else:
 # Persistent browser profile — keeps the Drushim login session between runs
 # so you only have to sign in once.
 BROWSER_PROFILE_DIR = DATA_DIR / "browser_profile"
+GOTFRIENDS_BROWSER_PROFILE_DIR = BROWSER_PROFILE_DIR / "gotfriends"
 
 # Optional environment variables (add more as needed)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
