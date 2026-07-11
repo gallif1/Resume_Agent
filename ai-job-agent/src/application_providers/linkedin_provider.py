@@ -10,8 +10,11 @@ from application_providers.base_provider import ApplicationResult, ValidationRes
 from application_providers.generic_provider import GenericProvider
 from application_providers.provider_utils import (
     detect_captcha,
+    detect_linkedin_auth_wall,
     detect_login_required,
+    extract_external_apply_url,
     hebrew_failure_message,
+    navigate_to_external_apply,
     open_application_page,
     page_has_application_form,
     url_matches,
@@ -50,6 +53,12 @@ class LinkedInProvider(GenericProvider):
         if page_has_application_form(page):
             return page
 
+        # Prefer direct navigation to off-site apply URL (works without LinkedIn login).
+        external_url = extract_external_apply_url(page)
+        if external_url and navigate_to_external_apply(page, external_url):
+            if page_has_application_form(page):
+                return page
+
         external = open_application_page(
             page,
             LINKEDIN_APPLY_TEXTS,
@@ -80,17 +89,29 @@ class LinkedInProvider(GenericProvider):
                 current_url=page.url,
                 provider_name=self.name,
             )
-        if detect_login_required(page):
+
+        app_page = self._resolve_application_page(page)
+
+        if app_page is None and detect_linkedin_auth_wall(page):
             return ApplicationResult(
                 success=False,
                 status="requires_user_action",
-                message=hebrew_failure_message("login_required"),
+                message=hebrew_failure_message("linkedin_login_required"),
                 failure_category="login_required",
                 current_url=page.url,
                 provider_name=self.name,
             )
 
-        app_page = self._resolve_application_page(page)
+        if detect_login_required(page) and app_page is None:
+            return ApplicationResult(
+                success=False,
+                status="requires_user_action",
+                message=hebrew_failure_message("linkedin_login_required"),
+                failure_category="login_required",
+                current_url=page.url,
+                provider_name=self.name,
+            )
+
         if app_page is None:
             return ApplicationResult(
                 success=False,
@@ -106,10 +127,27 @@ class LinkedInProvider(GenericProvider):
         self._application_page = app_page
 
         if url_matches(app_page.url, "linkedin.com"):
+            if detect_linkedin_auth_wall(app_page):
+                return ApplicationResult(
+                    success=False,
+                    status="requires_user_action",
+                    message=hebrew_failure_message("linkedin_login_required"),
+                    failure_category="login_required",
+                    current_url=app_page.url,
+                    provider_name=self.name,
+                )
             result = super().fill_application(
                 app_page, user_profile, cv_file_path, job, cover_letter=cover_letter
             )
             result.provider_name = self.name
+            if (
+                not result.success
+                and result.failure_category == "application_form_not_found"
+                and detect_linkedin_auth_wall(app_page)
+            ):
+                result.status = "requires_user_action"
+                result.failure_category = "login_required"
+                result.message = hebrew_failure_message("linkedin_login_required")
             return result
 
         external = _select_provider(app_page.url, app_page)

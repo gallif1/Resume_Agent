@@ -129,6 +129,15 @@ def test_bullhorn_form_fill(playwright_page, tmp_path):
     assert "full_name" in result.filled_fields or "email" in result.filled_fields
 
 
+def test_extract_external_apply_url(playwright_page):
+    from application_providers.provider_utils import extract_external_apply_url
+
+    html = (FIXTURES / "linkedin_external_apply.html").read_text(encoding="utf-8")
+    playwright_page.set_content(html)
+    url = extract_external_apply_url(playwright_page)
+    assert url == "https://apply.test.example/jobs/backend-dev"
+
+
 def test_linkedin_external_apply_navigation(playwright_page, tmp_path):
     from application_providers.linkedin_provider import LinkedInProvider
 
