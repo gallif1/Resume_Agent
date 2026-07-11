@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  applyToJob,
+  DuplicateApplicationError,
   getCvMatches,
   getCvScanStatus,
+  getJobApplication,
   parseScanSummary,
   updateMatchStatus,
   type ApplicationStatus,
   type Cv,
   type CvMatch,
   type CvScanStatus,
+  type JobApplication,
+  type JobApplicationStatus,
 } from "../lib/api";
 import PipelineProgress from "./PipelineProgress";
 
@@ -32,6 +37,19 @@ const STATUS_LABEL: Record<ApplicationStatus, string> = Object.fromEntries(
   STATUS_OPTIONS.map((o) => [o.value, o.label])
 ) as Record<ApplicationStatus, string>;
 
+const JOB_APP_STATUS_LABEL: Record<JobApplicationStatus, string> = {
+  pending: "ממתין להגשה",
+  in_progress: "מגיש…",
+  submitted: "קורות החיים נשלחו",
+  failed: "ההגשה נכשלה",
+  requires_user_action: "נדרשת השלמה ידנית",
+};
+
+interface ConfirmState {
+  match: CvMatch;
+  force?: boolean;
+}
+
 function scoreClass(score: number | null): string {
   if (score == null) return "";
   if (score >= 85) return "score-high";
@@ -49,6 +67,10 @@ function formatDate(iso: string | null): string {
   }).format(d);
 }
 
+function isActiveApplication(status: JobApplicationStatus | undefined): boolean {
+  return status === "pending" || status === "in_progress";
+}
+
 export default function CvDetails({
   cvId,
   cv,
@@ -62,6 +84,9 @@ export default function CvDetails({
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [applyingId, setApplyingId] = useState<number | null>(null);
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [logApplication, setLogApplication] = useState<JobApplication | null>(null);
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
@@ -107,7 +132,6 @@ export default function CvDetails({
     };
   }, [cvId, running, scanStatus?.warnings, scanStatus?.collection]);
 
-  // Reload matches when a scan for this CV finishes.
   useEffect(() => {
     if (prevRunning.current && !running && scanCvId === cvId) {
       load();
@@ -115,12 +139,24 @@ export default function CvDetails({
     prevRunning.current = running;
   }, [running, scanCvId, cvId, load]);
 
+  // Poll while any application is in progress.
+  useEffect(() => {
+    const hasActive = matches.some((m) =>
+      isActiveApplication(m.job_application?.status)
+    );
+    if (!hasActive) return;
+
+    const timer = window.setInterval(() => {
+      load();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [matches, load]);
+
   const handleStatusChange = async (
     match: CvMatch,
     status: ApplicationStatus
   ) => {
     setSavingId(match.match_id);
-    // Optimistic update.
     setMatches((prev) =>
       prev.map((m) =>
         m.match_id === match.match_id ? { ...m, application_status: status } : m
@@ -134,6 +170,126 @@ export default function CvDetails({
     } finally {
       setSavingId(null);
     }
+  };
+
+  const openConfirm = (match: CvMatch, force = false) => {
+    setConfirmState({ match, force });
+  };
+
+  const handleApply = async (match: CvMatch, force = false) => {
+    setApplyingId(match.job_id);
+    setError(null);
+    try {
+      const result = await applyToJob(cvId, match.job_id, { force });
+      setMatches((prev) =>
+        prev.map((m) =>
+          m.job_id === match.job_id
+            ? { ...m, job_application: result.application }
+            : m
+        )
+      );
+      setConfirmState(null);
+    } catch (e) {
+      if (e instanceof DuplicateApplicationError) {
+        openConfirm(match, true);
+        setError(e.message);
+      } else {
+        setError(e instanceof Error ? e.message : "שגיאה בהגשת קורות החיים");
+      }
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
+  const openApplicationLog = async (app: JobApplication) => {
+    try {
+      const full = await getJobApplication(cvId, app.application_id);
+      setLogApplication(full);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בטעינת יומן ההגשה");
+    }
+  };
+
+  const renderApplyButton = (match: CvMatch) => {
+    const app = match.job_application;
+    const status = app?.status;
+    const busy = applyingId === match.job_id || isActiveApplication(status);
+
+    if (status === "submitted") {
+      return (
+        <div className="apply-status-group">
+          <span className="apply-status apply-status-success">
+            קורות החיים נשלחו
+          </span>
+          {app?.submitted_at && (
+            <span className="apply-status-date">{formatDate(app.submitted_at)}</span>
+          )}
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => openConfirm(match, true)}
+          >
+            הגש שוב
+          </button>
+        </div>
+      );
+    }
+
+    if (status === "failed") {
+      return (
+        <div className="apply-status-group">
+          <span className="apply-status apply-status-failed">
+            ההגשה נכשלה – נסה שוב
+          </span>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={busy}
+            onClick={() => openConfirm(match)}
+          >
+            נסה שוב
+          </button>
+        </div>
+      );
+    }
+
+    if (status === "requires_user_action") {
+      return (
+        <div className="apply-status-group">
+          <span className="apply-status apply-status-warning">
+            נדרשת השלמה ידנית
+          </span>
+          {(app?.current_step_url || match.job_url) && (
+            <a
+              className="btn btn-primary btn-sm"
+              href={app?.current_step_url || match.job_url || "#"}
+              target="_blank"
+              rel="noreferrer"
+            >
+              המשך ידנית ↗
+            </a>
+          )}
+        </div>
+      );
+    }
+
+    if (busy) {
+      return (
+        <button type="button" className="btn btn-primary btn-sm" disabled>
+          מגיש…
+        </button>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        className="btn btn-primary btn-sm"
+        onClick={() => openConfirm(match)}
+      >
+        הגש קורות חיים
+      </button>
+    );
   };
 
   const title = cv?.display_name || cv?.file_name || "קורות חיים";
@@ -196,6 +352,80 @@ export default function CvDetails({
 
       {error && <div className="error-box">{error}</div>}
 
+      {confirmState && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-card apply-confirm-modal">
+            <h3>אישור הגשת קורות חיים</h3>
+            <p>
+              המערכת עומדת לפתוח את אתר המשרה החיצוני ולהגיש את פרטיך וקורות החיים
+              השמורים.
+            </p>
+            <div className="apply-confirm-details">
+              <p><b>משרה:</b> {confirmState.match.title}</p>
+              <p><b>חברה:</b> {confirmState.match.company || "—"}</p>
+            </div>
+            {confirmState.force && (
+              <p className="apply-confirm-warning">
+                כבר הוגשו קורות חיים למשרה זו. האם להמשיך בהגשה חוזרת?
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setConfirmState(null)}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={applyingId !== null}
+                onClick={() => handleApply(confirmState.match, confirmState.force)}
+              >
+                {confirmState.force ? "הגש שוב" : "הגש קורות חיים"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logApplication && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal-card apply-log-modal">
+            <h3>יומן הגשה</h3>
+            <p className="cv-meta">
+              סטטוס: {JOB_APP_STATUS_LABEL[logApplication.status]} · ניסיון{" "}
+              {logApplication.attempt_number ?? 1}
+            </p>
+            {logApplication.failure_reason && (
+              <p className="apply-log-error">{logApplication.failure_reason}</p>
+            )}
+            <ul className="apply-log-steps">
+              {(logApplication.steps ?? []).map((step) => (
+                <li key={step.id} className={`apply-log-step step-${step.status}`}>
+                  <span className="apply-log-step-name">{step.step_name}</span>
+                  <span className="apply-log-step-status">{step.status}</span>
+                  {step.message && (
+                    <span className="apply-log-step-message">{step.message}</span>
+                  )}
+                  <span className="apply-log-step-time">{formatDate(step.created_at)}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setLogApplication(null)}
+              >
+                סגור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="history-header">
         <h2>התאמות מהסריקה האחרונה</h2>
         <span className="history-count">
@@ -221,6 +451,7 @@ export default function CvDetails({
         <ul className="cv-list">
           {matches.map((m) => {
             const expanded = expandedId === m.match_id;
+            const app = m.job_application;
             return (
               <li key={m.match_id} className="cv-item job-item">
                 <div
@@ -242,9 +473,29 @@ export default function CvDetails({
                       <span className={`status-pill status-${m.application_status}`}>
                         {STATUS_LABEL[m.application_status]}
                       </span>
+                      {app && (
+                        <span className={`apply-pill apply-pill-${app.status}`}>
+                          {JOB_APP_STATUS_LABEL[app.status]}
+                        </span>
+                      )}
+                      {app?.updated_at && (
+                        <span className="cv-meta apply-attempt-date">
+                          ניסיון אחרון: {formatDate(app.updated_at)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="cv-actions" onClick={(e) => e.stopPropagation()}>
+                    {renderApplyButton(m)}
+                    {app && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => openApplicationLog(app)}
+                      >
+                        פרטי הגשה
+                      </button>
+                    )}
                     <select
                       className="status-select"
                       value={m.application_status}
@@ -307,6 +558,11 @@ export default function CvDetails({
                     {m.cv_improvements.length > 0 && (
                       <p>
                         <b>שיפורים מומלצים לקו&quot;ח:</b> {m.cv_improvements.join(" · ")}
+                      </p>
+                    )}
+                    {app?.failure_reason && (
+                      <p className="apply-log-error">
+                        <b>שגיאת הגשה:</b> {app.failure_reason}
                       </p>
                     )}
                     {m.updated_at && (

@@ -13,6 +13,10 @@ Multi-CV endpoints (each CV has isolated data):
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
+    POST   /cvs/{cv_id}/jobs/{job_id}/apply          start automated job application
+    GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
+    GET    /cvs/{cv_id}/jobs/{job_id}/application-status  latest application status
+    POST   /cvs/{cv_id}/job-applications/{id}/retry  retry a failed application
 
 Legacy (single global CV) endpoints, kept for backward compatibility:
     GET  /api/health            server + pipeline/scan availability
@@ -43,6 +47,8 @@ from pydantic import BaseModel
 
 import cv_service
 import db
+from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
+from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
@@ -456,6 +462,7 @@ def _match_public(match: dict) -> dict:
         "cv_improvements": _parse_json_list(match.get("ats_improvements")),
         "application_status": match.get("application_status") or db.CV_APP_NOT_SENT,
         "application_notes": match.get("application_notes"),
+        "job_application": match.get("job_application"),
         "updated_at": match.get("match_updated_at"),
     }
 
@@ -624,7 +631,16 @@ def get_cv_matches(cv_id: str, latest: bool = True, min_score: int | None = None
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
     cv_db = cv_db_path(cv_id)
     matches = db.get_cv_matches(cv_id, latest_only=latest, min_score=min_score, db_path=cv_db)
-    return {"matches": [_match_public(m) for m in matches]}
+    job_ids = [int(m["job_id"]) for m in matches]
+    latest_apps = db.get_latest_job_applications_for_cv(cv_id, job_ids, db_path=cv_db)
+    enriched = []
+    for m in matches:
+        row = dict(m)
+        app = latest_apps.get(int(row["job_id"]))
+        if app:
+            row["job_application"] = public_application(app)
+        enriched.append(_match_public(row))
+    return {"matches": enriched}
 
 
 class MatchStatusRequest(BaseModel):
@@ -646,6 +662,116 @@ def update_match_status(cv_id: str, match_id: int, req: MatchStatusRequest):
     if updated is None:
         raise HTTPException(status_code=404, detail="התאמה לא נמצאה")
     return {"updated": True, "match": _match_public(_reshape_match_row(updated))}
+
+
+class ApplyJobRequest(BaseModel):
+    force: bool = False
+
+
+def _application_error_response(exc: ApplicationError) -> HTTPException:
+    detail: dict | str = exc.message
+    if exc.code:
+        detail = {"message": exc.message, "code": exc.code}
+    return HTTPException(status_code=exc.status_code, detail=detail)
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/apply")
+def apply_to_job(cv_id: str, job_id: int, req: ApplyJobRequest | None = None):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    cv_db = cv_db_path(cv_id)
+    force = req.force if req else False
+    try:
+        result = start_application(cv_id, job_id, force=force, db_path=cv_db)
+    except ApplicationError as exc:
+        raise _application_error_response(exc) from exc
+
+    app = result["application"]
+    enqueue_application(app["id"], cv_id, job_id, db_path=cv_db)
+    return {
+        "application_id": app["id"],
+        "status": app["status"],
+        "application": public_application(app),
+    }
+
+
+@app.get("/cvs/{cv_id}/job-applications/{application_id}")
+def get_job_application(cv_id: str, application_id: str):
+    db.ensure_multi_cv_storage()
+    cv_db = cv_db_path(cv_id)
+    try:
+        return get_application_for_cv(cv_id, application_id, cv_db)
+    except ApplicationError as exc:
+        raise _application_error_response(exc) from exc
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/application-status")
+def job_application_status(cv_id: str, job_id: int):
+    db.ensure_multi_cv_storage()
+    cv_db = cv_db_path(cv_id)
+    try:
+        status = get_job_application_status(cv_id, job_id, cv_db)
+    except ApplicationError as exc:
+        raise _application_error_response(exc) from exc
+    if status is None:
+        return {"status": None, "application": None}
+    status["active"] = is_application_active(status["application_id"])
+    return {"status": status["status"], "application": status}
+
+
+@app.post("/cvs/{cv_id}/job-applications/{application_id}/retry")
+def retry_job_application(cv_id: str, application_id: str):
+    db.ensure_multi_cv_storage()
+    cv_db = cv_db_path(cv_id)
+    try:
+        existing = get_application_for_cv(cv_id, application_id, cv_db)
+    except ApplicationError as exc:
+        raise _application_error_response(exc) from exc
+
+    if existing["status"] == db.JOB_APP_IN_PROGRESS or is_application_active(application_id):
+        raise HTTPException(status_code=409, detail="הגשה כבר בתהליך")
+
+    result = start_application(
+        cv_id,
+        int(existing["job_id"]),
+        force=True,
+        db_path=cv_db,
+    )
+    app = result["application"]
+    enqueue_application(app["id"], cv_id, int(existing["job_id"]), db_path=cv_db)
+    return {
+        "application_id": app["id"],
+        "status": app["status"],
+        "application": public_application(app),
+    }
+
+
+# Aliases matching the suggested /api/ routes (cv_profile_id in body).
+class ApiApplyJobRequest(BaseModel):
+    cv_profile_id: str
+    job_id: int | None = None
+    force: bool = False
+
+
+@app.post("/api/jobs/{job_id}/apply")
+def api_apply_to_job(job_id: int, req: ApiApplyJobRequest):
+    return apply_to_job(req.cv_profile_id, job_id, ApplyJobRequest(force=req.force))
+
+
+@app.get("/api/job-applications/{application_id}")
+def api_get_job_application(application_id: str, cv_profile_id: str):
+    return get_job_application(cv_profile_id, application_id)
+
+
+@app.get("/api/jobs/{job_id}/application-status")
+def api_job_application_status(job_id: int, cv_profile_id: str):
+    return job_application_status(cv_profile_id, job_id)
+
+
+@app.post("/api/job-applications/{application_id}/retry")
+def api_retry_job_application(application_id: str, cv_profile_id: str):
+    return retry_job_application(cv_profile_id, application_id)
 
 
 def _reshape_match_row(row: dict) -> dict:

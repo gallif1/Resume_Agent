@@ -111,6 +111,10 @@ APPLY_HEADLESS = os.getenv("APPLY_HEADLESS", "false").lower() in ("1", "true", "
 # When false, the form is filled but the final "send" button is NOT clicked
 # (useful for a dry test). Defaults to true so applications are actually sent.
 AUTO_SUBMIT = os.getenv("AUTO_SUBMIT", "true").lower() in ("1", "true", "yes")
+# When true, generate a job-specific cover letter from saved CV data if none is saved.
+AUTO_GENERATE_COVER_LETTER = os.getenv(
+    "AUTO_GENERATE_COVER_LETTER", "false"
+).lower() in ("1", "true", "yes")
 # Optional Drushim login credentials. If left empty, you'll be asked to log in
 # manually in the browser window the first time (the session is then remembered).
 DRUSHIM_EMAIL = os.getenv("DRUSHIM_EMAIL", "").strip()

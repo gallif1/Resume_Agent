@@ -108,6 +108,41 @@ CREATE INDEX IF NOT EXISTS idx_cv_job_matches_cv ON cv_job_matches (cv_id);
 CREATE INDEX IF NOT EXISTS idx_cv_job_matches_job ON cv_job_matches (job_id);
 CREATE INDEX IF NOT EXISTS idx_cv_job_matches_scan ON cv_job_matches (scan_id);
 CREATE INDEX IF NOT EXISTS idx_cv_scans_cv ON cv_scans (cv_id);
+
+CREATE TABLE IF NOT EXISTS job_applications (
+    id TEXT PRIMARY KEY,
+    cv_id TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',
+    application_url TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    submitted_at TEXT,
+    failure_reason TEXT,
+    failure_category TEXT,
+    requires_user_action_reason TEXT,
+    external_confirmation_text TEXT,
+    external_confirmation_url TEXT,
+    attempt_number INTEGER DEFAULT 1,
+    provider_name TEXT,
+    current_step_url TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (job_id) REFERENCES jobs (id)
+);
+
+CREATE TABLE IF NOT EXISTS job_application_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    application_id TEXT NOT NULL,
+    step_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at TEXT,
+    FOREIGN KEY (application_id) REFERENCES job_applications (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_applications_cv_job ON job_applications (cv_id, job_id);
+CREATE INDEX IF NOT EXISTS idx_job_application_steps_app ON job_application_steps (application_id);
 """
 
 _LEGACY_CV_SCHEMA = """
@@ -1466,6 +1501,12 @@ def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
             ).fetchone()
             if still_referenced is not None:
                 continue
+            conn.execute(
+                "DELETE FROM job_application_steps WHERE application_id IN "
+                "(SELECT id FROM job_applications WHERE job_id = ?)",
+                (job_id,),
+            )
+            conn.execute("DELETE FROM job_applications WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
             conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             orphaned_job_ids.append(job_id)
@@ -1499,6 +1540,8 @@ def reset_cv_job_pool(cv_id: str) -> None:
     if not path.exists():
         return
     with get_connection(path) as conn:
+        conn.execute("DELETE FROM job_application_steps")
+        conn.execute("DELETE FROM job_applications")
         conn.execute("DELETE FROM applications")
         conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
         conn.execute("DELETE FROM jobs")
@@ -1765,6 +1808,277 @@ def update_cv_match_status(
             "SELECT * FROM cv_job_matches WHERE id = ?", (match_id,)
         ).fetchone()
         return dict(row) if row is not None else None
+
+
+def update_cv_match_status_by_job(
+    cv_id: str,
+    job_id: int,
+    status: str,
+    *,
+    notes: str | None = None,
+    db_path: Path = DB_PATH,
+) -> None:
+    """Set application status on the cv_job_matches row for (cv_id, job_id)."""
+    if status not in CV_APP_STATUSES:
+        raise ValueError(f"invalid application status: {status}")
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE cv_job_matches
+            SET application_status = ?, application_notes = ?, updated_at = ?
+            WHERE cv_id = ? AND job_id = ?
+            """,
+            (status, notes, _utc_now(), cv_id, job_id),
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Automated job applications
+# ---------------------------------------------------------------------------
+
+JOB_APP_PENDING = "pending"
+JOB_APP_IN_PROGRESS = "in_progress"
+JOB_APP_SUBMITTED = "submitted"
+JOB_APP_FAILED = "failed"
+JOB_APP_REQUIRES_USER_ACTION = "requires_user_action"
+
+JOB_APP_STATUSES = (
+    JOB_APP_PENDING,
+    JOB_APP_IN_PROGRESS,
+    JOB_APP_SUBMITTED,
+    JOB_APP_FAILED,
+    JOB_APP_REQUIRES_USER_ACTION,
+)
+
+JOB_APP_TERMINAL_STATUSES = (
+    JOB_APP_SUBMITTED,
+    JOB_APP_FAILED,
+    JOB_APP_REQUIRES_USER_ACTION,
+)
+
+STEP_SUCCESS = "success"
+STEP_FAILED = "failed"
+STEP_SKIPPED = "skipped"
+STEP_REQUIRES_USER_ACTION = "requires_user_action"
+
+
+def get_job_by_id(job_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
+    with get_connection(db_path) as conn:
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def create_job_application(
+    application_id: str,
+    cv_id: str,
+    job_id: int,
+    *,
+    application_url: str | None = None,
+    attempt_number: int = 1,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any]:
+    now = _utc_now()
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO job_applications (
+                id, cv_id, job_id, status, application_url, attempt_number,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                application_id,
+                cv_id,
+                job_id,
+                JOB_APP_PENDING,
+                application_url,
+                attempt_number,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    app = get_job_application(application_id, db_path=db_path)
+    assert app is not None
+    return app
+
+
+def get_job_application(
+    application_id: str, db_path: Path = DB_PATH
+) -> dict[str, Any] | None:
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM job_applications WHERE id = ?", (application_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def get_latest_job_application(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM job_applications
+            WHERE cv_id = ? AND job_id = ?
+            ORDER BY created_at DESC, attempt_number DESC
+            LIMIT 1
+            """,
+            (cv_id, job_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def count_successful_job_applications(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> int:
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM job_applications
+            WHERE cv_id = ? AND job_id = ? AND status = ?
+            """,
+            (cv_id, job_id, JOB_APP_SUBMITTED),
+        ).fetchone()
+        return int(row["n"])
+
+
+def list_job_applications_for_cv_job(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM job_applications
+            WHERE cv_id = ? AND job_id = ?
+            ORDER BY created_at DESC
+            """,
+            (cv_id, job_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def update_job_application(
+    application_id: str,
+    fields: dict[str, Any],
+    *,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    allowed = {
+        "status",
+        "application_url",
+        "started_at",
+        "completed_at",
+        "submitted_at",
+        "failure_reason",
+        "failure_category",
+        "requires_user_action_reason",
+        "external_confirmation_text",
+        "external_confirmation_url",
+        "attempt_number",
+        "provider_name",
+        "current_step_url",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return get_job_application(application_id, db_path=db_path)
+    updates["updated_at"] = _utc_now()
+    assignments = ", ".join(f"{key} = ?" for key in updates)
+    params = list(updates.values()) + [application_id]
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            f"UPDATE job_applications SET {assignments} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+    return get_job_application(application_id, db_path=db_path)
+
+
+def add_job_application_step(
+    application_id: str,
+    step_name: str,
+    status: str,
+    *,
+    message: str | None = None,
+    db_path: Path = DB_PATH,
+) -> int:
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO job_application_steps (
+                application_id, step_name, status, message, created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (application_id, step_name, status, message, _utc_now()),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def get_job_application_steps(
+    application_id: str, db_path: Path = DB_PATH
+) -> list[dict[str, Any]]:
+    with get_connection(db_path) as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM job_application_steps
+            WHERE application_id = ?
+            ORDER BY id ASC
+            """,
+            (application_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_latest_job_applications_for_cv(
+    cv_id: str,
+    job_ids: list[int] | None = None,
+    *,
+    db_path: Path = DB_PATH,
+) -> dict[int, dict[str, Any]]:
+    """Return the latest application attempt per job for a CV."""
+    with get_connection(db_path) as conn:
+        if job_ids:
+            placeholders = ",".join("?" for _ in job_ids)
+            rows = conn.execute(
+                f"""
+                SELECT * FROM job_applications
+                WHERE cv_id = ? AND job_id IN ({placeholders})
+                ORDER BY job_id, created_at DESC, attempt_number DESC
+                """,
+                [cv_id, *job_ids],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM job_applications
+                WHERE cv_id = ?
+                ORDER BY job_id, created_at DESC, attempt_number DESC
+                """,
+                (cv_id,),
+            ).fetchall()
+
+    latest: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        job_id = int(item["job_id"])
+        if job_id not in latest:
+            latest[job_id] = item
+    return latest
 
 
 if __name__ == "__main__":
