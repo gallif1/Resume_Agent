@@ -274,6 +274,13 @@ def test_captcha_detection(playwright_page):
     assert detect_captcha(playwright_page) is True
 
 
+def test_hidden_recaptcha_script_does_not_trigger_captcha(playwright_page):
+    """Job pages often embed reCAPTCHA scripts without a visible challenge."""
+    html = (FIXTURES / "job_page_with_hidden_recaptcha.html").read_text(encoding="utf-8")
+    playwright_page.set_content(html)
+    assert detect_captcha(playwright_page) is False
+
+
 def test_login_required_detection(playwright_page):
     html = (FIXTURES / "login_page.html").read_text(encoding="utf-8")
     playwright_page.set_content(html)

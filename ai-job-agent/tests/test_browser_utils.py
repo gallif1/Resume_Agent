@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from browser_utils import (
+    format_browser_launch_error,
     is_cloudflare_blocked_html,
     is_http_blocked,
     page_looks_blocked,
@@ -38,9 +39,20 @@ def test_page_looks_blocked_ignores_meta_robots():
     assert page_looks_blocked(page) is False
 
 
-def test_format_browser_launch_error_detects_missing_executable():
-    from browser_utils import format_browser_launch_error
+def test_page_looks_blocked_ignores_cloudflare_cdn_markers_on_full_job_page():
+    page = MagicMock()
+    page.url = "https://boards.greenhouse.io/acme/jobs/123"
+    page.title.return_value = "Software Engineer - Acme"
+    page.evaluate.return_value = "Apply for this role. First name, email, resume upload."
+    page.content.return_value = (
+        "<html><body><form><input name='email'></form>"
+        "<script>cf-turnstile</script></body></html>"
+    )
 
+    assert page_looks_blocked(page) is False
+
+
+def test_format_browser_launch_error_detects_missing_executable():
     message = format_browser_launch_error(
         RuntimeError(
             "BrowserType.launch: Executable doesn't exist at "
@@ -49,6 +61,9 @@ def test_format_browser_launch_error_detects_missing_executable():
     )
     assert "Playwright Chromium" in message
     assert "לא מותקן" in message
+
+
+def test_page_looks_blocked_detects_cloudflare_interstitial():
     page = MagicMock()
     page.url = "https://www.gotfriends.co.il/jobslobby/software/"
     page.title.return_value = "Attention Required! | Cloudflare"
