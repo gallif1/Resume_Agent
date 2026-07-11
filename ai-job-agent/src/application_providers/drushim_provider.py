@@ -26,7 +26,8 @@ from apply_jobs import (
     _click_first,
     _page_shows_success,
 )
-from site_auth import drushim_credentials_configured, ensure_drushim_session
+from site_auth import ensure_drushim_session
+from site_credentials import drushim_credentials_configured
 
 
 class DrushimProvider(GenericProvider):
@@ -93,9 +94,9 @@ class DrushimProvider(GenericProvider):
                 page.wait_for_timeout(2500)
             if detect_login_required(page):
                 message = (
-                    "הגדר DRUSHIM_EMAIL ו-DRUSHIM_PASSWORD בהגדרות השרת "
-                    "כדי שהמערכת תתחבר לדרושים אוטומטית."
-                    if not drushim_credentials_configured()
+                    "הזן אימייל וסיסמה לדרושים בעמוד הפרופיל "
+                    "כדי שהמערכת תתחבר אוטומטית."
+                    if not drushim_credentials_configured(cv_id)
                     else hebrew_failure_message("login_required")
                 )
                 return ApplicationResult(

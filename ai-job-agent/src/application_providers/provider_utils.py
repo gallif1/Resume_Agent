@@ -507,12 +507,12 @@ def hebrew_failure_message(category: str | None, default: str = "") -> str:
             "האתר דורש התחברות. יש לפתוח את העמוד ולהמשיך ידנית."
         ),
         "linkedin_login_required": (
-            "לינקדאין דורש התחברות. הגדר LINKEDIN_EMAIL ו-LINKEDIN_PASSWORD "
-            "בהגדרות השרת (Render → Environment) כדי שהמערכת תתחבר אוטומטית."
+            "לינקדאין דורש התחברות. הזן אימייל וסיסמה בעמוד הפרופיל "
+            "כדי שהמערכת תתחבר אוטומטית."
         ),
         "linkedin_credentials_missing": (
-            "נדרשת התחברות ללינקדאין. הוסף LINKEDIN_EMAIL ו-LINKEDIN_PASSWORD "
-            "בהגדרות השרת כדי לאפשר הגשה אוטומטית."
+            "נדרשת התחברות ללינקדאין. הזן את פרטי ההתחברות שלך בעמוד הפרופיל "
+            "כדי לאפשר הגשה אוטומטית."
         ),
         "user_action_required": "נדרשת פעולה ידנית כדי להשלים את ההגשה.",
         "submission_confirmation_not_found": (

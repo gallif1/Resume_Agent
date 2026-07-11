@@ -14,14 +14,8 @@ from apply_jobs import (
     attempt_credential_login as drushim_attempt_login,
     is_logged_in as drushim_is_logged_in,
 )
-from config import (
-    DRUSHIM_EMAIL,
-    DRUSHIM_PASSWORD,
-    LINKEDIN_BASE_URL,
-    LINKEDIN_EMAIL,
-    LINKEDIN_PASSWORD,
-    cv_data_dir,
-)
+from config import LINKEDIN_BASE_URL, cv_data_dir
+from site_credentials import get_drushim_credentials, get_linkedin_credentials
 
 LINKEDIN_LOGIN_URL = f"{LINKEDIN_BASE_URL}/login"
 LINKEDIN_USERNAME_SELECTOR = "#username"
@@ -121,8 +115,9 @@ def ensure_linkedin_session(page: Page, cv_id: str) -> bool:
     if is_linkedin_logged_in(page):
         return True
 
-    if LINKEDIN_EMAIL and LINKEDIN_PASSWORD:
-        if attempt_linkedin_credential_login(page, LINKEDIN_EMAIL, LINKEDIN_PASSWORD):
+    email, password = get_linkedin_credentials(cv_id)
+    if email and password:
+        if attempt_linkedin_credential_login(page, email, password):
             save_storage_state(page.context, linkedin_storage_state_path(cv_id))
             return True
 
@@ -141,17 +136,10 @@ def ensure_drushim_session(page: Page, cv_id: str) -> bool:
     if drushim_is_logged_in(page):
         return True
 
-    if DRUSHIM_EMAIL and DRUSHIM_PASSWORD:
-        if drushim_attempt_login(page, DRUSHIM_EMAIL, DRUSHIM_PASSWORD):
+    email, password = get_drushim_credentials(cv_id)
+    if email and password:
+        if drushim_attempt_login(page, email, password):
             save_storage_state(page.context, drushim_storage_state_path(cv_id))
             return True
 
     return drushim_is_logged_in(page)
-
-
-def linkedin_credentials_configured() -> bool:
-    return bool(LINKEDIN_EMAIL and LINKEDIN_PASSWORD)
-
-
-def drushim_credentials_configured() -> bool:
-    return bool(DRUSHIM_EMAIL and DRUSHIM_PASSWORD)

@@ -19,7 +19,8 @@ from application_providers.provider_utils import (
     page_has_application_form,
     url_matches,
 )
-from site_auth import ensure_linkedin_session, linkedin_credentials_configured
+from site_auth import ensure_linkedin_session
+from site_credentials import linkedin_credentials_configured
 
 LINKEDIN_APPLY_TEXTS = [
     "הגשת מועמדות",
@@ -103,7 +104,7 @@ class LinkedInProvider(GenericProvider):
         if app_page is None and detect_linkedin_auth_wall(page):
             message_key = (
                 "linkedin_credentials_missing"
-                if not linkedin_credentials_configured()
+                if not linkedin_credentials_configured(cv_id)
                 else "linkedin_login_required"
             )
             return ApplicationResult(
@@ -123,7 +124,7 @@ class LinkedInProvider(GenericProvider):
             if app_page is None:
                 message_key = (
                     "linkedin_credentials_missing"
-                    if not linkedin_credentials_configured()
+                    if not linkedin_credentials_configured(cv_id)
                     else "linkedin_login_required"
                 )
                 return ApplicationResult(
@@ -162,7 +163,7 @@ class LinkedInProvider(GenericProvider):
                 if detect_linkedin_auth_wall(app_page):
                     message_key = (
                         "linkedin_credentials_missing"
-                        if not linkedin_credentials_configured()
+                        if not linkedin_credentials_configured(cv_id)
                         else "linkedin_login_required"
                     )
                     return ApplicationResult(
@@ -191,7 +192,7 @@ class LinkedInProvider(GenericProvider):
                 result.failure_category = "login_required"
                 result.message = hebrew_failure_message(
                     "linkedin_credentials_missing"
-                    if not linkedin_credentials_configured()
+                    if not linkedin_credentials_configured(cv_id)
                     else "linkedin_login_required"
                 )
             return result
