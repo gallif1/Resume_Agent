@@ -24,6 +24,7 @@ from typing import Any, Callable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import db
+from collection_report import parse_agent_line
 from config import (
     CVS_DIR,
     LEGACY_CV_PROFILE_PATH,
@@ -255,6 +256,8 @@ def run_scan(
         raise ValueError(str(exc)) from exc
 
     error: str | None = None
+    warnings: list[str] = []
+    collection_summary: dict[str, Any] | None = None
     for key, name, script, extra in SCAN_STEPS:
         skipped = (key == "collect" and skip_collect) or (
             key == "enrich" and skip_enrich
@@ -286,6 +289,16 @@ def run_scan(
             line = line.rstrip()
             if line:
                 _log(line)
+                if key == "collect":
+                    parsed = parse_agent_line(line)
+                    if parsed is None:
+                        continue
+                    if parsed.get("type") == "warning":
+                        message = parsed.get("message")
+                        if message and message not in warnings:
+                            warnings.append(message)
+                    elif parsed.get("type") == "summary":
+                        collection_summary = parsed.get("summary")
         code = proc.wait()
 
         if code != 0:
@@ -303,7 +316,12 @@ def run_scan(
     match_count = len(
         db.get_cv_matches(cv_id, latest_only=True, db_path=cv_db)
     )
-    summary = json.dumps({"matches": match_count}, ensure_ascii=False)
+    summary_payload: dict[str, Any] = {"matches": match_count}
+    if collection_summary:
+        summary_payload["collection"] = collection_summary
+    if warnings:
+        summary_payload["warnings"] = warnings
+    summary = json.dumps(summary_payload, ensure_ascii=False)
 
     if error:
         db.finish_scan(
@@ -314,4 +332,9 @@ def run_scan(
         db.set_cv_last_scan(cv_id, db_path=db_path)
 
     _ = latest_scan
-    return db.get_scan(scan_id, db_path=cv_db) or {}
+    scan_record = db.get_scan(scan_id, db_path=cv_db) or {}
+    if warnings:
+        scan_record["warnings"] = warnings
+    if collection_summary:
+        scan_record["collection"] = collection_summary
+    return scan_record

@@ -286,6 +286,67 @@ body {
   line-height: 1.5;
 }
 
+.warning-box {
+  margin-top: 14px;
+  background: var(--warning-soft);
+  border: 1px solid rgba(251, 191, 90, 0.35);
+  color: #ffe0a8;
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.warning-box-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.warning-list {
+  margin: 0;
+  padding-inline-start: 18px;
+}
+
+.warning-list li + li {
+  margin-top: 6px;
+}
+
+.collection-summary {
+  margin-top: 14px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.collection-summary-title {
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.collection-summary-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.collection-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.collection-summary-site {
+  font-weight: 600;
+}
+
+.collection-summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
 .active-cv {
   margin-top: 16px;
   display: flex;

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getCvMatches,
+  getCvScanStatus,
+  parseScanSummary,
   updateMatchStatus,
   type ApplicationStatus,
   type Cv,
@@ -60,7 +62,11 @@ export default function CvDetails({
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [lastScanInfo, setLastScanInfo] = useState(() =>
+    parseScanSummary(null)
+  );
   const prevRunning = useRef(false);
+  const running = scanCvId === cvId && (scanStatus?.running ?? false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -79,8 +85,29 @@ export default function CvDetails({
     load();
   }, [load]);
 
+  useEffect(() => {
+    let cancelled = false;
+    getCvScanStatus(cvId)
+      .then((status) => {
+        if (cancelled) return;
+        const parsed = parseScanSummary(status.latest_scan?.summary);
+        if ((status.warnings?.length ?? 0) > 0) {
+          parsed.warnings = status.warnings ?? parsed.warnings;
+        }
+        if (status.collection) {
+          parsed.collection = status.collection;
+        }
+        setLastScanInfo(parsed);
+      })
+      .catch(() => {
+        /* scan status optional */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cvId, running, scanStatus?.warnings, scanStatus?.collection]);
+
   // Reload matches when a scan for this CV finishes.
-  const running = scanCvId === cvId && (scanStatus?.running ?? false);
   useEffect(() => {
     if (prevRunning.current && !running && scanCvId === cvId) {
       load();
@@ -110,10 +137,38 @@ export default function CvDetails({
   };
 
   const title = cv?.display_name || cv?.file_name || "קורות חיים";
+  const liveWarnings =
+    scanCvId === cvId ? scanStatus?.warnings ?? [] : [];
+  const liveCollection =
+    scanCvId === cvId ? scanStatus?.collection ?? null : null;
   const activeScan =
-    scanCvId === cvId && (scanStatus?.running || scanStatus?.error)
+    scanCvId === cvId &&
+    (scanStatus?.running ||
+      scanStatus?.error ||
+      liveWarnings.length > 0 ||
+      Boolean(liveCollection))
       ? scanStatus
       : null;
+  const displayWarnings =
+    liveWarnings.length > 0 ? liveWarnings : lastScanInfo.warnings;
+  const displayCollection = liveCollection ?? lastScanInfo.collection;
+  const showScanPanel =
+    activeScan ??
+    (displayWarnings.length > 0 || displayCollection
+      ? ({
+          running: false,
+          started_at: null,
+          finished_at: null,
+          error: null,
+          warnings: displayWarnings,
+          collection: displayCollection,
+          current_step: null,
+          detail: null,
+          steps: [],
+          log: [],
+          latest_scan: null,
+        } satisfies CvScanStatus)
+      : null);
 
   return (
     <section>
@@ -137,7 +192,7 @@ export default function CvDetails({
         </button>
       </div>
 
-      <PipelineProgress scanStatus={activeScan} />
+      <PipelineProgress scanStatus={showScanPanel} />
 
       {error && <div className="error-box">{error}</div>}
 
@@ -152,9 +207,15 @@ export default function CvDetails({
         <div className="empty-state">
           <div className="empty-icon">🔍</div>
           <p>אין עדיין התאמות לקובץ הזה.</p>
-          <p className="empty-hint">
-            לחץ על "הרץ סוכן" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.
-          </p>
+          {displayWarnings.length > 0 ? (
+            <p className="empty-hint">
+              הסריקה הסתיימה, אך לא נמצאו משרות חדשות. ראו את ההודעות למעלה לפרטים.
+            </p>
+          ) : (
+            <p className="empty-hint">
+              לחץ על "הרץ סוכן" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.
+            </p>
+          )}
         </div>
       ) : (
         <ul className="cv-list">

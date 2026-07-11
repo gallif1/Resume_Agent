@@ -43,6 +43,7 @@ from pydantic import BaseModel
 
 import cv_service
 import db
+from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
 
@@ -294,10 +295,22 @@ _scan_state: dict = {
     "started_at": None,
     "finished_at": None,
     "error": None,
+    "warnings": [],
+    "collection": None,
     "steps": [],
     "log": [],
     "current_detail": None,
 }
+
+
+def _parse_scan_summary(summary: str | None) -> dict:
+    if not summary:
+        return {}
+    try:
+        data = json.loads(summary)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _scan_log(line: str) -> None:
@@ -309,6 +322,15 @@ def _scan_log(line: str) -> None:
         stripped = line.strip()
         if stripped and not stripped.startswith(">>") and not stripped.startswith("--"):
             _scan_state["current_detail"] = stripped
+        parsed = parse_agent_line(stripped)
+        if parsed is None:
+            return
+        if parsed.get("type") == "warning":
+            message = parsed.get("message")
+            if message and message not in _scan_state["warnings"]:
+                _scan_state["warnings"].append(message)
+        elif parsed.get("type") == "summary":
+            _scan_state["collection"] = parsed.get("summary")
 
 
 def _scan_set_step(key: str, status: str) -> None:
@@ -351,6 +373,13 @@ def _run_scan_thread(
         )
         if scan.get("status") == db.SCAN_FAILED:
             error = scan.get("error_message") or "הסריקה נכשלה"
+        with _scan_lock:
+            scan_warnings = scan.get("warnings") or []
+            for message in scan_warnings:
+                if message and message not in _scan_state["warnings"]:
+                    _scan_state["warnings"].append(message)
+            if scan.get("collection"):
+                _scan_state["collection"] = scan.get("collection")
     except Exception as exc:  # noqa: BLE001 — surface any crash to the client
         error = str(exc)
         _scan_log(f"!! שגיאה: {exc}")
@@ -526,6 +555,8 @@ def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
                 "started_at": _utc_now(),
                 "finished_at": None,
                 "error": None,
+                "warnings": [],
+                "collection": None,
                 "log": [],
                 "current_detail": "מתחיל סריקה…",
                 "steps": [
@@ -556,6 +587,8 @@ def cv_scan_status(cv_id: str):
                 "started_at": _scan_state["started_at"],
                 "finished_at": _scan_state["finished_at"],
                 "error": _scan_state["error"],
+                "warnings": list(_scan_state["warnings"]),
+                "collection": _scan_state.get("collection"),
                 "current_step": _running_step_key_from_steps(steps),
                 "detail": _scan_state.get("current_detail"),
                 "steps": steps,
@@ -567,12 +600,20 @@ def cv_scan_status(cv_id: str):
                 "started_at": None,
                 "finished_at": None,
                 "error": None,
+                "warnings": [],
+                "collection": None,
                 "current_step": None,
                 "detail": None,
                 "steps": [],
                 "log": [],
             }
-    live["latest_scan"] = db.get_latest_scan(cv_id, db_path=cv_db)
+    latest_scan = db.get_latest_scan(cv_id, db_path=cv_db)
+    if latest_scan and not live.get("warnings"):
+        summary_data = _parse_scan_summary(latest_scan.get("summary"))
+        live["warnings"] = summary_data.get("warnings") or []
+        if not live.get("collection"):
+            live["collection"] = summary_data.get("collection")
+    live["latest_scan"] = latest_scan
     return live
 
 
