@@ -11,6 +11,8 @@ RUN npm run build
 FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
 WORKDIR /app/ai-job-agent
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 COPY ai-job-agent/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install chromium
@@ -21,7 +23,6 @@ COPY --from=frontend /web/dist /app/resume-agent-web/dist
 ENV API_HOST=0.0.0.0
 ENV HEADLESS=true
 ENV PYTHONUNBUFFERED=1
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 EXPOSE 8000
 CMD ["python", "src/api_server.py", "--host", "0.0.0.0"]

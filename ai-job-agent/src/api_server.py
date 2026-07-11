@@ -656,13 +656,38 @@ def _reshape_match_row(row: dict) -> dict:
     return row
 
 
+def _playwright_browser_ready() -> tuple[bool, str | None]:
+    """Check whether Playwright Chromium is installed for job scraping."""
+    import os
+    from pathlib import Path
+
+    browsers_path = Path(os.getenv("PLAYWRIGHT_BROWSERS_PATH", "")).expanduser()
+    if browsers_path.is_dir():
+        if any(browsers_path.glob("chromium*")) or any(
+            browsers_path.glob("chromium_headless_shell*")
+        ):
+            return True, None
+
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            browser.close()
+        return True, None
+    except Exception as error:
+        return False, str(error)[:300]
+
+
 @app.get("/api/health")
 async def health():
-    # Lightweight async handler — stays responsive even while scans hold DB locks.
+    browser_ok, browser_error = _playwright_browser_ready()
     return {
         "ok": True,
         "pipeline_running": _pipeline_state["running"],
         "scan_running": _scan_state["running"],
+        "playwright_ready": browser_ok,
+        "playwright_error": browser_error,
     }
 
 
