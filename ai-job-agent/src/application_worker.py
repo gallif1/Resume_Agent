@@ -269,6 +269,12 @@ def _run_on_page(
     fill_result = provider.fill_application(
         page, profile, cv_file_path, job, cover_letter=cover_letter
     )
+    active_page = provider.application_page(page)
+    if fill_result.provider_name:
+        provider_name = fill_result.provider_name
+        db.update_job_application(
+            application_id, {"provider_name": provider_name}, db_path=db_path
+        )
     _log_step(
         application_id,
         "opening_application_form",
@@ -299,8 +305,8 @@ def _run_on_page(
             application_id,
             db.JOB_APP_SUBMITTED,
             confirmation_text=fill_result.confirmation_text,
-            confirmation_url=fill_result.confirmation_url or page.url,
-            current_url=page.url,
+            confirmation_url=fill_result.confirmation_url or active_page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
@@ -315,7 +321,7 @@ def _run_on_page(
             failure_reason=fill_result.message,
             failure_category=fill_result.failure_category,
             requires_user_action_reason=fill_result.message,
-            current_url=fill_result.current_url or page.url,
+            current_url=fill_result.current_url or active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
@@ -326,7 +332,7 @@ def _run_on_page(
             fill_result.message,
             db_path,
         )
-        _save_debug_screenshot(page, application_id, "user_action")
+        _save_debug_screenshot(active_page, application_id, "user_action")
         return
 
     if not fill_result.success:
@@ -335,11 +341,11 @@ def _run_on_page(
             db.JOB_APP_FAILED,
             failure_reason=fill_result.message,
             failure_category=fill_result.failure_category or "unexpected_error",
-            current_url=fill_result.current_url or page.url,
+            current_url=fill_result.current_url or active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
-        _save_debug_screenshot(page, application_id, "fill_failed")
+        _save_debug_screenshot(active_page, application_id, "fill_failed")
         return
 
     if fill_result.uncertain_fields:
@@ -351,7 +357,7 @@ def _run_on_page(
             requires_user_action_reason=(
                 "שדות שלא ניתן למלא בוודאות: " + ", ".join(fill_result.uncertain_fields[:10])
             ),
-            current_url=page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
@@ -365,7 +371,7 @@ def _run_on_page(
         return
 
     # Step: validating_form
-    validation = provider.validate_before_submit(page)
+    validation = provider.validate_before_submit(active_page)
     _log_step(
         application_id,
         "validating_form",
@@ -379,11 +385,11 @@ def _run_on_page(
             db.JOB_APP_FAILED,
             failure_reason=hebrew_failure_message("form_validation_failed"),
             failure_category="form_validation_failed",
-            current_url=page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
-        _save_debug_screenshot(page, application_id, "validation_failed")
+        _save_debug_screenshot(active_page, application_id, "validation_failed")
         return
 
     if not AUTO_SUBMIT:
@@ -393,14 +399,14 @@ def _run_on_page(
             failure_reason="מצב בדיקה: הטופס מולא אך לא נשלח (AUTO_SUBMIT=false)",
             failure_category="user_action_required",
             requires_user_action_reason="יש ללחוץ על שליחה ידנית",
-            current_url=page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
         return
 
     # Step: submitting_application
-    submit_result = provider.submit(page)
+    submit_result = provider.submit(active_page)
     _log_step(
         application_id,
         "submitting_application",
@@ -414,14 +420,14 @@ def _run_on_page(
             db.JOB_APP_FAILED,
             failure_reason=submit_result.message,
             failure_category=submit_result.failure_category or "unexpected_error",
-            current_url=page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
         return
 
     # Step: verifying_submission
-    verify_result = provider.verify_submission(page)
+    verify_result = provider.verify_submission(active_page)
     _log_step(
         application_id,
         "verifying_submission",
@@ -434,8 +440,8 @@ def _run_on_page(
             application_id,
             db.JOB_APP_SUBMITTED,
             confirmation_text=verify_result.confirmation_text,
-            confirmation_url=verify_result.confirmation_url or page.url,
-            current_url=page.url,
+            confirmation_url=verify_result.confirmation_url or active_page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
@@ -446,11 +452,11 @@ def _run_on_page(
             db.JOB_APP_FAILED,
             failure_reason=verify_result.message,
             failure_category=verify_result.failure_category or "submission_confirmation_not_found",
-            current_url=page.url,
+            current_url=active_page.url,
             provider_name=provider_name,
             db_path=db_path,
         )
-        _save_debug_screenshot(page, application_id, "no_confirmation")
+        _save_debug_screenshot(active_page, application_id, "no_confirmation")
 
 
 def _sync_match_sent(application_id: str, db_path: Path) -> None:
