@@ -65,6 +65,18 @@ STEALTH_INIT_SCRIPT = (
 )
 
 
+def format_browser_launch_error(error: Exception) -> str:
+    """Return a user-facing Hebrew explanation for Playwright launch failures."""
+    text = str(error)
+    if "Executable doesn't exist" in text or "browserType.launch" in text:
+        return (
+            "דפדפן השרת (Playwright Chromium) לא מותקן או לא תואם לגרסת Playwright. "
+            "בסביבת Render יש לפרוס מחדש עם Docker image שמריץ "
+            "`python -m playwright install chromium`."
+        )
+    return f"שגיאה בהפעלת הדפדפן: {text[:200]}"
+
+
 def browser_http_headers(*, referer: str | None = None) -> dict[str, str]:
     """Return browser-like HTTP headers for plain requests."""
     headers = dict(BROWSER_HTTP_HEADERS)
@@ -149,15 +161,21 @@ def create_browser_context(
     }
 
     if user_data_dir:
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            accept_downloads=False,
-            **launch_kwargs,
-            **context_kwargs,
-        )
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                accept_downloads=False,
+                **launch_kwargs,
+                **context_kwargs,
+            )
+        except Exception as error:
+            raise RuntimeError(format_browser_launch_error(error)) from error
         page = context.pages[0] if context.pages else context.new_page()
     else:
-        browser = playwright.chromium.launch(**launch_kwargs)
+        try:
+            browser = playwright.chromium.launch(**launch_kwargs)
+        except Exception as error:
+            raise RuntimeError(format_browser_launch_error(error)) from error
         context = browser.new_context(**context_kwargs)
         page = context.new_page()
 

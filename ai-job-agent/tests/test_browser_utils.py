@@ -38,7 +38,17 @@ def test_page_looks_blocked_ignores_meta_robots():
     assert page_looks_blocked(page) is False
 
 
-def test_page_looks_blocked_detects_cloudflare_title():
+def test_format_browser_launch_error_detects_missing_executable():
+    from browser_utils import format_browser_launch_error
+
+    message = format_browser_launch_error(
+        RuntimeError(
+            "BrowserType.launch: Executable doesn't exist at "
+            "/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-linux64/"
+        )
+    )
+    assert "Playwright Chromium" in message
+    assert "לא מותקן" in message
     page = MagicMock()
     page.url = "https://www.gotfriends.co.il/jobslobby/software/"
     page.title.return_value = "Attention Required! | Cloudflare"
