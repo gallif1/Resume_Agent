@@ -1,7 +1,14 @@
-"""Background worker that runs Playwright job application automation."""
+"""Background worker that runs Playwright job application automation.
+
+Applications run in a separate subprocess (not a thread) so Playwright's sync API
+does not conflict with FastAPI/uvicorn's asyncio event loop.
+"""
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 import traceback
 from datetime import datetime, timezone
@@ -14,13 +21,15 @@ import db
 from application_providers import select_provider
 from application_providers.provider_utils import hebrew_failure_message
 from application_service import (
-    APPLICATION_STEPS,
     build_user_profile,
     resolve_cover_letter,
     resolve_cv_file_path,
 )
-from browser_utils import create_browser_context, page_looks_blocked
-from config import APPLY_HEADLESS, AUTO_SUBMIT, LOGS_DIR
+from browser_utils import create_browser_context, format_browser_launch_error, page_looks_blocked
+from config import APPLY_HEADLESS, AUTO_SUBMIT, LOGS_DIR, PROJECT_ROOT
+
+SRC = PROJECT_ROOT / "src"
+PYTHON = sys.executable
 
 _worker_lock = threading.Lock()
 _active_applications: set[str] = set()
@@ -50,6 +59,30 @@ def _save_debug_screenshot(page: Page, application_id: str, tag: str) -> None:
         page.screenshot(path=str(path))
     except Exception:
         pass
+
+
+def _classify_worker_error(exc: Exception) -> tuple[str, str, str]:
+    """Return (failure_category, user_message, step_name) for an unexpected error."""
+    text = str(exc)
+    if isinstance(exc, RuntimeError) or "Executable doesn't exist" in text:
+        return (
+            "website_blocked_automation",
+            format_browser_launch_error(exc),
+            "opening_job_page",
+        )
+    if isinstance(exc, PlaywrightTimeoutError):
+        return ("network_error", hebrew_failure_message("network_error"), "opening_job_page")
+    if "cannot switch to a different thread" in text.lower() or "sync api inside" in text.lower():
+        return (
+            "website_blocked_automation",
+            "שגיאת תזמון בדפדפן השרת. נסה שוב בעוד רגע.",
+            "opening_job_page",
+        )
+    return (
+        "unexpected_error",
+        hebrew_failure_message("unexpected_error"),
+        "opening_job_page",
+    )
 
 
 def _finalize_application(
@@ -89,7 +122,7 @@ def run_application_attempt(
     *,
     db_path: Path,
 ) -> None:
-    """Execute one application attempt synchronously (called from worker thread)."""
+    """Execute one application attempt synchronously (subprocess entry point)."""
     app = db.get_job_application(application_id, db_path=db_path)
     if app is None:
         return
@@ -126,7 +159,6 @@ def run_application_attempt(
         return
 
     url = job.get("job_url") or ""
-    provider_name = None
 
     try:
         with sync_playwright() as playwright:
@@ -145,18 +177,19 @@ def run_application_attempt(
             finally:
                 context.close()
     except Exception as exc:
+        category, message, step = _classify_worker_error(exc)
         _log_step(
             application_id,
-            "verifying_submission",
+            step,
             db.STEP_FAILED,
-            f"Worker error: {type(exc).__name__}",
+            f"{type(exc).__name__}: {str(exc)[:180]}",
             db_path,
         )
         _finalize_application(
             application_id,
             db.JOB_APP_FAILED,
-            failure_reason=hebrew_failure_message("unexpected_error"),
-            failure_category="unexpected_error",
+            failure_reason=message,
+            failure_category=category,
             db_path=db_path,
         )
 
@@ -252,7 +285,7 @@ def _run_on_page(
             ", ".join(fill_result.filled_fields[:15]),
             db_path,
         )
-    if "cv_file" in fill_result.filled_fields or cv_file_path:
+    if cv_file_path:
         _log_step(
             application_id,
             "uploading_cv",
@@ -272,6 +305,7 @@ def _run_on_page(
             db_path=db_path,
         )
         _log_step(application_id, "verifying_submission", db.STEP_SUCCESS, "Confirmed", db_path)
+        _sync_match_sent(application_id, db_path)
         return
 
     if fill_result.status == "requires_user_action":
@@ -405,12 +439,7 @@ def _run_on_page(
             provider_name=provider_name,
             db_path=db_path,
         )
-        # Update cv_job_matches application status
-        app = db.get_job_application(application_id, db_path=db_path)
-        if app:
-            db.update_cv_match_status_by_job(
-                app["cv_id"], app["job_id"], db.CV_APP_SENT, db_path=db_path
-            )
+        _sync_match_sent(application_id, db_path)
     else:
         _finalize_application(
             application_id,
@@ -424,6 +453,18 @@ def _run_on_page(
         _save_debug_screenshot(page, application_id, "no_confirmation")
 
 
+def _sync_match_sent(application_id: str, db_path: Path) -> None:
+    app = db.get_job_application(application_id, db_path=db_path)
+    if not app:
+        return
+    try:
+        db.update_cv_match_status_by_job(
+            app["cv_id"], app["job_id"], db.CV_APP_SENT, db_path=db_path
+        )
+    except ValueError:
+        pass
+
+
 def enqueue_application(
     application_id: str,
     cv_id: str,
@@ -431,30 +472,42 @@ def enqueue_application(
     *,
     db_path: Path,
 ) -> bool:
-    """Start application processing in a background thread."""
+    """Start application processing in a background subprocess."""
     with _worker_lock:
         if application_id in _active_applications:
             return False
         _active_applications.add(application_id)
 
-    def _runner() -> None:
+    env = os.environ.copy()
+    env["AGENT_CV_ID"] = cv_id
+
+    proc = subprocess.Popen(
+        [
+            PYTHON,
+            str(SRC / "application_worker.py"),
+            "--application-id",
+            application_id,
+            "--cv-id",
+            cv_id,
+            "--job-id",
+            str(job_id),
+        ],
+        cwd=str(PROJECT_ROOT),
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+    def _waiter() -> None:
         try:
-            run_application_attempt(application_id, cv_id, job_id, db_path=db_path)
-        except Exception:
-            traceback.print_exc()
-            _finalize_application(
-                application_id,
-                db.JOB_APP_FAILED,
-                failure_reason=hebrew_failure_message("unexpected_error"),
-                failure_category="unexpected_error",
-                db_path=db_path,
-            )
+            _, stderr = proc.communicate()
+            if proc.returncode != 0 and stderr:
+                traceback.print_exc()
         finally:
             with _worker_lock:
                 _active_applications.discard(application_id)
 
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
+    threading.Thread(target=_waiter, daemon=True).start()
     return True
 
 
@@ -465,10 +518,8 @@ def is_application_active(application_id: str) -> bool:
 
 if __name__ == "__main__":
     import argparse
-    import sys
-    from pathlib import Path
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.path.insert(0, str(SRC))
 
     from config import cv_db_path
 
@@ -484,4 +535,3 @@ if __name__ == "__main__":
         args.job_id,
         db_path=cv_db_path(args.cv_id),
     )
-    print("Done.")

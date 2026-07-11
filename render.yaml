@@ -23,6 +23,8 @@ services:
         value: 0.0.0.0
       - key: HEADLESS
         value: true
+      - key: APPLY_HEADLESS
+        value: true
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: OPENAI_API_KEY
