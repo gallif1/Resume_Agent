@@ -49,5 +49,27 @@ PR ממוזג ל-master → בדיקות → פריסה אוטומטית ל-Rend
 
 - בתוכנית החינמית השרת «נרדם» אחרי דקות ללא שימוש — הטעינה הראשונה אחרי הפסקה לוקחת ~30 שניות.
 - אם הפריסה נכשלת ב-GitHub Actions, בדוק ש-`RENDER_DEPLOY_HOOK` הוגדר נכון.
-- אפשר לעקוב אחרי הפריסה ב-GitHub → **Actions** וב-Render → **Events**.
+- אפשר לעקוב אfterי הפריסה ב-GitHub → **Actions** וב-Render → **Events**.
 - איסוף משרות מדרושים משתמש ב-Playwright Chromium. ה-Dockerfile מתקין אותו אוטומטית; אם מופיעה שגיאה `Executable doesn't exist`, פרוס מחדש מ-`master` אחרי עדכון Docker.
+
+## Zeabur — פריסה מחדש (חובה אחרי merge)
+
+הקוד ב-GitHub **לא** מתעדכן לבד ב-Zeabur. אחרי כל merge ל-`master`:
+
+1. Zeabur Dashboard → הפרויקט → השירות → **Redeploy**
+2. ודא שיש אייקון **Docker** בלוג הבנייה (לא Python/Node auto-detect)
+3. Root Directory = שורש הריפו (שם נמצא `Dockerfile`)
+4. אחרי הפריסה, בדוק: `https://YOUR-APP.zeabur.app/api/health`
+   - חייב להופיע: `"playwright_ready": true`
+   - אם `playwright_ready: false` — הבנייה לא השתמשה ב-Dockerfile
+
+אם Zeabur לא משתמש ב-Dockerfile, הוסף משתנה סביבה:
+`ZBPACK_DOCKERFILE_PATH=Dockerfile`
+
+## איך לדעת שהשינויים עלו?
+
+| מה לבדוק | לפני התיקון | אחרי התיקון |
+|-----------|-------------|-------------|
+| `/api/health` | אין `playwright_ready` | `"playwright_ready": true` |
+| אחרי סריקה | אין הודעות אזהרה | תיבה צהובה «בעיות באיסוף משרות» |
+| שגיאת דרושים | `Executable doesn't exist` | משרות נאספות / הודעה ברורה בעברית |
