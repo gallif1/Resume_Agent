@@ -17,6 +17,7 @@ from browser_utils import (
     is_http_blocked,
 )
 from config import (
+    AGENT_CV_ID,
     GOTFRIENDS_BASE_URL,
     GOTFRIENDS_BROWSER_PROFILE_DIR,
     GOTFRIENDS_MAX_PAGES,
@@ -78,6 +79,11 @@ _profession_slugs_cache: dict[str, list[str]] | None = None
 _gotfriends_access_blocked: bool | None = None
 
 
+def _server_mode() -> bool:
+    """True when collection runs from the web UI / API (no interactive browser)."""
+    return bool(AGENT_CV_ID)
+
+
 def _mark_gotfriends_blocked(blocked: bool) -> None:
     global _gotfriends_access_blocked
     _gotfriends_access_blocked = blocked
@@ -116,6 +122,13 @@ def fetch_gotfriends_html(
         return status, html
 
     if status in (403, 429, 503) or is_cloudflare_blocked_html(html):
+        if _server_mode():
+            _mark_gotfriends_blocked(True)
+            print(
+                f"  GotFriends HTTP {status or 'error'} / Cloudflare block for {url} — "
+                "skipping browser retry on server."
+            )
+            return status or 403, html
         print(
             f"  GotFriends HTTP {status or 'error'} / Cloudflare block for {url} — "
             "retrying with browser..."
@@ -127,7 +140,7 @@ def fetch_gotfriends_html(
         headless=headless,
         user_data_dir=str(GOTFRIENDS_BROWSER_PROFILE_DIR),
     )
-    if is_cloudflare_blocked_html(html) and headless:
+    if is_cloudflare_blocked_html(html) and headless and not _server_mode():
         print("  GotFriends still blocked in headless mode — retrying with a visible browser...")
         browser_status, html = fetch_html_with_playwright(
             url,

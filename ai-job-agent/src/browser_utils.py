@@ -188,7 +188,7 @@ def fetch_html_with_playwright(
     *,
     headless: bool = HEADLESS,
     user_data_dir: str | None = None,
-    wait_after_load_ms: int = 2500,
+    wait_after_load_ms: int = 1500,
     goto_timeout_ms: int = 60000,
 ) -> tuple[int, str]:
     """Fetch a page with Playwright and return (status_code, html)."""
