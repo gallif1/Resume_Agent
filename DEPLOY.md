@@ -1,41 +1,43 @@
 # פריסת האתר — בלי טרמינל
 
-אם אין לך גישה לטרמינל (למשל אתה בפלאפון), אפשר לפרוס את האתר **בלחיצה אחת** ולקבל קישור קבוע.
+## פריסה ראשונה (פעם אחת)
 
-## שלב 1 — מיזוג השינויים
+1. פתח: **[לחץ כאן לפריסה ב-Render](https://render.com/deploy?repo=https://github.com/gallif1/Resume_Agent)**
+2. התחבר עם GitHub ולחץ **Deploy**.
+3. בסיום תקבל כתובת קבועה, למשל `https://resume-agent-xxxx.onrender.com`.
 
-ודא שה-PR האחרון ממוזג ל-`master` ב-GitHub.
+## הגדרה חד-פעמית לפריסה אוטומטית
 
-## שלב 2 — פריסה ב-Render (חינם)
+כדי שאחרי **כל מיזוג PR ל-`master`** האתר יתעדכן לבד — בצע פעם אחת את שני השלבים:
 
-1. פתח בדפדפן (גם מהפלאפון):
+### 1. Render — הפעל Auto-Deploy
 
-   **[לחץ כאן לפריסה ב-Render](https://render.com/deploy?repo=https://github.com/gallif1/Resume_Agent)**
+1. Render → **resume-agent** → **Settings**
+2. תחת **Build & Deploy**:
+   - **Auto-Deploy**: `On`
+   - **Branch**: `master`
+3. שמור.
 
-2. התחבר עם חשבון GitHub (פעם אחת).
-3. לחץ **Deploy** — Render יבנה ויעלה את האתר (לוקח כ-5–10 דקות בפעם הראשונה).
-4. בסיום תקבל כתובת קבועה, למשל:
-   `https://resume-agent-xxxx.onrender.com`
+### 2. GitHub — הוסף Deploy Hook
 
-שמור את הקישור — זה האתר שלך.
+1. Render → **resume-agent** → **Settings** → **Deploy Hook** → העתק את ה-URL.
+2. GitHub → **Resume_Agent** → **Settings** → **Secrets and variables** → **Actions**
+3. **New repository secret**:
+   - Name: `RENDER_DEPLOY_HOOK`
+   - Value: ה-URL שהעתקת מ-Render
 
-## עדכונים אוטומטיים
+זהו. מעכשיו הזרימה אוטומטית:
 
-אחרי החיבור הראשון, כל מיזוג ל-`master` מעדכן את האתר אוטומטית — **בלי לבקש קישור חדש**.
+```
+PR נפתח → בדיקות (CI)
+PR ממוזג ל-master → בדיקות → פריסה אוטומטית ל-Render
+```
 
-הפרויקט כולל:
-
-- `render.yaml` עם `autoDeploy: true` ו-`branch: master` — Render מפריס אוטומטית בכל push ל-master (כשהריפו מחובר ב-Render).
-- `.github/workflows/render-deploy.yml` — אופציונלי: אם תוסיף ב-GitHub את הסוד `RENDER_DEPLOY_HOOK` (מ-Render → השירות → Settings → Deploy Hook), ה-workflow יפעיל פריסה גם דרך GitHub Actions.
-
-### הגדרת Deploy Hook (אופציונלי)
-
-1. ב-Render: **resume-agent** → **Settings** → **Deploy Hook** → העתק את ה-URL.
-2. ב-GitHub: **Settings** → **Secrets and variables** → **Actions** → הוסף `RENDER_DEPLOY_HOOK` עם ה-URL.
+אין צורך ב-Manual Deploy.
 
 ## מפתחות API (אופציונלי)
 
-בלוח הבקרה של Render → **Environment** → הוסף לפי הצורך:
+ב-Render → **Environment**:
 
 | משתנה | תיאור |
 |--------|--------|
@@ -46,4 +48,5 @@
 ## הערות
 
 - בתוכנית החינמית השרת «נרדם» אחרי דקות ללא שימוש — הטעינה הראשונה אחרי הפסקה לוקחת ~30 שניות.
-- אם אתה עובד עם סוכן Cursor, פשוט בקש ממנו שינויים — אחרי מיזוג ה-PR האתר יתעדכן לבד.
+- אם הפריסה נכשלת ב-GitHub Actions, בדוק ש-`RENDER_DEPLOY_HOOK` הוגדר נכון.
+- אפשר לעקוב אחרי הפריסה ב-GitHub → **Actions** וב-Render → **Events**.

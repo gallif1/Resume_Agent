@@ -1,19 +1,21 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
-# Deploy: Dashboard → Blueprints → New Blueprint Instance → connect this repo
+# After connecting this repo in Render, every push to master auto-deploys.
 
 services:
   - type: web
     name: resume-agent
     runtime: docker
     plan: free
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/health
+    repo: https://github.com/gallif1/Resume_Agent
     branch: master
     autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
     buildFilter:
       paths:
         - Dockerfile
         - render.yaml
+        - .github/**
         - ai-job-agent/**
         - resume-agent-web/**
     envVars:
