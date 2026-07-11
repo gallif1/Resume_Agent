@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import sys
 import time
@@ -22,7 +24,12 @@ from collection_report import (
 )
 from config import (
     AGENT_CV_ID,
+    COLLECT_MAX_CATEGORIES,
+    COLLECT_MAX_QUERIES,
     DRUSHIM_BASE_URL,
+    DRUSHIM_GOTO_TIMEOUT_MS,
+    DRUSHIM_PAGE_WAIT_MS,
+    DRUSHIM_SELECTOR_TIMEOUT_MS,
     HEADLESS,
     LINKEDIN_BASE_URL,
     LINKEDIN_LOCATION,
@@ -47,7 +54,7 @@ from role_analyzer import (
     load_matching_strategy,
 )
 
-DEFAULT_MAX_QUERIES_PER_CATEGORY = 6
+DEFAULT_MAX_QUERIES_PER_CATEGORY = COLLECT_MAX_QUERIES
 
 SITE_LABELS_HE = {
     "drushim": "דרושים",
@@ -190,102 +197,151 @@ def extract_jobs_from_page(page: Page) -> list[dict]:
     return page.evaluate(EXTRACT_JOBS_JS)
 
 
-def collect_drushim_jobs(query: str, headless: bool = HEADLESS) -> CollectionOutcome:
-    """Open Drushim in Playwright and extract job cards."""
+def _collect_drushim_with_page(
+    page: Page,
+    query: str,
+    *,
+    headless: bool,
+    allow_visible_retry: bool = True,
+) -> CollectionOutcome:
+    """Extract Drushim jobs using an existing Playwright page."""
     search_url = build_drushim_search_url(query)
     print(f"Searching Drushim for: {query}")
     print(f"URL: {search_url}")
     print(f"Browser mode: {'headless' if headless else 'visible'}")
 
-    with sync_playwright() as playwright:
-        context, page = create_browser_context(playwright, headless=headless)
+    response = page.goto(
+        search_url, wait_until="domcontentloaded", timeout=DRUSHIM_GOTO_TIMEOUT_MS
+    )
+    page.wait_for_timeout(DRUSHIM_PAGE_WAIT_MS)
+    http_status = response.status if response is not None else None
 
-        try:
-            response = page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(3000)
-            http_status = response.status if response is not None else None
+    if http_status is not None and http_status >= 400:
+        reason = f"Drushim returned HTTP {http_status}"
+        debug = save_debug_artifacts(page, reason)
+        if headless and allow_visible_retry and _interactive_retry_enabled():
+            print(f"{reason}. Retrying with a visible browser...")
+            return collect_drushim_jobs(query, headless=False)
+        return CollectionOutcome(
+            status="http_error",
+            reason=reason,
+            reason_he=f"דרושים החזיר שגיאת HTTP {http_status}",
+            http_status=http_status,
+            debug_artifact=str(debug),
+        )
 
-            if http_status is not None and http_status >= 400:
-                reason = f"Drushim returned HTTP {http_status}"
-                debug = save_debug_artifacts(page, reason)
-                if headless:
-                    print(f"{reason}. Retrying with a visible browser...")
-                    context.close()
-                    return collect_drushim_jobs(query, headless=False)
-                return CollectionOutcome(
-                    status="http_error",
-                    reason=reason,
-                    reason_he=f"דרושים החזיר שגיאת HTTP {http_status}",
-                    http_status=http_status,
-                    debug_artifact=str(debug),
-                )
+    try:
+        page.wait_for_selector(".job-item", timeout=DRUSHIM_SELECTOR_TIMEOUT_MS)
+    except Exception:
+        if page_looks_blocked_drushim(page):
+            reason = "Page may be blocked by captcha or anti-bot protection"
+            reason_he = "דרושים חסם את הגישה (captcha / anti-bot)"
+            status = "blocked"
+        else:
+            reason = "No job cards found on the page"
+            reason_he = f"דרושים: לא נמצאו כרטיסי משרות לחיפוש '{query}'"
+            status = "empty"
+        debug = save_debug_artifacts(page, reason)
+        emit_agent_warning(reason_he)
 
-            try:
-                page.wait_for_selector(".job-item", timeout=15000)
-            except Exception:
-                if page_looks_blocked_drushim(page):
-                    reason = "Page may be blocked by captcha or anti-bot protection"
-                    reason_he = "דרושים חסם את הגישה (captcha / anti-bot)"
-                    status = "blocked"
-                else:
-                    reason = "No job cards found on the page"
-                    reason_he = f"דרושים: לא נמצאו כרטיסי משרות לחיפוש '{query}'"
-                    status = "empty"
-                debug = save_debug_artifacts(page, reason)
-                emit_agent_warning(reason_he)
+        if headless and allow_visible_retry and _interactive_retry_enabled():
+            print("Headless extraction failed. Retrying with a visible browser...")
+            return collect_drushim_jobs(query, headless=False)
 
-                if headless:
-                    print("Headless extraction failed. Retrying with a visible browser...")
-                    context.close()
-                    return collect_drushim_jobs(query, headless=False)
-
-                if _interactive_retry_enabled():
-                    print("Inspect the browser window, then press Enter to retry extraction.")
-                    input()
-                    jobs = extract_jobs_from_page(page)
-                    if jobs:
-                        return CollectionOutcome(jobs=jobs, status="ok")
-                    save_debug_artifacts(page, "Extraction still failed after manual inspection")
-                return CollectionOutcome(
-                    status=status,
-                    reason=reason,
-                    reason_he=reason_he,
-                    http_status=http_status,
-                    debug_artifact=str(debug),
-                )
-
+        if _interactive_retry_enabled():
+            print("Inspect the browser window, then press Enter to retry extraction.")
+            input()
             jobs = extract_jobs_from_page(page)
             if jobs:
-                print(f"  Drushim extracted {len(jobs)} job card(s) for '{query}'")
                 return CollectionOutcome(jobs=jobs, status="ok")
+            save_debug_artifacts(page, "Extraction still failed after manual inspection")
+        return CollectionOutcome(
+            status=status,
+            reason=reason,
+            reason_he=reason_he,
+            http_status=http_status,
+            debug_artifact=str(debug),
+        )
 
-            reason = "Job cards were present but fields could not be parsed"
-            reason_he = "דרושים: נמצאו כרטיסי משרות אך לא ניתן לחלץ את הנתונים (ייתכן שהאתר שינה מבנה)"
-            debug = save_debug_artifacts(page, reason)
-            emit_agent_warning(reason_he)
+    jobs = extract_jobs_from_page(page)
+    if jobs:
+        print(f"  Drushim extracted {len(jobs)} job card(s) for '{query}'")
+        return CollectionOutcome(jobs=jobs, status="ok")
 
-            if headless:
-                print("Could not parse jobs in headless mode. Retrying visibly...")
-                context.close()
-                return collect_drushim_jobs(query, headless=False)
+    reason = "Job cards were present but fields could not be parsed"
+    reason_he = "דרושים: נמצאו כרטיסי משרות אך לא ניתן לחלץ את הנתונים (ייתכן שהאתר שינה מבנה)"
+    debug = save_debug_artifacts(page, reason)
+    emit_agent_warning(reason_he)
 
-            if _interactive_retry_enabled():
-                print("Inspect the browser window, then press Enter to retry extraction.")
-                input()
-                jobs = extract_jobs_from_page(page)
-                if jobs:
-                    return CollectionOutcome(jobs=jobs, status="ok")
-                save_debug_artifacts(page, "Extraction still failed after manual inspection")
+    if headless and allow_visible_retry and _interactive_retry_enabled():
+        print("Could not parse jobs in headless mode. Retrying visibly...")
+        return collect_drushim_jobs(query, headless=False)
 
-            return CollectionOutcome(
-                status="parse_error",
-                reason=reason,
-                reason_he=reason_he,
-                http_status=http_status,
-                debug_artifact=str(debug),
-            )
-        finally:
-            context.close()
+    if _interactive_retry_enabled():
+        print("Inspect the browser window, then press Enter to retry extraction.")
+        input()
+        jobs = extract_jobs_from_page(page)
+        if jobs:
+            return CollectionOutcome(jobs=jobs, status="ok")
+        save_debug_artifacts(page, "Extraction still failed after manual inspection")
+
+    return CollectionOutcome(
+        status="parse_error",
+        reason=reason,
+        reason_he=reason_he,
+        http_status=http_status,
+        debug_artifact=str(debug),
+    )
+
+
+class DrushimBrowserSession:
+    """Reuse one Chromium instance across many Drushim searches in a single run."""
+
+    def __init__(self, headless: bool = HEADLESS) -> None:
+        self.headless = headless
+        self._playwright = None
+        self._context = None
+        self.page: Page | None = None
+
+    def __enter__(self) -> DrushimBrowserSession:
+        self._playwright = sync_playwright().start()
+        self._context, self.page = create_browser_context(
+            self._playwright, headless=self.headless
+        )
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._context is not None:
+            self._context.close()
+        if self._playwright is not None:
+            self._playwright.stop()
+
+    def collect(self, query: str) -> CollectionOutcome:
+        if self.page is None:
+            raise RuntimeError("Drushim browser session is not open")
+        return _collect_drushim_with_page(
+            self.page, query, headless=self.headless, allow_visible_retry=False
+        )
+
+
+def collect_drushim_jobs(
+    query: str,
+    headless: bool = HEADLESS,
+    *,
+    page: Page | None = None,
+) -> CollectionOutcome:
+    """Open Drushim in Playwright and extract job cards."""
+    if page is not None:
+        return _collect_drushim_with_page(page, query, headless=headless)
+
+    with DrushimBrowserSession(headless=headless) as session:
+        assert session.page is not None
+        return _collect_drushim_with_page(
+            session.page,
+            query,
+            headless=headless,
+            allow_visible_retry=_interactive_retry_enabled(),
+        )
 
 
 LINKEDIN_JOBS_PER_PAGE = 25
@@ -522,7 +578,7 @@ def main() -> None:
         description="Collect jobs from Drushim, LinkedIn, and GotFriends using AI-generated search queries"
     )
     parser.add_argument(
-        "--max-categories", type=int, default=None,
+        "--max-categories", type=int, default=COLLECT_MAX_CATEGORIES,
         help="Limit how many categories to search",
     )
     parser.add_argument(
@@ -566,6 +622,11 @@ def main() -> None:
     if strategy_hash:
         print(f"Strategy hash: {strategy_hash[:12]}...")
     print(f"Categories to search: {len(plan)}")
+    if COLLECT_MAX_CATEGORIES is not None or DEFAULT_MAX_QUERIES_PER_CATEGORY != 6:
+        print(
+            f"Collection limits: max {DEFAULT_MAX_QUERIES_PER_CATEGORY} queries/category, "
+            f"{COLLECT_MAX_CATEGORIES or 'all'} categories"
+        )
 
     seen_job_keys: set[str] = set()
     touched_job_keys: set[str] = set()
@@ -581,102 +642,112 @@ def main() -> None:
     site_totals: dict[str, _SiteTotals] = {}
     site_outcomes: dict[str, list[dict[str, Any]]] = {}
 
-    for entry in plan:
-        category = entry.get("category", "")
-        queries = entry.get("queries", [])[: args.max_queries]
-        exclude_keywords = entry.get("exclude_keywords", [])
-        print(f"\n{'=' * 60}")
-        print(f"Category: {category} (priority {entry.get('priority', 0)})")
-        print(f"Queries: {', '.join(queries)}")
+    drushim_session: DrushimBrowserSession | None = None
+    if "drushim" in selected_sites:
+        print("Starting shared Drushim browser session (one browser for all queries)...")
+        drushim_session = DrushimBrowserSession(headless=HEADLESS)
+        drushim_session.__enter__()
 
-        for query in queries:
-            query_key = query.strip().lower()
-            if not query_key or query_key in searched_queries:
-                continue
-            searched_queries.add(query_key)
-            total_queries += 1
+    try:
+        for entry in plan:
+            category = entry.get("category", "")
+            queries = entry.get("queries", [])[: args.max_queries]
+            exclude_keywords = entry.get("exclude_keywords", [])
+            print(f"\n{'=' * 60}")
+            print(f"Category: {category} (priority {entry.get('priority', 0)})")
+            print(f"Queries: {', '.join(queries)}")
 
-            print(f"\n{'-' * 50}")
-
-            searches = collection_searches(selected_sites, _job_collectors())
-
-            for site_name, collect_fn in searches:
-                site = site_totals.setdefault(site_name, _SiteTotals())
-                site.queries += 1
-                try:
-                    raw_result = collect_fn(query)
-                    jobs, outcome = _unwrap_collection_result(raw_result)
-                except KeyboardInterrupt:
-                    print("\nInterrupted by user — stopping collection.")
-                    raise
-                except Exception as error:
-                    message = f"חיפוש '{query}' נכשל: {error}"
-                    print(f"  [{site_name}] Search failed for '{query}': {error}")
-                    emit_agent_warning(f"{_site_label(site_name)}: {message}")
-                    _note_site_issue(site_totals, site_name, message)
-                    site_outcomes.setdefault(site_name, []).append(
-                        {"query": query, "status": "failed", "reason": str(error)}
-                    )
+            for query in queries:
+                query_key = query.strip().lower()
+                if not query_key or query_key in searched_queries:
                     continue
+                searched_queries.add(query_key)
+                total_queries += 1
 
-                if outcome and outcome.reason_he and outcome.status != "ok":
-                    _note_site_issue(site_totals, site_name, outcome.reason_he)
-                    site_outcomes.setdefault(site_name, []).append(
-                        {"query": query, **outcome_to_dict(outcome)}
+                print(f"\n{'-' * 50}")
+
+                searches = collection_searches(selected_sites, _job_collectors())
+
+                for site_name, collect_fn in searches:
+                    site = site_totals.setdefault(site_name, _SiteTotals())
+                    site.queries += 1
+                    try:
+                        if site_name == "drushim" and drushim_session is not None:
+                            raw_result = drushim_session.collect(query)
+                        else:
+                            raw_result = collect_fn(query)
+                        jobs, outcome = _unwrap_collection_result(raw_result)
+                    except KeyboardInterrupt:
+                        print("\nInterrupted by user — stopping collection.")
+                        raise
+                    except Exception as error:
+                        message = f"חיפוש '{query}' נכשל: {error}"
+                        print(f"  [{site_name}] Search failed for '{query}': {error}")
+                        emit_agent_warning(f"{_site_label(site_name)}: {message}")
+                        _note_site_issue(site_totals, site_name, message)
+                        site_outcomes.setdefault(site_name, []).append(
+                            {"query": query, "status": "failed", "reason": str(error)}
+                        )
+                        continue
+
+                    if outcome and outcome.reason_he and outcome.status != "ok":
+                        _note_site_issue(site_totals, site_name, outcome.reason_he)
+                        site_outcomes.setdefault(site_name, []).append(
+                            {"query": query, **outcome_to_dict(outcome)}
+                        )
+                    elif not jobs:
+                        empty_message = (
+                            outcome.reason_he
+                            if outcome and outcome.reason_he
+                            else f"לא נמצאו משרות לחיפוש '{query}'"
+                        )
+                        _note_site_issue(site_totals, site_name, empty_message)
+                        site_outcomes.setdefault(site_name, []).append(
+                            {
+                                "query": query,
+                                "status": outcome.status if outcome else "empty",
+                                "reason_he": empty_message,
+                            }
+                        )
+
+                    raw, unique, duplicates, already_in_db, excluded, inserted, touched = save_jobs_to_db(
+                        jobs,
+                        source_query=query,
+                        source_category=category,
+                        source_strategy_hash=strategy_hash,
+                        exclude_keywords=exclude_keywords,
+                        seen_job_keys=seen_job_keys,
+                        known_db_keys=known_db_keys,
+                        touched_job_keys=touched_job_keys,
                     )
-                elif not jobs:
-                    empty_message = (
-                        outcome.reason_he
-                        if outcome and outcome.reason_he
-                        else f"לא נמצאו משרות לחיפוש '{query}'"
-                    )
-                    _note_site_issue(site_totals, site_name, empty_message)
-                    site_outcomes.setdefault(site_name, []).append(
-                        {
-                            "query": query,
-                            "status": outcome.status if outcome else "empty",
-                            "reason_he": empty_message,
-                        }
-                    )
+                    total_raw_found += raw
+                    total_unique += unique
+                    total_duplicates += duplicates
+                    total_already_in_db += already_in_db
+                    total_inserted += inserted
+                    total_touched += touched
+                    total_excluded += excluded
+                    site.raw += raw
+                    site.new += inserted
+                    site.already_in_db += already_in_db
+                    site.excluded += excluded
+                    if raw > 0:
+                        site.queries_with_raw += 1
 
-                raw, unique, duplicates, already_in_db, excluded, inserted, touched = save_jobs_to_db(
-                    jobs,
-                    source_query=query,
-                    source_category=category,
-                    source_strategy_hash=strategy_hash,
-                    exclude_keywords=exclude_keywords,
-                    seen_job_keys=seen_job_keys,
-                    known_db_keys=known_db_keys,
-                    touched_job_keys=touched_job_keys,
-                )
-                total_raw_found += raw
-                total_unique += unique
-                total_duplicates += duplicates
-                total_already_in_db += already_in_db
-                total_inserted += inserted
-                total_touched += touched
-                total_excluded += excluded
-
-                total_touched += touched
-                total_excluded += excluded
-                site.raw += raw
-                site.new += inserted
-                site.already_in_db += already_in_db
-                site.excluded += excluded
-                if raw > 0:
-                    site.queries_with_raw += 1
-
-                print(
-                    f"  [{site_name}] '{query}': raw {raw}, unique {unique}, duplicates {duplicates}, "
-                    f"already in db {already_in_db}, new {inserted}, touched {touched}, "
-                    f"excluded {excluded}"
-                )
-                if raw == 0:
-                    print(f"  [{site_name}] WARNING: no jobs found for query '{query}'")
-                elif inserted == 0 and already_in_db > 0:
                     print(
-                        f"  [{site_name}] NOTE: {raw} jobs found but all already exist in database"
+                        f"  [{site_name}] '{query}': raw {raw}, unique {unique}, duplicates {duplicates}, "
+                        f"already in db {already_in_db}, new {inserted}, touched {touched}, "
+                        f"excluded {excluded}"
                     )
+                    if raw == 0:
+                        print(f"  [{site_name}] WARNING: no jobs found for query '{query}'")
+                    elif inserted == 0 and already_in_db > 0:
+                        print(
+                            f"  [{site_name}] NOTE: {raw} jobs found but all already exist in database"
+                        )
+    finally:
+        if drushim_session is not None:
+            drushim_session.__exit__(None, None, None)
 
     print(f"\n{'=' * 60}")
     print("Overall:")

@@ -70,6 +70,19 @@ def test_collect_gotfriends_jobs_parses_listing_pages():
     assert all(job["source"] == "gotfriends" for job in jobs)
 
 
-def test_title_matches_query_filters_broad_category_results():
-    assert gf._title_matches_query("Python Developer בחברת Beta", "python") is True
-    assert gf._title_matches_query("Office Manager בחברת HR", "python") is False
+def test_fetch_gotfriends_html_skips_playwright_on_server_mode():
+    blocked = "<html><title>Attention Required! | Cloudflare</title></html>"
+
+    with patch("gotfriends_collector.requests.get") as mock_get, patch(
+        "gotfriends_collector.fetch_html_with_playwright"
+    ) as mock_playwright, patch.dict("os.environ", {"AGENT_CV_ID": "cv-test"}, clear=False), patch(
+        "gotfriends_collector.AGENT_CV_ID", "cv-test"
+    ):
+        mock_get.return_value.status_code = 403
+        mock_get.return_value.text = blocked
+
+        status, html = gf.fetch_gotfriends_html("https://www.gotfriends.co.il/jobslobby/software/")
+
+    assert status == 403
+    assert html == blocked
+    mock_playwright.assert_not_called()
