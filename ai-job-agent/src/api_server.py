@@ -54,6 +54,7 @@ from application_service import ApplicationError, get_application_for_cv, get_jo
 from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
+from job_boards import list_job_boards, normalize_job_board_ids
 from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
 
