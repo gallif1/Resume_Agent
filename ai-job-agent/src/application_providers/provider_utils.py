@@ -14,8 +14,19 @@ LOGIN_MARKERS = (
     "sign in",
     "log in",
     "login",
+    "join linkedin",
+    "join now",
     "התחברות",
     "כניסה",
+    "הצטרף",
+    "הצטרפו",
+)
+
+LINKEDIN_AUTH_SELECTORS = (
+    ".authwall-join-form",
+    ".auth-wall",
+    "form.login__form",
+    "a[data-tracking-control-name='public_jobs_auth_wall']",
 )
 
 SUCCESS_MARKERS = (
@@ -84,6 +95,63 @@ def detect_captcha(page: Page) -> bool:
             return True
 
     return False
+
+
+def detect_linkedin_auth_wall(page: Page) -> bool:
+    """Detect LinkedIn login/join walls that block guest apply automation."""
+    if not url_matches(page.url, "linkedin.com"):
+        return False
+    try:
+        for selector in LINKEDIN_AUTH_SELECTORS:
+            loc = page.locator(selector).first
+            if loc.count() and loc.is_visible():
+                return True
+    except Exception:
+        pass
+    text = page_text(page).lower()
+    linkedin_auth_phrases = (
+        "sign in to linkedin",
+        "join linkedin",
+        "log in to linkedin",
+        "כדי לראות את כל הפרטים",
+        "התחבר כדי",
+        "הצטרף ללינקדאין",
+    )
+    if any(phrase in text for phrase in linkedin_auth_phrases):
+        return True
+    return detect_login_required(page)
+
+
+def extract_external_apply_url(page: Page) -> str | None:
+    """Read an off-site apply URL from the job page without clicking."""
+    selectors = (
+        "a[data-tracking-control-name='public_jobs_apply-link-offsite']",
+        "a.jobs-apply-button[href^='http']",
+        "a[href*='apply'][href^='http']",
+    )
+    for selector in selectors:
+        try:
+            locator = page.locator(selector)
+            for i in range(min(locator.count(), 5)):
+                href = locator.nth(i).get_attribute("href")
+                if not href or not href.startswith("http"):
+                    continue
+                if "linkedin.com" in href.lower():
+                    continue
+                return href
+        except Exception:
+            continue
+    return None
+
+
+def navigate_to_external_apply(page: Page, apply_url: str, *, wait_ms: int = 2500) -> bool:
+    """Open an external application URL directly."""
+    try:
+        page.goto(apply_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(wait_ms)
+        return True
+    except Exception:
+        return False
 
 
 def detect_login_required(page: Page) -> bool:
@@ -435,7 +503,17 @@ def hebrew_failure_message(category: str | None, default: str = "") -> str:
         "cv_upload_failed": "לא ניתן היה להעלות את קובץ קורות החיים.",
         "form_validation_failed": "הטופס לא עבר אימות לפני השליחה.",
         "captcha_detected": "האתר דורש אימות CAPTCHA ולכן לא ניתן להשלים את ההגשה אוטומטית.",
-        "login_required": "האתר דורש התחברות. יש לפתוח את העמוד ולהמשיך ידנית.",
+        "login_required": (
+            "האתר דורש התחברות. יש לפתוח את העמוד ולהמשיך ידנית."
+        ),
+        "linkedin_login_required": (
+            "לינקדאין דורש התחברות. הזן אימייל וסיסמה בעמוד הפרופיל "
+            "כדי שהמערכת תתחבר אוטומטית."
+        ),
+        "linkedin_credentials_missing": (
+            "נדרשת התחברות ללינקדאין. הזן את פרטי ההתחברות שלך בעמוד הפרופיל "
+            "כדי לאפשר הגשה אוטומטית."
+        ),
         "user_action_required": "נדרשת פעולה ידנית כדי להשלים את ההגשה.",
         "submission_confirmation_not_found": (
             "קורות החיים הועלו, אך לא נמצאה הודעת אישור להגשה. יש לבדוק את העמוד ידנית."

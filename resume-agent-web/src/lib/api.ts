@@ -397,3 +397,39 @@ export async function retryJobApplication(
   }
   return res.json();
 }
+
+export interface SiteCredentialPublic {
+  email: string;
+  password_set: boolean;
+  configured: boolean;
+}
+
+export interface SiteCredentialsResponse {
+  credentials: {
+    linkedin: SiteCredentialPublic;
+    drushim: SiteCredentialPublic;
+  };
+}
+
+export interface SiteCredentialInput {
+  email: string;
+  password?: string;
+}
+
+export function getSiteCredentials(cvId: string): Promise<SiteCredentialsResponse> {
+  return request(`/cvs/${cvId}/site-credentials`);
+}
+
+export function saveSiteCredentials(
+  cvId: string,
+  payload: {
+    linkedin?: SiteCredentialInput;
+    drushim?: SiteCredentialInput;
+  }
+): Promise<SiteCredentialsResponse & { saved: boolean }> {
+  return request(`/cvs/${cvId}/site-credentials`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}

@@ -17,6 +17,9 @@ Multi-CV endpoints (each CV has isolated data):
     GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
     GET    /cvs/{cv_id}/jobs/{job_id}/application-status  latest application status
     POST   /cvs/{cv_id}/job-applications/{id}/retry  retry a failed application
+    PUT    /cvs/{cv_id}/site-sessions/linkedin       import LinkedIn browser cookies
+    GET    /cvs/{cv_id}/site-credentials             per-CV login settings (no passwords)
+    PUT    /cvs/{cv_id}/site-credentials             save LinkedIn/Drushim login for auto-apply
 
 Legacy (single global CV) endpoints, kept for backward compatibility:
     GET  /api/health            server + pipeline/scan availability
@@ -51,7 +54,8 @@ from application_service import ApplicationError, get_application_for_cv, get_jo
 from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
-from job_boards import list_job_boards, normalize_job_board_ids
+from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
+from site_credentials import public_site_credentials, update_site_credentials
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -760,6 +764,79 @@ def retry_job_application(cv_id: str, application_id: str):
         "status": app["status"],
         "application": public_application(app),
     }
+
+
+class LinkedInSessionRequest(BaseModel):
+    cookies: list[dict]
+    origins: list[dict] | None = None
+
+
+class SiteCredentialInput(BaseModel):
+    email: str = ""
+    password: str | None = None
+
+
+class SiteCredentialsUpdate(BaseModel):
+    linkedin: SiteCredentialInput | None = None
+    drushim: SiteCredentialInput | None = None
+
+
+@app.get("/cvs/{cv_id}/site-credentials")
+def get_site_credentials(cv_id: str):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    return {"credentials": public_site_credentials(cv_id)}
+
+
+@app.put("/cvs/{cv_id}/site-credentials")
+def save_site_credentials(cv_id: str, req: SiteCredentialsUpdate):
+    """Save per-user site logins used for one-click job applications."""
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    linkedin_patch = None
+    drushim_patch = None
+    if req.linkedin is not None:
+        linkedin_patch = {
+            "email": req.linkedin.email.strip(),
+            "password": req.linkedin.password,
+        }
+    if req.drushim is not None:
+        drushim_patch = {
+            "email": req.drushim.email.strip(),
+            "password": req.drushim.password,
+        }
+
+    credentials = update_site_credentials(
+        cv_id,
+        linkedin=linkedin_patch,
+        drushim=drushim_patch,
+    )
+    return {"saved": True, "credentials": credentials}
+
+
+@app.put("/cvs/{cv_id}/site-sessions/linkedin")
+def save_linkedin_session(cv_id: str, req: LinkedInSessionRequest):
+    """Import Playwright storage_state cookies so the server can apply on LinkedIn."""
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    if not req.cookies:
+        raise HTTPException(status_code=400, detail="נדרש לפחות cookie אחד")
+    payload = {"cookies": req.cookies, "origins": req.origins or []}
+    path = import_linkedin_storage_state(cv_id, payload)
+    return {"saved": True, "path": str(path)}
+
+
+@app.get("/cvs/{cv_id}/site-sessions/linkedin")
+def linkedin_session_status(cv_id: str):
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    path = linkedin_storage_state_path(cv_id)
+    return {"configured": path.is_file(), "path": str(path)}
 
 
 # Aliases matching the suggested /api/ routes (cv_profile_id in body).

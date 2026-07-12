@@ -15,6 +15,7 @@ import {
   type JobApplicationStatus,
 } from "../lib/api";
 import PipelineProgress from "./PipelineProgress";
+import ProfileSettings from "./ProfileSettings";
 
 interface Props {
   cvId: string;
@@ -87,6 +88,7 @@ export default function CvDetails({
   const [applyingId, setApplyingId] = useState<number | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [logApplication, setLogApplication] = useState<JobApplication | null>(null);
+  const [activeTab, setActiveTab] = useState<"jobs" | "profile">("jobs");
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
@@ -348,6 +350,31 @@ export default function CvDetails({
         </button>
       </div>
 
+      <div className="details-tabs" role="tablist" aria-label="תצוגת קורות חיים">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "jobs"}
+          className={`details-tab ${activeTab === "jobs" ? "active" : ""}`}
+          onClick={() => setActiveTab("jobs")}
+        >
+          משרות
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "profile"}
+          className={`details-tab ${activeTab === "profile" ? "active" : ""}`}
+          onClick={() => setActiveTab("profile")}
+        >
+          פרופיל
+        </button>
+      </div>
+
+      {activeTab === "profile" ? (
+        <ProfileSettings cvId={cvId} />
+      ) : (
+        <>
       <PipelineProgress scanStatus={showScanPanel} />
 
       {error && <div className="error-box">{error}</div>}
@@ -574,6 +601,8 @@ export default function CvDetails({
             );
           })}
         </ul>
+      )}
+        </>
       )}
     </section>
   );

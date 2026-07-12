@@ -71,6 +71,7 @@ class ApplicationProvider(ABC):
         job: dict[str, Any],
         *,
         cover_letter: str | None = None,
+        cv_id: str | None = None,
     ) -> ApplicationResult:
         ...
 

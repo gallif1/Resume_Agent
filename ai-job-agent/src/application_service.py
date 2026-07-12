@@ -14,6 +14,7 @@ from profile_utils import load_cv_profile
 
 APPLICATION_STEPS = (
     "opening_job_page",
+    "site_authentication",
     "detecting_application_provider",
     "opening_application_form",
     "filling_personal_details",

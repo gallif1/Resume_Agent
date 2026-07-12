@@ -56,6 +56,7 @@ class GenericProvider(ApplicationProvider):
         job: dict[str, Any],
         *,
         cover_letter: str | None = None,
+        cv_id: str | None = None,
     ) -> ApplicationResult:
         if detect_captcha(page):
             return ApplicationResult(

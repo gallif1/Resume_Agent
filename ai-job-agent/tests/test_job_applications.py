@@ -129,6 +129,15 @@ def test_bullhorn_form_fill(playwright_page, tmp_path):
     assert "full_name" in result.filled_fields or "email" in result.filled_fields
 
 
+def test_extract_external_apply_url(playwright_page):
+    from application_providers.provider_utils import extract_external_apply_url
+
+    html = (FIXTURES / "linkedin_external_apply.html").read_text(encoding="utf-8")
+    playwright_page.set_content(html)
+    url = extract_external_apply_url(playwright_page)
+    assert url == "https://apply.test.example/jobs/backend-dev"
+
+
 def test_linkedin_external_apply_navigation(playwright_page, tmp_path):
     from application_providers.linkedin_provider import LinkedInProvider
 
@@ -431,3 +440,36 @@ def test_api_apply_rejects_when_playwright_unavailable(db_path, cvs_dir, monkeyp
     client = TestClient(api_server.app)
     res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
     assert res.status_code == 503
+
+
+def test_api_site_credentials_roundtrip(db_path, cvs_dir, monkeypatch):
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+    import config
+    monkeypatch.setattr(config, "REGISTRY_DB_PATH", db_path)
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+
+    cv_id = _create_cv(db_path, cvs_dir)
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(api_server.app)
+    empty = client.get(f"/cvs/{cv_id}/site-credentials")
+    assert empty.status_code == 200
+    assert empty.json()["credentials"]["linkedin"]["configured"] is False
+
+    saved = client.put(
+        f"/cvs/{cv_id}/site-credentials",
+        json={
+            "linkedin": {"email": "user@example.com", "password": "secret"},
+            "drushim": {"email": "0501234567", "password": "d-pass"},
+        },
+    )
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["saved"] is True
+    assert body["credentials"]["linkedin"]["configured"] is True
+    assert "password" not in body["credentials"]["linkedin"]
+
+    loaded = client.get(f"/cvs/{cv_id}/site-credentials")
+    assert loaded.json()["credentials"]["linkedin"]["email"] == "user@example.com"
+    assert loaded.json()["credentials"]["linkedin"]["password_set"] is True
