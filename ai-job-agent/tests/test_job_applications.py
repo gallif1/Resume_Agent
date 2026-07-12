@@ -420,28 +420,6 @@ def test_rate_limiting():
     assert exc.value.status_code == 429
 
 
-def test_api_apply_rejects_when_playwright_unavailable(db_path, cvs_dir, monkeypatch):
-    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
-    import config
-    monkeypatch.setattr(config, "REGISTRY_DB_PATH", db_path)
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    monkeypatch.setattr(
-        api_server,
-        "_playwright_browser_ready",
-        lambda: (False, "chromium missing"),
-    )
-
-    cv_id = _create_cv(db_path, cvs_dir)
-    job_id = db.insert_job("Dev", "https://example.com/job/8", db_path=db.cv_db_path(cv_id))
-    _link_match(db_path, cv_id, job_id)
-
-    from fastapi.testclient import TestClient
-
-    client = TestClient(api_server.app)
-    res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
-    assert res.status_code == 503
-
-
 def test_api_site_credentials_roundtrip(db_path, cvs_dir, monkeypatch):
     monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
     import config
@@ -473,3 +451,33 @@ def test_api_site_credentials_roundtrip(db_path, cvs_dir, monkeypatch):
     loaded = client.get(f"/cvs/{cv_id}/site-credentials")
     assert loaded.json()["credentials"]["linkedin"]["email"] == "user@example.com"
     assert loaded.json()["credentials"]["linkedin"]["password_set"] is True
+
+
+def test_api_apply_rejects_when_playwright_unavailable(db_path, cvs_dir, monkeypatch):
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+    import config
+    monkeypatch.setattr(config, "REGISTRY_DB_PATH", db_path)
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    monkeypatch.setattr(
+        api_server,
+        "_playwright_browser_ready",
+        lambda: (False, "chromium missing"),
+    )
+
+    cv_id = _create_cv(db_path, cvs_dir)
+    job_id = db.insert_job("Dev", "https://example.com/job/8", db_path=db.cv_db_path(cv_id))
+    _link_match(db_path, cv_id, job_id)
+
+    from fastapi.testclient import TestClient
+
+    client = TestClient(api_server.app)
+    res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
+    assert res.status_code == 503
+
+
+def test_api_run_agent_endpoint_has_job_board_imports():
+    """Regression: run-agent must not crash with NameError on normalize_job_board_ids."""
+    from job_boards import list_job_boards, normalize_job_board_ids
+
+    assert api_server.normalize_job_board_ids is normalize_job_board_ids
+    assert api_server.list_job_boards is list_job_boards
