@@ -239,7 +239,7 @@ def match_all_jobs(
         final_score = _blend_scores(pm_result.score, ats_result.ats_score)
         if pm_result.exclusion_hit:
             final_score = min(final_score, pm_result.score)
-        if ats_result.mandatory_failed:
+        if ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
             final_score = min(final_score, ats_result.ats_score)
 
         score_label = pm_result.score_label if final_score == pm_result.score else ats_result.score_label
@@ -249,6 +249,8 @@ def match_all_jobs(
             score_label = "Good Match"
         elif final_score >= 50:
             score_label = "Partial Match"
+        elif ats_result.is_potential_junior_match:
+            score_label = "Potential Match"
         else:
             score_label = "Weak Match"
 
@@ -259,6 +261,9 @@ def match_all_jobs(
             ats_result=ats_result,
             strategy_hash=strategy_hash,
             fallback_score=fallback_score,
+        )
+        fields["is_potential_junior_match"] = (
+            1 if ats_result.is_potential_junior_match else 0
         )
         _store_match_result(job["id"], fields, cv_id=cv_id, scan_id=scan_id)
         stats["ats_scored"] += 1

@@ -13,6 +13,7 @@ Multi-CV endpoints (each CV has isolated data):
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
+    POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
     POST   /cvs/{cv_id}/jobs/{job_id}/apply          start automated job application
     GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
     GET    /cvs/{cv_id}/jobs/{job_id}/application-status  latest application status
@@ -57,6 +58,7 @@ from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DI
 from job_boards import list_job_boards, normalize_job_board_ids
 from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
+from tailor_cv_service import TailorCvError, tailor_cv_for_job
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -465,6 +467,9 @@ def _match_public(match: dict) -> dict:
         "relevant_experience": _parse_json_list(match.get("ats_relevant_experience")),
         "score_reasons": _parse_json_list(match.get("ats_reasons")),
         "cv_improvements": _parse_json_list(match.get("ats_improvements")),
+        "is_potential_junior_match": bool(match.get("is_potential_junior_match")),
+        "has_tailored_cv": bool(match.get("tailored_cv_path")),
+        "tailored_cv_updated_at": match.get("tailored_cv_updated_at"),
         "application_status": match.get("application_status") or db.CV_APP_NOT_SENT,
         "application_notes": match.get("application_notes"),
         "job_application": match.get("job_application"),
@@ -635,6 +640,7 @@ def get_cv_matches(cv_id: str, latest: bool = True, min_score: int | None = None
     if db.get_cv(cv_id) is None:
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
     cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
     matches = db.get_cv_matches(cv_id, latest_only=latest, min_score=min_score, db_path=cv_db)
     job_ids = [int(m["job_id"]) for m in matches]
     latest_apps = db.get_latest_job_applications_for_cv(cv_id, job_ids, db_path=cv_db)
@@ -651,6 +657,51 @@ def get_cv_matches(cv_id: str, latest: bool = True, min_score: int | None = None
 class MatchStatusRequest(BaseModel):
     status: str
     notes: str | None = None
+
+
+class TailorCvRequest(BaseModel):
+    force: bool = False
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/tailor-cv")
+def tailor_cv_endpoint(cv_id: str, job_id: int, req: TailorCvRequest | None = None):
+    """Generate an ATS-optimized Markdown CV tailored to one job (no hallucinated experience)."""
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None:
+        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+
+    force = req.force if req else False
+    try:
+        result = tailor_cv_for_job(cv_id, job, force=force)
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    relative_path = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
+    db.mark_cv_match_tailored(
+        cv_id,
+        job_id,
+        tailored_cv_path=relative_path,
+        db_path=cv_db,
+    )
+
+    return {
+        "cv_id": cv_id,
+        "job_id": job_id,
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "markdown": result["markdown"],
+        "highlights": result.get("highlights") or [],
+        "caveats": result.get("caveats") or [],
+        "from_cache": bool(result.get("from_cache")),
+        "saved_path": relative_path,
+        "generated_at": result.get("generated_at"),
+    }
 
 
 @app.patch("/cvs/{cv_id}/matches/{match_id}/status")

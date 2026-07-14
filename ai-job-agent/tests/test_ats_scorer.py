@@ -51,12 +51,71 @@ def test_missing_mandatory_caps_score():
         mandatory_requirements=["5+ years experience", "CISSP certification"],
         years_experience_min=5.0,
         certifications=["CISSP"],
+        seniority="senior",
+        required_skills=["Kubernetes", "Terraform"],
+        technologies=["Kubernetes", "Terraform"],
     )
-    result = score(_candidate(experience_years=2.0), job)
+    result = score(
+        _candidate(experience_years=2.0, skills=["Python"], technologies=["Python"]),
+        job,
+    )
     assert result.mandatory_failed
     assert result.ats_score <= 49
     assert result.score_label == "Weak Match"
+    assert not result.is_potential_junior_match
     assert len(result.missing_mandatory_requirements) > 0
+
+
+def test_junior_potential_match_skips_hard_cap():
+    """Junior with foundational skills + ≤3y job should not be hard-capped to ≤49."""
+    job = _job_profile(
+        title="Software Engineer",
+        seniority="junior",
+        years_experience_min=3.0,
+        mandatory_requirements=["3+ years experience"],
+        required_skills=["Python", "SQL", "AWS"],
+        technologies=["Python", "SQL", "AWS"],
+        certifications=[],
+        languages=["English"],
+    )
+    candidate = _candidate(
+        experience_years=1.5,
+        seniority="junior",
+        previous_roles=["Junior Software Developer", "Technical Support"],
+        skills=["Python", "SQL", "AWS", "English"],
+        technologies=["Python", "SQL", "AWS"],
+    )
+    result = score(candidate, job)
+    assert result.mandatory_failed
+    assert result.is_potential_junior_match
+    assert result.ats_score > 49
+    assert result.score_label != "Weak Match"
+    fields = result.to_db_fields()
+    assert fields["is_potential_junior_match"] == 1
+    assert fields["rejection_reason"] is None
+
+
+def test_junior_potential_label_when_score_below_partial():
+    job = _job_profile(
+        title="Software Engineer",
+        seniority="junior",
+        years_experience_min=2.0,
+        mandatory_requirements=["2+ years experience"],
+        required_skills=["Python", "SQL", "AWS"],
+        technologies=["Python", "SQL", "AWS"],
+        languages=["English"],
+    )
+    candidate = _candidate(
+        experience_years=0.5,
+        seniority="junior",
+        previous_roles=["Technical Support"],
+        skills=["Python", "SQL", "English"],
+        technologies=["Python", "SQL"],
+    )
+    result = score(candidate, job)
+    assert result.is_potential_junior_match
+    if result.ats_score < 50:
+        assert result.score_label == "Potential Match"
 
 
 def test_missing_required_skills_reduces_score():

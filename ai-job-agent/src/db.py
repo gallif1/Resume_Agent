@@ -280,6 +280,9 @@ def _apply_cv_match_migrations(conn: sqlite3.Connection) -> None:
         ("ats_reasons", "TEXT"),
         ("ats_improvements", "TEXT"),
         ("ats_component_scores", "TEXT"),
+        ("is_potential_junior_match", "INTEGER DEFAULT 0"),
+        ("tailored_cv_path", "TEXT"),
+        ("tailored_cv_updated_at", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE cv_job_matches ADD COLUMN {column} {col_type}")
@@ -1624,6 +1627,7 @@ _CV_MATCH_FIELDS = (
     "ats_reasons",
     "ats_improvements",
     "ats_component_scores",
+    "is_potential_junior_match",
 )
 
 
@@ -1762,6 +1766,9 @@ def get_cv_matches(
             m.ats_reasons,
             m.ats_improvements,
             m.ats_component_scores,
+            m.is_potential_junior_match,
+            m.tailored_cv_path,
+            m.tailored_cv_updated_at,
             m.application_status,
             m.application_notes,
             m.updated_at AS match_updated_at,
@@ -1774,7 +1781,12 @@ def get_cv_matches(
         FROM cv_job_matches m
         JOIN jobs j ON j.id = m.job_id
         WHERE {where}
-        ORDER BY m.match_score IS NULL, m.match_score DESC, m.updated_at DESC
+        ORDER BY
+            CASE WHEN m.is_potential_junior_match = 1 AND COALESCE(m.match_score, 0) < 50
+                 THEN 1 ELSE 0 END,
+            m.match_score IS NULL,
+            m.match_score DESC,
+            m.updated_at DESC
     """
     with get_connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1806,6 +1818,34 @@ def update_cv_match_status(
             return None
         row = conn.execute(
             "SELECT * FROM cv_job_matches WHERE id = ?", (match_id,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def mark_cv_match_tailored(
+    cv_id: str,
+    job_id: int,
+    *,
+    tailored_cv_path: str,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    """Record that a tailored CV was generated for this match."""
+    now = _utc_now()
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE cv_job_matches
+            SET tailored_cv_path = ?, tailored_cv_updated_at = ?, updated_at = ?
+            WHERE cv_id = ? AND job_id = ?
+            """,
+            (tailored_cv_path, now, now, cv_id, job_id),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM cv_job_matches WHERE cv_id = ? AND job_id = ?",
+            (cv_id, job_id),
         ).fetchone()
         return dict(row) if row is not None else None
 
