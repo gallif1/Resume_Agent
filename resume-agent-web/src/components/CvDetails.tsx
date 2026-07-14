@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import {
   applyToJob,
   DuplicateApplicationError,
@@ -6,6 +7,7 @@ import {
   getCvScanStatus,
   getJobApplication,
   parseScanSummary,
+  tailorCvForJob,
   updateMatchStatus,
   type ApplicationStatus,
   type Cv,
@@ -13,6 +15,7 @@ import {
   type CvScanStatus,
   type JobApplication,
   type JobApplicationStatus,
+  type TailoredCvResponse,
 } from "../lib/api";
 import PipelineProgress from "./PipelineProgress";
 import ProfileSettings from "./ProfileSettings";
@@ -46,16 +49,35 @@ const JOB_APP_STATUS_LABEL: Record<JobApplicationStatus, string> = {
   requires_user_action: "נדרשת השלמה ידנית",
 };
 
+const SCORE_LABEL_HE: Record<string, string> = {
+  "Excellent Match": "התאמה מצוינת",
+  "Good Match": "התאמה טובה",
+  "Partial Match": "התאמה חלקית",
+  "Potential Match": "התאמה פוטנציאלית",
+  "Weak Match": "התאמה חלשה",
+};
+
 interface ConfirmState {
   match: CvMatch;
   force?: boolean;
 }
 
-function scoreClass(score: number | null): string {
+function scoreClass(score: number | null, isPotential = false): string {
   if (score == null) return "";
+  if (isPotential && score < 50) return "score-potential";
   if (score >= 85) return "score-high";
   if (score >= 70) return "score-mid";
   return "score-low";
+}
+
+function formatScoreLabel(label: string | null, isPotential = false): string | null {
+  if (!label) {
+    return isPotential ? SCORE_LABEL_HE["Potential Match"] : null;
+  }
+  if (isPotential && (label === "Weak Match" || label === "Potential Match")) {
+    return SCORE_LABEL_HE["Potential Match"];
+  }
+  return SCORE_LABEL_HE[label] ?? label;
 }
 
 function formatDate(iso: string | null): string {
@@ -70,6 +92,20 @@ function formatDate(iso: string | null): string {
 
 function isActiveApplication(status: JobApplicationStatus | undefined): boolean {
   return status === "pending" || status === "in_progress";
+}
+
+function isPotentialMatch(match: CvMatch): boolean {
+  return Boolean(match.is_potential_junior_match) && (match.match_score ?? 0) < 50;
+}
+
+function downloadTextFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function CvDetails({
@@ -89,11 +125,24 @@ export default function CvDetails({
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [logApplication, setLogApplication] = useState<JobApplication | null>(null);
   const [activeTab, setActiveTab] = useState<"jobs" | "profile">("jobs");
+  const [tailoringId, setTailoringId] = useState<number | null>(null);
+  const [tailoredCv, setTailoredCv] = useState<TailoredCvResponse | null>(null);
+  const [copyDone, setCopyDone] = useState(false);
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
   const prevRunning = useRef(false);
   const running = scanCvId === cvId && (scanStatus?.running ?? false);
+
+  const { primaryMatches, potentialMatches } = useMemo(() => {
+    const primary: CvMatch[] = [];
+    const potential: CvMatch[] = [];
+    for (const m of matches) {
+      if (isPotentialMatch(m)) potential.push(m);
+      else primary.push(m);
+    }
+    return { primaryMatches: primary, potentialMatches: potential };
+  }, [matches]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,6 +261,50 @@ export default function CvDetails({
     }
   };
 
+  const handleTailorCv = async (match: CvMatch, force = false) => {
+    setTailoringId(match.job_id);
+    setError(null);
+    setCopyDone(false);
+    try {
+      const result = await tailorCvForJob(cvId, match.job_id, { force });
+      setTailoredCv(result);
+      setMatches((prev) =>
+        prev.map((m) =>
+          m.job_id === match.job_id
+            ? {
+                ...m,
+                has_tailored_cv: true,
+                tailored_cv_updated_at: result.generated_at ?? new Date().toISOString(),
+              }
+            : m
+        )
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
+    } finally {
+      setTailoringId(null);
+    }
+  };
+
+  const handleCopyTailored = async () => {
+    if (!tailoredCv?.markdown) return;
+    try {
+      await navigator.clipboard.writeText(tailoredCv.markdown);
+      setCopyDone(true);
+      window.setTimeout(() => setCopyDone(false), 2000);
+    } catch {
+      setError("לא ניתן להעתיק ללוח");
+    }
+  };
+
+  const handleDownloadTailored = () => {
+    if (!tailoredCv?.markdown) return;
+    const safeTitle = (tailoredCv.title || "job")
+      .replace(/[^\w\u0590-\u05FF-]+/g, "_")
+      .slice(0, 40);
+    downloadTextFile(`cv-tailored-${safeTitle}-${tailoredCv.job_id}.md`, tailoredCv.markdown);
+  };
+
   const renderApplyButton = (match: CvMatch) => {
     const app = match.job_application;
     const status = app?.status;
@@ -291,6 +384,152 @@ export default function CvDetails({
       >
         הגש קורות חיים
       </button>
+    );
+  };
+
+  const renderMatchCard = (m: CvMatch) => {
+    const expanded = expandedId === m.match_id;
+    const app = m.job_application;
+    const potential = isPotentialMatch(m) || Boolean(m.is_potential_junior_match);
+    const label = formatScoreLabel(m.score_label, potential);
+    const busyTailor = tailoringId === m.job_id;
+
+    return (
+      <li key={m.match_id} className={`cv-item job-item ${potential ? "job-item-potential" : ""}`}>
+        <div
+          className="job-row"
+          onClick={() => setExpandedId(expanded ? null : m.match_id)}
+        >
+          <div className="job-row-main">
+            <span className={`job-score ${scoreClass(m.match_score, potential)}`}>
+              <span className="job-score-value">{m.match_score ?? "—"}</span>
+              {label && <span className="score-label">{label}</span>}
+            </span>
+            <div className="cv-info">
+              <div className="cv-name">{m.title}</div>
+              <div className="cv-meta">
+                {[m.company, m.location, m.source].filter(Boolean).join(" · ")}
+              </div>
+              {potential && (
+                <span className="potential-pill">התאמה פוטנציאלית</span>
+              )}
+              <span className={`status-pill status-${m.application_status}`}>
+                {STATUS_LABEL[m.application_status]}
+              </span>
+              {app && (
+                <span className={`apply-pill apply-pill-${app.status}`}>
+                  {JOB_APP_STATUS_LABEL[app.status]}
+                </span>
+              )}
+              {app?.updated_at && (
+                <span className="cv-meta apply-attempt-date">
+                  ניסיון אחרון: {formatDate(app.updated_at)}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="cv-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={busyTailor}
+              onClick={() => handleTailorCv(m)}
+            >
+              {busyTailor ? "מייצר קורות חיים..." : "התאם קורות חיים למשרה"}
+            </button>
+            {renderApplyButton(m)}
+            {app && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => openApplicationLog(app)}
+              >
+                פרטי הגשה
+              </button>
+            )}
+            <select
+              className="status-select"
+              value={m.application_status}
+              disabled={savingId === m.match_id}
+              onChange={(e) =>
+                handleStatusChange(m, e.target.value as ApplicationStatus)
+              }
+            >
+              {STATUS_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            {m.job_url && (
+              <a
+                className="btn btn-ghost"
+                href={m.job_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                למשרה ↗
+              </a>
+            )}
+          </div>
+        </div>
+
+        {expanded && (
+          <div className="job-details">
+            {m.explanation && (
+              <p>
+                <b>הסבר התאמה:</b> {m.explanation}
+              </p>
+            )}
+            {m.score_reasons.length > 0 && (
+              <p>
+                <b>סיבות לציון:</b> {m.score_reasons.join(" · ")}
+              </p>
+            )}
+            {m.matched_skills.length > 0 && (
+              <p>
+                <b>כישורים תואמים:</b> {m.matched_skills.join(", ")}
+              </p>
+            )}
+            {m.missing_skills.length > 0 && (
+              <p>
+                <b>כישורים חסרים:</b> {m.missing_skills.join(", ")}
+              </p>
+            )}
+            {m.missing_mandatory.length > 0 && (
+              <p>
+                <b>דרישות חובה חסרות:</b> {m.missing_mandatory.join(", ")}
+              </p>
+            )}
+            {m.relevant_experience.length > 0 && (
+              <p>
+                <b>ניסיון רלוונטי:</b> {m.relevant_experience.join(", ")}
+              </p>
+            )}
+            {m.cv_improvements.length > 0 && (
+              <p>
+                <b>שיפורים מומלצים לקו&quot;ח:</b> {m.cv_improvements.join(" · ")}
+              </p>
+            )}
+            {m.has_tailored_cv && (
+              <p className="cv-meta">
+                קורות חיים מותאמים נשמרו
+                {m.tailored_cv_updated_at
+                  ? ` · עודכן ${formatDate(m.tailored_cv_updated_at)}`
+                  : ""}
+              </p>
+            )}
+            {app?.failure_reason && (
+              <p className="apply-log-error">
+                <b>שגיאת הגשה:</b> {app.failure_reason}
+              </p>
+            )}
+            {m.updated_at && (
+              <p className="cv-meta">עודכן: {formatDate(m.updated_at)}</p>
+            )}
+          </div>
+        )}
+      </li>
     );
   };
 
@@ -381,7 +620,7 @@ export default function CvDetails({
 
       {confirmState && (
         <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal-card apply-confirm-modal">
+          <div className="modal apply-confirm-modal">
             <h3>אישור הגשת קורות חיים</h3>
             <p>
               המערכת עומדת לפתוח את אתר המשרה החיצוני ולהגיש את פרטיך וקורות החיים
@@ -419,7 +658,7 @@ export default function CvDetails({
 
       {logApplication && (
         <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal-card apply-log-modal">
+          <div className="modal apply-log-modal">
             <h3>יומן הגשה</h3>
             <p className="cv-meta">
               סטטוס: {JOB_APP_STATUS_LABEL[logApplication.status]} · ניסיון{" "}
@@ -453,6 +692,86 @@ export default function CvDetails({
         </div>
       )}
 
+      {tailoredCv && (
+        <div className="modal-overlay" role="dialog" aria-modal="true">
+          <div className="modal tailored-cv-modal">
+            <div className="tailored-cv-header">
+              <div>
+                <h3>קורות חיים מותאמים למשרה</h3>
+                <p className="cv-meta">
+                  {[tailoredCv.title, tailoredCv.company].filter(Boolean).join(" · ")}
+                  {tailoredCv.from_cache ? " · מטמון" : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setTailoredCv(null)}
+              >
+                סגור
+              </button>
+            </div>
+            {(tailoredCv.highlights?.length ?? 0) > 0 && (
+              <p className="tailored-cv-meta">
+                <b>הודגש:</b> {tailoredCv.highlights.join(" · ")}
+              </p>
+            )}
+            {(tailoredCv.caveats?.length ?? 0) > 0 && (
+              <p className="tailored-cv-meta tailored-cv-caveats">
+                <b>הערות כנות:</b> {tailoredCv.caveats.join(" · ")}
+              </p>
+            )}
+            <div className="tailored-cv-body" dir="auto">
+              <Markdown>{tailoredCv.markdown}</Markdown>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={async () => {
+                  setTailoringId(tailoredCv.job_id);
+                  setError(null);
+                  setCopyDone(false);
+                  try {
+                    const result = await tailorCvForJob(cvId, tailoredCv.job_id, {
+                      force: true,
+                    });
+                    setTailoredCv(result);
+                    setMatches((prev) =>
+                      prev.map((m) =>
+                        m.job_id === tailoredCv.job_id
+                          ? {
+                              ...m,
+                              has_tailored_cv: true,
+                              tailored_cv_updated_at:
+                                result.generated_at ?? new Date().toISOString(),
+                            }
+                          : m
+                      )
+                    );
+                  } catch (e) {
+                    setError(
+                      e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים"
+                    );
+                  } finally {
+                    setTailoringId(null);
+                  }
+                }}
+                disabled={tailoringId === tailoredCv.job_id}
+              >
+                {tailoringId === tailoredCv.job_id ? "מייצר קורות חיים..." : "צור מחדש"}
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={handleCopyTailored}>
+                {copyDone ? "הועתק!" : "העתק ללוח"}
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleDownloadTailored}>
+                הורד Markdown
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="history-header">
         <h2>התאמות מהסריקה האחרונה</h2>
         <span className="history-count">
@@ -470,137 +789,30 @@ export default function CvDetails({
             </p>
           ) : (
             <p className="empty-hint">
-              לחץ על "הרץ סוכן" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.
+              לחץ על &quot;הרץ סוכן&quot; כדי לאסוף ולדרג משרות עבור קורות החיים האלה.
             </p>
           )}
         </div>
       ) : (
-        <ul className="cv-list">
-          {matches.map((m) => {
-            const expanded = expandedId === m.match_id;
-            const app = m.job_application;
-            return (
-              <li key={m.match_id} className="cv-item job-item">
-                <div
-                  className="job-row"
-                  onClick={() => setExpandedId(expanded ? null : m.match_id)}
-                >
-                  <div className="job-row-main">
-                    <span className={`job-score ${scoreClass(m.match_score)}`}>
-                      <span className="job-score-value">{m.match_score ?? "—"}</span>
-                      {m.score_label && (
-                        <span className="score-label">{m.score_label}</span>
-                      )}
-                    </span>
-                    <div className="cv-info">
-                      <div className="cv-name">{m.title}</div>
-                      <div className="cv-meta">
-                        {[m.company, m.location, m.source].filter(Boolean).join(" · ")}
-                      </div>
-                      <span className={`status-pill status-${m.application_status}`}>
-                        {STATUS_LABEL[m.application_status]}
-                      </span>
-                      {app && (
-                        <span className={`apply-pill apply-pill-${app.status}`}>
-                          {JOB_APP_STATUS_LABEL[app.status]}
-                        </span>
-                      )}
-                      {app?.updated_at && (
-                        <span className="cv-meta apply-attempt-date">
-                          ניסיון אחרון: {formatDate(app.updated_at)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="cv-actions" onClick={(e) => e.stopPropagation()}>
-                    {renderApplyButton(m)}
-                    {app && (
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => openApplicationLog(app)}
-                      >
-                        פרטי הגשה
-                      </button>
-                    )}
-                    <select
-                      className="status-select"
-                      value={m.application_status}
-                      disabled={savingId === m.match_id}
-                      onChange={(e) =>
-                        handleStatusChange(m, e.target.value as ApplicationStatus)
-                      }
-                    >
-                      {STATUS_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                    {m.job_url && (
-                      <a
-                        className="btn btn-ghost"
-                        href={m.job_url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        למשרה ↗
-                      </a>
-                    )}
-                  </div>
-                </div>
+        <>
+          {primaryMatches.length > 0 && (
+            <ul className="cv-list">{primaryMatches.map(renderMatchCard)}</ul>
+          )}
 
-                {expanded && (
-                  <div className="job-details">
-                    {m.explanation && (
-                      <p>
-                        <b>הסבר התאמה:</b> {m.explanation}
-                      </p>
-                    )}
-                    {m.score_reasons.length > 0 && (
-                      <p>
-                        <b>סיבות לציון:</b> {m.score_reasons.join(" · ")}
-                      </p>
-                    )}
-                    {m.matched_skills.length > 0 && (
-                      <p>
-                        <b>כישורים תואמים:</b> {m.matched_skills.join(", ")}
-                      </p>
-                    )}
-                    {m.missing_skills.length > 0 && (
-                      <p>
-                        <b>כישורים חסרים:</b> {m.missing_skills.join(", ")}
-                      </p>
-                    )}
-                    {m.missing_mandatory.length > 0 && (
-                      <p>
-                        <b>דרישות חובה חסרות:</b> {m.missing_mandatory.join(", ")}
-                      </p>
-                    )}
-                    {m.relevant_experience.length > 0 && (
-                      <p>
-                        <b>ניסיון רלוונטי:</b> {m.relevant_experience.join(", ")}
-                      </p>
-                    )}
-                    {m.cv_improvements.length > 0 && (
-                      <p>
-                        <b>שיפורים מומלצים לקו&quot;ח:</b> {m.cv_improvements.join(" · ")}
-                      </p>
-                    )}
-                    {app?.failure_reason && (
-                      <p className="apply-log-error">
-                        <b>שגיאת הגשה:</b> {app.failure_reason}
-                      </p>
-                    )}
-                    {m.updated_at && (
-                      <p className="cv-meta">עודכן: {formatDate(m.updated_at)}</p>
-                    )}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+          {potentialMatches.length > 0 && (
+            <div className="potential-matches-section">
+              <div className="history-header">
+                <h2>התאמות פוטנציאליות</h2>
+                <span className="history-count">{potentialMatches.length} משרות</span>
+              </div>
+              <p className="potential-matches-hint">
+                משרות ברף כניסה (1–3 שנים / Tech בסיסי) שלא קיבלו ציון מלא — ניתן להתאים
+                להן קורות חיים ממוקדי ATS.
+              </p>
+              <ul className="cv-list">{potentialMatches.map(renderMatchCard)}</ul>
+            </div>
+          )}
+        </>
       )}
         </>
       )}

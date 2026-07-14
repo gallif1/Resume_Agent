@@ -172,10 +172,26 @@ export interface CvMatch {
   relevant_experience: string[];
   score_reasons: string[];
   cv_improvements: string[];
+  is_potential_junior_match?: boolean;
+  has_tailored_cv?: boolean;
+  tailored_cv_updated_at?: string | null;
   application_status: ApplicationStatus;
   application_notes: string | null;
   job_application: JobApplication | null;
   updated_at: string | null;
+}
+
+export interface TailoredCvResponse {
+  cv_id: string;
+  job_id: number;
+  title: string | null;
+  company: string | null;
+  markdown: string;
+  highlights: string[];
+  caveats: string[];
+  from_cache: boolean;
+  saved_path: string;
+  generated_at?: string | null;
 }
 
 export interface CvScanStatus {
@@ -321,6 +337,18 @@ export function updateMatchStatus(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status, notes: notes ?? null }),
+  });
+}
+
+export function tailorCvForJob(
+  cvId: string,
+  jobId: number,
+  options?: { force?: boolean }
+): Promise<TailoredCvResponse> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailor-cv`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force: options?.force ?? false }),
   });
 }
 

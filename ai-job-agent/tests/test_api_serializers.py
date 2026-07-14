@@ -64,6 +64,9 @@ def test_match_public_includes_ats_fields():
         "ats_relevant_experience": '["Backend Developer"]',
         "ats_reasons": '["Required skills: 3/4 matched"]',
         "ats_improvements": '["Add skill: Rust"]',
+        "is_potential_junior_match": 1,
+        "tailored_cv_path": "data/cvs/x/tailored_cvs/2.md",
+        "tailored_cv_updated_at": "2026-01-01T00:00:00+00:00",
         "application_status": "not_sent",
         "match_updated_at": "u",
     }
@@ -73,6 +76,9 @@ def test_match_public_includes_ats_fields():
     assert out["relevant_experience"] == ["Backend Developer"]
     assert out["score_reasons"] == ["Required skills: 3/4 matched"]
     assert out["cv_improvements"] == ["Add skill: Rust"]
+    assert out["is_potential_junior_match"] is True
+    assert out["has_tailored_cv"] is True
+    assert out["tailored_cv_updated_at"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_reshape_match_row_maps_id_to_match_id():

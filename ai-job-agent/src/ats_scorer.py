@@ -14,7 +14,7 @@ from job_classifier import score_to_action, score_to_decision
 from skill_normalizer import find_matching_skills, normalize_skill, skills_match
 
 # Bump when scoring algorithm changes — used for match invalidation.
-ATS_SCORER_VERSION = "v1"
+ATS_SCORER_VERSION = "v2"
 
 # Section weights (must sum to 1.0).
 WEIGHT_MANDATORY = 0.35
@@ -25,6 +25,15 @@ WEIGHT_PREFERRED = 0.10
 
 # Any failed mandatory requirement caps the total score at this value.
 MANDATORY_FAIL_CAP = 49
+# Soft ceiling when a junior candidate is a "potential" match (no hard Weak cap).
+POTENTIAL_MATCH_SOFT_CAP = 69
+
+# Junior profiles + entry-level-friendly jobs skip the hard mandatory fail cap.
+JUNIOR_SENIORITIES = frozenset({"student", "intern", "junior"})
+POTENTIAL_MAX_YEARS = 3.0
+FOUNDATIONAL_SKILL_RATIO = 0.25
+# Lead/manager roles are never treated as potential junior matches.
+EXCLUDED_POTENTIAL_SENIORITIES = frozenset({"lead", "manager"})
 
 SENIORITY_ORDER = {
     "student": 0,
@@ -43,6 +52,7 @@ SCORE_LABELS = (
     (50, "Partial Match"),
     (0, "Weak Match"),
 )
+POTENTIAL_MATCH_LABEL = "Potential Match"
 
 
 @dataclass
@@ -57,6 +67,7 @@ class AtsMatchResult:
     cv_improvements: list[str] = field(default_factory=list)
     component_scores: dict[str, float] = field(default_factory=dict)
     mandatory_failed: bool = False
+    is_potential_junior_match: bool = False
 
     def to_db_fields(self, *, strategy_hash: str = "", fallback_score: int | None = None) -> dict[str, Any]:
         decision = score_to_decision(self.ats_score)
@@ -66,6 +77,8 @@ class AtsMatchResult:
             f"[ATS] {self.score_label} ({self.ats_score})",
             f"decision: {decision} -> {action}",
         ]
+        if self.is_potential_junior_match:
+            reason_parts.append("potential junior match")
         if self.missing_mandatory_requirements:
             reason_parts.append(
                 f"mandatory gaps: {', '.join(self.missing_mandatory_requirements[:5])}"
@@ -88,7 +101,7 @@ class AtsMatchResult:
             "fallback_score": fallback_score,
             "rejection_reason": (
                 "; ".join(self.missing_mandatory_requirements)
-                if self.mandatory_failed
+                if self.mandatory_failed and not self.is_potential_junior_match
                 else None
             ),
             "candidate_strategy_hash": strategy_hash,
@@ -102,6 +115,7 @@ class AtsMatchResult:
             "ats_reasons": json.dumps(self.score_reasons, ensure_ascii=False),
             "ats_improvements": json.dumps(self.cv_improvements, ensure_ascii=False),
             "ats_component_scores": json.dumps(self.component_scores, ensure_ascii=False),
+            "is_potential_junior_match": 1 if self.is_potential_junior_match else 0,
         }
 
 
@@ -110,6 +124,54 @@ def score_label_for(score: int) -> str:
         if score >= threshold:
             return label
     return "Weak Match"
+
+
+def is_junior_profile(candidate: AtsCandidateProfile) -> bool:
+    """True for student/intern/junior seniority or very early-career experience."""
+    seniority = (candidate.seniority or "unknown").lower()
+    if seniority in JUNIOR_SENIORITIES:
+        return True
+    years = candidate.experience_years
+    return years is not None and years <= 2.0
+
+
+def _job_within_junior_reach(job: JobProfile) -> bool:
+    """True when the job's experience bar is entry-level friendly (≤3 years)."""
+    seniority = (job.seniority or "unknown").lower()
+    if seniority in EXCLUDED_POTENTIAL_SENIORITIES:
+        return False
+    years = job.years_experience_min
+    if years is not None:
+        return years <= POTENTIAL_MAX_YEARS
+    # No years gate — treat junior/mid/unknown postings as reachable.
+    return seniority in {"intern", "student", "junior", "mid", "unknown"}
+
+
+def _has_foundational_skill_overlap(
+    matched: list[str],
+    required: list[str],
+) -> bool:
+    """True when enough required/tech keywords overlap with the candidate."""
+    if not matched:
+        return False
+    if not required:
+        return True
+    ratio = len(matched) / len(required)
+    return ratio >= FOUNDATIONAL_SKILL_RATIO or len(matched) >= 2
+
+
+def evaluate_potential_junior_match(
+    candidate: AtsCandidateProfile,
+    job: JobProfile,
+    matched_required_skills: list[str],
+) -> bool:
+    """Whether a junior candidate should skip the hard mandatory fail cap."""
+    if not is_junior_profile(candidate):
+        return False
+    required = job.required_skills or job.technologies
+    years_ok = _job_within_junior_reach(job)
+    skills_ok = _has_foundational_skill_overlap(matched_required_skills, required)
+    return years_ok or skills_ok
 
 
 def _seniority_distance(cv_seniority: str, job_seniority: str | None) -> float:
@@ -373,14 +435,29 @@ def score(
     )
 
     mandatory_failed = bool(missing_mandatory)
+    is_potential = False
     if mandatory_failed:
-        weighted = min(weighted, MANDATORY_FAIL_CAP)
+        is_potential = evaluate_potential_junior_match(
+            candidate, job_profile, matched
+        )
+        if is_potential:
+            # Soft ceiling only — do not force the Weak Match hard-cap for juniors.
+            weighted = min(weighted, POTENTIAL_MATCH_SOFT_CAP)
+        else:
+            weighted = min(weighted, MANDATORY_FAIL_CAP)
 
     ats_score = clamp_score(round(weighted))
     label = score_label_for(ats_score)
+    if is_potential and ats_score < 50:
+        label = POTENTIAL_MATCH_LABEL
 
     all_reasons = mand_reasons + req_reasons + exp_reasons + sen_reasons + pref_reasons
-    if mandatory_failed:
+    if is_potential:
+        all_reasons.insert(
+            0,
+            "Potential junior match — mandatory hard-cap relaxed for entry-level reach",
+        )
+    elif mandatory_failed:
         all_reasons.insert(0, "Hard requirements not met — score capped")
 
     improvements = _build_improvements(missing, missing_mandatory)
@@ -396,4 +473,5 @@ def score(
         cv_improvements=improvements,
         component_scores=component_scores,
         mandatory_failed=mandatory_failed,
+        is_potential_junior_match=is_potential,
     )
