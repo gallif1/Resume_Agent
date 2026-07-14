@@ -11,6 +11,25 @@ import config
 import tailor_cv_service as svc
 
 
+SAMPLE_STRUCTURED = """## פירוט שינויים
+- הודגשו כישורי troubleshooting ו-SQL מתפקיד Technical Support.
+- שופץ תקציר מקצועי סביב מילות מפתח של Backend.
+
+## ציון התאמה למשרה
+**ציון משוער: 68/100** — התאמה טובה יותר לדרישות החובה.
+
+---
+
+## קורות החיים המעודכנים
+
+# Gal Lifshiz
+
+## Experience
+### Technical Support
+- Troubleshooting and SQL queries for production systems
+"""
+
+
 def test_save_and_load_tailored_cv(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
     cv_id = "cv_test"
     job_id = 42
@@ -24,20 +43,52 @@ def test_save_and_load_tailored_cv(cvs_dir: Path, monkeypatch: pytest.MonkeyPatc
     assert loaded.startswith("# Hello")
 
 
+def test_split_tailored_markdown_on_horizontal_rule():
+    preamble, body = svc.split_tailored_markdown(SAMPLE_STRUCTURED)
+    assert "פירוט שינויים" in preamble
+    assert "ציון התאמה" in preamble
+    assert body.startswith("# Gal Lifshiz")
+    assert "פירוט שינויים" not in body
+    assert svc.extract_cv_markdown_for_copy(SAMPLE_STRUCTURED).startswith("# Gal")
+
+
 def test_normalize_tailor_result_requires_markdown():
     with pytest.raises(svc.TailorCvError):
         svc._normalize_tailor_result({"markdown": "  ", "highlights": []})
 
     out = svc._normalize_tailor_result(
         {
-            "markdown": "# CV\n",
+            "markdown": SAMPLE_STRUCTURED,
+            "changes_breakdown": ["הודגשו כישורי SQL"],
+            "estimated_ats_score": 68,
+            "cv_markdown": "# Gal Lifshiz\n\n## Experience\n",
             "highlights": ["SQL"],
             "caveats": ["No Kubernetes experience claimed"],
         }
     )
-    assert out["markdown"].startswith("# CV")
-    assert out["highlights"] == ["SQL"]
+    assert "## פירוט שינויים" in out["markdown"]
+    assert "---" in out["markdown"]
+    assert out["cv_markdown"].startswith("# Gal")
+    assert out["estimated_ats_score"] == 68
+    assert out["changes_breakdown"] == ["הודגשו כישורי SQL"]
     assert "Kubernetes" in out["caveats"][0]
+
+
+def test_normalize_assembles_markdown_from_parts():
+    out = svc._normalize_tailor_result(
+        {
+            "changes_breakdown": ["Reframed support bullets around SQL"],
+            "estimated_ats_score": 55,
+            "cv_markdown": "# Name\n\n## Summary\nBackend-leaning support engineer.\n",
+            "caveats": [],
+        }
+    )
+    assert "## פירוט שינויים" in out["markdown"]
+    assert "## ציון התאמה למשרה" in out["markdown"]
+    assert "---" in out["markdown"]
+    assert "## קורות החיים המעודכנים" in out["markdown"]
+    assert out["estimated_ats_score"] == 55
+    assert "Backend-leaning" in out["cv_markdown"]
 
 
 def test_tailor_cv_for_job_uses_cache(
@@ -63,7 +114,7 @@ def test_tailor_cv_for_job_uses_cache(
         ),
         encoding="utf-8",
     )
-    svc.save_tailored_cv(cv_id, 7, "# Cached tailored CV\n")
+    svc.save_tailored_cv(cv_id, 7, SAMPLE_STRUCTURED)
 
     called = {"n": 0}
 
@@ -80,7 +131,9 @@ def test_tailor_cv_for_job_uses_cache(
         force=False,
     )
     assert result["from_cache"] is True
-    assert "Cached tailored" in result["markdown"]
+    assert "פירוט שינויים" in result["markdown"]
+    assert result["cv_markdown"].startswith("# Gal")
+    assert result["estimated_ats_score"] == 68
     assert called["n"] == 0
 
 
@@ -109,7 +162,12 @@ def test_tailor_cv_for_job_calls_openai(
 
     def _fake_openai(*_args, **_kwargs):
         return {
-            "markdown": (
+            "markdown": SAMPLE_STRUCTURED.replace("Gal Lifshiz", "Name").replace(
+                "### Technical Support", "### Technical Support Engineer"
+            ),
+            "changes_breakdown": ["Highlighted SQL troubleshooting"],
+            "estimated_ats_score": 68,
+            "cv_markdown": (
                 "# Name\n\n## Experience\n### Technical Support Engineer\n"
                 "- Troubleshooting and SQL queries for production systems\n"
             ),
@@ -133,10 +191,13 @@ def test_tailor_cv_for_job_calls_openai(
         force=True,
         use_cache=False,
     )
-    assert "Technical Support Engineer" in result["markdown"]
+    assert "Technical Support Engineer" in result["cv_markdown"]
     assert result["from_cache"] is False
+    assert result["estimated_ats_score"] == 68
     assert svc.tailored_cv_path(cv_id, 9).exists()
     assert "Did not invent" in result["caveats"][0]
+    # Cache namespace should include prompt version.
+    assert "v2" in svc.TAILOR_PROMPT_VERSION
 
 
 def test_tailor_requires_api_key(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
