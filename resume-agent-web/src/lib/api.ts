@@ -187,6 +187,10 @@ export interface TailoredCvResponse {
   title: string | null;
   company: string | null;
   markdown: string;
+  /** Resume body only (after ---); preferred for copy/download. */
+  cv_markdown?: string;
+  changes_breakdown?: string[];
+  estimated_ats_score?: number | null;
   highlights: string[];
   caveats: string[];
   from_cache: boolean;

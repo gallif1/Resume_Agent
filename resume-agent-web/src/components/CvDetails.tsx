@@ -108,6 +108,31 @@ function downloadTextFile(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+/** Prefer the resume body after `---` / "קורות החיים המעודכנים". */
+function extractTailoredCvBody(markdown: string, cvMarkdown?: string | null): string {
+  if (cvMarkdown?.trim()) return cvMarkdown.trim();
+  const text = (markdown || "").trim();
+  if (!text) return "";
+
+  const hrSplit = text.split(/\n---\s*\n/);
+  if (hrSplit.length >= 2) {
+    let body = hrSplit.slice(1).join("\n---\n").trim();
+    body = body.replace(
+      /^##\s*(?:קורות החיים המעודכנים|The Tailored CV|Tailored CV)\s*\n+/i,
+      ""
+    );
+    return body.trim() || text;
+  }
+
+  const headingMatch = text.match(
+    /^##\s*(?:קורות החיים המעודכנים|The Tailored CV|Tailored CV)\s*$/im
+  );
+  if (headingMatch?.index != null) {
+    return text.slice(headingMatch.index + headingMatch[0].length).trim() || text;
+  }
+  return text;
+}
+
 export default function CvDetails({
   cvId,
   cv,
@@ -288,8 +313,12 @@ export default function CvDetails({
 
   const handleCopyTailored = async () => {
     if (!tailoredCv?.markdown) return;
+    const cvOnly = extractTailoredCvBody(
+      tailoredCv.markdown,
+      tailoredCv.cv_markdown
+    );
     try {
-      await navigator.clipboard.writeText(tailoredCv.markdown);
+      await navigator.clipboard.writeText(cvOnly);
       setCopyDone(true);
       window.setTimeout(() => setCopyDone(false), 2000);
     } catch {
@@ -299,10 +328,14 @@ export default function CvDetails({
 
   const handleDownloadTailored = () => {
     if (!tailoredCv?.markdown) return;
+    const cvOnly = extractTailoredCvBody(
+      tailoredCv.markdown,
+      tailoredCv.cv_markdown
+    );
     const safeTitle = (tailoredCv.title || "job")
       .replace(/[^\w\u0590-\u05FF-]+/g, "_")
       .slice(0, 40);
-    downloadTextFile(`cv-tailored-${safeTitle}-${tailoredCv.job_id}.md`, tailoredCv.markdown);
+    downloadTextFile(`cv-tailored-${safeTitle}-${tailoredCv.job_id}.md`, cvOnly);
   };
 
   const renderApplyButton = (match: CvMatch) => {
@@ -711,9 +744,18 @@ export default function CvDetails({
                 סגור
               </button>
             </div>
-            {(tailoredCv.highlights?.length ?? 0) > 0 && (
+            {(tailoredCv.estimated_ats_score != null ||
+              (tailoredCv.changes_breakdown?.length ?? 0) > 0) && (
               <p className="tailored-cv-meta">
-                <b>הודגש:</b> {tailoredCv.highlights.join(" · ")}
+                {tailoredCv.estimated_ats_score != null && (
+                  <>
+                    <b>ציון משוער:</b> {tailoredCv.estimated_ats_score}/100
+                    {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
+                  </>
+                )}
+                {(tailoredCv.changes_breakdown?.length ?? 0) > 0 && (
+                  <span className="cv-meta">פירוט השינויים בגוף המסמך למטה</span>
+                )}
               </p>
             )}
             {(tailoredCv.caveats?.length ?? 0) > 0 && (
@@ -762,7 +804,7 @@ export default function CvDetails({
                 {tailoringId === tailoredCv.job_id ? "מייצר קורות חיים..." : "צור מחדש"}
               </button>
               <button type="button" className="btn btn-ghost" onClick={handleCopyTailored}>
-                {copyDone ? "הועתק!" : "העתק ללוח"}
+                {copyDone ? "הועתק קו״ח!" : "העתק קורות חיים"}
               </button>
               <button type="button" className="btn btn-primary" onClick={handleDownloadTailored}>
                 הורד Markdown
