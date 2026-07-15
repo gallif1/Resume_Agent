@@ -246,3 +246,200 @@ def test_tailor_requires_api_key(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch)
             force=True,
         )
     assert exc.value.status_code == 503
+
+
+def test_format_matcher_feedback_lists_gaps():
+    text = svc.format_matcher_feedback(
+        {
+            "ats_score": 54,
+            "score_label": "Partial Match",
+            "missing_keywords": ["Docker", "Kubernetes"],
+            "missing_mandatory_requirements": ["3+ years experience"],
+            "cv_improvements": ["Add Docker to skills"],
+            "score_reasons": ["Required skills: 1/3 matched"],
+            "component_scores": {"required_skills": 33.0},
+            "profile_match_score": 48,
+        }
+    )
+    assert "54/100" in text
+    assert "Docker" in text
+    assert "Kubernetes" in text
+    assert "3+ years experience" in text
+    assert "refine the previous draft" in text
+
+
+def test_evaluate_tailored_draft_detects_missing_skills(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    from job_analyzer import JobProfile
+
+    profile = {
+        "raw_text": "Gal\nTechnical Support\nPython SQL",
+        "experience": {
+            "job_titles": ["Technical Support"],
+            "years_of_experience_estimate": 2,
+            "seniority_level": "junior",
+        },
+        "skills": {"programming_languages": ["Python", "SQL"]},
+        "universal_profile": {
+            "canonical_skills": ["Python", "SQL"],
+            "seniority_level": "junior",
+            "years_of_experience": 2,
+        },
+    }
+    draft = "# Gal\n\n## Skills\nPython | SQL\n\n## Experience\n- Support work\n"
+    job = {"id": 1, "title": "Backend Engineer", "full_description": "Need Python Docker"}
+    job_profile = JobProfile(
+        title="Backend Engineer",
+        required_skills=["Python", "Docker", "Kubernetes"],
+        technologies=["Python", "Docker"],
+        seniority="junior",
+        years_experience_min=1,
+    )
+    feedback = svc.evaluate_tailored_draft(
+        cv_profile=profile,
+        draft_markdown=draft,
+        job=job,
+        job_profile=job_profile,
+    )
+    assert feedback["ats_score"] is not None
+    assert "Docker" in feedback["missing_required_skills"] or "Docker" in feedback["missing_keywords"]
+    assert "Python" in feedback["matched_required_skills"]
+
+
+def test_build_regenerate_user_prompt_includes_sections():
+    prompt = svc.build_regenerate_user_prompt(
+        base_cv_data="RAW",
+        job_description="Title: Dev",
+        previous_tailored_cv="# Draft\nPython",
+        matcher_feedback={
+            "ats_score": 40,
+            "score_label": "Weak Match",
+            "missing_keywords": ["Go"],
+        },
+    )
+    assert "===== matcher_feedback =====" in prompt
+    assert "===== previous_tailored_cv =====" in prompt
+    assert "===== base_cv_data =====" in prompt
+    assert "===== job_description =====" in prompt
+    assert "40/100" in prompt
+    assert "Go" in prompt
+
+
+def test_regenerate_requires_previous_draft(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    cv_id = "cv_regen_missing"
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    profile_dir = cvs_dir / cv_id
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "cv_profile.json").write_text(
+        json.dumps({"raw_text": "hello", "experience": {"job_titles": ["Support"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
+    with pytest.raises(svc.TailorCvError) as exc:
+        svc.tailor_cv_for_job(
+            cv_id,
+            {"id": 3, "title": "Dev", "full_description": "x"},
+            regenerate=True,
+        )
+    assert exc.value.status_code == 404
+
+
+def test_regenerate_sends_matcher_feedback(
+    cvs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cv_id = "cv_regen"
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    profile_dir = cvs_dir / cv_id
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "cv_profile.json").write_text(
+        json.dumps(
+            {
+                "raw_text": "Name\nTechnical Support\nPython SQL Docker basics",
+                "experience": {
+                    "job_titles": ["Technical Support"],
+                    "years_of_experience_estimate": 2,
+                    "seniority_level": "junior",
+                },
+                "skills": {
+                    "programming_languages": ["Python", "SQL"],
+                    "cloud_devops_tools": ["Docker"],
+                },
+                "universal_profile": {
+                    "canonical_skills": ["Python", "SQL", "Docker"],
+                    "technologies_tools": ["Docker"],
+                    "seniority_level": "junior",
+                    "years_of_experience": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    weak_draft = """## פירוט שינויים
+- Draft 1
+
+## ציון התאמה למשרה
+**ציון משוער: 45/100**
+
+---
+
+## קורות החיים המעודכנים
+
+# Name
+
+## Skills
+Python | SQL
+
+## Experience
+### Technical Support
+- Helped users with Windows
+"""
+    svc.save_tailored_cv(cv_id, 5, weak_draft)
+
+    captured: dict = {}
+
+    def _fake_openai(system_prompt, user_prompt, **kwargs):
+        captured["system"] = system_prompt
+        captured["user"] = user_prompt
+        return {
+            "markdown": "",
+            "changes_breakdown": ["Integrated Docker from matcher gaps"],
+            "estimated_ats_score": 72,
+            "cv_markdown": (
+                "# Name\n\n## Skills\nPython | SQL | Docker\n\n"
+                "## Experience\n### Technical Support\n"
+                "- Supported production apps with Docker containers and SQL\n"
+            ),
+            "highlights": ["Docker"],
+            "caveats": [],
+            "_from_cache": False,
+        }
+
+    monkeypatch.setattr(svc, "call_openai_json", _fake_openai)
+    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
+
+    job = {
+        "id": 5,
+        "title": "Backend Engineer",
+        "company": "Acme",
+        "full_description": "Python Docker SQL",
+        "job_profile": json.dumps(
+            {
+                "title": "Backend Engineer",
+                "required_skills": ["Python", "Docker", "SQL"],
+                "technologies": ["Python", "Docker", "SQL"],
+                "seniority": "junior",
+                "years_experience_min": 1,
+            }
+        ),
+    }
+    result = svc.tailor_cv_for_job(cv_id, job, regenerate=True)
+    assert result["regenerated"] is True
+    assert "REGENERATE & OPTIMIZE" in captured["system"] or "matcher_feedback" in captured["user"]
+    assert "===== matcher_feedback =====" in captured["user"]
+    assert "Docker" in captured["user"]
+    assert result["matcher_feedback"]["previous"]["ats_score"] is not None
+    assert result["matcher_feedback"]["current"]["ats_score"] is not None
+    assert "Docker" in result["cv_markdown"]
+    assert svc.tailored_cv_path(cv_id, 5).exists()
+    # Deterministic score should be embedded in the returned markdown.
+    assert result["estimated_ats_score"] == result["matcher_feedback"]["current"]["ats_score"]

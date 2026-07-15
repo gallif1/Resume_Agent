@@ -181,6 +181,21 @@ export interface CvMatch {
   updated_at: string | null;
 }
 
+export interface MatcherFeedbackSnapshot {
+  ats_score?: number | null;
+  score_label?: string | null;
+  matched_required_skills?: string[];
+  missing_required_skills?: string[];
+  missing_mandatory_requirements?: string[];
+  missing_keywords?: string[];
+  cv_improvements?: string[];
+  score_reasons?: string[];
+  component_scores?: Record<string, number>;
+  profile_match_score?: number | null;
+  profile_missing_skills?: string[];
+  mandatory_failed?: boolean;
+}
+
 export interface TailoredCvResponse {
   cv_id: string;
   job_id: number;
@@ -196,6 +211,11 @@ export interface TailoredCvResponse {
   from_cache: boolean;
   saved_path: string;
   generated_at?: string | null;
+  regenerated?: boolean;
+  matcher_feedback?: {
+    previous?: MatcherFeedbackSnapshot;
+    current?: MatcherFeedbackSnapshot;
+  } | null;
 }
 
 export interface CvScanStatus {
@@ -347,12 +367,15 @@ export function updateMatchStatus(
 export function tailorCvForJob(
   cvId: string,
   jobId: number,
-  options?: { force?: boolean }
+  options?: { force?: boolean; regenerate?: boolean }
 ): Promise<TailoredCvResponse> {
-  return request(`/cvs/${cvId}/jobs/${jobId}/tailor-cv`, {
+  const regenerate = Boolean(options?.regenerate);
+  const force = Boolean(options?.force) || regenerate;
+  const qs = regenerate ? "?regenerate=true" : "";
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailor-cv${qs}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ force: options?.force ?? false }),
+    body: JSON.stringify({ force }),
   });
 }
 
