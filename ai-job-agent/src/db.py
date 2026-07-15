@@ -1717,6 +1717,34 @@ def cv_job_needs_matching(
     return False
 
 
+def refresh_cv_job_match_scan(
+    cv_id: str,
+    job_id: int,
+    scan_id: int | None,
+    *,
+    db_path: Path = DB_PATH,
+) -> bool:
+    """Attach an existing match row to the current scan without rescoring.
+
+    The UI lists matches for the latest scan_id. Without this, jobs skipped as
+    "already matched" disappear from the latest-scan view.
+    """
+    if scan_id is None:
+        return False
+    now = _utc_now()
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE cv_job_matches
+            SET scan_id = ?, updated_at = ?
+            WHERE cv_id = ? AND job_id = ?
+            """,
+            (scan_id, now, cv_id, job_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 def get_cv_matches(
     cv_id: str,
     *,

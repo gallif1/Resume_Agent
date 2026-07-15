@@ -143,11 +143,17 @@ DRUSHIM_BASE_URL = "https://www.drushim.co.il"
 # LinkedIn job search (public guest endpoints — no login required)
 LINKEDIN_BASE_URL = "https://www.linkedin.com"
 LINKEDIN_ENABLED = os.getenv("LINKEDIN_ENABLED", "true").lower() in ("1", "true", "yes")
-LINKEDIN_LOCATION = os.getenv("LINKEDIN_LOCATION", "Israel").strip()
-# How many result pages (25 jobs each) to fetch per search query.
-# Slightly deeper when running from the web UI so scans get a real pool.
-_DEFAULT_LINKEDIN_MAX_PAGES = "3" if AGENT_CV_ID else "2"
+# Broad country/region string — avoid narrow city strings that collapse guest results.
+LINKEDIN_LOCATION = os.getenv("LINKEDIN_LOCATION", "Israel").strip() or "Israel"
+# LinkedIn geoId for Israel (stable guest-API location filter). Empty disables geoId.
+LINKEDIN_GEO_ID = os.getenv("LINKEDIN_GEO_ID", "101620260").strip()
+# Guest API currently returns ~10 job cards per page (was historically 25).
+LINKEDIN_JOBS_PER_PAGE = int(os.getenv("LINKEDIN_JOBS_PER_PAGE", "10"))
+# How many result pages to fetch per search query.
+_DEFAULT_LINKEDIN_MAX_PAGES = "5" if AGENT_CV_ID else "4"
 LINKEDIN_MAX_PAGES = int(os.getenv("LINKEDIN_MAX_PAGES", _DEFAULT_LINKEDIN_MAX_PAGES))
+# Retries with exponential backoff when LinkedIn returns 429/503.
+LINKEDIN_MAX_RETRIES = int(os.getenv("LINKEDIN_MAX_RETRIES", "3"))
 
 # GotFriends job search (public HTML — no login required)
 GOTFRIENDS_BASE_URL = "https://www.gotfriends.co.il"

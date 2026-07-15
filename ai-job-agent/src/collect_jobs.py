@@ -43,8 +43,11 @@ from config import (
     GOTFRIENDS_MAX_PAGES,
     HEADLESS,
     LINKEDIN_BASE_URL,
+    LINKEDIN_GEO_ID,
+    LINKEDIN_JOBS_PER_PAGE,
     LINKEDIN_LOCATION,
     LINKEDIN_MAX_PAGES,
+    LINKEDIN_MAX_RETRIES,
     LOGS_DIR,
 )
 from db import get_known_job_identity_keys, init_db, upsert_collected_job
@@ -685,28 +688,75 @@ def collect_drushim_jobs(
         )
 
 
-LINKEDIN_JOBS_PER_PAGE = 25
+LINKEDIN_USER_AGENTS = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+)
 
-LINKEDIN_HEADERS = browser_http_headers()
+
+def _linkedin_headers(*, user_agent: str | None = None) -> dict[str, str]:
+    """Browser-like headers for LinkedIn guest job search."""
+    headers = browser_http_headers(referer=f"{LINKEDIN_BASE_URL}/jobs/search/")
+    headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    headers["Sec-Fetch-Site"] = "same-origin"
+    headers["Sec-Fetch-Mode"] = "cors"
+    headers["Sec-Fetch-Dest"] = "empty"
+    if user_agent:
+        headers["User-Agent"] = user_agent
+    return headers
 
 
 def build_linkedin_search_url(query: str, start: int = 0) -> str:
-    """Build a LinkedIn guest jobs-search API URL (no login required)."""
-    params = {
+    """Build a LinkedIn guest jobs-search API URL (no login required).
+
+    Uses broad location defaults (Israel + geoId). No seniority / experience
+    filters — those belong in matching, not collection.
+    """
+    params: dict[str, str | int] = {
         "keywords": query,
         "location": LINKEDIN_LOCATION,
-        "start": start,
+        "start": max(0, int(start)),
     }
+    if LINKEDIN_GEO_ID:
+        params["geoId"] = LINKEDIN_GEO_ID
     return f"{LINKEDIN_BASE_URL}/jobs-guest/jobs/api/seeMoreJobPostings/search?{urlencode(params)}"
+
+
+def _linkedin_response_blocked(status_code: int, html: str) -> str | None:
+    """Return a human reason when LinkedIn blocked/throttled the guest API."""
+    if status_code == 429:
+        return "rate_limited_429"
+    if status_code in (401, 403):
+        return f"blocked_http_{status_code}"
+    if status_code >= 500:
+        return f"server_error_{status_code}"
+    lowered = (html or "").lower()
+    if not lowered.strip():
+        return "empty_body"
+    if "authwall" in lowered or "session_redirect" in lowered:
+        return "authwall"
+    if "captcha" in lowered or "challenge" in lowered:
+        return "challenge"
+    if is_cloudflare_blocked_html(html):
+        return "cloudflare"
+    return None
 
 
 def _parse_linkedin_cards(html: str) -> list[dict]:
     """Parse job cards from a LinkedIn guest search response."""
+    if not html or not html.strip():
+        return []
+
     soup = BeautifulSoup(html, "html.parser")
     jobs: list[dict] = []
     seen_ids: set[str] = set()
 
-    cards = soup.select("li") or soup.select("div.base-card")
+    cards = soup.select("div.base-card") or soup.select("li")
     for card in cards:
         link = card.select_one("a.base-card__full-link, a[href*='/jobs/view/']")
         if link is None:
@@ -720,6 +770,7 @@ def _parse_linkedin_cards(html: str) -> list[dict]:
             if linkedin_id in seen_ids:
                 continue
             seen_ids.add(linkedin_id)
+            href = f"https://www.linkedin.com/jobs/view/{linkedin_id}"
 
         title_el = card.select_one("h3.base-search-card__title, h3")
         company_el = card.select_one("h4.base-search-card__subtitle a, h4 a, h4")
@@ -741,47 +792,143 @@ def _parse_linkedin_cards(html: str) -> list[dict]:
     return jobs
 
 
-def collect_linkedin_jobs(query: str, max_pages: int = LINKEDIN_MAX_PAGES) -> list[dict]:
-    """Fetch job cards from LinkedIn's public guest search API."""
-    print(f"Searching LinkedIn for: {query} (location: {LINKEDIN_LOCATION})")
+def _fetch_linkedin_page(
+    url: str,
+    *,
+    page_index: int,
+    max_retries: int = LINKEDIN_MAX_RETRIES,
+) -> tuple[int, str, str | None]:
+    """GET one LinkedIn guest page with UA rotation and exponential backoff.
+
+    Returns (status_code, body, error_reason_or_none).
+    """
+    last_status = 0
+    last_body = ""
+    last_reason: str | None = None
+
+    for attempt in range(max(1, max_retries)):
+        ua = LINKEDIN_USER_AGENTS[attempt % len(LINKEDIN_USER_AGENTS)]
+        headers = _linkedin_headers(user_agent=ua)
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+        except requests.RequestException as error:
+            last_reason = f"request_error:{error}"
+            wait_s = min(8.0, 1.5 * (2 ** attempt))
+            print(
+                f"  LinkedIn request error (page {page_index + 1}, "
+                f"attempt {attempt + 1}/{max_retries}): {error} — retry in {wait_s:.1f}s"
+            )
+            time.sleep(wait_s)
+            continue
+
+        last_status = response.status_code
+        last_body = response.text or ""
+        block_reason = _linkedin_response_blocked(last_status, last_body)
+        if block_reason in ("rate_limited_429", "server_error_503", "blocked_http_403") or (
+            block_reason and block_reason.startswith("server_error_")
+        ):
+            last_reason = block_reason
+            wait_s = min(20.0, 2.0 * (2 ** attempt))
+            print(
+                f"  LinkedIn {block_reason} (page {page_index + 1}, "
+                f"attempt {attempt + 1}/{max_retries}) — backoff {wait_s:.1f}s"
+            )
+            time.sleep(wait_s)
+            continue
+
+        if block_reason:
+            return last_status, last_body, block_reason
+        return last_status, last_body, None
+
+    return last_status, last_body, last_reason or "retries_exhausted"
+
+
+def collect_linkedin_jobs(
+    query: str,
+    max_pages: int = LINKEDIN_MAX_PAGES,
+) -> CollectionOutcome:
+    """Fetch job cards from LinkedIn's public guest search API with pagination."""
+    location_label = LINKEDIN_LOCATION
+    if LINKEDIN_GEO_ID:
+        location_label = f"{LINKEDIN_LOCATION} (geoId={LINKEDIN_GEO_ID})"
+    print(
+        f"Searching LinkedIn for: {query} "
+        f"(location: {location_label}, up to {max_pages} page(s), "
+        f"~{LINKEDIN_JOBS_PER_PAGE}/page)"
+    )
     all_jobs: list[dict] = []
+    seen_ids: set[str] = set()
+    page_size = max(1, LINKEDIN_JOBS_PER_PAGE)
+    last_status: int | None = None
 
     for page_index in range(max_pages):
-        start = page_index * LINKEDIN_JOBS_PER_PAGE
+        start = page_index * page_size
         url = build_linkedin_search_url(query, start=start)
+        print(f"  LinkedIn page {page_index + 1}/{max_pages}: start={start}")
+        print(f"  URL: {url}")
 
-        try:
-            response = requests.get(url, headers=LINKEDIN_HEADERS, timeout=30)
-        except requests.RequestException as error:
-            print(f"  LinkedIn request failed (page {page_index + 1}): {error}")
-            break
+        status, body, error_reason = _fetch_linkedin_page(url, page_index=page_index)
+        last_status = status
 
-        if response.status_code == 429:
-            print("  LinkedIn rate limit hit (429) — stopping this query.")
-            break
-        if response.status_code >= 400:
-            print(f"  LinkedIn returned HTTP {response.status_code} — stopping this query.")
-            break
+        if error_reason:
+            reason_he = {
+                "rate_limited_429": "לינקדאין חסם/הגביל בקשות (429)",
+                "authwall": "לינקדאין דרש התחברות (authwall)",
+                "challenge": "לינקדאין הציג אתגר אבטחה",
+                "cloudflare": "לינקדאין חסום ע״י Cloudflare",
+                "empty_body": "לינקדאין החזיר תשובה ריקה",
+            }.get(error_reason, f"לינקדאין: {error_reason}")
+            if all_jobs:
+                print(
+                    f"  LinkedIn stopped pagination after partial results "
+                    f"({error_reason}, HTTP {status}). Keeping {len(all_jobs)} job(s)."
+                )
+                break
+            print(f"  LinkedIn BLOCKED/empty for '{query}': {error_reason} (HTTP {status})")
+            return CollectionOutcome(
+                status="blocked" if "429" in error_reason or "auth" in error_reason or "challenge" in error_reason else "http_error",
+                reason=f"LinkedIn {error_reason} (HTTP {status})",
+                reason_he=reason_he,
+                http_status=status or None,
+            )
 
-        page_jobs = _parse_linkedin_cards(response.text)
+        page_jobs = _parse_linkedin_cards(body)
         if not page_jobs:
+            print(
+                f"  LinkedIn page {page_index + 1}: 0 parseable cards "
+                f"(HTTP {status}, body {len(body)} bytes) — stopping."
+            )
             break
 
-        all_jobs.extend(page_jobs)
-        if len(page_jobs) < LINKEDIN_JOBS_PER_PAGE:
+        # Adapt to the guest API's actual page size (currently ~10, not 25).
+        if page_index == 0:
+            page_size = max(len(page_jobs), 1)
+
+        added = 0
+        for job in page_jobs:
+            job_id = extract_linkedin_job_id(job.get("job_url"))
+            key = job_id or normalize_job_url(job.get("job_url"))
+            if not key or key in seen_ids:
+                continue
+            seen_ids.add(key)
+            all_jobs.append(job)
+            added += 1
+
+        print(f"  LinkedIn page {page_index + 1}: +{added} new ({len(page_jobs)} on page)")
+        if len(page_jobs) < page_size:
             break
+        if page_index < max_pages - 1:
+            time.sleep(1.5)
 
-        # Be polite between pages to avoid rate limiting.
-        time.sleep(1.5)
-
-    print(f"  LinkedIn returned {len(all_jobs)} job card(s)")
-    return all_jobs
-
-
-def _title_excluded(title: str, exclude_keywords: list[str]) -> bool:
-    """True when a job title matches one of the category's exclude keywords."""
-    title_l = (title or "").lower()
-    return any(kw.lower() in title_l for kw in exclude_keywords if kw)
+    print(f"  LinkedIn returned {len(all_jobs)} job card(s) for '{query}'")
+    if not all_jobs:
+        return CollectionOutcome(
+            status="empty",
+            reason="No LinkedIn job cards parsed",
+            reason_he=f"לינקדאין: לא נמצאו משרות לחיפוש '{query}'",
+            http_status=last_status,
+        )
+    return CollectionOutcome(jobs=all_jobs, status="ok", http_status=last_status)
 
 
 def save_jobs_to_db(
@@ -790,17 +937,21 @@ def save_jobs_to_db(
     source_query: str,
     source_category: str,
     source_strategy_hash: str | None,
-    exclude_keywords: list[str],
+    exclude_keywords: list[str] | None = None,
     seen_job_keys: set[str],
     known_db_keys: set[str],
     touched_job_keys: set[str],
 ) -> tuple[int, int, int, int, int, int, int]:
     """Upsert jobs into SQLite with strict run-level deduplication.
 
+    All scraped jobs are saved — seniority/experience exclude keywords are NOT
+    applied during collection (they belong in matching/scoring only).
+
     Returns:
         (raw_found, unique_processed, duplicates_skipped, already_in_db,
          excluded, inserted, touched_once)
     """
+    del exclude_keywords  # retained in signature for call-site compatibility
     raw_found = len(jobs)
     unique_processed = 0
     duplicates_skipped = 0
@@ -822,16 +973,7 @@ def save_jobs_to_db(
             duplicates_skipped += 1
             continue
 
-        if job_key in known_db_keys:
-            already_in_db += 1
-            seen_job_keys.add(job_key)
-            continue
-
-        if _title_excluded(title, exclude_keywords):
-            excluded += 1
-            seen_job_keys.add(job_key)
-            continue
-
+        already_known = job_key in known_db_keys
         seen_job_keys.add(job_key)
         unique_processed += 1
 
@@ -846,6 +988,13 @@ def save_jobs_to_db(
             source_category=source_category,
             source_strategy_hash=source_strategy_hash,
         )
+        if already_known and not is_new:
+            already_in_db += 1
+            if job_id is not None and job_key not in touched_job_keys:
+                touched_once += 1
+                touched_job_keys.add(job_key)
+            continue
+
         if is_new:
             inserted += 1
             known_db_keys.add(job_key)

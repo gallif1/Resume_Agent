@@ -24,6 +24,7 @@ from db import (
     job_needs_analysis,
     job_needs_matching,
     mark_all_jobs_for_rematch,
+    refresh_cv_job_match_scan,
     set_cv_last_scan,
     update_job_profile,
     update_match_result,
@@ -212,9 +213,13 @@ def match_all_jobs(
                 job, current_strategy_hash=strategy_hash, rematch=rematch
             )
         if not needs:
+            # Keep already-scored jobs visible on the current scan in the UI.
+            if cv_id and scan_id is not None:
+                refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
             stats["skipped"] += 1
             safe_print(
-                f"Skipping already matched job: {job.get('title', '')} @ {job.get('company', '')}"
+                f"Reusing prior match for current scan: "
+                f"{job.get('title', '')} @ {job.get('company', '')}"
             )
             continue
 
