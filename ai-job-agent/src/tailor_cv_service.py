@@ -14,12 +14,19 @@ from ai_client import (
     is_ai_available,
     truncate_text,
 )
+from ats_candidate import AtsCandidateProfile, build_ats_candidate
+from ats_scorer import AtsMatchResult
+from ats_scorer import score as ats_score
 from config import OPENAI_CV_MAX_CHARS, OPENAI_JOB_MAX_CHARS, cv_data_dir
 from job_analyzer import JobProfile, parse_stored_job_profile
+from multilingual_normalizer import expand_synonyms, to_canonical
+from profile_matcher import score as profile_match_score
 from profile_utils import load_cv_profile
+from skill_normalizer import normalize_skill
 
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
 TAILOR_PROMPT_VERSION = "v3"
+REGENERATE_PROMPT_VERSION = "v1"
 
 TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
 to maximize honest keyword/semantic alignment with ONE target job description.
@@ -114,7 +121,7 @@ ZERO HALLUCINATION / HARD CONSTRAINTS
    metrics, or years of experience absent from base_cv_data.
 2. NEVER rename real past job titles to match the target role.
 3. You MAY reframe existing bullets and weave in JD keywords ONLY when they honestly
-   map to skills/experience already on the CV.
+   map to skills/experience already on base_cv_data.
 4. If the candidate lacks a required skill, do NOT claim it. Omit it or note an
    adjacent evidenced skill in caveats — never fabricate.
 5. Preserve contact details, education facts, dates, and employers from base_cv_data.
@@ -125,6 +132,30 @@ ZERO HALLUCINATION / HARD CONSTRAINTS
 8. Keep `cv_markdown` identical to the body under "## קורות החיים המעודכנים"
    (without that heading). Keep `estimated_ats_score` consistent with section 2.
 """
+
+REGENERATE_SYSTEM_PROMPT = (
+    TAILOR_SYSTEM_PROMPT
+    + """
+
+================================================================================
+REGENERATE & OPTIMIZE MODE (feedback loop)
+================================================================================
+You are refining a PREVIOUS tailored draft. The user message includes:
+- previous_tailored_cv — the last draft
+- matcher_feedback — exact gaps from a deterministic ATS matcher (score, missing skills/keywords)
+- base_cv_data — ground truth (still the only allowed evidence)
+- job_description — the target job
+
+Your ONLY goal: raise the ATS score by closing the listed gaps.
+- Directly integrate missing keywords/skills into Skills, Experience bullets, and Projects
+  WHEN they are honestly evidenced in base_cv_data (synonyms, adjacent tools, real usage).
+- Prefer the exact keyword spelling used in matcher_feedback / the JD when truthful.
+- In "## פירוט שינויים", list which matcher gaps you addressed (and which you could not,
+  honestly, in caveats).
+- Do NOT invent skills just because the matcher listed them as missing.
+- Keep real job titles, companies, and dates unchanged.
+"""
+)
 
 HR_SPLIT_RE = re.compile(r"\n---\s*\n", re.MULTILINE)
 CV_SECTION_HEADING_RE = re.compile(
@@ -313,6 +344,216 @@ def build_tailor_user_prompt(
     )
 
 
+def _skill_appears_in_text(skill: str, text: str) -> bool:
+    """True when a skill (or known synonym) appears in free text."""
+    haystack = (text or "").lower()
+    if not skill or not haystack:
+        return False
+    candidates: set[str] = {skill.strip().lower()}
+    canon = to_canonical(skill) or normalize_skill(skill)
+    if canon:
+        candidates.add(canon.lower())
+        candidates.update(v.lower() for v in expand_synonyms(canon) if v)
+        candidates.update(v.lower() for v in expand_synonyms(skill) if v)
+    for term in candidates:
+        cleaned = re.sub(r"\s+", " ", term).strip()
+        if len(cleaned) >= 2 and cleaned in haystack:
+            return True
+    return False
+
+
+def _job_skill_universe(job_profile: JobProfile | None) -> list[str]:
+    if job_profile is None:
+        return []
+    items: list[str] = []
+    for bucket in (
+        job_profile.required_skills,
+        job_profile.preferred_skills,
+        job_profile.technologies,
+    ):
+        for skill in bucket or []:
+            text = str(skill).strip()
+            if text and text not in items:
+                items.append(text)
+    return items
+
+
+def build_draft_ats_candidate(
+    cv_profile: dict[str, Any],
+    draft_markdown: str,
+    job_profile: JobProfile | None,
+) -> AtsCandidateProfile:
+    """Build an ATS candidate that reflects skills present in the tailored draft."""
+    base = build_ats_candidate(cv_profile)
+    draft = draft_markdown or ""
+
+    check_skills = list(_job_skill_universe(job_profile))
+    for skill in list(base.skills) + list(base.technologies) + list(base.languages):
+        if skill not in check_skills:
+            check_skills.append(skill)
+
+    found: set[str] = set()
+    for skill in check_skills:
+        if _skill_appears_in_text(skill, draft):
+            canon = normalize_skill(skill, domain=base.domain)
+            if canon:
+                found.add(canon)
+
+    # Keep language/cert facts from the base profile (hard attributes).
+    found |= set(base.languages) | set(base.certifications)
+
+    draft_l = draft.lower()
+    projects = [
+        p for p in base.projects if p and str(p).lower() in draft_l
+    ] or list(base.projects)
+
+    return AtsCandidateProfile(
+        skills=sorted(found),
+        technologies=sorted(
+            {
+                normalize_skill(t, domain=base.domain)
+                for t in base.technologies
+                if t and _skill_appears_in_text(t, draft)
+            }
+            - {""}
+        ),
+        experience_years=base.experience_years,
+        previous_roles=list(base.previous_roles),
+        projects=projects,
+        education=list(base.education),
+        languages=list(base.languages),
+        certifications=list(base.certifications),
+        seniority=base.seniority,
+        domain=base.domain,
+    )
+
+
+def evaluate_tailored_draft(
+    *,
+    cv_profile: dict[str, Any],
+    draft_markdown: str,
+    job: dict[str, Any],
+    job_profile: JobProfile | None,
+) -> dict[str, Any]:
+    """Run deterministic ATS + profile matchers against a tailored draft."""
+    body = extract_cv_markdown_for_copy(draft_markdown)
+    candidate = build_draft_ats_candidate(cv_profile, body, job_profile)
+
+    empty_job = JobProfile(title=str(job.get("title") or ""))
+    effective_job = job_profile or empty_job
+    ats_result: AtsMatchResult = ats_score(candidate, effective_job, job)
+
+    universal = dict(cv_profile.get("universal_profile") or {})
+    # Reflect draft skill coverage in the universal profile used by profile_matcher.
+    draft_skills = sorted(candidate.all_skills_set)
+    if draft_skills:
+        universal["canonical_skills"] = draft_skills
+        universal["technologies_tools"] = list(candidate.technologies)
+
+    profile_result = profile_match_score(universal, job, job_profile)
+
+    missing_keywords = list(
+        dict.fromkeys(
+            list(ats_result.missing_required_skills)
+            + list(profile_result.missing_skills)
+        )
+    )
+
+    return {
+        "ats_score": ats_result.ats_score,
+        "score_label": ats_result.score_label,
+        "matched_required_skills": list(ats_result.matched_required_skills),
+        "missing_required_skills": list(ats_result.missing_required_skills),
+        "missing_mandatory_requirements": list(
+            ats_result.missing_mandatory_requirements
+        ),
+        "missing_keywords": missing_keywords,
+        "cv_improvements": list(ats_result.cv_improvements),
+        "score_reasons": list(ats_result.score_reasons),
+        "component_scores": dict(ats_result.component_scores),
+        "profile_match_score": profile_result.score,
+        "profile_missing_skills": list(profile_result.missing_skills),
+        "mandatory_failed": bool(ats_result.mandatory_failed),
+    }
+
+
+def format_matcher_feedback(feedback: dict[str, Any]) -> str:
+    """Human-readable feedback block for the regenerate OpenAI prompt."""
+    score = feedback.get("ats_score")
+    label = feedback.get("score_label") or ""
+    missing_kw = feedback.get("missing_keywords") or feedback.get(
+        "missing_required_skills"
+    ) or []
+    missing_mand = feedback.get("missing_mandatory_requirements") or []
+    improvements = feedback.get("cv_improvements") or []
+    reasons = feedback.get("score_reasons") or []
+    components = feedback.get("component_scores") or {}
+    profile_score = feedback.get("profile_match_score")
+
+    lines = [
+        f"The deterministic ATS matcher evaluated this draft at {score}/100 ({label}).",
+    ]
+    if profile_score is not None:
+        lines.append(f"Profile matcher score: {profile_score}/100.")
+    if missing_kw:
+        lines.append(
+            "It is still penalizing the CV for missing these specific keywords/skills: "
+            + ", ".join(str(x) for x in missing_kw[:20])
+            + "."
+        )
+    else:
+        lines.append("No missing required skill keywords were detected.")
+    if missing_mand:
+        lines.append(
+            "Failed / missing mandatory requirements: "
+            + ", ".join(str(x) for x in missing_mand[:12])
+            + "."
+        )
+    if components:
+        lines.append(
+            "Component scores: "
+            + ", ".join(f"{k}={v}" for k, v in components.items())
+            + "."
+        )
+    if improvements:
+        lines.append("Suggested CV improvements:")
+        lines.extend(f"- {item}" for item in improvements[:8])
+    if reasons:
+        lines.append("Matcher reasons:")
+        lines.extend(f"- {item}" for item in reasons[:8])
+    lines.append(
+        "Your task is to refine the previous draft to directly integrate these missing "
+        "keywords and address these gaps to maximize the score, while strictly keeping "
+        "the real job titles, dates, and zero-hallucination rules."
+    )
+    return "\n".join(lines)
+
+
+def build_regenerate_user_prompt(
+    *,
+    base_cv_data: str,
+    job_description: str,
+    previous_tailored_cv: str,
+    matcher_feedback: dict[str, Any],
+) -> str:
+    """User prompt for regenerate & optimize mode."""
+    feedback_text = format_matcher_feedback(matcher_feedback)
+    return (
+        "REGENERATE & OPTIMIZE the previous tailored CV using matcher feedback.\n"
+        "Start from previous_tailored_cv and close the listed gaps when honestly "
+        "supported by base_cv_data. Do not invent experience.\n"
+        "Return the same JSON/markdown structure as a normal tailor response.\n\n"
+        "===== matcher_feedback =====\n"
+        f"{feedback_text}\n\n"
+        "===== previous_tailored_cv =====\n"
+        f"{truncate_text(previous_tailored_cv, OPENAI_CV_MAX_CHARS)}\n\n"
+        "===== base_cv_data =====\n"
+        f"{base_cv_data}\n\n"
+        "===== job_description =====\n"
+        f"{job_description}"
+    )
+
+
 def _normalize_tailor_result(raw: dict[str, Any]) -> dict[str, Any]:
     changes = _string_list(
         raw.get("changes_breakdown") or raw.get("highlights"),
@@ -397,14 +638,150 @@ def _result_from_saved_markdown(markdown: str, *, saved_path: str) -> dict[str, 
     }
 
 
+def _load_cv_profile_or_raise(cv_id: str) -> dict[str, Any]:
+    cv_profile = load_cv_profile(cv_id)
+    if not cv_profile or not (
+        cv_profile.get("raw_text")
+        or cv_profile.get("experience")
+        or cv_profile.get("skills")
+    ):
+        raise TailorCvError(
+            "Parsed CV profile not found — run the agent / parse CV first",
+            status_code=404,
+        )
+    return cv_profile
+
+
+def _apply_matcher_score_to_result(
+    result: dict[str, Any],
+    *,
+    feedback: dict[str, Any],
+) -> dict[str, Any]:
+    """Prefer the deterministic matcher score in the saved/displayed document."""
+    score = _clamp_score(feedback.get("ats_score"))
+    if score is None:
+        return result
+
+    label = feedback.get("score_label") or ""
+    score_line = f"**ציון משוער: {score}/100**"
+    if label:
+        score_line += f" — {label} (מדד ATS דטרמיניסטי)"
+
+    changes = list(result.get("changes_breakdown") or [])
+    cv_markdown = result.get("cv_markdown") or ""
+    markdown = _assemble_structured_markdown(
+        changes_breakdown=changes,
+        estimated_ats_score=score,
+        cv_markdown=cv_markdown,
+        score_line=score_line,
+    )
+    return {
+        **result,
+        "markdown": markdown.strip(),
+        "estimated_ats_score": score,
+    }
+
+
+def _regenerate_tailored_cv(
+    cv_id: str,
+    job: dict[str, Any],
+    *,
+    use_cache: bool = False,
+) -> dict[str, Any]:
+    """Improve a previous tailored draft using matcher gap feedback."""
+    job_id = int(job["id"])
+    previous = load_saved_tailored_cv(cv_id, job_id)
+    if not previous:
+        raise TailorCvError(
+            "לא נמצא קובץ קורות חיים מותאם לשיפור — יש ליצור גרסה ראשונה קודם",
+            status_code=404,
+        )
+
+    if not is_ai_available():
+        raise TailorCvError(
+            "OPENAI_API_KEY is not configured — cannot tailor the CV",
+            status_code=503,
+        )
+
+    cv_profile = _load_cv_profile_or_raise(cv_id)
+    job_profile = parse_stored_job_profile(job.get("job_profile"))
+
+    previous_feedback = evaluate_tailored_draft(
+        cv_profile=cv_profile,
+        draft_markdown=previous,
+        job=job,
+        job_profile=job_profile,
+    )
+
+    base_cv_data = _cv_source_payload(cv_profile)
+    job_description = _job_prompt_payload(job, job_profile)
+    user_prompt = build_regenerate_user_prompt(
+        base_cv_data=base_cv_data,
+        job_description=job_description,
+        previous_tailored_cv=previous,
+        matcher_feedback=previous_feedback,
+    )
+
+    try:
+        raw = call_openai_json(
+            REGENERATE_SYSTEM_PROMPT,
+            user_prompt,
+            temperature=0.2,
+            use_cache=use_cache,
+            cache_namespace=(
+                f"tailor_cv_regen_{REGENERATE_PROMPT_VERSION}_"
+                f"{TAILOR_PROMPT_VERSION}_{cv_id}"
+            ),
+            cache_payload=(
+                f"regen|{REGENERATE_PROMPT_VERSION}|{TAILOR_PROMPT_VERSION}|"
+                f"{cv_id}|{job_id}|{previous_feedback.get('ats_score')}|"
+                f"{','.join((previous_feedback.get('missing_keywords') or [])[:12])}|"
+                f"{job_description[:1500]}|{previous[:3000]}"
+            ),
+        )
+    except OpenAIAPIError as exc:
+        raise TailorCvError(str(exc), status_code=502) from exc
+
+    result = _normalize_tailor_result(raw)
+
+    new_feedback = evaluate_tailored_draft(
+        cv_profile=cv_profile,
+        draft_markdown=result.get("cv_markdown") or result["markdown"],
+        job=job,
+        job_profile=job_profile,
+    )
+    result = _apply_matcher_score_to_result(result, feedback=new_feedback)
+
+    path = save_tailored_cv(cv_id, job_id, result["markdown"])
+    return {
+        **result,
+        "from_cache": bool(raw.get("_from_cache")),
+        "saved_path": str(path),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "regenerated": True,
+        "matcher_feedback": {
+            "previous": previous_feedback,
+            "current": new_feedback,
+        },
+    }
+
+
 def tailor_cv_for_job(
     cv_id: str,
     job: dict[str, Any],
     *,
     force: bool = False,
     use_cache: bool = True,
+    regenerate: bool = False,
 ) -> dict[str, Any]:
-    """Generate (or load) an ATS-tailored Markdown CV for one job."""
+    """Generate (or load) an ATS-tailored Markdown CV for one job.
+
+    When ``regenerate`` is True, score the previous draft with the deterministic
+    matcher and ask the LLM to close the measured gaps.
+    """
+    if regenerate:
+        return _regenerate_tailored_cv(cv_id, job, use_cache=False)
+
     job_id = int(job["id"])
     if not force:
         cached = load_saved_tailored_cv(cv_id, job_id)
@@ -419,16 +796,7 @@ def tailor_cv_for_job(
             status_code=503,
         )
 
-    cv_profile = load_cv_profile(cv_id)
-    if not cv_profile or not (
-        cv_profile.get("raw_text")
-        or cv_profile.get("experience")
-        or cv_profile.get("skills")
-    ):
-        raise TailorCvError(
-            "Parsed CV profile not found — run the agent / parse CV first",
-            status_code=404,
-        )
+    cv_profile = _load_cv_profile_or_raise(cv_id)
 
     job_profile = parse_stored_job_profile(job.get("job_profile"))
     base_cv_data = _cv_source_payload(cv_profile)
@@ -460,4 +828,5 @@ def tailor_cv_for_job(
         "from_cache": bool(raw.get("_from_cache")),
         "saved_path": str(path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "regenerated": False,
     }

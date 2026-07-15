@@ -14,6 +14,7 @@ Multi-CV endpoints (each CV has isolated data):
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
+           (?regenerate=true runs matcher feedback loop to improve ATS score)
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf  download tailored CV as PDF
     POST   /cvs/{cv_id}/jobs/{job_id}/apply          start automated job application
     GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
@@ -671,8 +672,17 @@ class TailorCvRequest(BaseModel):
 
 
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailor-cv")
-def tailor_cv_endpoint(cv_id: str, job_id: int, req: TailorCvRequest | None = None):
-    """Generate an ATS-optimized Markdown CV tailored to one job (no hallucinated experience)."""
+def tailor_cv_endpoint(
+    cv_id: str,
+    job_id: int,
+    regenerate: bool = False,
+    req: TailorCvRequest | None = None,
+):
+    """Generate an ATS-optimized Markdown CV tailored to one job (no hallucinated experience).
+
+    Pass ``?regenerate=true`` to score the previous draft with the deterministic
+    matcher and ask the LLM to close measured keyword/skill gaps.
+    """
     db.ensure_multi_cv_storage()
     if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
@@ -683,9 +693,11 @@ def tailor_cv_endpoint(cv_id: str, job_id: int, req: TailorCvRequest | None = No
     if job is None:
         raise HTTPException(status_code=404, detail="משרה לא נמצאה")
 
-    force = req.force if req else False
+    force = (req.force if req else False) or regenerate
     try:
-        result = tailor_cv_for_job(cv_id, job, force=force)
+        result = tailor_cv_for_job(
+            cv_id, job, force=force, regenerate=regenerate
+        )
     except TailorCvError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -711,6 +723,8 @@ def tailor_cv_endpoint(cv_id: str, job_id: int, req: TailorCvRequest | None = No
         "from_cache": bool(result.get("from_cache")),
         "saved_path": relative_path,
         "generated_at": result.get("generated_at"),
+        "regenerated": bool(result.get("regenerated")),
+        "matcher_feedback": result.get("matcher_feedback"),
     }
 
 

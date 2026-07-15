@@ -1612,6 +1612,42 @@ code {
   opacity: 0.7;
 }
 
+.btn-regenerate-optimize {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
+}
+
+.btn-regen-icon {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: btn-spin 0.7s linear infinite;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tailored-cv-score-delta {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.tailored-cv-gaps {
+  color: var(--text-muted);
+}
+
 .step-requires_user_action .apply-log-step-status {
   color: var(--warning);
 }

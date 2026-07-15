@@ -155,6 +155,7 @@ export default function CvDetails({
   const [tailoredCv, setTailoredCv] = useState<TailoredCvResponse | null>(null);
   const [copyDone, setCopyDone] = useState(false);
   const [pdfDownloading, setPdfDownloading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
@@ -288,24 +289,29 @@ export default function CvDetails({
     }
   };
 
+  const applyTailoredResult = (result: TailoredCvResponse) => {
+    setTailoredCv(result);
+    setMatches((prev) =>
+      prev.map((m) =>
+        m.job_id === result.job_id
+          ? {
+              ...m,
+              has_tailored_cv: true,
+              tailored_cv_updated_at:
+                result.generated_at ?? new Date().toISOString(),
+            }
+          : m
+      )
+    );
+  };
+
   const handleTailorCv = async (match: CvMatch, force = false) => {
     setTailoringId(match.job_id);
     setError(null);
     setCopyDone(false);
     try {
       const result = await tailorCvForJob(cvId, match.job_id, { force });
-      setTailoredCv(result);
-      setMatches((prev) =>
-        prev.map((m) =>
-          m.job_id === match.job_id
-            ? {
-                ...m,
-                has_tailored_cv: true,
-                tailored_cv_updated_at: result.generated_at ?? new Date().toISOString(),
-              }
-            : m
-        )
-      );
+      applyTailoredResult(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
     } finally {
@@ -350,6 +356,25 @@ export default function CvDetails({
       setError(e instanceof Error ? e.message : "שגיאה בהורדת PDF");
     } finally {
       setPdfDownloading(false);
+    }
+  };
+
+  const handleRegenerateOptimize = async () => {
+    if (!tailoredCv) return;
+    setRegenerating(true);
+    setError(null);
+    setCopyDone(false);
+    try {
+      const result = await tailorCvForJob(cvId, tailoredCv.job_id, {
+        regenerate: true,
+      });
+      applyTailoredResult(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "שגיאה בשיפור קורות החיים המותאמים"
+      );
+    } finally {
+      setRegenerating(false);
     }
   };
 
@@ -765,6 +790,14 @@ export default function CvDetails({
                 {tailoredCv.estimated_ats_score != null && (
                   <>
                     <b>ציון משוער:</b> {tailoredCv.estimated_ats_score}/100
+                    {tailoredCv.matcher_feedback?.previous?.ats_score != null &&
+                    tailoredCv.regenerated ? (
+                      <span className="tailored-cv-score-delta">
+                        {" "}
+                        (קודם: {tailoredCv.matcher_feedback.previous.ats_score}
+                        /100)
+                      </span>
+                    ) : null}
                     {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
                   </>
                 )}
@@ -773,6 +806,16 @@ export default function CvDetails({
                 )}
               </p>
             )}
+            {(tailoredCv.matcher_feedback?.current?.missing_keywords?.length ??
+              0) > 0 &&
+              tailoredCv.regenerated && (
+                <p className="tailored-cv-meta tailored-cv-gaps">
+                  <b>פערים שנותרו:</b>{" "}
+                  {tailoredCv.matcher_feedback?.current?.missing_keywords
+                    ?.slice(0, 8)
+                    .join(" · ")}
+                </p>
+              )}
             {(tailoredCv.caveats?.length ?? 0) > 0 && (
               <p className="tailored-cv-meta tailored-cv-caveats">
                 <b>הערות כנות:</b> {tailoredCv.caveats.join(" · ")}
@@ -784,6 +827,41 @@ export default function CvDetails({
             <div className="modal-actions">
               <button
                 type="button"
+                className="btn btn-ghost btn-regenerate-optimize"
+                onClick={handleRegenerateOptimize}
+                disabled={
+                  regenerating ||
+                  pdfDownloading ||
+                  tailoringId === tailoredCv.job_id
+                }
+              >
+                <span className="btn-regen-icon" aria-hidden="true">
+                  {regenerating ? (
+                    <span className="btn-spinner" />
+                  ) : (
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                      <path
+                        d="M21 12a9 9 0 1 1-2.64-6.36"
+                        stroke="currentColor"
+                        strokeWidth="1.85"
+                        strokeLinecap="round"
+                      />
+                      <path
+                        d="M21 4v5h-5"
+                        stroke="currentColor"
+                        strokeWidth="1.85"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
+                </span>
+                {regenerating
+                  ? "מנתח פערים ומייצר גרסה משופרת..."
+                  : "ייצר מחדש ושפר התאמה"}
+              </button>
+              <button
+                type="button"
                 className="btn btn-ghost"
                 onClick={async () => {
                   setTailoringId(tailoredCv.job_id);
@@ -793,19 +871,7 @@ export default function CvDetails({
                     const result = await tailorCvForJob(cvId, tailoredCv.job_id, {
                       force: true,
                     });
-                    setTailoredCv(result);
-                    setMatches((prev) =>
-                      prev.map((m) =>
-                        m.job_id === tailoredCv.job_id
-                          ? {
-                              ...m,
-                              has_tailored_cv: true,
-                              tailored_cv_updated_at:
-                                result.generated_at ?? new Date().toISOString(),
-                            }
-                          : m
-                      )
-                    );
+                    applyTailoredResult(result);
                   } catch (e) {
                     setError(
                       e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים"
@@ -814,21 +880,39 @@ export default function CvDetails({
                     setTailoringId(null);
                   }
                 }}
-                disabled={tailoringId === tailoredCv.job_id}
+                disabled={
+                  regenerating || tailoringId === tailoredCv.job_id
+                }
               >
-                {tailoringId === tailoredCv.job_id ? "מייצר קורות חיים..." : "צור מחדש"}
+                {tailoringId === tailoredCv.job_id
+                  ? "מייצר קורות חיים..."
+                  : "צור מחדש"}
               </button>
-              <button type="button" className="btn btn-ghost" onClick={handleCopyTailored}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={handleCopyTailored}
+                disabled={regenerating}
+              >
                 {copyDone ? "הועתק קו״ח!" : "העתק קורות חיים"}
               </button>
-              <button type="button" className="btn btn-ghost" onClick={handleDownloadTailored}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={handleDownloadTailored}
+                disabled={regenerating}
+              >
                 הורד Markdown
               </button>
               <button
                 type="button"
                 className="btn btn-primary btn-pdf-download"
                 onClick={handleDownloadTailoredPdf}
-                disabled={pdfDownloading || tailoringId === tailoredCv.job_id}
+                disabled={
+                  pdfDownloading ||
+                  regenerating ||
+                  tailoringId === tailoredCv.job_id
+                }
               >
                 <span className="btn-pdf-icon" aria-hidden="true">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
