@@ -9,8 +9,11 @@ from collect_jobs import (
     DrushimBrowserSession,
     _collect_drushim_with_page,
     _drushim_uses_browser,
+    build_drushim_api_search_url,
+    collect_drushim_jobs_api,
     collect_drushim_jobs_http,
     page_looks_blocked_drushim,
+    parse_drushim_api_jobs,
     parse_drushim_search_html,
 )
 
@@ -26,6 +29,36 @@ SAMPLE_DRUSHIM_HTML = """
 </body></html>
 """
 
+SAMPLE_DRUSHIM_API_PAGE = {
+    "ResultList": [
+        {
+            "Code": 111,
+            "Company": {"CompanyDisplayName": "Acme"},
+            "JobContent": {
+                "Name": "Python Developer",
+                "JobCode": 111,
+                "Description": "<p>Build APIs</p>",
+                "Regions": [{"NameInHebrew": "תל אביב"}],
+            },
+            "JobInfo": {"Link": "/job/111/abcd/", "Hash": "ABCD"},
+        },
+        {
+            "Code": 222,
+            "Company": {"NameInHebrew": "Beta"},
+            "JobContent": {
+                "Name": "Backend Engineer",
+                "JobCode": 222,
+                "Description": "Services",
+                "Regions": [],
+            },
+            "JobInfo": {"Link": "/job/222/efgh/", "Hash": "EFGH"},
+        },
+    ],
+    "NextPageNumber": 1,
+    "TotalPagesNumber": 3,
+    "Count": 2,
+}
+
 
 def test_parse_drushim_search_html_extracts_job_fields():
     jobs = parse_drushim_search_html(SAMPLE_DRUSHIM_HTML)
@@ -39,8 +72,62 @@ def test_parse_drushim_search_html_extracts_job_fields():
     assert jobs[0]["description"] == "Great role"
 
 
+def test_parse_drushim_api_jobs_extracts_fields():
+    jobs = parse_drushim_api_jobs(SAMPLE_DRUSHIM_API_PAGE)
+
+    assert len(jobs) == 2
+    assert jobs[0]["title"] == "Python Developer"
+    assert jobs[0]["company"] == "Acme"
+    assert jobs[0]["location"] == "תל אביב"
+    assert jobs[0]["job_url"] == "https://www.drushim.co.il/job/111/abcd"
+    assert jobs[0]["description"] == "Build APIs"
+    assert jobs[0]["source"] == "drushim"
+
+
+def test_build_drushim_api_search_url_pagination():
+    assert "searchterm=python" in build_drushim_api_search_url("python")
+    assert "page=" not in build_drushim_api_search_url("python")
+    assert "page=2" in build_drushim_api_search_url("python", page=2)
+
+
+def test_collect_drushim_jobs_api_paginates():
+    page1 = dict(SAMPLE_DRUSHIM_API_PAGE)
+    page2 = {
+        "ResultList": [
+            {
+                "Code": 333,
+                "Company": {"CompanyDisplayName": "Gamma"},
+                "JobContent": {"Name": "Django Dev", "JobCode": 333, "Description": "", "Regions": []},
+                "JobInfo": {"Link": "/job/333/zzzz/", "Hash": "ZZZZ"},
+            }
+        ],
+        "NextPageNumber": -1,
+        "TotalPagesNumber": 2,
+        "Count": 1,
+    }
+
+    responses = [
+        MagicMock(status_code=200, **{}),
+        MagicMock(status_code=200, **{}),
+    ]
+    responses[0].json.return_value = page1
+    responses[1].json.return_value = page2
+
+    with patch("collect_jobs.requests.get", side_effect=responses) as mock_get, patch(
+        "collect_jobs.time.sleep"
+    ):
+        outcome = collect_drushim_jobs_api("python", max_pages=3)
+
+    assert outcome.status == "ok"
+    assert len(outcome.jobs) == 3
+    assert mock_get.call_count == 2
+
+
 def test_collect_drushim_jobs_http_returns_jobs():
-    with patch("collect_jobs.requests.get") as mock_get:
+    with patch("collect_jobs.collect_drushim_jobs_api") as mock_api, patch(
+        "collect_jobs.requests.get"
+    ) as mock_get:
+        mock_api.return_value = MagicMock(status="empty", jobs=[], reason_he=None)
         mock_get.return_value.status_code = 200
         mock_get.return_value.text = SAMPLE_DRUSHIM_HTML
 
@@ -50,10 +137,22 @@ def test_collect_drushim_jobs_http_returns_jobs():
     assert len(outcome.jobs) == 1
 
 
-def test_drushim_uses_browser_false_on_server_http_only():
-    with patch("collect_jobs.DRUSHIM_HTTP_FIRST", True), patch(
-        "collect_jobs.DRUSHIM_BROWSER_FALLBACK", False
-    ):
+def test_collect_drushim_jobs_http_prefers_api():
+    api_jobs = parse_drushim_api_jobs(SAMPLE_DRUSHIM_API_PAGE)
+    with patch("collect_jobs.collect_drushim_jobs_api") as mock_api, patch(
+        "collect_jobs.requests.get"
+    ) as mock_get:
+        mock_api.return_value = MagicMock(status="ok", jobs=api_jobs, reason_he=None)
+
+        outcome = collect_drushim_jobs_http("python")
+
+    assert outcome.status == "ok"
+    assert len(outcome.jobs) == 2
+    mock_get.assert_not_called()
+
+
+def test_drushim_uses_browser_false_when_browser_fallback_disabled():
+    with patch("collect_jobs.DRUSHIM_BROWSER_FALLBACK", False):
         assert _drushim_uses_browser() is False
 
 
@@ -90,10 +189,13 @@ def test_drushim_session_reuses_page_without_relaunching_browser():
     response = MagicMock()
     response.status = 200
     page.goto.return_value = response
+    empty_api = MagicMock(status="empty", jobs=[], reason_he=None)
 
     with patch("collect_jobs.create_browser_context", return_value=(MagicMock(), page)), patch(
         "collect_jobs.sync_playwright"
-    ) as mock_playwright:
+    ) as mock_playwright, patch(
+        "collect_jobs.collect_drushim_jobs_api", return_value=empty_api
+    ):
         mock_playwright.return_value.start.return_value = MagicMock()
         with DrushimBrowserSession(headless=True) as session:
             outcome1 = session.collect("python")

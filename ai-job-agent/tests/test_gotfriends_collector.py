@@ -70,6 +70,26 @@ def test_collect_gotfriends_jobs_parses_listing_pages():
     assert all(job["source"] == "gotfriends" for job in jobs)
 
 
+def test_resolve_gotfriends_prefers_specific_profession_over_broad_developer():
+    with patch("gotfriends_collector.fetch_profession_slugs", return_value={}):
+        urls = gf.resolve_gotfriends_listing_urls("Python Developer")
+
+    assert any("python-developer" in url for url in urls)
+    assert not any(url.rstrip("/").endswith("/backend-developer") for url in urls)
+
+
+def test_resolve_gotfriends_caps_broad_lobby_fanout():
+    with patch(
+        "gotfriends_collector.fetch_profession_slugs",
+        return_value={
+            "software": [f"slug-{i}" for i in range(10)],
+        },
+    ):
+        urls = gf.resolve_gotfriends_listing_urls("software engineer slug-1")
+
+    assert len(urls) <= 3
+
+
 def test_fetch_gotfriends_html_skips_playwright_on_server_mode():
     blocked = "<html><title>Attention Required! | Cloudflare</title></html>"
 

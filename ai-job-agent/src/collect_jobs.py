@@ -31,13 +31,16 @@ from config import (
     AGENT_CV_ID,
     COLLECT_MAX_CATEGORIES,
     COLLECT_MAX_QUERIES,
+    DRUSHIM_API_BASE_URL,
     DRUSHIM_BASE_URL,
     DRUSHIM_BROWSER_FALLBACK,
     DRUSHIM_GOTO_TIMEOUT_MS,
     DRUSHIM_HTTP_FIRST,
     DRUSHIM_HTTP_TIMEOUT_SEC,
+    DRUSHIM_MAX_PAGES,
     DRUSHIM_PAGE_WAIT_MS,
     DRUSHIM_SELECTOR_TIMEOUT_MS,
+    GOTFRIENDS_MAX_PAGES,
     HEADLESS,
     LINKEDIN_BASE_URL,
     LINKEDIN_LOCATION,
@@ -54,6 +57,7 @@ from job_identity import (
     normalize_job_url,
 )
 from profile_utils import load_profile
+from query_builder import select_diverse_queries
 from role_analyzer import (
     collection_plan_from_roles,
     get_collection_query_plan,
@@ -169,8 +173,109 @@ EXTRACT_JOBS_JS = """
 
 
 def build_drushim_search_url(query: str) -> str:
-    """Build a Drushim search URL for the given query."""
+    """Build a Drushim HTML search URL for the given query."""
     return f"{DRUSHIM_BASE_URL}/jobs/search/?searchterm={quote(query)}"
+
+
+def build_drushim_api_search_url(query: str, *, page: int | None = None) -> str:
+    """Build a Drushim JSON search API URL.
+
+    Omitting ``page`` returns the first SSR-sized batch (~20–24 jobs).
+    ``page=1`` and up return subsequent pages (~10 jobs each).
+    """
+    params: dict[str, str | int] = {"searchterm": query}
+    if page is not None and page > 0:
+        params["page"] = page
+    return f"{DRUSHIM_API_BASE_URL}/api/jobs/search?{urlencode(params)}"
+
+
+def _strip_html_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "<" not in text:
+        return text
+    return BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+
+
+def parse_drushim_api_jobs(payload: dict[str, Any] | list[Any] | None) -> list[dict]:
+    """Parse job cards from a Drushim JSON search API response."""
+    if isinstance(payload, list):
+        result_list = payload
+    elif isinstance(payload, dict):
+        result_list = payload.get("ResultList") or []
+    else:
+        return []
+    if not isinstance(result_list, list):
+        return []
+
+    jobs: list[dict] = []
+    seen_urls: set[str] = set()
+    for item in result_list:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("JobContent") if isinstance(item.get("JobContent"), dict) else {}
+        company_obj = item.get("Company") if isinstance(item.get("Company"), dict) else {}
+        info = item.get("JobInfo") if isinstance(item.get("JobInfo"), dict) else {}
+
+        code = (
+            item.get("Code")
+            or content.get("JobCode")
+            or info.get("JobCode")
+        )
+        title = str(
+            content.get("Name")
+            or content.get("FullName")
+            or (item.get("JobAnalytics") or {}).get("name")
+            or ""
+        ).strip()
+        if not title:
+            continue
+
+        href = str(info.get("Link") or "").strip()
+        if not href and code is not None:
+            job_hash = str(info.get("Hash") or "").strip().lower()
+            href = f"/job/{code}/{job_hash}/" if job_hash else f"/job/{code}/"
+        if not href:
+            continue
+
+        if href.startswith("/"):
+            job_url = f"{DRUSHIM_BASE_URL}{href}"
+        elif href.startswith("http"):
+            job_url = href
+        else:
+            job_url = f"{DRUSHIM_BASE_URL}/{href.lstrip('/')}"
+
+        canonical = normalize_job_url(job_url)
+        if not canonical or canonical in seen_urls:
+            continue
+        seen_urls.add(canonical)
+
+        regions = content.get("Regions") if isinstance(content.get("Regions"), list) else []
+        location_parts = [
+            str(region.get("NameInHebrew") or "").strip()
+            for region in regions
+            if isinstance(region, dict) and region.get("NameInHebrew")
+        ]
+        location = ", ".join(location_parts[:3])
+
+        company = str(
+            company_obj.get("CompanyDisplayName")
+            or company_obj.get("NameInHebrew")
+            or ""
+        ).strip()
+        description = _strip_html_text(content.get("Description"))
+
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": location,
+            "job_url": canonical,
+            "source": "drushim",
+            "description": description,
+        })
+
+    return jobs
 
 
 def parse_drushim_search_html(html: str) -> list[dict]:
@@ -215,10 +320,114 @@ def parse_drushim_search_html(html: str) -> list[dict]:
     return jobs
 
 
+def collect_drushim_jobs_api(
+    query: str,
+    *,
+    max_pages: int = DRUSHIM_MAX_PAGES,
+) -> CollectionOutcome:
+    """Fetch Drushim search results via the paginated JSON API."""
+    print(f"Searching Drushim (API) for: {query} (max {max_pages} page(s))")
+    all_jobs: list[dict] = []
+    seen_urls: set[str] = set()
+    last_status: int | None = None
+    pages_fetched = 0
+
+    # Page schedule: initial batch (no page param), then page=1..N-1.
+    page_numbers: list[int | None] = [None]
+    if max_pages > 1:
+        page_numbers.extend(range(1, max_pages))
+
+    headers = {
+        **browser_http_headers(referer=f"{DRUSHIM_BASE_URL}/"),
+        "Accept": "application/json, text/plain, */*",
+        "Origin": DRUSHIM_BASE_URL,
+    }
+
+    for index, page in enumerate(page_numbers):
+        url = build_drushim_api_search_url(query, page=page)
+        try:
+            response = requests.get(url, headers=headers, timeout=DRUSHIM_HTTP_TIMEOUT_SEC)
+        except requests.RequestException as error:
+            if all_jobs:
+                print(f"  Drushim API page request failed after partial results: {error}")
+                break
+            return CollectionOutcome(
+                status="http_error",
+                reason=f"Drushim API request failed: {error}",
+                reason_he=f"דרושים: שגיאת רשת — {error}",
+            )
+
+        last_status = response.status_code
+        if last_status == 429:
+            print("  Drushim API rate limit hit (429) — stopping this query.")
+            break
+        if last_status >= 400:
+            if all_jobs:
+                print(f"  Drushim API returned HTTP {last_status} — stopping pagination.")
+                break
+            return CollectionOutcome(
+                status="http_error",
+                reason=f"Drushim API returned HTTP {last_status}",
+                reason_he=f"דרושים החזיר שגיאת HTTP {last_status}",
+                http_status=last_status,
+            )
+
+        try:
+            payload = response.json()
+        except ValueError:
+            if all_jobs:
+                break
+            return CollectionOutcome(
+                status="http_error",
+                reason="Drushim API returned non-JSON response",
+                reason_he="דרושים: תגובת API לא תקינה",
+                http_status=last_status,
+            )
+
+        page_jobs = parse_drushim_api_jobs(payload if isinstance(payload, dict) else None)
+        if not page_jobs:
+            break
+
+        added = 0
+        for job in page_jobs:
+            url_key = job.get("job_url") or ""
+            if not url_key or url_key in seen_urls:
+                continue
+            seen_urls.add(url_key)
+            all_jobs.append(job)
+            added += 1
+
+        pages_fetched += 1
+        next_page = payload.get("NextPageNumber") if isinstance(payload, dict) else None
+        # API uses NextPageNumber=-1 when there are no further pages.
+        if added == 0 or next_page in (-1, "-1"):
+            break
+        if index < len(page_numbers) - 1:
+            time.sleep(0.75)
+
+    if all_jobs:
+        print(
+            f"  Drushim API extracted {len(all_jobs)} job card(s) "
+            f"across {pages_fetched} page(s) for '{query}'"
+        )
+        return CollectionOutcome(jobs=all_jobs, status="ok", http_status=last_status)
+
+    return CollectionOutcome(
+        status="empty",
+        reason="No job cards found in Drushim API response",
+        reason_he=f"דרושים: לא נמצאו משרות לחיפוש '{query}'",
+        http_status=last_status,
+    )
+
+
 def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
-    """Fetch Drushim search results with plain HTTP (no browser)."""
+    """Fetch Drushim search results with plain HTTP (API first, HTML fallback)."""
+    api_outcome = collect_drushim_jobs_api(query, max_pages=DRUSHIM_MAX_PAGES)
+    if api_outcome.status == "ok" and api_outcome.jobs:
+        return api_outcome
+
     search_url = build_drushim_search_url(query)
-    print(f"Searching Drushim (HTTP) for: {query}")
+    print(f"Searching Drushim (HTTP HTML fallback) for: {query}")
     print(f"URL: {search_url}")
 
     try:
@@ -228,6 +437,9 @@ def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
             timeout=DRUSHIM_HTTP_TIMEOUT_SEC,
         )
     except requests.RequestException as error:
+        # Prefer the richer API failure reason when the API already failed.
+        if api_outcome.status != "empty":
+            return api_outcome
         reason = f"Drushim HTTP request failed: {error}"
         return CollectionOutcome(
             status="http_error",
@@ -237,6 +449,8 @@ def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
 
     http_status = response.status_code
     if http_status >= 400:
+        if api_outcome.status != "empty":
+            return api_outcome
         return CollectionOutcome(
             status="http_error",
             reason=f"Drushim returned HTTP {http_status}",
@@ -245,6 +459,8 @@ def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
         )
 
     if is_cloudflare_blocked_html(response.text):
+        if api_outcome.status != "empty":
+            return api_outcome
         return CollectionOutcome(
             status="blocked",
             reason="Cloudflare block page",
@@ -254,10 +470,10 @@ def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
 
     jobs = parse_drushim_search_html(response.text)
     if jobs:
-        print(f"  Drushim HTTP extracted {len(jobs)} job card(s) for '{query}'")
+        print(f"  Drushim HTML extracted {len(jobs)} job card(s) for '{query}'")
         return CollectionOutcome(jobs=jobs, status="ok")
 
-    return CollectionOutcome(
+    return api_outcome if api_outcome.status != "ok" else CollectionOutcome(
         status="empty",
         reason="No job cards found in HTTP response",
         reason_he=f"דרושים: לא נמצאו משרות לחיפוש '{query}'",
@@ -266,10 +482,13 @@ def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
 
 
 def _drushim_uses_browser() -> bool:
-    """True when Drushim collection may launch Playwright."""
-    if DRUSHIM_HTTP_FIRST and not DRUSHIM_BROWSER_FALLBACK:
-        return False
-    return True
+    """True when a shared Playwright session should be warmed up.
+
+    Collection prefers the paginated JSON API, so we no longer keep Chromium
+    open for the whole run. Browser fallback launches on demand inside
+    ``collect_drushim_jobs`` when enabled.
+    """
+    return False
 
 
 def save_debug_artifacts(page: Page, reason: str) -> Path:
@@ -426,6 +645,10 @@ class DrushimBrowserSession:
     def collect(self, query: str) -> CollectionOutcome:
         if self.page is None:
             raise RuntimeError("Drushim browser session is not open")
+        # Prefer paginated API even when a browser session is open for fallback.
+        api_outcome = collect_drushim_jobs_api(query, max_pages=DRUSHIM_MAX_PAGES)
+        if api_outcome.status == "ok" and api_outcome.jobs:
+            return api_outcome
         return _collect_drushim_with_page(
             self.page, query, headless=self.headless, allow_visible_retry=False
         )
@@ -437,19 +660,20 @@ def collect_drushim_jobs(
     *,
     page: Page | None = None,
 ) -> CollectionOutcome:
-    """Collect Drushim jobs — HTTP first on server, browser fallback on desktop."""
-    if page is None and DRUSHIM_HTTP_FIRST:
-        http_outcome = collect_drushim_jobs_http(query)
-        if http_outcome.status == "ok":
-            return http_outcome
-        if not DRUSHIM_BROWSER_FALLBACK:
-            if http_outcome.reason_he:
-                emit_agent_warning(http_outcome.reason_he)
-            return http_outcome
-        print(f"  Drushim HTTP {http_outcome.status} — falling back to browser...")
-
+    """Collect Drushim jobs — paginated JSON API first, then HTML/browser fallback."""
     if page is not None:
         return _collect_drushim_with_page(page, query, headless=headless)
+
+    # Always try the paginated JSON API (and HTML SSR fallback) before Chromium.
+    # The HTML search page alone capped results at ~20–24 jobs per query.
+    http_outcome = collect_drushim_jobs_http(query)
+    if http_outcome.status == "ok" and http_outcome.jobs:
+        return http_outcome
+    if not DRUSHIM_BROWSER_FALLBACK:
+        if http_outcome.reason_he:
+            emit_agent_warning(http_outcome.reason_he)
+        return http_outcome
+    print(f"  Drushim HTTP {http_outcome.status} — falling back to browser...")
 
     with DrushimBrowserSession(headless=headless) as session:
         assert session.page is not None
@@ -739,11 +963,12 @@ def main() -> None:
     if strategy_hash:
         print(f"Strategy hash: {strategy_hash[:12]}...")
     print(f"Categories to search: {len(plan)}")
-    if COLLECT_MAX_CATEGORIES is not None or DEFAULT_MAX_QUERIES_PER_CATEGORY != 6:
-        print(
-            f"Collection limits: max {DEFAULT_MAX_QUERIES_PER_CATEGORY} queries/category, "
-            f"{COLLECT_MAX_CATEGORIES or 'all'} categories"
-        )
+    print(
+        f"Collection limits: max {args.max_queries} queries/category, "
+        f"{args.max_categories if args.max_categories is not None else 'all'} categories; "
+        f"board pages — Drushim ≤{DRUSHIM_MAX_PAGES}, LinkedIn ≤{LINKEDIN_MAX_PAGES}, "
+        f"GotFriends ≤{GOTFRIENDS_MAX_PAGES}"
+    )
 
     seen_job_keys: set[str] = set()
     touched_job_keys: set[str] = set()
@@ -770,7 +995,10 @@ def main() -> None:
     try:
         for entry in plan:
             category = entry.get("category", "")
-            queries = entry.get("queries", [])[: args.max_queries]
+            queries = select_diverse_queries(
+                list(entry.get("queries") or []),
+                max_items=args.max_queries,
+            )
             exclude_keywords = entry.get("exclude_keywords", [])
             print(f"\n{'=' * 60}")
             print(f"Category: {category} (priority {entry.get('priority', 0)})")

@@ -14,9 +14,49 @@ MAX_QUERIES_HE = 5
 MAX_QUERIES_MIXED = 4
 MAX_QUERIES_TOTAL = 16
 
+# Broad titles that dominate board rankings and collapse CV diversity when used alone.
+_GENERIC_QUERY_RE = re.compile(
+    r"^(software\s+engineer|software\s+developer|developer|engineer|"
+    r"מפתח|מפתח\s+תוכנה|מהנדס\s+תוכנה|programmer|full\s*stack(\s+developer)?)$",
+    re.IGNORECASE,
+)
+
 
 def _is_hebrew(text: str) -> bool:
     return bool(_HEBREW_RE.search(text or ""))
+
+
+def _query_specificity_score(query: str) -> int:
+    """Higher score = more CV-specific / less likely to return identical top results."""
+    text = (query or "").strip()
+    if not text:
+        return -100
+    words = [w for w in re.split(r"\s+", text) if w]
+    score = 0
+    if _GENERIC_QUERY_RE.match(text):
+        score -= 40
+    if len(words) >= 2:
+        score += 12
+    if len(words) >= 3:
+        score += 8
+    if any(ch.isdigit() for ch in text):
+        score += 4
+    # Prefer role+tech / mixed-script queries that differentiate candidates.
+    if _is_hebrew(text) and re.search(r"[A-Za-z]", text):
+        score += 18
+    if re.search(
+        r"\b(python|java|react|angular|node|aws|azure|devops|nurse|"
+        r"qa|cyber|data|frontend|backend|fullstack|kotlin|swift|golang)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        score += 20
+    if re.search(r"(פייתון|סיעוד|אחות|בדיקות|סייבר|פרונט|בקאנד)", text):
+        score += 16
+    # Bare single-token generic searches collapse across CVs.
+    if len(words) == 1 and len(text) <= 12:
+        score -= 10
+    return score
 
 
 def dedupe_queries(queries: list[str], *, max_items: int = MAX_QUERIES_TOTAL) -> list[str]:
@@ -35,6 +75,42 @@ def dedupe_queries(queries: list[str], *, max_items: int = MAX_QUERIES_TOTAL) ->
         if len(result) >= max_items:
             break
     return result
+
+
+def select_diverse_queries(queries: list[str], *, max_items: int) -> list[str]:
+    """Pick up to max_items queries, preferring specific/varied terms over generics.
+
+    When collection truncates to a small query budget (web UI defaults), taking the
+    first N titles often yields the same 'Software Engineer' / 'מפתח' searches for
+    every CV. Prefer technology-, domain-, and bilingual-specific queries first,
+    then fill remaining slots while preserving original relative order.
+    """
+    if max_items <= 0:
+        return []
+    cleaned = dedupe_queries(queries, max_items=max(len(queries), max_items))
+    if len(cleaned) <= max_items:
+        return cleaned
+
+    ranked = sorted(
+        enumerate(cleaned),
+        key=lambda item: (-_query_specificity_score(item[1]), item[0]),
+    )
+    chosen: list[str] = []
+    chosen_keys: set[str] = set()
+    # First pass: take the most specific queries.
+    for _, query in ranked:
+        if len(chosen) >= max_items:
+            break
+        key = query.lower()
+        if key in chosen_keys:
+            continue
+        chosen.append(query)
+        chosen_keys.add(key)
+
+    # Keep output roughly in original order for readability/logs.
+    order = {q.lower(): index for index, q in enumerate(cleaned)}
+    chosen.sort(key=lambda q: order.get(q.lower(), 0))
+    return chosen
 
 
 def split_keywords_by_script(keywords: list[str]) -> tuple[list[str], list[str]]:
@@ -111,8 +187,20 @@ def build_collection_query_entry(
     technologies = list(profile.get("technologies_tools") or [])
     seniority = str(profile.get("seniority_level") or "unknown")
 
+    # Role+technology combos first so truncated query budgets stay CV-specific.
+    tech_role_queries: list[str] = []
+    techs = [t for t in technologies if t and not _is_hebrew(t)][:5]
+    for role in (preferred + alternative)[:4]:
+        role_text = str(role or "").strip()
+        if not role_text:
+            continue
+        for tech in techs:
+            if tech.lower() in role_text.lower():
+                continue
+            tech_role_queries.append(f"{role_text} {tech}".strip())
+
     queries_en = dedupe_queries(
-        preferred + alternative + keywords_en,
+        tech_role_queries + preferred + alternative + keywords_en,
         max_items=MAX_QUERIES_EN,
     )
     queries_he = dedupe_queries(keywords_he, max_items=MAX_QUERIES_HE)
@@ -124,8 +212,9 @@ def build_collection_query_entry(
         queries_en, queries_he, technologies=technologies, max_items=MAX_QUERIES_MIXED
     )
 
+    # Prefer mixed / tech-augmented searches before bare generic titles.
     all_queries = dedupe_queries(
-        queries_en + queries_he + queries_mixed,
+        queries_mixed + tech_role_queries + queries_en + queries_he,
         max_items=MAX_QUERIES_TOTAL,
     )
 
@@ -206,7 +295,7 @@ def normalize_collection_entry(entry: dict[str, Any], profile: dict[str, Any]) -
         queries_mixed = build_mixed_queries(queries_en, queries_he, technologies=technologies)
 
     all_queries = dedupe_queries(
-        queries_en + queries_he + queries_mixed + list(entry.get("queries") or []),
+        queries_mixed + queries_en + queries_he + list(entry.get("queries") or []),
         max_items=MAX_QUERIES_TOTAL,
     )
 

@@ -182,6 +182,28 @@ def compute_candidate_input_hash(
     cv_profile: dict[str, Any],
 ) -> str:
     """Hash of candidate inputs used to decide if role/strategy analysis should re-run."""
+    universal = cv_profile.get("universal_profile")
+    universal_fingerprint: dict[str, Any] | None = None
+    if isinstance(universal, dict):
+        # Include search-driving fields so a rebuilt universal profile invalidates
+        # the matching strategy even when raw skill lists look similar.
+        universal_fingerprint = {
+            key: universal.get(key)
+            for key in (
+                "canonical_roles",
+                "preferred_role_titles",
+                "alternative_role_titles",
+                "search_keywords_en",
+                "search_keywords_he",
+                "technologies_tools",
+                "domain_keywords",
+                "exclusion_keywords",
+                "seniority_level",
+                "collection_queries",
+                "candidate_summary",
+            )
+        }
+
     payload = {
         "profile": {key: profile.get(key) for key in sorted(profile.keys())},
         "cv_skills": cv_profile.get("skills"),
@@ -190,6 +212,7 @@ def compute_candidate_input_hash(
         "cv_contact": cv_profile.get("contact"),
         "cv_projects": cv_profile.get("projects"),
         "cv_certifications": cv_profile.get("certifications"),
+        "universal_profile": universal_fingerprint,
     }
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

@@ -96,8 +96,12 @@ Rules:
 - collection_queries drive the actual job-board search, so each entry MUST contain
   concrete, ready-to-search job titles derived from the CV — NOT abstract skills.
 - search_queries: 4-8 English job titles a recruiter would post for this candidate.
-- hebrew_search_queries: 2-5 Hebrew equivalents of those titles (Israel job market).
+  Prefer distinctive role+skill / role+domain titles from THIS CV
+  (e.g. "Python Backend Developer", not only generic "Software Engineer").
+- hebrew_search_queries: 2-5 Hebrew equivalents of those titles (Israel job market),
+  including mixed Hebrew+technology phrases when useful (e.g. "מפתח Python").
 - alternative_titles: related/adjacent titles worth searching.
+- Avoid emitting only broad titles that return the same top board results for every CV.
 - exclude_keywords: words that should disqualify a result (seniority, unrelated roles),
   in both English and Hebrew.
 - priority: 0-100 indicating how strongly the candidate fits that category.
@@ -538,7 +542,10 @@ def analyze_matching_strategy_with_openai(
     candidate_summary = build_candidate_summary(profile, cv_profile)
     user_prompt = _build_analysis_prompt(profile, cv_profile)
 
-    cache_payload = f"matching_strategy_v3_hebrew_keywords\n{user_prompt[:OPENAI_CV_SUMMARY_MAX_CHARS]}"
+    cache_payload = (
+        f"matching_strategy_v4_specific_queries\n"
+        f"{user_prompt[:OPENAI_CV_SUMMARY_MAX_CHARS]}"
+    )
     raw = call_openai_json(
         MATCHING_STRATEGY_SYSTEM,
         user_prompt,
