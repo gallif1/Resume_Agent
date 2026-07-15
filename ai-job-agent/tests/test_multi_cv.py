@@ -208,6 +208,22 @@ def test_matches_latest_scan_only_and_sorted(db_path):
     assert all(m["scan_id"] == new_scan for m in latest)
 
 
+def test_refresh_cv_job_match_scan_keeps_prior_score_on_new_scan(db_path):
+    """Already-matched jobs must reappear on the latest scan without rescoring."""
+    db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
+    job = insert_job(db_path, title="Kept", url="https://x/kept")
+    old_scan = db.create_scan("cv-a", db_path=db_path)
+    db.upsert_cv_job_match("cv-a", job, _match_fields(72), scan_id=old_scan, db_path=db_path)
+
+    new_scan = db.create_scan("cv-a", db_path=db_path)
+    assert db.refresh_cv_job_match_scan("cv-a", job, new_scan, db_path=db_path)
+
+    latest = db.get_cv_matches("cv-a", latest_only=True, db_path=db_path)
+    assert len(latest) == 1
+    assert latest[0]["scan_id"] == new_scan
+    assert latest[0]["match_score"] == 72
+
+
 def test_invalid_status_rejected(db_path):
     db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
     job = insert_job(db_path, title="Dev", url="https://x/6")
