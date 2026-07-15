@@ -702,12 +702,14 @@ def tailor_cv_endpoint(
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     relative_path = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
-    db.mark_cv_match_tailored(
-        cv_id,
-        job_id,
-        tailored_cv_path=relative_path,
-        db_path=cv_db,
-    )
+    # Only bump tailored-CV metadata when content actually changed.
+    if not result.get("no_improvement"):
+        db.mark_cv_match_tailored(
+            cv_id,
+            job_id,
+            tailored_cv_path=relative_path,
+            db_path=cv_db,
+        )
 
     return {
         "cv_id": cv_id,
@@ -724,6 +726,9 @@ def tailor_cv_endpoint(
         "saved_path": relative_path,
         "generated_at": result.get("generated_at"),
         "regenerated": bool(result.get("regenerated")),
+        "improved": bool(result.get("improved")),
+        "no_improvement": bool(result.get("no_improvement")),
+        "message": result.get("message"),
         "matcher_feedback": result.get("matcher_feedback"),
     }
 

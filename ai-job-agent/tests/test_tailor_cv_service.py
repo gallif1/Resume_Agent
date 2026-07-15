@@ -434,12 +434,116 @@ Python | SQL
     }
     result = svc.tailor_cv_for_job(cv_id, job, regenerate=True)
     assert result["regenerated"] is True
+    assert result["improved"] is True
+    assert result["no_improvement"] is False
+    assert result.get("message") is None
     assert "REGENERATE & OPTIMIZE" in captured["system"] or "matcher_feedback" in captured["user"]
     assert "===== matcher_feedback =====" in captured["user"]
     assert "Docker" in captured["user"]
     assert result["matcher_feedback"]["previous"]["ats_score"] is not None
     assert result["matcher_feedback"]["current"]["ats_score"] is not None
+    assert result["matcher_feedback"]["current"]["ats_score"] > result["matcher_feedback"]["previous"]["ats_score"]
     assert "Docker" in result["cv_markdown"]
     assert svc.tailored_cv_path(cv_id, 5).exists()
     # Deterministic score should be embedded in the returned markdown.
     assert result["estimated_ats_score"] == result["matcher_feedback"]["current"]["ats_score"]
+
+
+def test_regenerate_discards_when_score_not_improved(
+    cvs_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cv_id = "cv_regen_guard"
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    profile_dir = cvs_dir / cv_id
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "cv_profile.json").write_text(
+        json.dumps(
+            {
+                "raw_text": "Name\nTechnical Support\nPython SQL Docker",
+                "experience": {
+                    "job_titles": ["Technical Support"],
+                    "years_of_experience_estimate": 2,
+                    "seniority_level": "junior",
+                },
+                "skills": {
+                    "programming_languages": ["Python", "SQL"],
+                    "cloud_devops_tools": ["Docker"],
+                },
+                "universal_profile": {
+                    "canonical_skills": ["Python", "SQL", "Docker"],
+                    "technologies_tools": ["Docker"],
+                    "seniority_level": "junior",
+                    "years_of_experience": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    strong_draft = """## פירוט שינויים
+- Strong draft with Python SQL Docker
+
+## ציון התאמה למשרה
+**ציון משוער: 80/100**
+
+---
+
+## קורות החיים המעודכנים
+
+# Name
+
+## Skills
+Python | SQL | Docker
+
+## Experience
+### Technical Support
+- Production support with Python, SQL, and Docker
+"""
+    path = svc.save_tailored_cv(cv_id, 8, strong_draft)
+    original_text = path.read_text(encoding="utf-8")
+
+    def _fake_openai(*_args, **_kwargs):
+        # Deliberately weaker wording that omits Docker/SQL keywords.
+        return {
+            "markdown": "",
+            "changes_breakdown": ["Rewrote summary"],
+            "estimated_ats_score": 90,
+            "cv_markdown": (
+                "# Name\n\n## Skills\nCommunication\n\n"
+                "## Experience\n### Technical Support\n"
+                "- Helped users politely\n"
+            ),
+            "highlights": [],
+            "caveats": [],
+            "_from_cache": False,
+        }
+
+    monkeypatch.setattr(svc, "call_openai_json", _fake_openai)
+    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
+
+    job = {
+        "id": 8,
+        "title": "Backend Engineer",
+        "company": "Acme",
+        "full_description": "Python Docker SQL",
+        "job_profile": json.dumps(
+            {
+                "title": "Backend Engineer",
+                "required_skills": ["Python", "Docker", "SQL"],
+                "technologies": ["Python", "Docker", "SQL"],
+                "seniority": "junior",
+                "years_experience_min": 1,
+            }
+        ),
+    }
+    result = svc.tailor_cv_for_job(cv_id, job, regenerate=True)
+    assert result["no_improvement"] is True
+    assert result["improved"] is False
+    assert result["regenerated"] is False
+    assert result["message"] == svc.NO_IMPROVEMENT_MESSAGE
+    assert "Docker" in result["cv_markdown"]
+    assert "Helped users politely" not in result["cv_markdown"]
+    assert path.read_text(encoding="utf-8") == original_text
+    assert result["matcher_feedback"]["discarded"]["ats_score"] <= result[
+        "matcher_feedback"
+    ]["previous"]["ats_score"]
