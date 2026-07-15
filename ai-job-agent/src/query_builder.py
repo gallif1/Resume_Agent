@@ -22,8 +22,24 @@ _GENERIC_QUERY_RE = re.compile(
 )
 
 
+# Boards where Hebrew/mixed tech queries return near-zero relevant listings.
+ENGLISH_ONLY_BOARDS = frozenset({"linkedin", "gotfriends"})
+BILINGUAL_BOARDS = frozenset({"drushim"})
+
+
 def _is_hebrew(text: str) -> bool:
     return bool(_HEBREW_RE.search(text or ""))
+
+
+def is_english_query(text: str) -> bool:
+    """True for non-empty queries with no Hebrew characters."""
+    value = str(text or "").strip()
+    return bool(value) and not _is_hebrew(value)
+
+
+def is_hebrew_query(text: str) -> bool:
+    """True when the query contains Hebrew (pure or mixed)."""
+    return _is_hebrew(str(text or "").strip())
 
 
 def _query_specificity_score(query: str) -> int:
@@ -212,9 +228,9 @@ def build_collection_query_entry(
         queries_en, queries_he, technologies=technologies, max_items=MAX_QUERIES_MIXED
     )
 
-    # Prefer mixed / tech-augmented searches before bare generic titles.
+    # English titles first so English-first boards are not starved by Hebrew mixes.
     all_queries = dedupe_queries(
-        queries_mixed + tech_role_queries + queries_en + queries_he,
+        tech_role_queries + queries_en + queries_mixed + queries_he,
         max_items=MAX_QUERIES_TOTAL,
     )
 
@@ -294,8 +310,26 @@ def normalize_collection_entry(entry: dict[str, Any], profile: dict[str, Any]) -
     if not queries_mixed:
         queries_mixed = build_mixed_queries(queries_en, queries_he, technologies=technologies)
 
+    # Partition any leftover flat queries into language buckets.
+    for raw in list(entry.get("queries") or []):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if _is_hebrew(text) and re.search(r"[A-Za-z]", text):
+            queries_mixed.append(text)
+        elif _is_hebrew(text):
+            queries_he.append(text)
+        else:
+            queries_en.append(text)
+
+    queries_en = dedupe_queries(
+        [q for q in queries_en if is_english_query(q)],
+        max_items=MAX_QUERIES_EN,
+    )
+    queries_he = dedupe_queries(queries_he, max_items=MAX_QUERIES_HE)
+    queries_mixed = dedupe_queries(queries_mixed, max_items=MAX_QUERIES_MIXED)
     all_queries = dedupe_queries(
-        queries_mixed + queries_en + queries_he + list(entry.get("queries") or []),
+        queries_en + queries_mixed + queries_he,
         max_items=MAX_QUERIES_TOTAL,
     )
 
@@ -317,11 +351,82 @@ def normalize_collection_entry(entry: dict[str, Any], profile: dict[str, Any]) -
         "category": category,
         "priority": max(0, min(100, priority)),
         "primary_role": primary_role,
-        "queries_en": dedupe_queries(queries_en, max_items=MAX_QUERIES_EN),
-        "queries_he": dedupe_queries(queries_he, max_items=MAX_QUERIES_HE),
-        "queries_mixed": dedupe_queries(queries_mixed, max_items=MAX_QUERIES_MIXED),
-        "search_queries": dedupe_queries(queries_en, max_items=MAX_QUERIES_EN),
-        "hebrew_search_queries": dedupe_queries(queries_he, max_items=MAX_QUERIES_HE),
+        "queries_en": queries_en,
+        "queries_he": queries_he,
+        "queries_mixed": queries_mixed,
+        "search_queries": queries_en,
+        "hebrew_search_queries": queries_he,
         "queries": all_queries,
         "exclude_keywords": exclusion,
     }
+
+
+def _english_query_pool(entry: dict[str, Any]) -> list[str]:
+    """English-only search terms for LinkedIn / GotFriends."""
+    pool: list[str] = []
+    for key in ("queries_en", "search_queries", "alternative_titles"):
+        value = entry.get(key)
+        if isinstance(value, list):
+            pool.extend(str(item) for item in value)
+
+    primary = str(entry.get("primary_role") or "").strip()
+    if primary and is_english_query(primary):
+        pool.insert(0, primary)
+
+    # Recover English titles buried in the flat list (legacy strategies).
+    for item in entry.get("queries") or []:
+        text = str(item or "").strip()
+        if is_english_query(text):
+            pool.append(text)
+
+    return dedupe_queries(pool, max_items=MAX_QUERIES_TOTAL)
+
+
+def _bilingual_query_pool(entry: dict[str, Any]) -> list[str]:
+    """Hebrew + English + mixed terms for Drushim."""
+    pool: list[str] = []
+    for key in (
+        "queries_en",
+        "search_queries",
+        "queries_mixed",
+        "queries_he",
+        "hebrew_search_queries",
+        "queries",
+        "alternative_titles",
+    ):
+        value = entry.get(key)
+        if isinstance(value, list):
+            pool.extend(str(item) for item in value)
+
+    primary = str(entry.get("primary_role") or "").strip()
+    if primary:
+        pool.insert(0, primary)
+    return dedupe_queries(pool, max_items=MAX_QUERIES_TOTAL)
+
+
+def queries_for_board(
+    entry: dict[str, Any],
+    board_id: str,
+    *,
+    max_items: int,
+) -> list[str]:
+    """Select search queries appropriate for a specific job board.
+
+    LinkedIn and GotFriends list Israeli tech roles almost exclusively in English,
+    so Hebrew/mixed terms like 'מפתח פייתון' return near-zero results. Drushim
+    remains bilingual.
+    """
+    board = str(board_id or "").strip().lower()
+    if max_items <= 0:
+        return []
+
+    if board in ENGLISH_ONLY_BOARDS:
+        english = _english_query_pool(entry)
+        selected = select_diverse_queries(english, max_items=max_items)
+        if selected:
+            return selected
+        # Absolute fallback: never send Hebrew to English-only boards.
+        return []
+
+    # Default / Drushim: keep bilingual capability.
+    return select_diverse_queries(_bilingual_query_pool(entry), max_items=max_items)

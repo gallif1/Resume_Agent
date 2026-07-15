@@ -6,6 +6,7 @@ from query_builder import (
     build_collection_queries,
     build_mixed_queries,
     dedupe_queries,
+    queries_for_board,
     select_diverse_queries,
     split_keywords_by_script,
 )
@@ -84,3 +85,49 @@ def test_build_collection_queries_puts_tech_specific_terms_early():
     entry = build_collection_queries(profile)[0]
     joined = " | ".join(entry["queries"][:4]).lower()
     assert "python" in joined
+
+
+def test_queries_for_board_linkedin_uses_english_only():
+    entry = {
+        "primary_role": "Software Developer",
+        "queries_en": [
+            "Software Developer",
+            "Backend Developer",
+            "Data Scientist",
+            "Data Analyst",
+        ],
+        "queries_he": ["מפתח פייתון", "מפתח תוכנה"],
+        "queries_mixed": ["מפתח Python"],
+        "queries": ["מפתח פייתון", "Software Developer", "Backend Developer"],
+    }
+    linkedin = queries_for_board(entry, "linkedin", max_items=5)
+    gotfriends = queries_for_board(entry, "gotfriends", max_items=5)
+    drushim = queries_for_board(entry, "drushim", max_items=5)
+
+    assert linkedin
+    assert all(not any("\u0590" <= ch <= "\u05FF" for ch in q) for q in linkedin)
+    assert "Software Developer" in linkedin or "Backend Developer" in linkedin
+    assert "מפתח פייתון" not in linkedin
+    assert gotfriends
+    assert all(not any("\u0590" <= ch <= "\u05FF" for ch in q) for q in gotfriends)
+    # Drushim may include Hebrew / mixed terms.
+    assert drushim
+    assert any(any("\u0590" <= ch <= "\u05FF" for ch in q) for q in drushim) or any(
+        q in drushim for q in entry["queries_en"]
+    )
+
+
+def test_queries_for_board_recovers_english_from_flat_legacy_list():
+    entry = {
+        "primary_role": "מפתח פייתון",
+        "queries": [
+            "מפתח פייתון",
+            "Python Developer",
+            "Backend Developer",
+            "מפתח Python",
+        ],
+    }
+    linkedin = queries_for_board(entry, "linkedin", max_items=3)
+    assert "Python Developer" in linkedin
+    assert "Backend Developer" in linkedin
+    assert "מפתח פייתון" not in linkedin
