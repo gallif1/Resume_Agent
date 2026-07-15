@@ -195,13 +195,39 @@ def _dedupe_queries(queries: list[str], max_items: int = 16) -> list[str]:
 
 
 def normalize_collection_query_entry(entry: Any, index: int = 0) -> dict[str, Any] | None:
-    """Normalize one collection_queries entry into a flat search plan.
+    """Normalize one collection_queries entry into a board-ready search plan.
 
-    Accepts either the rich schema (search_queries / hebrew_search_queries /
-    alternative_titles / primary_role) or a pre-flattened ``queries`` list.
+    Preserves English / Hebrew / mixed buckets so LinkedIn/GotFriends can search
+    in English while Drushim stays bilingual.
     """
     if not isinstance(entry, dict):
         return None
+
+    from query_builder import (
+        is_english_query,
+        is_hebrew_query,
+        normalize_collection_entry,
+    )
+
+    # Reuse the richer normalizer when language buckets (or recover-able fields) exist.
+    rich = normalize_collection_entry(entry, profile={})
+    if rich.get("queries") or rich.get("queries_en") or rich.get("queries_he"):
+        try:
+            priority = int(round(float(entry.get("priority", rich.get("priority", 50)))))
+        except (TypeError, ValueError):
+            priority = int(rich.get("priority", 50) or 50)
+        rich["priority"] = max(0, min(100, priority))
+        if not rich.get("category"):
+            rich["category"] = f"category_{index}"
+        # Keep a non-Hebrew primary_role when possible for English boards.
+        primary = str(rich.get("primary_role") or "").strip()
+        if primary and not is_english_query(primary):
+            en = rich.get("queries_en") or []
+            if en:
+                rich["primary_role"] = en[0]
+        if not rich.get("queries") and not rich.get("queries_en") and not rich.get("queries_he"):
+            return None
+        return rich
 
     primary_role = str(entry.get("primary_role", "") or "").strip()
     category = str(entry.get("category", "") or "").strip()
@@ -210,15 +236,34 @@ def normalize_collection_query_entry(entry: Any, index: int = 0) -> dict[str, An
     if not category:
         category = f"category_{index}"
 
-    queries: list[str] = []
+    queries_en: list[str] = []
+    queries_he: list[str] = []
+    queries_mixed: list[str] = []
     if primary_role:
-        queries.append(primary_role)
+        if is_english_query(primary_role):
+            queries_en.append(primary_role)
+        elif is_hebrew_query(primary_role):
+            queries_he.append(primary_role)
+
     for key in ("queries", "search_queries", "hebrew_search_queries", "queries_mixed", "alternative_titles"):
         value = entry.get(key)
-        if isinstance(value, list):
-            queries.extend(str(item) for item in value)
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if is_hebrew_query(text) and any(ch.isascii() and ch.isalpha() for ch in text):
+                queries_mixed.append(text)
+            elif is_hebrew_query(text):
+                queries_he.append(text)
+            else:
+                queries_en.append(text)
 
-    queries = _dedupe_queries(queries, max_items=16)
+    queries_en = _dedupe_queries(queries_en, max_items=8)
+    queries_he = _dedupe_queries(queries_he, max_items=5)
+    queries_mixed = _dedupe_queries(queries_mixed, max_items=4)
+    queries = _dedupe_queries(queries_en + queries_mixed + queries_he, max_items=16)
     if not queries:
         return None
 
@@ -228,10 +273,19 @@ def normalize_collection_query_entry(entry: Any, index: int = 0) -> dict[str, An
         priority = 50
     priority = max(0, min(100, priority))
 
+    english_primary = primary_role if is_english_query(primary_role) else (
+        queries_en[0] if queries_en else primary_role or queries[0]
+    )
+
     return {
         "category": category,
         "priority": priority,
-        "primary_role": primary_role or queries[0],
+        "primary_role": english_primary,
+        "queries_en": queries_en,
+        "queries_he": queries_he,
+        "queries_mixed": queries_mixed,
+        "search_queries": queries_en,
+        "hebrew_search_queries": queries_he,
         "queries": queries,
         "exclude_keywords": normalize_string_list(entry.get("exclude_keywords", []), max_items=15),
     }
@@ -246,21 +300,31 @@ def _collection_queries_from_categories(
     role_scores = {r.get("role", "").lower(): r.get("score", 50) for r in roles}
     plan: list[dict[str, Any]] = []
 
+    from query_builder import is_english_query, is_hebrew_query
+
     for index, category in enumerate(categories):
         titles = list(category.get("titles", []))
         queries = _dedupe_queries(titles, max_items=16)
         if not queries:
             continue
+        queries_en = [q for q in queries if is_english_query(q)]
+        queries_he = [q for q in queries if is_hebrew_query(q) and q not in queries_en]
         priority = 0
         for title in titles:
             priority = max(priority, int(role_scores.get(title.lower(), 0) or 0))
         if not priority:
             priority = max(40, 90 - index * 10)
+        primary = queries_en[0] if queries_en else queries[0]
         plan.append({
             "category": category.get("category") or f"category_{index}",
             "priority": priority,
-            "primary_role": queries[0],
-            "queries": queries,
+            "primary_role": primary,
+            "queries_en": queries_en,
+            "queries_he": queries_he,
+            "queries_mixed": [],
+            "search_queries": queries_en,
+            "hebrew_search_queries": queries_he,
+            "queries": _dedupe_queries(queries_en + queries_he, max_items=16),
             "exclude_keywords": normalize_string_list(
                 category.get("negative_keywords", []), max_items=15
             ),
@@ -273,10 +337,17 @@ def _collection_queries_from_categories(
         role = str(role_entry.get("role", "") or "").strip()
         if not role:
             continue
+        en = [role] if is_english_query(role) else []
+        he = [role] if is_hebrew_query(role) and not en else []
         plan.append({
             "category": role.lower().replace(" ", "_")[:40] or f"role_{index}",
             "priority": int(role_entry.get("score", 50) or 50),
-            "primary_role": role,
+            "primary_role": role if en else (en[0] if en else role),
+            "queries_en": en,
+            "queries_he": he,
+            "queries_mixed": [],
+            "search_queries": en,
+            "hebrew_search_queries": he,
             "queries": [role],
             "exclude_keywords": list(SENIOR_KEYWORDS[:6]),
         })
@@ -687,15 +758,24 @@ def get_collection_query_plan(strategy: dict[str, Any] | None) -> list[dict[str,
 
 def collection_plan_from_roles(roles: list[str]) -> list[dict[str, Any]]:
     """Build a minimal collection plan from plain role-title strings (last-resort)."""
+    from query_builder import is_english_query, is_hebrew_query
+
     plan: list[dict[str, Any]] = []
     for index, role in enumerate(roles):
         role = str(role or "").strip()
         if not role:
             continue
+        en = [role] if is_english_query(role) else []
+        he = [role] if is_hebrew_query(role) and not en else []
         plan.append({
             "category": role.lower().replace(" ", "_")[:40] or f"role_{index}",
             "priority": max(40, 90 - index * 10),
-            "primary_role": role,
+            "primary_role": role if en else (en[0] if en else role),
+            "queries_en": en,
+            "queries_he": he,
+            "queries_mixed": [],
+            "search_queries": en,
+            "hebrew_search_queries": he,
             "queries": [role],
             "exclude_keywords": list(SENIOR_KEYWORDS[:6]),
         })

@@ -60,7 +60,7 @@ from job_identity import (
     normalize_job_url,
 )
 from profile_utils import load_profile
-from query_builder import select_diverse_queries
+from query_builder import queries_for_board
 from role_analyzer import (
     collection_plan_from_roles,
     get_collection_query_plan,
@@ -1121,7 +1121,8 @@ def main() -> None:
 
     seen_job_keys: set[str] = set()
     touched_job_keys: set[str] = set()
-    searched_queries: set[str] = set()
+    # Per-board query dedupe: the same English string may run on LinkedIn and Drushim.
+    searched_queries: set[tuple[str, str]] = set()
     total_raw_found = 0
     total_unique = 0
     total_duplicates = 0
@@ -1142,31 +1143,53 @@ def main() -> None:
         print("Drushim: using HTTP mode (no browser — saves server memory)")
 
     try:
+        searches = collection_searches(selected_sites, _job_collectors())
         for entry in plan:
             category = entry.get("category", "")
-            queries = select_diverse_queries(
-                list(entry.get("queries") or []),
-                max_items=args.max_queries,
-            )
             exclude_keywords = entry.get("exclude_keywords", [])
             print(f"\n{'=' * 60}")
             print(f"Category: {category} (priority {entry.get('priority', 0)})")
-            print(f"Queries: {', '.join(queries)}")
+            print(f"Primary role: {entry.get('primary_role') or '(none)'}")
+            if entry.get("queries_en"):
+                print(f"English titles: {', '.join(entry.get('queries_en') or [])}")
+            if entry.get("queries_he") or entry.get("queries_mixed"):
+                print(
+                    "Hebrew/mixed titles: "
+                    + ", ".join(
+                        list(entry.get("queries_he") or [])
+                        + list(entry.get("queries_mixed") or [])
+                    )
+                )
 
-            for query in queries:
-                query_key = query.strip().lower()
-                if not query_key or query_key in searched_queries:
-                    continue
-                searched_queries.add(query_key)
-                total_queries += 1
-
+            for site_name, collect_fn in searches:
+                queries = queries_for_board(
+                    entry, site_name, max_items=args.max_queries
+                )
                 print(f"\n{'-' * 50}")
+                print(
+                    f"[{site_name}] Queries ({len(queries)}): "
+                    + (", ".join(queries) if queries else "(none — skipped)")
+                )
+                if not queries:
+                    message = (
+                        "אין שאילתות באנגלית לחיפוש — "
+                        "LinkedIn/GotFriends דורשים מונחי חיפוש באנגלית"
+                        if site_name in ("linkedin", "gotfriends")
+                        else "אין שאילתות חיפוש לקטגוריה זו"
+                    )
+                    emit_agent_warning(f"{_site_label(site_name)}: {message}")
+                    _note_site_issue(site_totals, site_name, message)
+                    continue
 
-                searches = collection_searches(selected_sites, _job_collectors())
-
-                for site_name, collect_fn in searches:
-                    site = site_totals.setdefault(site_name, _SiteTotals())
+                site = site_totals.setdefault(site_name, _SiteTotals())
+                for query in queries:
+                    query_key = (site_name, query.strip().lower())
+                    if not query_key[1] or query_key in searched_queries:
+                        continue
+                    searched_queries.add(query_key)
+                    total_queries += 1
                     site.queries += 1
+
                     try:
                         if site_name == "drushim" and drushim_session is not None:
                             raw_result = drushim_session.collect(query)
