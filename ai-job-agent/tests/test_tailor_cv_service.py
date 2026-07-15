@@ -197,7 +197,36 @@ def test_tailor_cv_for_job_calls_openai(
     assert svc.tailored_cv_path(cv_id, 9).exists()
     assert "Did not invent" in result["caveats"][0]
     # Cache namespace should include prompt version.
-    assert "v2" in svc.TAILOR_PROMPT_VERSION
+    assert "v3" in svc.TAILOR_PROMPT_VERSION
+
+
+def test_tailor_system_prompt_is_role_agnostic():
+    """Prompt must stay universal — no hardcoded roles/companies as the target path."""
+    prompt = svc.TAILOR_SYSTEM_PROMPT
+    assert "Target Role:" in prompt
+    assert "TRANSITION RULE" in prompt
+    assert "SEMANTIC SKILLS MATRIX" in prompt
+    assert "base_cv_data" in prompt
+    assert "job_description" in prompt
+    # Examples of specific career paths must not be baked in as the default narrative.
+    for banned in (
+        "Technical Support",
+        "Backend Developer",
+        "keep \"Technical Support\"",
+    ):
+        assert banned not in prompt
+
+
+def test_build_tailor_user_prompt_labels_inputs():
+    user = svc.build_tailor_user_prompt(
+        base_cv_data="RAW CV TEXT HERE",
+        job_description="Title: React Frontend Developer\nDescription: React, TypeScript",
+    )
+    assert "===== base_cv_data =====" in user
+    assert "===== job_description =====" in user
+    assert "RAW CV TEXT HERE" in user
+    assert "React Frontend Developer" in user
+    assert "Target Role:" in user
 
 
 def test_tailor_requires_api_key(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
