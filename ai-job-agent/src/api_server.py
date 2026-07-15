@@ -14,6 +14,7 @@ Multi-CV endpoints (each CV has isolated data):
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf  download tailored CV as PDF
     POST   /cvs/{cv_id}/jobs/{job_id}/apply          start automated job application
     GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
     GET    /cvs/{cv_id}/jobs/{job_id}/application-status  latest application status
@@ -45,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -56,9 +57,15 @@ from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
+from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
-from tailor_cv_service import TailorCvError, tailor_cv_for_job
+from tailor_cv_service import (
+    TailorCvError,
+    extract_cv_markdown_for_copy,
+    load_saved_tailored_cv,
+    tailor_cv_for_job,
+)
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -705,6 +712,41 @@ def tailor_cv_endpoint(cv_id: str, job_id: int, req: TailorCvRequest | None = No
         "saved_path": relative_path,
         "generated_at": result.get("generated_at"),
     }
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf")
+def download_tailored_cv_pdf(cv_id: str, job_id: int):
+    """Render the saved tailored CV Markdown to a professionally styled A4 PDF."""
+    db.ensure_multi_cv_storage()
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None:
+        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+
+    saved = load_saved_tailored_cv(cv_id, job_id)
+    if not saved:
+        raise HTTPException(
+            status_code=404,
+            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
+        )
+
+    cv_body = extract_cv_markdown_for_copy(saved)
+    try:
+        pdf_bytes, filename = generate_tailored_cv_pdf(cv_body)
+    except PdfGeneratorError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    # ASCII fallback keeps Content-Disposition compatible with older clients.
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "CV_Tailored.pdf"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{ascii_name}"',
+        "Cache-Control": "no-store",
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @app.patch("/cvs/{cv_id}/matches/{match_id}/status")
