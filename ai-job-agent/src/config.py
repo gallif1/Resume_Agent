@@ -145,18 +145,27 @@ LINKEDIN_BASE_URL = "https://www.linkedin.com"
 LINKEDIN_ENABLED = os.getenv("LINKEDIN_ENABLED", "true").lower() in ("1", "true", "yes")
 LINKEDIN_LOCATION = os.getenv("LINKEDIN_LOCATION", "Israel").strip()
 # How many result pages (25 jobs each) to fetch per search query.
-LINKEDIN_MAX_PAGES = int(os.getenv("LINKEDIN_MAX_PAGES", "2"))
+# Slightly deeper when running from the web UI so scans get a real pool.
+_DEFAULT_LINKEDIN_MAX_PAGES = "3" if AGENT_CV_ID else "2"
+LINKEDIN_MAX_PAGES = int(os.getenv("LINKEDIN_MAX_PAGES", _DEFAULT_LINKEDIN_MAX_PAGES))
 
 # GotFriends job search (public HTML — no login required)
 GOTFRIENDS_BASE_URL = "https://www.gotfriends.co.il"
 GOTFRIENDS_ENABLED = os.getenv("GOTFRIENDS_ENABLED", "true").lower() in ("1", "true", "yes")
-# How many listing pages (10 jobs each) to fetch per profession/category URL.
-GOTFRIENDS_MAX_PAGES = int(os.getenv("GOTFRIENDS_MAX_PAGES", "2"))
+# How many listing pages (~10 jobs each) to fetch per profession/category URL.
+_DEFAULT_GOTFRIENDS_MAX_PAGES = "3" if AGENT_CV_ID else "2"
+GOTFRIENDS_MAX_PAGES = int(os.getenv("GOTFRIENDS_MAX_PAGES", _DEFAULT_GOTFRIENDS_MAX_PAGES))
 
-# Job collection limits — tighter defaults when running from the web UI (AGENT_CV_ID set).
-_DEFAULT_COLLECT_MAX_QUERIES = "2" if AGENT_CV_ID else "6"
+# Drushim JSON search API (paginated; HTML scrape only returns the first SSR page).
+DRUSHIM_API_BASE_URL = os.getenv("DRUSHIM_API_BASE_URL", "https://webapi.drushim.co.il").rstrip("/")
+# How many API pages (~10 jobs each) to fetch per query. Page 0 is the SSR-sized first page.
+_DEFAULT_DRUSHIM_MAX_PAGES = "4" if AGENT_CV_ID else "5"
+DRUSHIM_MAX_PAGES = int(os.getenv("DRUSHIM_MAX_PAGES", _DEFAULT_DRUSHIM_MAX_PAGES))
+
+# Job collection limits — web UI defaults aim for ~50–100 jobs/scan while staying polite.
+_DEFAULT_COLLECT_MAX_QUERIES = "5" if AGENT_CV_ID else "8"
 COLLECT_MAX_QUERIES = int(os.getenv("COLLECT_MAX_QUERIES", _DEFAULT_COLLECT_MAX_QUERIES))
-_DEFAULT_COLLECT_MAX_CATEGORIES = "1" if AGENT_CV_ID else ""
+_DEFAULT_COLLECT_MAX_CATEGORIES = "3" if AGENT_CV_ID else ""
 _collect_max_categories_raw = os.getenv("COLLECT_MAX_CATEGORIES", _DEFAULT_COLLECT_MAX_CATEGORIES)
 COLLECT_MAX_CATEGORIES = (
     int(_collect_max_categories_raw) if _collect_max_categories_raw.strip() else None

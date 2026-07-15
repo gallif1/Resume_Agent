@@ -63,6 +63,11 @@ Rules:
 - search_keywords_he must include Hebrew equivalents for role/domain words when relevant.
 - technologies_tools: include only when the CV mentions specific tools; otherwise return [].
 - collection_queries: 1-4 categories covering realistic job search; concrete searchable titles.
+- Prefer DISTINCTIVE, skill-/domain-specific search titles over generic ones
+  (avoid bare "Software Engineer" / "Developer" / "מפתח" as the only queries).
+  Include role+technology / role+domain phrases derived from THIS CV
+  (e.g. "Python Backend Developer", "ICU Nurse", "מפתח Python").
+- Different CVs must produce different search_queries reflecting their specialties.
 - Base analysis ONLY on provided candidate data. Do not invent employers or degrees.
 - Consider the Israel job market when bilingual keywords are useful.
 - Return valid JSON only, no markdown."""
@@ -211,7 +216,7 @@ def extract_universal_profile_with_openai(
 ) -> dict[str, Any]:
     """Single OpenAI call to extract universal candidate profile."""
     user_prompt = _build_user_prompt(raw_text, rule_based)
-    cache_payload = f"universal_profile_v1\n{user_prompt[:OPENAI_CV_MAX_CHARS]}"
+    cache_payload = f"universal_profile_v2_specific_queries\n{user_prompt[:OPENAI_CV_MAX_CHARS]}"
 
     raw = call_openai_json(
         UNIVERSAL_PROFILE_SYSTEM,

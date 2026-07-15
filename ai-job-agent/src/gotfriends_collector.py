@@ -40,7 +40,7 @@ GOTFRIENDS_CATEGORIES = (
     "graduates",
 )
 
-# Map search keywords to (category, profession slug) pairs.
+# Specific keyword → (category, profession slug). Matched before broad fallbacks.
 _KEYWORD_SLUG_HINTS: list[tuple[list[str], str, str]] = [
     (["python", "פייתון"], "software", "python-developer"),
     (["backend", "back-end", "צד שרת", "בקאנד"], "software", "backend-developer"),
@@ -67,7 +67,13 @@ _KEYWORD_SLUG_HINTS: list[tuple[list[str], str, str]] = [
     (["qa", "automation", "בדיקות", "אוטומציה", "tester"], "qa", "qa"),
     (["cyber", "security", "סייבר", "אבטחה"], "datasecurity", "datasecurity"),
     (["junior", "graduate", "בוגר", "ג'וניור", "גוניור"], "software", "graduate-with-high-honors"),
-    (["software", "מפתח", "מהנדס תוכנה", "developer", "engineer"], "software", "backend-developer"),
+]
+
+# Only used when no specific profession hint matched — keeps different CVs
+# from collapsing onto the same generic backend-developer lobby.
+_BROAD_KEYWORD_SLUG_HINTS: list[tuple[list[str], str, str]] = [
+    (["software engineer", "software developer", "מהנדס תוכנה"], "software", "full-stack-developer"),
+    (["software", "מפתח תוכנה", "developer", "engineer", "מפתח"], "software", "backend-developer"),
 ]
 
 _QUERY_STOP_WORDS = frozenset({
@@ -260,6 +266,13 @@ def resolve_gotfriends_listing_urls(query: str) -> list[str]:
             if slug == slug_candidate or slug_candidate in slug or slug in slug_candidate:
                 urls.append(f"{GOTFRIENDS_BASE_URL}/jobslobby/{category}/{slug}/")
 
+    # Broad software/developer terms only apply when nothing specific matched.
+    if not urls:
+        for keywords, category, slug in _BROAD_KEYWORD_SLUG_HINTS:
+            if any(keyword in query_l for keyword in keywords):
+                urls.append(f"{GOTFRIENDS_BASE_URL}/jobslobby/{category}/{slug}/")
+                break
+
     if not urls:
         for category in GOTFRIENDS_CATEGORIES:
             urls.append(f"{GOTFRIENDS_BASE_URL}/jobslobby/{category}/")
@@ -270,7 +283,8 @@ def resolve_gotfriends_listing_urls(query: str) -> list[str]:
         if url not in seen:
             seen.add(url)
             deduped.append(url)
-    return deduped
+    # Cap fan-out so one generic query does not crawl every lobby category.
+    return deduped[:3]
 
 
 def build_gotfriends_page_url(listing_url: str, page: int) -> str:

@@ -6,6 +6,7 @@ from query_builder import (
     build_collection_queries,
     build_mixed_queries,
     dedupe_queries,
+    select_diverse_queries,
     split_keywords_by_script,
 )
 
@@ -50,3 +51,36 @@ def test_build_collection_queries_from_profile():
     assert entry.get("queries_he")
     assert entry.get("queries")
     assert len(entry["queries"]) <= 16
+
+
+def test_select_diverse_queries_prefers_specific_over_generic():
+    queries = [
+        "Software Engineer",
+        "Developer",
+        "Python Backend Developer",
+        "מפתח Python",
+        "FastAPI Developer",
+        "מפתח",
+    ]
+    selected = select_diverse_queries(queries, max_items=3)
+    assert len(selected) == 3
+    assert "Software Engineer" not in selected
+    assert "Developer" not in selected
+    assert "מפתח" not in selected
+    assert "Python Backend Developer" in selected
+    assert "מפתח Python" in selected
+
+
+def test_build_collection_queries_puts_tech_specific_terms_early():
+    profile = {
+        "preferred_role_titles": ["Software Engineer"],
+        "alternative_role_titles": [],
+        "search_keywords_en": ["software"],
+        "search_keywords_he": ["מפתח"],
+        "technologies_tools": ["Python", "FastAPI"],
+        "exclusion_keywords": [],
+        "seniority_level": "mid",
+    }
+    entry = build_collection_queries(profile)[0]
+    joined = " | ".join(entry["queries"][:4]).lower()
+    assert "python" in joined
