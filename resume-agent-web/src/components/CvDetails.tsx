@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import {
   applyToJob,
+  downloadTailoredCvPdf,
   DuplicateApplicationError,
   getCvMatches,
   getCvScanStatus,
@@ -153,6 +154,7 @@ export default function CvDetails({
   const [tailoringId, setTailoringId] = useState<number | null>(null);
   const [tailoredCv, setTailoredCv] = useState<TailoredCvResponse | null>(null);
   const [copyDone, setCopyDone] = useState(false);
+  const [pdfDownloading, setPdfDownloading] = useState(false);
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
@@ -336,6 +338,19 @@ export default function CvDetails({
       .replace(/[^\w\u0590-\u05FF-]+/g, "_")
       .slice(0, 40);
     downloadTextFile(`cv-tailored-${safeTitle}-${tailoredCv.job_id}.md`, cvOnly);
+  };
+
+  const handleDownloadTailoredPdf = async () => {
+    if (!tailoredCv) return;
+    setPdfDownloading(true);
+    setError(null);
+    try {
+      await downloadTailoredCvPdf(cvId, tailoredCv.job_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בהורדת PDF");
+    } finally {
+      setPdfDownloading(false);
+    }
   };
 
   const renderApplyButton = (match: CvMatch) => {
@@ -806,8 +821,38 @@ export default function CvDetails({
               <button type="button" className="btn btn-ghost" onClick={handleCopyTailored}>
                 {copyDone ? "הועתק קו״ח!" : "העתק קורות חיים"}
               </button>
-              <button type="button" className="btn btn-primary" onClick={handleDownloadTailored}>
+              <button type="button" className="btn btn-ghost" onClick={handleDownloadTailored}>
                 הורד Markdown
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-pdf-download"
+                onClick={handleDownloadTailoredPdf}
+                disabled={pdfDownloading || tailoringId === tailoredCv.job_id}
+              >
+                <span className="btn-pdf-icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M14 2v6h6"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M8 13h8M8 17h5"
+                      stroke="currentColor"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </span>
+                {pdfDownloading ? "מכין PDF..." : "הורד כ-PDF"}
               </button>
             </div>
           </div>

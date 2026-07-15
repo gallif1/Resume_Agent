@@ -356,6 +356,52 @@ export function tailorCvForJob(
   });
 }
 
+function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const utfMatch = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(header);
+  if (utfMatch?.[1]) {
+    try {
+      return decodeURIComponent(utfMatch[1].trim());
+    } catch {
+      /* fall through */
+    }
+  }
+  const plainMatch = /filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)/i.exec(header);
+  const raw = (plainMatch?.[1] ?? plainMatch?.[2] ?? "").trim();
+  return raw || null;
+}
+
+/** Download the tailored CV as a professionally rendered PDF (Playwright). */
+export async function downloadTailoredCvPdf(
+  cvId: string,
+  jobId: number
+): Promise<void> {
+  const res = await fetch(
+    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-pdf`
+  );
+  if (!res.ok) {
+    let detail = `שגיאה ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* keep generic message */
+    }
+    throw new Error(detail);
+  }
+
+  const blob = await res.blob();
+  const filename =
+    filenameFromContentDisposition(res.headers.get("Content-Disposition")) ||
+    "Gal_Lifshitz_CV_Tailored.pdf";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export class DuplicateApplicationError extends Error {
   code = "duplicate_application";
   constructor(message: string) {
