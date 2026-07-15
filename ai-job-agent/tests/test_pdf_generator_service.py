@@ -33,34 +33,39 @@ StartupX | 2019
 ## Projects
 
 ### Personal Dashboard
+Personal | 2021
+
 - Designed a React dashboard with REST APIs
 
 ## Skills
-Python | SQL | Linux | Git
+Languages: Python, SQL
+Tools: Git, Linux
 """
 
 
 def test_markdown_to_html_has_resume_structure():
     html_doc = pdf.markdown_to_resume_html(SAMPLE_CV)
     assert "<!DOCTYPE html>" in html_doc
-    assert 'class="resume"' in html_doc
     assert 'class="header"' in html_doc
     assert "Gal Lifshitz" in html_doc
     assert "contact-info" in html_doc
     assert "target-role" in html_doc
     assert "section-title" in html_doc
-    assert "entry-row" in html_doc
-    assert "entry-title" in html_doc
-    assert "entry-meta" in html_doc
-    assert "experience-item" in html_doc
-    assert "#2563eb" in html_doc  # target-role accent
-    assert '"Inter"' in html_doc
-    assert "page-break-inside: avoid" in html_doc
+    assert "resume-row" in html_doc
+    assert "title-main" in html_doc
+    assert "title-sub" in html_doc
+    assert "meta-right" in html_doc
+    assert "Technical Support Engineer" in html_doc
     assert "Acme Corp" in html_doc
     assert "2020" in html_doc
+    assert "#1d4ed8" in html_doc
+    assert "margin: 15mm 15mm 15mm 15mm" in html_doc
+    # Dates are on the same flex row as titles — not dump-style separate blocks only.
+    assert 'class="meta-right"' in html_doc
+    assert "<ul>" in html_doc and "<li>" in html_doc
 
 
-def test_skills_grid_from_category_lines():
+def test_skills_lines_bold_category():
     md = """# Name
 
 ## Skills
@@ -68,10 +73,20 @@ Languages: Python, SQL
 Tools: Git, Linux
 """
     html_doc = pdf.markdown_to_resume_html(md)
-    assert "skills-container" in html_doc
+    assert "skills-line" in html_doc
     assert "skills-category" in html_doc
     assert "Python, SQL" in html_doc
     assert "Git, Linux" in html_doc
+
+
+def test_parse_puts_dates_in_meta_right():
+    parsed = pdf.parse_resume_markdown(SAMPLE_CV)
+    exp = next(s for s in parsed.sections if s.kind == "experience")
+    first = exp.entries[0]
+    assert first.title == "Technical Support Engineer"
+    assert first.subtitle == "Acme Corp"
+    assert "2020" in first.dates
+    assert "Present" in first.dates
 
 
 def test_pdf_filename_from_name():
