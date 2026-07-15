@@ -27,6 +27,7 @@ from skill_normalizer import normalize_skill
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
 TAILOR_PROMPT_VERSION = "v3"
 REGENERATE_PROMPT_VERSION = "v1"
+NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
 TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
 to maximize honest keyword/semantic alignment with ONE target job description.
@@ -750,8 +751,34 @@ def _regenerate_tailored_cv(
         job=job,
         job_profile=job_profile,
     )
-    result = _apply_matcher_score_to_result(result, feedback=new_feedback)
 
+    previous_score = int(previous_feedback.get("ats_score") or 0)
+    new_score = int(new_feedback.get("ats_score") or 0)
+    saved_path = str(tailored_cv_path(cv_id, job_id))
+
+    # Score guard: never overwrite the saved draft with an equal/worse version.
+    if new_score <= previous_score:
+        preserved = _result_from_saved_markdown(previous, saved_path=saved_path)
+        return {
+            **preserved,
+            "estimated_ats_score": previous_score or preserved.get(
+                "estimated_ats_score"
+            ),
+            "from_cache": True,
+            "saved_path": saved_path,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "regenerated": False,
+            "improved": False,
+            "no_improvement": True,
+            "message": NO_IMPROVEMENT_MESSAGE,
+            "matcher_feedback": {
+                "previous": previous_feedback,
+                "current": previous_feedback,
+                "discarded": new_feedback,
+            },
+        }
+
+    result = _apply_matcher_score_to_result(result, feedback=new_feedback)
     path = save_tailored_cv(cv_id, job_id, result["markdown"])
     return {
         **result,
@@ -759,6 +786,9 @@ def _regenerate_tailored_cv(
         "saved_path": str(path),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "regenerated": True,
+        "improved": True,
+        "no_improvement": False,
+        "message": None,
         "matcher_feedback": {
             "previous": previous_feedback,
             "current": new_feedback,

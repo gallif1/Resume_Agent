@@ -368,7 +368,11 @@ export default function CvDetails({
       const result = await tailorCvForJob(cvId, tailoredCv.job_id, {
         regenerate: true,
       });
+      // Always apply returned payload — on score-guard miss it is the previous best draft.
       applyTailoredResult(result);
+      if (result.no_improvement || result.message === "לא הצלחתי לייצר גרסה יותר טובה") {
+        setError(result.message || "לא הצלחתי לייצר גרסה יותר טובה");
+      }
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "שגיאה בשיפור קורות החיים המותאמים"
@@ -689,7 +693,16 @@ export default function CvDetails({
         <>
       <PipelineProgress scanStatus={showScanPanel} />
 
-      {error && <div className="error-box">{error}</div>}
+      {error && (
+        <div
+          className={
+            error === "לא הצלחתי לייצר גרסה יותר טובה" ? "warning-box" : "error-box"
+          }
+          role="status"
+        >
+          {error}
+        </div>
+      )}
 
       {confirmState && (
         <div className="modal-overlay" role="dialog" aria-modal="true">

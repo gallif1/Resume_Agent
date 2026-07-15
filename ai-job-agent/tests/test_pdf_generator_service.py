@@ -44,11 +44,34 @@ def test_markdown_to_html_has_resume_structure():
     html_doc = pdf.markdown_to_resume_html(SAMPLE_CV)
     assert "<!DOCTYPE html>" in html_doc
     assert 'class="resume"' in html_doc
+    assert 'class="header"' in html_doc
     assert "Gal Lifshitz" in html_doc
-    assert "contact-bar" in html_doc
+    assert "contact-info" in html_doc
+    assert "target-role" in html_doc
+    assert "section-title" in html_doc
+    assert "entry-row" in html_doc
+    assert "entry-title" in html_doc
+    assert "entry-meta" in html_doc
     assert "experience-item" in html_doc
-    assert "#1a365d" in html_doc  # section accent in CSS
+    assert "#2563eb" in html_doc  # target-role accent
+    assert '"Inter"' in html_doc
     assert "page-break-inside: avoid" in html_doc
+    assert "Acme Corp" in html_doc
+    assert "2020" in html_doc
+
+
+def test_skills_grid_from_category_lines():
+    md = """# Name
+
+## Skills
+Languages: Python, SQL
+Tools: Git, Linux
+"""
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "skills-container" in html_doc
+    assert "skills-category" in html_doc
+    assert "Python, SQL" in html_doc
+    assert "Git, Linux" in html_doc
 
 
 def test_pdf_filename_from_name():

@@ -212,9 +212,13 @@ export interface TailoredCvResponse {
   saved_path: string;
   generated_at?: string | null;
   regenerated?: boolean;
+  improved?: boolean;
+  no_improvement?: boolean;
+  message?: string | null;
   matcher_feedback?: {
     previous?: MatcherFeedbackSnapshot;
     current?: MatcherFeedbackSnapshot;
+    discarded?: MatcherFeedbackSnapshot;
   } | null;
 }
 
