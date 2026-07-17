@@ -289,7 +289,30 @@ def test_format_matcher_feedback_lists_gaps():
     assert "Docker" in text
     assert "Kubernetes" in text
     assert "3+ years experience" in text
-    assert "refine the previous draft" in text
+    assert "original_source_cvs" in text
+    assert "latest_tailored_draft" in text
+
+
+def test_gather_original_source_cvs_includes_master_and_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(config, "CVS_DIR", tmp_path / "cvs")
+    (tmp_path / "cvs").mkdir(parents=True)
+    profile = {
+        "raw_text": "Compiled summary with Docker and Kubernetes",
+        "master_profile": {
+            "unified_summary": "Master summary mentioning Expo and SQLAlchemy",
+            "source_cv_count": 2,
+        },
+        "skills": {"programming_languages": ["Python"]},
+        "experience": {"job_titles": ["Developer"]},
+    }
+    text = svc.gather_original_source_cvs(
+        "cv_solo",
+        cv_profile=profile,
+    )
+    assert "COMPILED MASTER PROFILE" in text
+    assert "Expo" in text or "SQLAlchemy" in text
+    assert "Docker" in text or "Compiled summary" in text
+    assert "COMPILED STRUCTURED PROFILE" in text
 
 
 def test_evaluate_tailored_draft_detects_missing_skills(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
@@ -331,7 +354,29 @@ def test_evaluate_tailored_draft_detects_missing_skills(cvs_dir: Path, monkeypat
 
 def test_build_regenerate_user_prompt_includes_sections():
     prompt = svc.build_regenerate_user_prompt(
-        base_cv_data="RAW",
+        original_source_cvs="RAW SOURCE + MASTER",
+        latest_tailored_draft="# Draft\nPython",
+        ats_feedback_gaps={
+            "ats_score": 40,
+            "score_label": "Weak Match",
+            "missing_keywords": ["Go"],
+            "cv_improvements": ["Add Go evidence"],
+        },
+        job_description="Title: Dev",
+    )
+    assert "===== ats_feedback_gaps =====" in prompt
+    assert "===== latest_tailored_draft =====" in prompt
+    assert "===== original_source_cvs =====" in prompt
+    assert "===== job_description =====" in prompt
+    assert "40/100" in prompt
+    assert "Go" in prompt
+    assert "dual-lookup" in prompt.lower() or "deep-scan" in prompt.lower() or "Deep-scan" in prompt
+    assert "RAW SOURCE + MASTER" in prompt
+
+
+def test_build_regenerate_user_prompt_accepts_legacy_aliases():
+    prompt = svc.build_regenerate_user_prompt(
+        base_cv_data="LEGACY_BASE",
         job_description="Title: Dev",
         previous_tailored_cv="# Draft\nPython",
         matcher_feedback={
@@ -339,13 +384,13 @@ def test_build_regenerate_user_prompt_includes_sections():
             "score_label": "Weak Match",
             "missing_keywords": ["Go"],
         },
+        original_source_cvs="",
+        latest_tailored_draft="",
+        ats_feedback_gaps="",
     )
-    assert "===== matcher_feedback =====" in prompt
-    assert "===== previous_tailored_cv =====" in prompt
-    assert "===== base_cv_data =====" in prompt
-    assert "===== job_description =====" in prompt
-    assert "40/100" in prompt
-    assert "Go" in prompt
+    assert "LEGACY_BASE" in prompt
+    assert "===== original_source_cvs =====" in prompt
+    assert "===== latest_tailored_draft =====" in prompt
 
 
 def test_regenerate_requires_previous_draft(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
@@ -461,9 +506,12 @@ Python | SQL
     assert result["improved"] is True
     assert result["no_improvement"] is False
     assert result.get("message") is None
-    assert "REGENERATE & OPTIMIZE" in captured["system"] or "matcher_feedback" in captured["user"]
-    assert "===== matcher_feedback =====" in captured["user"]
+    assert "deep-scan" in captured["system"].lower() or "original_source_cvs" in captured["system"]
+    assert "===== ats_feedback_gaps =====" in captured["user"]
+    assert "===== original_source_cvs =====" in captured["user"]
+    assert "===== latest_tailored_draft =====" in captured["user"]
     assert "Docker" in captured["user"]
+    assert "Technical Support" in captured["user"] or "Python SQL Docker" in captured["user"]
     assert result["matcher_feedback"]["previous"]["ats_score"] is not None
     assert result["matcher_feedback"]["current"]["ats_score"] is not None
     assert result["matcher_feedback"]["current"]["ats_score"] > result["matcher_feedback"]["previous"]["ats_score"]

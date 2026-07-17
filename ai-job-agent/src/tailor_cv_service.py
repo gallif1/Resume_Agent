@@ -33,7 +33,7 @@ from skill_normalizer import normalize_skill
 
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
 TAILOR_PROMPT_VERSION = "v4"
-REGENERATE_PROMPT_VERSION = "v2"
+REGENERATE_PROMPT_VERSION = "v3"
 NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
 TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
@@ -186,24 +186,45 @@ REGENERATE_SYSTEM_PROMPT = (
     + """
 
 ================================================================================
-REGENERATE & OPTIMIZE MODE (feedback loop)
+REGENERATE & OPTIMIZE MODE (deep-scan feedback loop)
 ================================================================================
-You are refining a PREVIOUS tailored draft. The user message includes:
-- previous_tailored_cv — the last draft
-- matcher_feedback — exact gaps from a deterministic ATS matcher (score, missing skills/keywords)
-- base_cv_data — ground truth (still the only allowed evidence)
-- job_description — the target job
+You are refining an existing tailored CV draft to boost its ATS score against the
+Job Description.
 
-Your ONLY goal: raise the ATS score by closing the listed gaps WHILE staying on ONE A4 page.
-- Directly integrate missing keywords/skills into Skills, Experience bullets, and Projects
-  WHEN they are honestly evidenced in base_cv_data (synonyms, adjacent tools, real usage).
-- Prefer the exact keyword spelling used in matcher_feedback / the JD when truthful.
-- Keep Summary ≤3 sentences and ≤4 bullets per role/project.
-- Preserve every real employment entry; do not drop companies to make room for keywords.
-- In "## פירוט שינויים", list which matcher gaps you addressed (and which you could not,
-  honestly, in caveats).
-- Do NOT invent skills just because the matcher listed them as missing.
-- Keep real job titles, companies, and dates unchanged.
+The user message supplies THREE inputs (plus the job description):
+1) original_source_cvs — ALL original raw CV files/text and/or the compiled Master
+   Profile uploaded by the candidate at the beginning (full history / ground truth)
+2) latest_tailored_draft — the current tailored version that currently holds the
+   highest score
+3) ats_feedback_gaps — the specific missing keywords or weak sections identified
+   by the deterministic ATS scorer
+
+Your primary instruction is to look at the missing keywords/skills provided in
+`ats_feedback_gaps`.
+
+Then, perform a **deep-scan of the `original_source_cvs`** (the raw files uploaded
+initially). Check if the candidate actually possesses those missing skills, tools,
+or completed any relevant projects that were accidentally omitted or summarized
+too tightly in the `latest_tailored_draft`.
+
+- **If the missing skill/context exists in the original files:** Extract it and
+  explicitly weave it into the relevant Experience, Projects, or Skills section
+  of the new draft.
+- **If the missing skill does NOT exist in the original files:** Do NOT hallucinate.
+  Instead, safely reframe the existing technical bullet points in the
+  `latest_tailored_draft` to align as closely as possible with the required
+  methodologies without fabricating experience.
+
+Strict Constraint: Never delete real companies, degrees, or positions present in
+the original source documents.
+
+Additional regenerate rules:
+- Prefer the exact keyword spelling used in ats_feedback_gaps / the JD when truthful.
+- Keep Summary ≤3 sentences and ≤4 bullets per role/project (ONE A4 page).
+- In "## פירוט שינויים", list which matcher gaps you recovered from original sources
+  vs which you could only reframe (and note unrecovered gaps in caveats).
+- Start from latest_tailored_draft; improve it — do not rebuild from scratch if that
+  would drop real employment or education facts.
 """
 )
 
@@ -580,39 +601,175 @@ def format_matcher_feedback(feedback: dict[str, Any]) -> str:
             + "."
         )
     if improvements:
-        lines.append("Suggested CV improvements:")
+        lines.append("Suggested CV improvements (weak sections):")
         lines.extend(f"- {item}" for item in improvements[:8])
     if reasons:
         lines.append("Matcher reasons:")
         lines.extend(f"- {item}" for item in reasons[:8])
     lines.append(
-        "Your task is to refine the previous draft to directly integrate these missing "
-        "keywords and address these gaps to maximize the score, while strictly keeping "
-        "the real job titles, dates, and zero-hallucination rules."
+        "Deep-scan original_source_cvs for evidence of these gaps before deciding "
+        "whether to extract omitted facts or only reframe latest_tailored_draft."
     )
     return "\n".join(lines)
 
 
+def format_ats_feedback_gaps(feedback: dict[str, Any]) -> str:
+    """Compact ATS gap block used as the regenerate primary instruction target."""
+    missing_kw = feedback.get("missing_keywords") or feedback.get(
+        "missing_required_skills"
+    ) or []
+    missing_mand = feedback.get("missing_mandatory_requirements") or []
+    improvements = feedback.get("cv_improvements") or []
+    lines = [
+        f"Current best ATS score: {feedback.get('ats_score')}/100 "
+        f"({feedback.get('score_label') or 'n/a'}).",
+        "Missing / weak keywords to recover if evidenced in original_source_cvs:",
+    ]
+    if missing_kw:
+        lines.extend(f"- {item}" for item in missing_kw[:20])
+    else:
+        lines.append("- (none detected)")
+    if missing_mand:
+        lines.append("Missing mandatory requirements:")
+        lines.extend(f"- {item}" for item in missing_mand[:12])
+    if improvements:
+        lines.append("Weak sections / improvements:")
+        lines.extend(f"- {item}" for item in improvements[:8])
+    lines.append("")
+    lines.append(format_matcher_feedback(feedback))
+    return "\n".join(lines)
+
+
+def _load_source_cv_raw_text(cv_id: str) -> str:
+    """Load raw text from a single uploaded CV's parsed profile."""
+    path = cv_data_dir(cv_id) / "cv_profile.json"
+    if not path.exists():
+        return ""
+    try:
+        profile = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    raw = str(profile.get("raw_text") or "").strip()
+    if raw:
+        return raw
+    sections = profile.get("sections")
+    if isinstance(sections, dict):
+        parts = [str(v).strip() for v in sections.values() if v]
+        return "\n\n".join(p for p in parts if p)
+    return ""
+
+
+def gather_original_source_cvs(
+    cv_id: str,
+    *,
+    user_id: str | None = None,
+    cv_profile: dict[str, Any] | None = None,
+) -> str:
+    """Gather ALL original uploaded CV texts + compiled Master Profile for deep-scan.
+
+    Prefer every source file uploaded by the user; always append the compiled
+    master / structured profile so omitted details in the latest draft can be
+    recovered from full history.
+    """
+    import db as db_mod
+
+    profile = cv_profile or {}
+    blocks: list[str] = []
+    seen_fingerprints: set[str] = set()
+    per_source_budget = max(4000, OPENAI_CV_MAX_CHARS // 3)
+
+    def _append_block(title: str, body: str) -> None:
+        text = (body or "").strip()
+        if not text:
+            return
+        fingerprint = text[:500].lower()
+        if fingerprint in seen_fingerprints:
+            return
+        seen_fingerprints.add(fingerprint)
+        blocks.append(
+            f"----- {title} -----\n{truncate_text(text, per_source_budget)}"
+        )
+
+    effective_user = user_id
+    if not effective_user and cv_id == WORKSPACE_CV_ID:
+        effective_user = AGENT_USER_ID or DEFAULT_USER_ID
+
+    source_cvs: list[dict[str, Any]] = []
+    if effective_user:
+        try:
+            source_cvs = db_mod.list_active_cvs_for_user(
+                effective_user, db_path=db_mod.REGISTRY_DB_PATH
+            )
+        except Exception:  # noqa: BLE001 — fall back to profile-only
+            source_cvs = []
+
+    if source_cvs:
+        for index, cv in enumerate(source_cvs, start=1):
+            sid = str(cv.get("id") or "")
+            label = cv.get("display_name") or cv.get("file_name") or sid or f"cv_{index}"
+            raw = _load_source_cv_raw_text(sid) if sid else ""
+            _append_block(f"ORIGINAL SOURCE CV #{index}: {label}", raw)
+    elif cv_id and cv_id != WORKSPACE_CV_ID:
+        raw = _load_source_cv_raw_text(cv_id)
+        _append_block(f"ORIGINAL SOURCE CV: {cv_id}", raw)
+
+    # Compiled Master Profile / structured facts (always include when present).
+    master = profile.get("master_profile")
+    if master:
+        _append_block(
+            "COMPILED MASTER PROFILE",
+            json.dumps(master, ensure_ascii=False, indent=2),
+        )
+
+    profile_raw = str(profile.get("raw_text") or "").strip()
+    if profile_raw:
+        _append_block("COMPILED PROFILE RAW TEXT", profile_raw)
+
+    # Structured sections from the active profile (skills/experience/projects).
+    structured = _cv_source_payload(profile)
+    if structured.strip():
+        _append_block("COMPILED STRUCTURED PROFILE (base_cv_data)", structured)
+
+    if not blocks:
+        return "(no original source CV text available)"
+
+    combined = "\n\n".join(blocks)
+    return truncate_text(combined, OPENAI_CV_MAX_CHARS * 2)
+
+
 def build_regenerate_user_prompt(
     *,
-    base_cv_data: str,
+    original_source_cvs: str,
+    latest_tailored_draft: str,
+    ats_feedback_gaps: dict[str, Any] | str,
     job_description: str,
-    previous_tailored_cv: str,
-    matcher_feedback: dict[str, Any],
+    # Backward-compatible aliases used by older call sites / tests.
+    base_cv_data: str | None = None,
+    previous_tailored_cv: str | None = None,
+    matcher_feedback: dict[str, Any] | None = None,
 ) -> str:
-    """User prompt for regenerate & optimize mode."""
-    feedback_text = format_matcher_feedback(matcher_feedback)
+    """User prompt for regenerate & optimize (dual-lookup / three-input mode)."""
+    sources = (original_source_cvs or base_cv_data or "").strip()
+    draft = (latest_tailored_draft or previous_tailored_cv or "").strip()
+    gaps_payload = ats_feedback_gaps if ats_feedback_gaps not in (None, "") else matcher_feedback
+    if isinstance(gaps_payload, dict):
+        gaps_text = format_ats_feedback_gaps(gaps_payload)
+    else:
+        gaps_text = str(gaps_payload or "")
+
     return (
-        "REGENERATE & OPTIMIZE the previous tailored CV using matcher feedback.\n"
-        "Start from previous_tailored_cv and close the listed gaps when honestly "
-        "supported by base_cv_data. Do not invent experience.\n"
+        "REGENERATE & OPTIMIZE the existing tailored CV using the dual-lookup flow.\n"
+        "Primary target: close ats_feedback_gaps by deep-scanning original_source_cvs.\n"
+        "If a gap is evidenced in the originals, extract and weave it into the draft.\n"
+        "If not evidenced, reframe latest_tailored_draft honestly — never hallucinate.\n"
+        "Never delete real companies, degrees, or positions from the original sources.\n"
         "Return the same JSON/markdown structure as a normal tailor response.\n\n"
-        "===== matcher_feedback =====\n"
-        f"{feedback_text}\n\n"
-        "===== previous_tailored_cv =====\n"
-        f"{truncate_text(previous_tailored_cv, OPENAI_CV_MAX_CHARS)}\n\n"
-        "===== base_cv_data =====\n"
-        f"{base_cv_data}\n\n"
+        "===== ats_feedback_gaps =====\n"
+        f"{gaps_text}\n\n"
+        "===== latest_tailored_draft =====\n"
+        f"{truncate_text(draft, OPENAI_CV_MAX_CHARS)}\n\n"
+        "===== original_source_cvs =====\n"
+        f"{sources}\n\n"
         "===== job_description =====\n"
         f"{job_description}"
     )
@@ -777,7 +934,16 @@ def _regenerate_tailored_cv(
     use_cache: bool = False,
     user_id: str | None = None,
 ) -> dict[str, Any]:
-    """Improve a previous tailored draft using matcher gap feedback."""
+    """Improve the best tailored draft via deep-scan of original source CVs.
+
+    Dual-lookup inputs:
+    - original_source_cvs (all uploads + master profile)
+    - latest_tailored_draft (current highest-scoring saved draft)
+    - ats_feedback_gaps (deterministic matcher missing keywords / weak sections)
+
+    Score guard: only overwrite the saved draft when the new ATS score is
+    strictly higher; otherwise roll back with ``no_improvement``.
+    """
     job_id = int(job["id"])
     previous = load_saved_tailored_cv(cv_id, job_id)
     if not previous:
@@ -802,13 +968,15 @@ def _regenerate_tailored_cv(
         job_profile=job_profile,
     )
 
-    base_cv_data = _cv_source_payload(cv_profile)
+    original_source_cvs = gather_original_source_cvs(
+        cv_id, user_id=user_id, cv_profile=cv_profile
+    )
     job_description = _job_prompt_payload(job, job_profile)
     user_prompt = build_regenerate_user_prompt(
-        base_cv_data=base_cv_data,
+        original_source_cvs=original_source_cvs,
+        latest_tailored_draft=previous,
+        ats_feedback_gaps=previous_feedback,
         job_description=job_description,
-        previous_tailored_cv=previous,
-        matcher_feedback=previous_feedback,
     )
 
     try:
@@ -825,7 +993,8 @@ def _regenerate_tailored_cv(
                 f"regen|{REGENERATE_PROMPT_VERSION}|{TAILOR_PROMPT_VERSION}|"
                 f"{cv_id}|{job_id}|{previous_feedback.get('ats_score')}|"
                 f"{','.join((previous_feedback.get('missing_keywords') or [])[:12])}|"
-                f"{job_description[:1500]}|{previous[:3000]}"
+                f"{job_description[:1500]}|{previous[:3000]}|"
+                f"{original_source_cvs[:2000]}"
             ),
         )
     except OpenAIAPIError as exc:
@@ -895,8 +1064,8 @@ def tailor_cv_for_job(
 ) -> dict[str, Any]:
     """Generate (or load) an ATS-tailored Markdown CV for one job.
 
-    When ``regenerate`` is True, score the previous draft with the deterministic
-    matcher and ask the LLM to close the measured gaps.
+    When ``regenerate`` is True, deep-scan original source CVs against ATS gaps
+    on the current best tailored draft and only keep a strictly higher score.
     """
     if regenerate:
         return _regenerate_tailored_cv(cv_id, job, use_cache=False, user_id=user_id)
