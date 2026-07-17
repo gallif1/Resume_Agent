@@ -219,10 +219,21 @@ def split_tailored_markdown(markdown: str) -> tuple[str, str]:
     return "", text
 
 
-def extract_cv_markdown_for_copy(markdown: str) -> str:
-    """Return the resume body suitable for clipboard / download of the CV only."""
-    _, body = split_tailored_markdown(markdown)
-    return body or (markdown or "").strip()
+def extract_cv_markdown_for_copy(markdown: str | dict[str, Any] | None) -> str:
+    """Return the resume body suitable for clipboard / download of the CV only.
+
+    Accepts either the full tailored markdown string or a tailor result dict
+    (``markdown`` / ``cv_markdown`` keys) so API callers cannot crash with 500.
+    """
+    if isinstance(markdown, dict):
+        preferred = markdown.get("cv_markdown") or markdown.get("markdown") or ""
+        text = preferred if isinstance(preferred, str) else ""
+    else:
+        text = markdown or ""
+    if not isinstance(text, str):
+        text = str(text)
+    _, body = split_tailored_markdown(text)
+    return body or text.strip()
 
 
 def _clamp_score(value: Any) -> int | None:
