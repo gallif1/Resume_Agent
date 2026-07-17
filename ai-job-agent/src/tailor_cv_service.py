@@ -17,11 +17,18 @@ from ai_client import (
 from ats_candidate import AtsCandidateProfile, build_ats_candidate
 from ats_scorer import AtsMatchResult
 from ats_scorer import score as ats_score
-from config import OPENAI_CV_MAX_CHARS, OPENAI_JOB_MAX_CHARS, cv_data_dir
+from config import (
+    AGENT_USER_ID,
+    OPENAI_CV_MAX_CHARS,
+    OPENAI_JOB_MAX_CHARS,
+    cv_data_dir,
+    user_cv_profile_path,
+    user_data_dir,
+)
+from db import DEFAULT_USER_ID, WORKSPACE_CV_ID
 from job_analyzer import JobProfile, parse_stored_job_profile
 from multilingual_normalizer import expand_synonyms, to_canonical
 from profile_matcher import score as profile_match_score
-from profile_utils import load_cv_profile
 from skill_normalizer import normalize_skill
 
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
@@ -639,12 +646,36 @@ def _result_from_saved_markdown(markdown: str, *, saved_path: str) -> dict[str, 
     }
 
 
-def _load_cv_profile_or_raise(cv_id: str) -> dict[str, Any]:
-    cv_profile = load_cv_profile(cv_id)
+def tailored_cv_dir(cv_id: str) -> Path:
+    if cv_id == WORKSPACE_CV_ID and (AGENT_USER_ID or DEFAULT_USER_ID):
+        return user_data_dir(AGENT_USER_ID or DEFAULT_USER_ID) / "tailored_cvs"
+    return cv_data_dir(cv_id) / "tailored_cvs"
+
+
+def _profile_path_for(cv_id: str, user_id: str | None = None) -> Path:
+    if cv_id == WORKSPACE_CV_ID or user_id:
+        return user_cv_profile_path(user_id or AGENT_USER_ID or DEFAULT_USER_ID)
+    from profile_utils import cv_profile_path_for
+
+    return cv_profile_path_for(cv_id)
+
+
+def _load_cv_profile_or_raise(cv_id: str, *, user_id: str | None = None) -> dict[str, Any]:
+    path = _profile_path_for(cv_id, user_id=user_id)
+    if path.exists():
+        try:
+            cv_profile = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cv_profile = {}
+    else:
+        from profile_utils import load_cv_profile
+
+        cv_profile = load_cv_profile(cv_id)
     if not cv_profile or not (
         cv_profile.get("raw_text")
         or cv_profile.get("experience")
         or cv_profile.get("skills")
+        or cv_profile.get("master_profile")
     ):
         raise TailorCvError(
             "Parsed CV profile not found — run the agent / parse CV first",
@@ -688,6 +719,7 @@ def _regenerate_tailored_cv(
     job: dict[str, Any],
     *,
     use_cache: bool = False,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Improve a previous tailored draft using matcher gap feedback."""
     job_id = int(job["id"])
@@ -704,7 +736,7 @@ def _regenerate_tailored_cv(
             status_code=503,
         )
 
-    cv_profile = _load_cv_profile_or_raise(cv_id)
+    cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)
     job_profile = parse_stored_job_profile(job.get("job_profile"))
 
     previous_feedback = evaluate_tailored_draft(
@@ -803,6 +835,7 @@ def tailor_cv_for_job(
     force: bool = False,
     use_cache: bool = True,
     regenerate: bool = False,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate (or load) an ATS-tailored Markdown CV for one job.
 
@@ -810,7 +843,7 @@ def tailor_cv_for_job(
     matcher and ask the LLM to close the measured gaps.
     """
     if regenerate:
-        return _regenerate_tailored_cv(cv_id, job, use_cache=False)
+        return _regenerate_tailored_cv(cv_id, job, use_cache=False, user_id=user_id)
 
     job_id = int(job["id"])
     if not force:
@@ -826,7 +859,7 @@ def tailor_cv_for_job(
             status_code=503,
         )
 
-    cv_profile = _load_cv_profile_or_raise(cv_id)
+    cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)
 
     job_profile = parse_stored_job_profile(job.get("job_profile"))
     base_cv_data = _cv_source_payload(cv_profile)

@@ -269,7 +269,11 @@ export class DuplicateCvError extends Error {
   }
 }
 
-export function listServerCvs(): Promise<{ cvs: Cv[] }> {
+export function listServerCvs(): Promise<{
+  cvs: Cv[];
+  workspace_match_count?: number;
+  active_cv_count?: number;
+}> {
   return request(`/cvs`);
 }
 
@@ -338,6 +342,66 @@ export function runAgentForCv(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(options ?? {}),
+  });
+}
+
+/** Run the job-matching agent across all uploaded CV files. */
+export function runJobMatcher(
+  options?: {
+    skip_collect?: boolean;
+    skip_enrich?: boolean;
+    job_sites?: string[];
+  }
+): Promise<{ started: boolean; user_id: string; cv_count: number }> {
+  return request(`/jobs/match`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(options ?? {}),
+  });
+}
+
+export function getJobMatchStatus(): Promise<CvScanStatus & {
+  match_count?: number;
+  cv_count?: number;
+}> {
+  return request(`/jobs/match-status`);
+}
+
+export function getJobMatches(
+  options?: { latest?: boolean; minScore?: number }
+): Promise<{ matches: CvMatch[] }> {
+  const params = new URLSearchParams();
+  params.set("latest", String(options?.latest ?? true));
+  if (options?.minScore != null) params.set("min_score", String(options.minScore));
+  return request(`/jobs/matches?${params.toString()}`);
+}
+
+export function updateWorkspaceMatchStatus(
+  matchId: number,
+  status: ApplicationStatus,
+  notes?: string
+): Promise<{ updated: boolean; match: CvMatch }> {
+  return request(`/jobs/matches/${matchId}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status, notes: notes ?? null }),
+  });
+}
+
+export function tailorWorkspaceJob(
+  jobId: number,
+  options?: { force?: boolean; regenerate?: boolean; sourceCvId?: string }
+): Promise<TailoredCvResponse> {
+  const regenerate = Boolean(options?.regenerate);
+  const force = Boolean(options?.force) || regenerate;
+  const params = new URLSearchParams();
+  if (regenerate) params.set("regenerate", "true");
+  if (options?.sourceCvId) params.set("source_cv_id", options.sourceCvId);
+  const qs = params.toString() ? `?${params.toString()}` : "";
+  return request(`/jobs/${jobId}/tailor-cv${qs}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ force }),
   });
 }
 

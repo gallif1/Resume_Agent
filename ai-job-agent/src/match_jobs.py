@@ -16,8 +16,9 @@ from ai_client import clamp_score
 from ats_candidate import build_ats_candidate
 from ats_scorer import score as ats_score
 from console_utils import configure_console, safe_print
-from config import AGENT_CV_ID, AGENT_SCAN_ID, AI_RERANK_ENABLED
+from config import AGENT_CV_ID, AGENT_SCAN_ID, AGENT_USER_ID, AI_RERANK_ENABLED
 from db import (
+    WORKSPACE_CV_ID,
     cv_job_needs_matching,
     get_all_jobs,
     init_db,
@@ -165,7 +166,10 @@ def match_all_jobs(
     """Score jobs using deterministic profile matcher + ATS engine (no per-job AI)."""
     configure_console()
     if cv_id is None:
-        cv_id = AGENT_CV_ID or None
+        if AGENT_USER_ID:
+            cv_id = WORKSPACE_CV_ID
+        else:
+            cv_id = AGENT_CV_ID or None
     if scan_id is None:
         scan_id = _resolved_scan_id()
 

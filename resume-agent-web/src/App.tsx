@@ -6,10 +6,10 @@ import {
   checkHealth,
   deleteServerCv,
   DuplicateCvError,
-  getCvScanStatus,
+  getJobMatchStatus,
   listJobSites,
   listServerCvs,
-  runAgentForCv,
+  runJobMatcher,
   uploadCv,
   type Cv,
   type CvScanStatus,
@@ -24,9 +24,9 @@ export default function App() {
   const [cvs, setCvs] = useState<Cv[]>([]);
   const [cvsLoading, setCvsLoading] = useState(false);
   const [cvsError, setCvsError] = useState<string | null>(null);
-  const [selectedCvId, setSelectedCvId] = useState<string | null>(null);
+  const [workspaceMatchCount, setWorkspaceMatchCount] = useState(0);
+  const [showMatches, setShowMatches] = useState(false);
 
-  const [scanCvId, setScanCvId] = useState<string | null>(null);
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
   const [jobSites, setJobSites] = useState<JobSite[]>([
     {
@@ -52,7 +52,7 @@ export default function App() {
     },
   ]);
   const [jobSitesLoading, setJobSitesLoading] = useState(false);
-  const [runModalCvId, setRunModalCvId] = useState<string | null>(null);
+  const [runModalOpen, setRunModalOpen] = useState(false);
   const pollRef = useRef<number | null>(null);
   const scanRunningRef = useRef(false);
   const healthFailCount = useRef(0);
@@ -68,6 +68,7 @@ export default function App() {
     try {
       const data = await listServerCvs();
       setCvs(data.cvs);
+      setWorkspaceMatchCount(data.workspace_match_count ?? 0);
     } catch (e) {
       setCvsError(e instanceof Error ? e.message : "שגיאה בטעינת קורות החיים");
     } finally {
@@ -86,13 +87,13 @@ export default function App() {
         setServerUp(true);
         return;
       }
-      // During an active scan the server may be slow — don't flip to "down" immediately.
       if (scanRunningRef.current) return;
       healthFailCount.current += 1;
       if (healthFailCount.current >= 3) setServerUp(false);
     },
     []
   );
+
   const pingServer = useCallback(async () => {
     setHealthChecking(true);
     const up = await checkHealth();
@@ -102,7 +103,6 @@ export default function App() {
     return up;
   }, [refreshCvs, applyHealthResult]);
 
-  // Server health polling — faster while disconnected.
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
@@ -185,24 +185,24 @@ export default function App() {
     }
   }, []);
 
-  const startPolling = useCallback(
-    (cvId: string) => {
-      stopPolling();
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const s = await getCvScanStatus(cvId);
-          setScanStatus(s);
-          if (!s.running) {
-            stopPolling();
-            refreshCvs();
+  const startPolling = useCallback(() => {
+    stopPolling();
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const s = await getJobMatchStatus();
+        setScanStatus(s);
+        if (!s.running) {
+          stopPolling();
+          refreshCvs();
+          if ((s.match_count ?? 0) > 0) {
+            setWorkspaceMatchCount(s.match_count ?? 0);
           }
-        } catch {
-          /* server temporarily unreachable — keep polling */
         }
-      }, 2500);
-    },
-    [stopPolling, refreshCvs]
-  );
+      } catch {
+        /* server temporarily unreachable — keep polling */
+      }
+    }, 2500);
+  }, [stopPolling, refreshCvs]);
 
   useEffect(() => stopPolling, [stopPolling]);
 
@@ -239,26 +239,25 @@ export default function App() {
   const handleDelete = async (id: string) => {
     try {
       await deleteServerCv(id);
-      if (selectedCvId === id) setSelectedCvId(null);
       await refreshCvs();
-      showToast("קורות החיים וכל הנתונים הקשורים נמחקו");
+      showToast("קובץ קורות החיים נמחק");
     } catch (e) {
       showToast(`מחיקה נכשלה: ${e instanceof Error ? e.message : ""}`);
     }
   };
 
-  const handleRun = (id: string) => {
-    // Defer opening so the same click/tap cannot immediately dismiss the modal.
-    window.setTimeout(() => setRunModalCvId(id), 0);
+  const handleRun = () => {
+    if (cvs.length === 0) {
+      showToast("יש להעלות לפחות קובץ קורות חיים אחד");
+      return;
+    }
+    window.setTimeout(() => setRunModalOpen(true), 0);
   };
 
   const confirmRun = async (siteIds: string[]) => {
-    const id = runModalCvId;
-    if (!id) return;
-    setRunModalCvId(null);
+    setRunModalOpen(false);
     try {
-      await runAgentForCv(id, { job_sites: siteIds });
-      setScanCvId(id);
+      await runJobMatcher({ job_sites: siteIds });
       setScanStatus({
         running: true,
         started_at: new Date().toISOString(),
@@ -272,7 +271,7 @@ export default function App() {
         log: [],
         latest_scan: null,
       });
-      startPolling(id);
+      startPolling();
     } catch (e) {
       showToast(
         `הרצת הסוכן נכשלה: ${e instanceof Error ? e.message : ""}`
@@ -280,8 +279,7 @@ export default function App() {
     }
   };
 
-  const selectedCv = cvs.find((c) => c.id === selectedCvId);
-  const runModalCv = cvs.find((c) => c.id === runModalCvId);
+  const primaryCv = cvs[0];
   const scanActive = scanStatus?.running ?? false;
 
   return (
@@ -358,26 +356,25 @@ export default function App() {
               {healthChecking ? "בודק..." : "נסה שוב"}
             </button>
           </div>
-        ) : selectedCvId ? (
+        ) : showMatches && primaryCv ? (
           <CvDetails
-            cvId={selectedCvId}
-            cv={selectedCv}
-            scanCvId={scanCvId}
+            cvId={primaryCv.id}
+            cv={primaryCv}
             scanStatus={scanStatus}
-            onBack={() => setSelectedCvId(null)}
-            onRun={handleRun}
+            workspaceMode
+            onBack={() => setShowMatches(false)}
           />
         ) : (
           <CvManager
             cvs={cvs}
             loading={cvsLoading}
             error={cvsError}
-            scanCvId={scanCvId}
             scanStatus={scanStatus}
+            workspaceMatchCount={workspaceMatchCount}
             onUpload={handleUpload}
             onDelete={handleDelete}
-            onRun={handleRun}
-            onOpen={(id) => setSelectedCvId(id)}
+            onRunAgent={handleRun}
+            onOpenMatches={() => setShowMatches(true)}
           />
         )}
       </main>
@@ -390,13 +387,13 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {runModalCvId && (
+      {runModalOpen && (
         <RunAgentModal
-          cvName={runModalCv?.display_name || runModalCv?.file_name || "קורות חיים"}
+          cvName={`${cvs.length} קבצי קורות חיים`}
           sites={jobSites}
           loading={jobSitesLoading}
           onConfirm={confirmRun}
-          onCancel={() => setRunModalCvId(null)}
+          onCancel={() => setRunModalOpen(false)}
         />
       )}
     </div>

@@ -28,9 +28,20 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+DEFAULT_USER_ID = "default"
+WORKSPACE_CV_ID = "workspace"
+
 _REGISTRY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    display_name TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS cvs (
     id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT 'default',
     file_name TEXT NOT NULL,
     display_name TEXT,
     stored_path TEXT,
@@ -38,10 +49,14 @@ CREATE TABLE IF NOT EXISTS cvs (
     file_size INTEGER,
     file_hash TEXT,
     parsed_profile TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT,
     updated_at TEXT,
-    last_scan_at TEXT
+    last_scan_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users (id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_cvs_user_active ON cvs (user_id, is_active);
 """
 
 _JOBS_SCHEMA = """
@@ -166,7 +181,32 @@ def init_registry_db(db_path: Path = REGISTRY_DB_PATH) -> None:
     """Create the global CV registry (metadata only)."""
     with get_connection(db_path) as conn:
         conn.executescript(_REGISTRY_SCHEMA)
+        _apply_registry_migrations(conn)
         conn.commit()
+
+
+def _apply_registry_migrations(conn: sqlite3.Connection) -> None:
+    """Evolve the registry schema for multi-user CV support."""
+    now = _utc_now()
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO users (id, display_name, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (DEFAULT_USER_ID, "Default User", now, now),
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(cvs)").fetchall()}
+    for column, col_type in [
+        ("user_id", "TEXT NOT NULL DEFAULT 'default'"),
+        ("is_active", "INTEGER NOT NULL DEFAULT 1"),
+    ]:
+        if column not in columns:
+            conn.execute(f"ALTER TABLE cvs ADD COLUMN {column} {col_type}")
+    conn.execute(
+        "UPDATE cvs SET user_id = ? WHERE user_id IS NULL OR user_id = ''",
+        (DEFAULT_USER_ID,),
+    )
+    conn.execute("UPDATE cvs SET is_active = 1 WHERE is_active IS NULL")
 
 
 def init_cv_data_db(cv_id: str) -> Path:
@@ -1371,22 +1411,26 @@ def create_cv(
     file_size: int | None = None,
     file_hash: str | None = None,
     parsed_profile: str | None = None,
+    user_id: str = DEFAULT_USER_ID,
+    is_active: bool = True,
     db_path: Path = REGISTRY_DB_PATH,
 ) -> dict[str, Any]:
     """Insert a new CV record and return it."""
     now = _utc_now()
+    init_registry_db(db_path)
     init_cv_data_db(cv_id)
     with get_connection(db_path) as conn:
         conn.execute(
             """
             INSERT INTO cvs (
-                id, file_name, display_name, stored_path, file_ext, file_size,
-                file_hash, parsed_profile, created_at, updated_at, last_scan_at
+                id, user_id, file_name, display_name, stored_path, file_ext, file_size,
+                file_hash, parsed_profile, is_active, created_at, updated_at, last_scan_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
             """,
             (
                 cv_id,
+                user_id,
                 file_name,
                 display_name or file_name,
                 stored_path,
@@ -1394,6 +1438,7 @@ def create_cv(
                 file_size,
                 file_hash,
                 parsed_profile,
+                1 if is_active else 0,
                 now,
                 now,
             ),
@@ -1421,15 +1466,31 @@ def find_cv_by_hash(file_hash: str, db_path: Path = REGISTRY_DB_PATH) -> dict[st
         return dict(row) if row is not None else None
 
 
-def list_cvs(db_path: Path = REGISTRY_DB_PATH) -> list[dict[str, Any]]:
-    """Return all CVs (newest first) with lightweight match/scan counts."""
+def list_cvs(
+    *,
+    user_id: str | None = None,
+    active_only: bool = False,
+    db_path: Path = REGISTRY_DB_PATH,
+) -> list[dict[str, Any]]:
+    """Return CVs (newest first) with lightweight match/scan counts."""
+    init_registry_db(db_path)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if user_id:
+        clauses.append("c.user_id = ?")
+        params.append(user_id)
+    if active_only:
+        clauses.append("c.is_active = 1")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT c.*
             FROM cvs c
+            {where}
             ORDER BY c.created_at DESC
-            """
+            """,
+            params,
         ).fetchall()
         result = []
         for row in rows:
@@ -1441,10 +1502,18 @@ def list_cvs(db_path: Path = REGISTRY_DB_PATH) -> list[dict[str, Any]]:
         return result
 
 
+def list_active_cvs_for_user(
+    user_id: str = DEFAULT_USER_ID,
+    db_path: Path = REGISTRY_DB_PATH,
+) -> list[dict[str, Any]]:
+    """Return all active CV records for a user (newest first)."""
+    return list_cvs(user_id=user_id, active_only=True, db_path=db_path)
+
+
 def update_cv(cv_id: str, fields: dict[str, Any], db_path: Path = REGISTRY_DB_PATH) -> None:
     """Update editable CV fields (display_name, parsed_profile, last_scan_at)."""
     allowed = {"display_name", "parsed_profile", "last_scan_at", "file_name",
-               "stored_path", "file_ext", "file_size", "file_hash"}
+               "stored_path", "file_ext", "file_size", "file_hash", "is_active", "user_id"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
@@ -1537,9 +1606,9 @@ SCAN_SUCCESS = "success"
 SCAN_FAILED = "failed"
 
 
-def reset_cv_job_pool(cv_id: str) -> None:
+def reset_cv_job_pool(cv_id: str, db_path: Path | None = None) -> None:
     """Clear collected jobs and match rows before a fresh agent scan."""
-    path = cv_db_path(cv_id)
+    path = db_path or cv_db_path(cv_id)
     if not path.exists():
         return
     with get_connection(path) as conn:

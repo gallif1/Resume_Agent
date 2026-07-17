@@ -9,7 +9,11 @@ Multi-CV endpoints (each CV has isolated data):
     POST   /cvs/upload                      upload a CV (dedup by content hash)
     GET    /cvs/{cv_id}                     one CV + its latest scan
     DELETE /cvs/{cv_id}                     delete a CV and all its data
-    POST   /cvs/{cv_id}/run-agent           run the agent for a single CV
+    POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
+    GET    /jobs/match-status                 live workspace scan progress
+    GET    /jobs/matches                      workspace job matches
+    PATCH  /jobs/matches/{id}/status          set application status for workspace match
+    POST   /jobs/{job_id}/tailor-cv           tailor CV from aggregated profile
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
@@ -41,6 +45,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -56,7 +61,7 @@ import db
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
 from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
-from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path
+from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
@@ -182,6 +187,12 @@ def _run_pipeline(skip_collect: bool, skip_enrich: bool) -> None:
 class RunRequest(BaseModel):
     skip_collect: bool = False
     skip_enrich: bool = False
+
+
+class RunAgentRequest(BaseModel):
+    skip_collect: bool = False
+    skip_enrich: bool = False
+    job_sites: list[str] | None = None
 
 
 @app.post("/api/pipeline/run")
@@ -311,7 +322,9 @@ async def upload_cv(file: UploadFile = File(...)):
 _scan_lock = threading.Lock()
 _scan_state: dict = {
     "running": False,
+    "mode": None,
     "cv_id": None,
+    "user_id": None,
     "scan_id": None,
     "started_at": None,
     "finished_at": None,
@@ -411,6 +424,143 @@ def _run_scan_thread(
             _scan_state["error"] = error
 
 
+def _run_user_scan_thread(
+    user_id: str,
+    skip_collect: bool,
+    skip_enrich: bool,
+    job_sites: list[str] | None,
+) -> None:
+    error: str | None = None
+    try:
+        scan = cv_service.run_user_scan(
+            user_id,
+            skip_collect=skip_collect,
+            skip_enrich=skip_enrich,
+            job_sites=job_sites,
+            log=_scan_log,
+            set_step_status=_scan_set_step,
+        )
+        if scan.get("status") == db.SCAN_FAILED:
+            error = scan.get("error_message") or "הסריקה נכשלה"
+        with _scan_lock:
+            scan_warnings = scan.get("warnings") or []
+            for message in scan_warnings:
+                if message and message not in _scan_state["warnings"]:
+                    _scan_state["warnings"].append(message)
+            if scan.get("collection"):
+                _scan_state["collection"] = scan.get("collection")
+    except Exception as exc:  # noqa: BLE001 — surface any crash to the client
+        error = str(exc)
+        _scan_log(f"!! שגיאה: {exc}")
+    finally:
+        with _scan_lock:
+            _scan_state["running"] = False
+            _scan_state["finished_at"] = _utc_now()
+            _scan_state["error"] = error
+
+
+def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
+    workspace_db = user_db_path(user_id)
+    if not workspace_db.exists():
+        return 0
+    return len(
+        db.get_cv_matches(
+            db.WORKSPACE_CV_ID,
+            latest_only=True,
+            db_path=workspace_db,
+        )
+    )
+
+
+def _start_user_scan(req: RunAgentRequest, user_id: str = db.DEFAULT_USER_ID) -> dict:
+    active = db.list_active_cvs_for_user(user_id)
+    if not active:
+        raise HTTPException(status_code=400, detail="יש להעלות לפחות קובץ קורות חיים אחד")
+
+    try:
+        normalize_job_board_ids(req.job_sites)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+        _scan_state.update(
+            {
+                "running": True,
+                "mode": "user",
+                "cv_id": None,
+                "user_id": user_id,
+                "scan_id": None,
+                "started_at": _utc_now(),
+                "finished_at": None,
+                "error": None,
+                "warnings": [],
+                "collection": None,
+                "log": [],
+                "current_detail": "מתחיל סריקה…",
+                "steps": [
+                    {"key": key, "name": name, "status": "pending"}
+                    for key, name, _, _ in cv_service.USER_SCAN_STEPS
+                ],
+            }
+        )
+
+    thread = threading.Thread(
+        target=_run_user_scan_thread,
+        args=(user_id, req.skip_collect, req.skip_enrich, req.job_sites),
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "started": True,
+        "user_id": user_id,
+        "cv_count": len(active),
+    }
+
+
+def _user_scan_status(user_id: str = db.DEFAULT_USER_ID) -> dict:
+    workspace_db = user_db_path(user_id)
+    with _scan_lock:
+        if _scan_state.get("mode") == "user" and _scan_state.get("user_id") == user_id:
+            steps = [dict(s) for s in _scan_state["steps"]]
+            live = {
+                "running": _scan_state["running"],
+                "started_at": _scan_state["started_at"],
+                "finished_at": _scan_state["finished_at"],
+                "error": _scan_state["error"],
+                "warnings": list(_scan_state["warnings"]),
+                "collection": _scan_state.get("collection"),
+                "current_step": _running_step_key_from_steps(steps),
+                "detail": _scan_state.get("current_detail"),
+                "steps": steps,
+                "log": list(_scan_state["log"][-20:]),
+            }
+        else:
+            live = {
+                "running": False,
+                "started_at": None,
+                "finished_at": None,
+                "error": None,
+                "warnings": [],
+                "collection": None,
+                "current_step": None,
+                "detail": None,
+                "steps": [],
+                "log": [],
+            }
+    latest_scan = db.get_latest_scan(db.WORKSPACE_CV_ID, db_path=workspace_db)
+    if latest_scan and not live.get("warnings"):
+        summary_data = _parse_scan_summary(latest_scan.get("summary"))
+        live["warnings"] = summary_data.get("warnings") or []
+        if not live.get("collection"):
+            live["collection"] = summary_data.get("collection")
+    live["latest_scan"] = latest_scan
+    live["match_count"] = _workspace_match_count(user_id)
+    live["cv_count"] = len(db.list_active_cvs_for_user(user_id))
+    return live
+
+
 def _cv_public(cv: dict) -> dict:
     """Shape a CV row for the API (without the large parsed_profile blob)."""
     profile = None
@@ -493,7 +643,35 @@ def list_cvs():
         cv_service.adopt_legacy_cv()
     except Exception:  # noqa: BLE001 — adoption is best-effort
         pass
-    return {"cvs": [_cv_public(cv) for cv in db.list_cvs()]}
+    return {"cvs": [_cv_public(cv) for cv in db.list_cvs()],
+            "workspace_match_count": _workspace_match_count(),
+            "active_cv_count": len(db.list_active_cvs_for_user())}
+
+
+@app.post("/jobs/match")
+def run_job_matcher(req: RunAgentRequest):
+    """Run the job-matching agent across all uploaded CVs for the default user."""
+    db.ensure_multi_cv_storage()
+    return _start_user_scan(req)
+
+
+@app.get("/jobs/match-status")
+def job_match_status():
+    db.ensure_multi_cv_storage()
+    return _user_scan_status()
+
+
+@app.get("/jobs/matches")
+def get_job_matches(latest: bool = True, min_score: int | None = None):
+    db.ensure_multi_cv_storage()
+    workspace_db = user_db_path(db.DEFAULT_USER_ID)
+    matches = db.get_cv_matches(
+        db.WORKSPACE_CV_ID,
+        latest_only=latest,
+        min_score=min_score,
+        db_path=workspace_db,
+    )
+    return {"matches": [_match_public(_reshape_match_row(m)) for m in matches]}
 
 
 @app.post("/cvs/upload")
@@ -541,16 +719,12 @@ def delete_cv(cv_id: str):
     if db.get_cv(cv_id) is None:
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
     with _scan_lock:
-        if _scan_state["running"] and _scan_state["cv_id"] == cv_id:
+        if _scan_state["running"] and (
+            _scan_state.get("cv_id") == cv_id or _scan_state.get("mode") == "user"
+        ):
             raise HTTPException(status_code=409, detail="לא ניתן למחוק בזמן סריקה")
     summary = cv_service.delete_cv(cv_id)
     return {"deleted": True, **summary}
-
-
-class RunAgentRequest(BaseModel):
-    skip_collect: bool = False
-    skip_enrich: bool = False
-    job_sites: list[str] | None = None
 
 
 @app.get("/api/job-sites")
@@ -575,7 +749,9 @@ def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
         _scan_state.update(
             {
                 "running": True,
+                "mode": "cv",
                 "cv_id": cv_id,
+                "user_id": None,
                 "scan_id": None,
                 "started_at": _utc_now(),
                 "finished_at": None,
@@ -766,6 +942,88 @@ def download_tailored_cv_pdf(cv_id: str, job_id: int):
         "Cache-Control": "no-store",
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@app.patch("/jobs/matches/{match_id}/status")
+def update_workspace_match_status(match_id: int, req: MatchStatusRequest):
+    db.ensure_multi_cv_storage()
+    if req.status not in db.CV_APP_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"סטטוס לא חוקי: {req.status}",
+        )
+    workspace_db = user_db_path(db.DEFAULT_USER_ID)
+    updated = db.update_cv_match_status(
+        db.WORKSPACE_CV_ID,
+        match_id,
+        req.status,
+        notes=req.notes,
+        db_path=workspace_db,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="התאמה לא נמצאה")
+    return {"updated": True, "match": _match_public(_reshape_match_row(updated))}
+
+
+def _resolve_job_context(
+    job_id: int,
+    cv_id: str | None = None,
+) -> tuple[dict[str, Any], Path, str]:
+    """Find a job in the user workspace DB first, then per-CV DB."""
+    workspace_db = user_db_path(db.DEFAULT_USER_ID)
+    job = db.get_job_by_id(job_id, db_path=workspace_db)
+    if job is not None:
+        return job, workspace_db, db.WORKSPACE_CV_ID
+    if cv_id:
+        cv_db = cv_db_path(cv_id)
+        job = db.get_job_by_id(job_id, db_path=cv_db)
+        if job is not None:
+            return job, cv_db, cv_id
+    raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+
+
+@app.post("/jobs/{job_id}/tailor-cv")
+def tailor_workspace_job(
+    job_id: int,
+    regenerate: bool = False,
+    source_cv_id: str | None = None,
+    req: TailorCvRequest | None = None,
+):
+    """Tailor CV for a workspace job using the aggregated master profile."""
+    db.ensure_multi_cv_storage()
+    job, _, profile_cv_id = _resolve_job_context(job_id, source_cv_id)
+    force = (req.force if req else False) or regenerate
+    try:
+        result = tailor_cv_for_job(
+            profile_cv_id,
+            job,
+            force=force,
+            regenerate=regenerate,
+            user_id=db.DEFAULT_USER_ID,
+        )
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    relative_path = f"data/users/{db.DEFAULT_USER_ID}/tailored_cvs/{job_id}.md"
+    return {
+        "cv_id": profile_cv_id,
+        "job_id": job_id,
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "markdown": result["markdown"],
+        "cv_markdown": extract_cv_markdown_for_copy(result),
+        "changes_breakdown": result.get("changes_breakdown"),
+        "estimated_ats_score": result.get("estimated_ats_score"),
+        "highlights": result.get("highlights", []),
+        "caveats": result.get("caveats", []),
+        "from_cache": result.get("from_cache", False),
+        "saved_path": relative_path,
+        "generated_at": result.get("generated_at"),
+        "regenerated": result.get("regenerated", False),
+        "improved": result.get("improved"),
+        "no_improvement": result.get("no_improvement"),
+        "message": result.get("message"),
+        "matcher_feedback": result.get("matcher_feedback"),
+    }
 
 
 @app.patch("/cvs/{cv_id}/matches/{match_id}/status")
