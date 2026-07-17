@@ -638,11 +638,6 @@ def _match_public(match: dict) -> dict:
 @app.get("/cvs")
 def list_cvs():
     db.ensure_multi_cv_storage()
-    # Import any pre-existing single-CV setup so it appears as the first CV.
-    try:
-        cv_service.adopt_legacy_cv()
-    except Exception:  # noqa: BLE001 — adoption is best-effort
-        pass
     return {"cvs": [_cv_public(cv) for cv in db.list_cvs()],
             "workspace_match_count": _workspace_match_count(),
             "active_cv_count": len(db.list_active_cvs_for_user())}
