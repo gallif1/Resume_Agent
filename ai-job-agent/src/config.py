@@ -17,6 +17,8 @@ SYNONYM_DICTIONARY_PATH = DATA_DIR / "synonym_dictionary.json"
 
 # Per-CV working data lives under data/cvs/<cv_id>/.
 CVS_DIR = DATA_DIR / "cvs"
+# Per-user workspace data (aggregated profile, shared job matches).
+USERS_DIR = DATA_DIR / "users"
 
 PROFILE_PATH = DATA_DIR / "profile.json"
 LEGACY_PROFILE_PATH = PROFILE_PATH
@@ -42,14 +44,41 @@ def cv_profile_prefs_path(cv_id: str) -> Path:
 def cv_ai_cache_dir(cv_id: str) -> Path:
     return cv_data_dir(cv_id) / "ai_cache"
 
+
+def user_data_dir(user_id: str) -> Path:
+    """Directory for a user's aggregated workspace artifacts."""
+    return USERS_DIR / user_id
+
+
+def user_db_path(user_id: str) -> Path:
+    """Shared jobs/scans/matches database for a user's workspace."""
+    return user_data_dir(user_id) / "jobs.db"
+
+
+def user_master_profile_path(user_id: str) -> Path:
+    return user_data_dir(user_id) / "master_profile.json"
+
+
+def user_cv_profile_path(user_id: str) -> Path:
+    return user_data_dir(user_id) / "cv_profile.json"
+
+
+def user_profile_prefs_path(user_id: str) -> Path:
+    return user_data_dir(user_id) / "profile.json"
+
+
+def user_ai_cache_dir(user_id: str) -> Path:
+    return user_data_dir(user_id) / "ai_cache"
+
 # ---------------------------------------------------------------------------
 # CV-scoped paths
 # ---------------------------------------------------------------------------
 # The pipeline scripts (parse_cv, analyze_roles, collect_jobs, match_jobs, ...)
-# run as subprocesses. When AGENT_CV_ID is set, every per-CV artifact is stored
-# under data/cvs/<cv_id>/ so running the agent for one CV never touches another
-# CV's parsed profile, strategy, or pipeline state. When it is unset the legacy
-# global paths in data/ are used, preserving the original single-CV behavior.
+# run as subprocesses. When AGENT_USER_ID is set, artifacts are stored under
+# data/users/<user_id>/ for aggregated multi-CV matching. When AGENT_CV_ID is
+# set (without AGENT_USER_ID), per-CV paths are used. When neither is set the
+# legacy global paths in data/ are used.
+AGENT_USER_ID = os.getenv("AGENT_USER_ID", "").strip()
 AGENT_CV_ID = os.getenv("AGENT_CV_ID", "").strip()
 # When the agent runs as part of a recorded scan, matches are linked to it.
 AGENT_SCAN_ID = os.getenv("AGENT_SCAN_ID", "").strip()
@@ -77,7 +106,18 @@ def _find_cv_file(directory: Path) -> Path | None:
     return None
 
 
-if AGENT_CV_ID:
+if AGENT_USER_ID:
+    _USER_DIR = user_data_dir(AGENT_USER_ID)
+    CV_PROFILE_PATH = user_cv_profile_path(AGENT_USER_ID)
+    MASTER_PROFILE_PATH = user_master_profile_path(AGENT_USER_ID)
+    PROFILE_PATH = user_profile_prefs_path(AGENT_USER_ID)
+    AI_ROLES_PATH = _USER_DIR / "ai_roles.json"
+    AI_MATCHING_STRATEGY_PATH = _USER_DIR / "ai_matching_strategy.json"
+    PIPELINE_STATE_PATH = _USER_DIR / "pipeline_state.json"
+    AI_CACHE_DIR = user_ai_cache_dir(AGENT_USER_ID)
+    DB_PATH = user_db_path(AGENT_USER_ID)
+    CV_PATH = LEGACY_CV_PATH
+elif AGENT_CV_ID:
     _CV_DIR = cv_data_dir(AGENT_CV_ID)
     CV_PROFILE_PATH = _CV_DIR / "cv_profile.json"
     PROFILE_PATH = cv_profile_prefs_path(AGENT_CV_ID)
@@ -90,6 +130,7 @@ if AGENT_CV_ID:
     CV_PATH = _find_cv_file(_CV_DIR) or (_CV_DIR / "resume.pdf")
 else:
     CV_PROFILE_PATH = LEGACY_CV_PROFILE_PATH
+    MASTER_PROFILE_PATH = DATA_DIR / "master_profile.json"
     AI_ROLES_PATH = LEGACY_AI_ROLES_PATH
     AI_MATCHING_STRATEGY_PATH = LEGACY_AI_MATCHING_STRATEGY_PATH
     PIPELINE_STATE_PATH = LEGACY_PIPELINE_STATE_PATH

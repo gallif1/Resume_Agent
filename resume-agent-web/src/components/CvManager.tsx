@@ -9,12 +9,12 @@ interface Props {
   cvs: Cv[];
   loading: boolean;
   error: string | null;
-  scanCvId: string | null;
   scanStatus: CvScanStatus | null;
+  workspaceMatchCount: number;
   onUpload: (files: File[]) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onRun: (id: string) => void;
-  onOpen: (id: string) => void;
+  onRunAgent: () => void;
+  onOpenMatches: () => void;
 }
 
 function fileIcon(name: string | null): string {
@@ -46,12 +46,12 @@ export default function CvManager({
   cvs,
   loading,
   error,
-  scanCvId,
   scanStatus,
+  workspaceMatchCount,
   onUpload,
   onDelete,
-  onRun,
-  onOpen,
+  onRunAgent,
+  onOpenMatches,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -94,19 +94,17 @@ export default function CvManager({
     handleFiles(Array.from(e.dataTransfer.files));
   };
 
-  const isScanning = (id: string) =>
-    scanCvId === id && (scanStatus?.running ?? false);
   const anyScanning = scanStatus?.running ?? false;
 
   return (
     <section>
       <section className="hero">
         <h1>
-          קורות החיים שלך, <span className="accent">מרובי גרסאות</span>
+          קורות החיים שלך, <span className="accent">מאוחדים לפרופיל אחד</span>
         </h1>
         <p>
-          העלה כמה קבצי קורות חיים. לכל אחד יש פרופיל, סריקות והתאמות נפרדות —
-          הרצת הסוכן על קובץ אחד לא משפיעה על האחרים.
+          העלה כמה קבצי קורות חיים — הסוכן יאחד את כולם לפרופיל מועמד מקיף
+          ויחפש משרות שמתאימות לכל הניסיון והמיומנויות שלך יחד.
         </p>
       </section>
 
@@ -151,12 +149,43 @@ export default function CvManager({
         )}
       </div>
 
+      {cvs.length > 0 && (
+        <div className="run-agent-section">
+          <button
+            type="button"
+            className="btn btn-primary btn-run-agent"
+            disabled={anyScanning || loading}
+            onClick={onRunAgent}
+          >
+            {anyScanning ? "הסוכן רץ…" : "הפעל סוכן מציאת משרות"}
+          </button>
+          <p className="run-agent-hint">
+            הסוכן ינתח את כל {cvs.length} הקבצים שהועלו, יאחד אותם לפרופיל מאוחד
+            ויחפש משרות מתאימות.
+          </p>
+        </div>
+      )}
+
       {anyScanning && scanStatus && (
         <PipelineProgress scanStatus={scanStatus} compact />
       )}
 
+      {workspaceMatchCount > 0 && !anyScanning && (
+        <div className="workspace-matches-banner">
+          <div>
+            <strong>{workspaceMatchCount} התאמות משרה</strong>
+            <span className="workspace-matches-sub">
+              מבוסס על הפרופיל המאוחד של כל קורות החיים
+            </span>
+          </div>
+          <button type="button" className="btn btn-ghost" onClick={onOpenMatches}>
+            צפה בתוצאות
+          </button>
+        </div>
+      )}
+
       <div className="history-header">
-        <h2>קורות החיים שהועלו</h2>
+        <h2>קבצי קורות החיים שהועלו</h2>
         <span className="history-count">
           {loading ? "טוען..." : `${cvs.length} קבצים`}
         </span>
@@ -167,7 +196,7 @@ export default function CvManager({
           <div className="empty-icon">🗂️</div>
           <p>עדיין לא העלית קורות חיים.</p>
           <p className="empty-hint">
-            העלה קובץ כדי להתחיל — לאחר מכן תוכל להריץ את הסוכן ולראות התאמות.
+            העלה קובץ אחד או יותר — לאחר מכן לחץ על "הפעל סוכן מציאת משרות".
           </p>
         </div>
       ) : (
@@ -176,18 +205,14 @@ export default function CvManager({
             <li key={cv.id} className="cv-item cv-manager-item">
               <div className="cv-icon">{fileIcon(cv.file_name)}</div>
 
-              <div className="cv-info" onClick={() => onOpen(cv.id)}>
+              <div className="cv-info">
                 <div className="cv-name">
                   {cv.display_name || cv.file_name}
-                  {isScanning(cv.id) && <span className="badge badge-run">סורק…</span>}
-                  {(cv.match_count ?? 0) > 0 && (
-                    <span className="badge">{cv.match_count} התאמות</span>
-                  )}
                 </div>
                 <div className="cv-meta">
                   הועלה {formatDate(cv.created_at)}
                   {cv.file_size != null && ` · ${formatSize(cv.file_size)}`}
-                  {cv.last_scan_at && ` · סריקה אחרונה ${formatDate(cv.last_scan_at)}`}
+                  {cv.last_scan_at && ` · נכלל בסריקה ${formatDate(cv.last_scan_at)}`}
                 </div>
                 {cv.profile && (
                   <div className="cv-meta cv-profile-meta">
@@ -201,23 +226,9 @@ export default function CvManager({
               </div>
 
               <div className="cv-actions">
-                <button className="btn btn-ghost" onClick={() => onOpen(cv.id)}>
-                  פרטים ותוצאות
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  disabled={anyScanning}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRun(cv.id);
-                  }}
-                >
-                  {isScanning(cv.id) ? "רץ…" : "▶ הרץ סוכן"}
-                </button>
                 <button
                   className="btn btn-ghost btn-delete"
-                  disabled={isScanning(cv.id)}
+                  disabled={anyScanning}
                   onClick={() => setConfirmDelete(cv)}
                 >
                   מחק
@@ -233,9 +244,8 @@ export default function CvManager({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>מחיקת קורות חיים</h3>
             <p>
-              מחיקת "{confirmDelete.display_name || confirmDelete.file_name}" תמחק
-              גם את כל הנתונים הקשורים: הפרופיל המנותח, היסטוריית הסריקות, תוצאות
-              ההתאמה וסטטוסי ההגשה. לא ניתן לבטל פעולה זו.
+              מחיקת "{confirmDelete.display_name || confirmDelete.file_name}" תסיר
+              את הקובץ מהרשימה. לאחר מכן הרץ שוב את הסוכן כדי לעדכן את הפרופיל המאוחד.
             </p>
             <div className="modal-actions">
               <button

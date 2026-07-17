@@ -32,8 +32,13 @@ from config import (
     RESUMES_DIR,
     cv_data_dir,
     cv_db_path,
+    user_cv_profile_path,
+    user_data_dir,
+    user_db_path,
+    user_master_profile_path,
 )
-from profile_utils import save_profile_for_cv
+from cv_aggregator_service import aggregate_and_save
+from profile_utils import save_profile_for_user
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -51,8 +56,19 @@ SCAN_STEPS = [
     ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
 ]
 
+# Unified multi-CV pipeline: parse all uploads, aggregate, then match jobs.
+USER_SCAN_STEPS = [
+    ("parse_cvs", "ניתוח כל קבצי קורות החיים", None, []),
+    ("aggregate", "איחוד לפרופיל מועמד מאוחד", None, []),
+    ("analyze_roles", "בניית אסטרטגיית חיפוש", "analyze_roles.py", []),
+    ("collect", "איסוף משרות", "collect_jobs.py", []),
+    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", []),
+    ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
+]
+
 # Steps that abort the scan when they fail (same policy as run_all.py).
-CRITICAL_STEPS = {"parse_cv", "analyze_roles", "match"}
+CRITICAL_STEPS = {"parse_cv", "parse_cvs", "aggregate", "analyze_roles", "match"}
+USER_CRITICAL_STEPS = CRITICAL_STEPS
 
 
 class DuplicateCvError(Exception):
@@ -338,3 +354,290 @@ def run_scan(
     if collection_summary:
         scan_record["collection"] = collection_summary
     return scan_record
+
+
+def _cv_text_from_profile(profile: dict[str, Any]) -> str:
+    raw = str(profile.get("raw_text") or "").strip()
+    if raw:
+        return raw
+    sections = profile.get("sections")
+    if isinstance(sections, dict):
+        parts = [str(v).strip() for v in sections.values() if v]
+        combined = "\n\n".join(p for p in parts if p)
+        if combined:
+            return combined
+    return ""
+
+
+def _load_parsed_cv_text(cv_id: str) -> str:
+    profile_path = cv_data_dir(cv_id) / "cv_profile.json"
+    if not profile_path.exists():
+        return ""
+    try:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ""
+    return _cv_text_from_profile(profile)
+
+
+def _parse_all_user_cvs(
+    user_id: str,
+    *,
+    log: Callable[[str], None] | None = None,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> list[str]:
+    """Parse every active CV for a user and return their text contents."""
+    import os
+
+    texts: list[str] = []
+    active_cvs = db.list_active_cvs_for_user(user_id, db_path=db_path)
+    if not active_cvs:
+        raise ValueError("no active CV files uploaded")
+
+    for cv in active_cvs:
+        cv_id = cv["id"]
+        if log:
+            log(f"-- מנתח: {cv.get('display_name') or cv.get('file_name')}")
+        env = {**os.environ, "AGENT_CV_ID": cv_id}
+        proc = subprocess.Popen(
+            [PYTHON, str(SRC / "parse_cv.py"), "--yes"],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line and log:
+                log(line)
+        code = proc.wait()
+        if code != 0:
+            raise RuntimeError(f"parse failed for CV {cv_id}")
+        sync_parsed_profile(cv_id, db_path=db_path)
+        text = _load_parsed_cv_text(cv_id)
+        if text:
+            texts.append(text)
+    if not texts:
+        raise ValueError("could not extract text from uploaded CV files")
+    return texts
+
+
+def _aggregate_user_profile(
+    user_id: str,
+    cv_texts: list[str],
+    *,
+    log: Callable[[str], None] | None = None,
+) -> None:
+    workspace = user_data_dir(user_id)
+    workspace.mkdir(parents=True, exist_ok=True)
+    master = aggregate_and_save(
+        cv_texts,
+        master_path=user_master_profile_path(user_id),
+        cv_profile_path=user_cv_profile_path(user_id),
+    )
+    from cv_domain import refine_profile
+    from universal_profile import (
+        apply_universal_profile_to_cv,
+        build_universal_profile_fallback,
+        extract_universal_profile,
+    )
+
+    cv_profile = refine_profile(
+        json.loads(user_cv_profile_path(user_id).read_text(encoding="utf-8"))
+    )
+    raw_text = _cv_text_from_profile(cv_profile)
+    try:
+        universal = extract_universal_profile(raw_text, cv_profile, use_ai=True)
+    except Exception:  # noqa: BLE001
+        universal = build_universal_profile_fallback(cv_profile)
+    cv_profile = refine_profile(apply_universal_profile_to_cv(cv_profile, universal))
+    user_cv_profile_path(user_id).write_text(
+        json.dumps(cv_profile, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    save_profile_for_user(user_id, cv_profile)
+    if log:
+        log(
+            f"אוחדו {master.source_cv_count} קבצי קורות חיים "
+            f"({master.aggregated_with}) — {len(master.work_experience)} תפקידים, "
+            f"{sum(len(v) for v in master.master_skills.values())} מיומנויות"
+        )
+
+
+def run_user_scan(
+    user_id: str = db.DEFAULT_USER_ID,
+    *,
+    skip_collect: bool = False,
+    skip_enrich: bool = False,
+    job_sites: list[str] | None = None,
+    log: Callable[[str], None] | None = None,
+    set_step_status: Callable[[str, str], None] | None = None,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any]:
+    """Run the unified agent pipeline across all of a user's uploaded CVs."""
+    import os
+
+    from job_boards import normalize_job_board_ids
+
+    workspace_cv_id = db.WORKSPACE_CV_ID
+    user_db = user_db_path(user_id)
+    db.init_db(user_db)
+    user_data_dir(user_id).mkdir(parents=True, exist_ok=True)
+
+    active_cvs = db.list_active_cvs_for_user(user_id, db_path=db_path)
+    if not active_cvs:
+        raise ValueError("no active CV files uploaded")
+
+    def _log(line: str) -> None:
+        if log is not None:
+            log(line)
+
+    def _step(key: str, status: str) -> None:
+        if set_step_status is not None:
+            set_step_status(key, status)
+
+    scan_id = db.create_scan(workspace_cv_id, db_path=user_db)
+    db.reset_cv_job_pool(workspace_cv_id, db_path=user_db)
+    env = {
+        **os.environ,
+        "AGENT_USER_ID": user_id,
+        "AGENT_SCAN_ID": str(scan_id),
+    }
+    # Clear per-CV scope so subprocesses use the user workspace paths.
+    env.pop("AGENT_CV_ID", None)
+
+    try:
+        selected_sites = normalize_job_board_ids(job_sites)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+    error: str | None = None
+    warnings: list[str] = []
+    collection_summary: dict[str, Any] | None = None
+    cv_texts: list[str] | None = None
+
+    for key, name, script, extra in USER_SCAN_STEPS:
+        skipped = (key == "collect" and skip_collect) or (
+            key == "enrich" and skip_enrich
+        )
+        if skipped:
+            _step(key, "skipped")
+            _log(f"-- מדלג על: {name}")
+            continue
+
+        _step(key, "running")
+        _log(f">> {name}")
+
+        if key == "parse_cvs":
+            try:
+                cv_texts = _parse_all_user_cvs(user_id, log=_log, db_path=db_path)
+            except (ValueError, RuntimeError) as exc:
+                _step(key, "failed")
+                _log(f"!! {name} נכשל: {exc}")
+                error = f"השלב '{name}' נכשל"
+                break
+            _step(key, "success")
+            continue
+
+        if key == "aggregate":
+            try:
+                texts = cv_texts or _collect_active_cv_texts(user_id, db_path=db_path)
+                _aggregate_user_profile(user_id, texts, log=_log)
+            except Exception as exc:  # noqa: BLE001
+                _step(key, "failed")
+                _log(f"!! {name} נכשל: {exc}")
+                error = f"השלב '{name}' נכשל"
+                break
+            _step(key, "success")
+            continue
+
+        extra_args = list(extra)
+        if key == "collect" and selected_sites:
+            extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
+
+        proc = subprocess.Popen(
+            [PYTHON, str(SRC / script), *extra_args],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                _log(line)
+                if key == "collect":
+                    parsed = parse_agent_line(line)
+                    if parsed is None:
+                        continue
+                    if parsed.get("type") == "warning":
+                        message = parsed.get("message")
+                        if message and message not in warnings:
+                            warnings.append(message)
+                    elif parsed.get("type") == "summary":
+                        collection_summary = parsed.get("summary")
+        code = proc.wait()
+
+        if code != 0:
+            _step(key, "failed")
+            _log(f"!! {name} נכשל (קוד {code})")
+            if key in USER_CRITICAL_STEPS:
+                error = f"השלב '{name}' נכשל"
+                break
+        else:
+            _step(key, "success")
+
+    match_count = len(
+        db.get_cv_matches(workspace_cv_id, latest_only=True, db_path=user_db)
+    )
+    summary_payload: dict[str, Any] = {
+        "matches": match_count,
+        "cv_count": len(active_cvs),
+        "user_id": user_id,
+    }
+    if collection_summary:
+        summary_payload["collection"] = collection_summary
+    if warnings:
+        summary_payload["warnings"] = warnings
+    summary = json.dumps(summary_payload, ensure_ascii=False)
+
+    now = _utc_now()
+    if error:
+        db.finish_scan(
+            scan_id, db.SCAN_FAILED, summary=summary, error_message=error, db_path=user_db
+        )
+    else:
+        db.finish_scan(scan_id, db.SCAN_SUCCESS, summary=summary, db_path=user_db)
+        for cv in active_cvs:
+            db.set_cv_last_scan(cv["id"], when=now, db_path=db_path)
+
+    scan_record = db.get_scan(scan_id, db_path=user_db) or {}
+    if warnings:
+        scan_record["warnings"] = warnings
+    if collection_summary:
+        scan_record["collection"] = collection_summary
+    scan_record["user_id"] = user_id
+    scan_record["cv_count"] = len(active_cvs)
+    return scan_record
+
+
+def _collect_active_cv_texts(
+    user_id: str,
+    *,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> list[str]:
+    texts: list[str] = []
+    for cv in db.list_active_cvs_for_user(user_id, db_path=db_path):
+        text = _load_parsed_cv_text(cv["id"])
+        if text:
+            texts.append(text)
+    if not texts:
+        raise ValueError("could not extract text from uploaded CV files")
+    return texts

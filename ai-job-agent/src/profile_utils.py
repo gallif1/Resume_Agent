@@ -14,11 +14,14 @@ from typing import Any
 
 from config import (
     AGENT_CV_ID,
+    AGENT_USER_ID,
     CV_PROFILE_PATH,
     LEGACY_CV_PROFILE_PATH,
     LEGACY_PROFILE_PATH,
     cv_data_dir,
     cv_profile_prefs_path,
+    user_cv_profile_path,
+    user_profile_prefs_path,
 )
 from cv_domain import detect_domain
 
@@ -34,10 +37,22 @@ _SENIOR_ROLE_KEYWORDS = (
 
 
 def profile_path_for_cv(cv_id: str | None = None) -> Path:
+    uid = (AGENT_USER_ID or "").strip()
+    if uid:
+        return user_profile_prefs_path(uid)
     cid = (cv_id or AGENT_CV_ID or "").strip()
     if cid:
         return cv_profile_prefs_path(cid)
     return LEGACY_PROFILE_PATH
+
+
+def save_profile_for_user(user_id: str, cv_profile: dict[str, Any]) -> Path:
+    """Write user-level profile.json from aggregated resume data."""
+    path = user_profile_prefs_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    profile = build_profile_from_cv(cv_profile)
+    path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def build_profile_from_cv(cv_profile: dict[str, Any]) -> dict[str, Any]:
@@ -154,7 +169,10 @@ def _read_cv_profile(path: Path) -> dict[str, Any] | None:
 
 
 def cv_profile_path_for(cv_id: str | None = None) -> Path:
-    """Resolved cv_profile.json for the active or given CV context."""
+    """Resolved cv_profile.json for the active user, CV, or legacy context."""
+    uid = (AGENT_USER_ID or "").strip()
+    if uid:
+        return user_cv_profile_path(uid)
     cid = (cv_id or AGENT_CV_ID or "").strip()
     if cid:
         return cv_data_dir(cid) / "cv_profile.json"
@@ -182,6 +200,20 @@ def load_cv_contact(cv_id: str | None = None) -> dict[str, str]:
 
 def load_profile() -> dict[str, Any]:
     """Load search/match preferences derived from the resume under review."""
+    uid = (AGENT_USER_ID or "").strip()
+    if uid:
+        prefs_path = user_profile_prefs_path(uid)
+        if prefs_path.exists():
+            try:
+                with open(prefs_path, encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError):
+                pass
+        cv_profile = _read_cv_profile(user_cv_profile_path(uid))
+        if cv_profile:
+            return build_profile_from_cv(cv_profile)
+        return _empty_profile_defaults()
+
     cid = (AGENT_CV_ID or "").strip()
 
     if cid:

@@ -6,10 +6,14 @@ import {
   DuplicateApplicationError,
   getCvMatches,
   getCvScanStatus,
+  getJobMatches,
+  getJobMatchStatus,
   getJobApplication,
   parseScanSummary,
   tailorCvForJob,
+  tailorWorkspaceJob,
   updateMatchStatus,
+  updateWorkspaceMatchStatus,
   type ApplicationStatus,
   type Cv,
   type CvMatch,
@@ -24,10 +28,9 @@ import ProfileSettings from "./ProfileSettings";
 interface Props {
   cvId: string;
   cv: Cv | undefined;
-  scanCvId: string | null;
-  scanStatus: CvScanStatus | null;
+  scanStatus?: CvScanStatus | null;
+  workspaceMode?: boolean;
   onBack: () => void;
-  onRun: (id: string) => void;
 }
 
 const STATUS_OPTIONS: { value: ApplicationStatus; label: string }[] = [
@@ -137,10 +140,9 @@ function extractTailoredCvBody(markdown: string, cvMarkdown?: string | null): st
 export default function CvDetails({
   cvId,
   cv,
-  scanCvId,
-  scanStatus,
+  scanStatus = null,
+  workspaceMode = false,
   onBack,
-  onRun,
 }: Props) {
   const [matches, setMatches] = useState<CvMatch[]>([]);
   const [loading, setLoading] = useState(false);
@@ -160,7 +162,7 @@ export default function CvDetails({
     parseScanSummary(null)
   );
   const prevRunning = useRef(false);
-  const running = scanCvId === cvId && (scanStatus?.running ?? false);
+  const running = scanStatus?.running ?? false;
 
   const { primaryMatches, potentialMatches } = useMemo(() => {
     const primary: CvMatch[] = [];
@@ -176,14 +178,16 @@ export default function CvDetails({
     setLoading(true);
     setError(null);
     try {
-      const data = await getCvMatches(cvId, { latest: true });
+      const data = workspaceMode
+        ? await getJobMatches({ latest: true })
+        : await getCvMatches(cvId, { latest: true });
       setMatches(data.matches);
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
     } finally {
       setLoading(false);
     }
-  }, [cvId]);
+  }, [cvId, workspaceMode]);
 
   useEffect(() => {
     load();
@@ -191,7 +195,8 @@ export default function CvDetails({
 
   useEffect(() => {
     let cancelled = false;
-    getCvScanStatus(cvId)
+    const fetchStatus = workspaceMode ? getJobMatchStatus : () => getCvScanStatus(cvId);
+    fetchStatus()
       .then((status) => {
         if (cancelled) return;
         const parsed = parseScanSummary(status.latest_scan?.summary);
@@ -209,14 +214,14 @@ export default function CvDetails({
     return () => {
       cancelled = true;
     };
-  }, [cvId, running, scanStatus?.warnings, scanStatus?.collection]);
+  }, [cvId, workspaceMode, running, scanStatus?.warnings, scanStatus?.collection]);
 
   useEffect(() => {
-    if (prevRunning.current && !running && scanCvId === cvId) {
+    if (prevRunning.current && !running) {
       load();
     }
     prevRunning.current = running;
-  }, [running, scanCvId, cvId, load]);
+  }, [running, load]);
 
   // Poll while any application is in progress.
   useEffect(() => {
@@ -242,7 +247,11 @@ export default function CvDetails({
       )
     );
     try {
-      await updateMatchStatus(cvId, match.match_id, status);
+      if (workspaceMode) {
+        await updateWorkspaceMatchStatus(match.match_id, status);
+      } else {
+        await updateMatchStatus(cvId, match.match_id, status);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בעדכון הסטטוס");
       load();
@@ -310,7 +319,9 @@ export default function CvDetails({
     setError(null);
     setCopyDone(false);
     try {
-      const result = await tailorCvForJob(cvId, match.job_id, { force });
+      const result = workspaceMode
+        ? await tailorWorkspaceJob(match.job_id, { force, sourceCvId: cvId })
+        : await tailorCvForJob(cvId, match.job_id, { force });
       applyTailoredResult(result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
@@ -365,9 +376,14 @@ export default function CvDetails({
     setError(null);
     setCopyDone(false);
     try {
-      const result = await tailorCvForJob(cvId, tailoredCv.job_id, {
-        regenerate: true,
-      });
+      const result = workspaceMode
+        ? await tailorWorkspaceJob(tailoredCv.job_id, {
+            regenerate: true,
+            sourceCvId: cvId,
+          })
+        : await tailorCvForJob(cvId, tailoredCv.job_id, {
+            regenerate: true,
+          });
       // Always apply returned payload — on score-guard miss it is the previous best draft.
       applyTailoredResult(result);
       if (result.no_improvement || result.message === "לא הצלחתי לייצר גרסה יותר טובה") {
@@ -610,17 +626,16 @@ export default function CvDetails({
     );
   };
 
-  const title = cv?.display_name || cv?.file_name || "קורות חיים";
-  const liveWarnings =
-    scanCvId === cvId ? scanStatus?.warnings ?? [] : [];
-  const liveCollection =
-    scanCvId === cvId ? scanStatus?.collection ?? null : null;
+  const title = workspaceMode
+    ? "התאמות משרה (פרופיל מאוחד)"
+    : cv?.display_name || cv?.file_name || "קורות חיים";
+  const liveWarnings = scanStatus?.warnings ?? [];
+  const liveCollection = scanStatus?.collection ?? null;
   const activeScan =
-    scanCvId === cvId &&
-    (scanStatus?.running ||
-      scanStatus?.error ||
-      liveWarnings.length > 0 ||
-      Boolean(liveCollection))
+    scanStatus?.running ||
+    scanStatus?.error ||
+    liveWarnings.length > 0 ||
+    Boolean(liveCollection)
       ? scanStatus
       : null;
   const displayWarnings =
@@ -652,18 +667,15 @@ export default function CvDetails({
         </button>
         <div className="details-title">
           <h2>{title}</h2>
-          {cv?.last_scan_at && (
-            <span className="cv-meta">סריקה אחרונה: {formatDate(cv.last_scan_at)}</span>
+          {workspaceMode ? (
+            <span className="cv-meta">מבוסס על כל קבצי קורות החיים שהועלו</span>
+          ) : (
+            cv?.last_scan_at && (
+              <span className="cv-meta">סריקה אחרונה: {formatDate(cv.last_scan_at)}</span>
+            )
           )}
         </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={scanStatus?.running ?? false}
-          onClick={() => onRun(cvId)}
-        >
-          {running ? "רץ עכשיו…" : "▶ הרץ סוכן"}
-        </button>
+        <div className="details-topbar-spacer" />
       </div>
 
       <div className="details-tabs" role="tablist" aria-label="תצוגת קורות חיים">

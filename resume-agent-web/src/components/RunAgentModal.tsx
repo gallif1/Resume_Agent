@@ -78,7 +78,8 @@ export default function RunAgentModal({
       <div className="modal run-agent-modal" onClick={(e) => e.stopPropagation()}>
         <h3>מאיזה אתרים לחפש משרות?</h3>
         <p>
-          בחר אתר אחד או יותר לסריקה של <b>{cvName}</b>. ניתן לסמן כמה אתרים במקביל.
+          בחר אתר אחד או יותר לסריקה של <b>{cvName}</b>. הסוכן יאחד את כל הקבצים
+          לפרופיל מועמד אחד ויחפש משרות מתאימות.
         </p>
 
         {loading && sites.length === 0 ? (
