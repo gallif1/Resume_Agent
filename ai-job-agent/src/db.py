@@ -55,8 +55,6 @@ CREATE TABLE IF NOT EXISTS cvs (
     last_scan_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_cvs_user_active ON cvs (user_id, is_active);
 """
 
 _JOBS_SCHEMA = """
@@ -207,6 +205,10 @@ def _apply_registry_migrations(conn: sqlite3.Connection) -> None:
         (DEFAULT_USER_ID,),
     )
     conn.execute("UPDATE cvs SET is_active = 1 WHERE is_active IS NULL")
+    # Index must be created AFTER columns exist — old registries predate user_id.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cvs_user_active ON cvs (user_id, is_active)"
+    )
 
 
 def init_cv_data_db(cv_id: str) -> Path:
@@ -344,13 +346,25 @@ def init_db(db_path: Path = DB_PATH) -> None:
 
 def _cv_data_counts(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> tuple[int, int]:
     data_db = _resolve_cv_data_db(cv_id, registry_db)
+    if not data_db.exists():
+        return 0, 0
     with get_connection(data_db) as conn:
-        scan_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
-        ).fetchone()["n"]
-        match_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
-        ).fetchone()["n"]
+        tables = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        scan_count = 0
+        match_count = 0
+        if "cv_scans" in tables:
+            scan_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
+            ).fetchone()["n"]
+        if "cv_job_matches" in tables:
+            match_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
+            ).fetchone()["n"]
     return int(match_count), int(scan_count)
 
 
