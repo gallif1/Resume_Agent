@@ -9,9 +9,11 @@ Multi-CV endpoints (each CV has isolated data):
     POST   /cvs/upload                      upload a CV (dedup by content hash)
     GET    /cvs/{cv_id}                     one CV + its latest scan
     DELETE /cvs/{cv_id}                     delete a CV and all its data
+    POST   /cvs/reset                       delete all CVs + clear workspace
     POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
     GET    /jobs/match-status                 live workspace scan progress
     GET    /jobs/matches                      workspace job matches
+    POST   /jobs/matches/reset                clear workspace match results
     PATCH  /jobs/matches/{id}/status          set application status for workspace match
     POST   /jobs/{job_id}/tailor-cv           tailor CV from aggregated profile
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
@@ -66,6 +68,7 @@ from job_boards import list_job_boards, normalize_job_board_ids
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from scan_control import (
     begin_scan,
+    clear_scan_state,
     is_cancelled,
     load_scan_state,
     mark_interrupted_if_stale,
@@ -751,6 +754,53 @@ def _match_public(match: dict) -> dict:
     }
 
 
+def _clear_live_scan_state(user_id: str = db.DEFAULT_USER_ID) -> None:
+    """Reset in-memory + persisted scan UI so the client can start fresh."""
+    with _scan_lock:
+        if _scan_state["running"] and (
+            _scan_state.get("user_id") == user_id or _scan_state.get("mode") == "user"
+        ):
+            raise HTTPException(status_code=409, detail="לא ניתן לאפס בזמן סריקה פעילה")
+        _scan_state.update(
+            {
+                "running": False,
+                "mode": None,
+                "cv_id": None,
+                "user_id": None,
+                "scan_id": None,
+                "started_at": None,
+                "finished_at": None,
+                "error": None,
+                "warnings": [],
+                "collection": None,
+                "log": [],
+                "current_detail": None,
+                "steps": [],
+            }
+        )
+    clear_scan_state(user_id)
+
+
+@app.post("/jobs/matches/reset")
+def reset_job_matches():
+    """Clear workspace match/scan results; keep uploaded CV files."""
+    db.ensure_multi_cv_storage()
+    user_id = db.DEFAULT_USER_ID
+    _clear_live_scan_state(user_id)
+    summary = cv_service.reset_user_results(user_id)
+    return {"ok": True, **summary}
+
+
+@app.post("/cvs/reset")
+def reset_all_cvs():
+    """Delete all uploaded CV files and clear workspace results/profiles."""
+    db.ensure_multi_cv_storage()
+    user_id = db.DEFAULT_USER_ID
+    _clear_live_scan_state(user_id)
+    summary = cv_service.reset_user_files(user_id)
+    return {"ok": True, **summary}
+
+
 @app.get("/cvs")
 def list_cvs():
     try:
@@ -874,7 +924,13 @@ def delete_cv(cv_id: str):
             _scan_state.get("cv_id") == cv_id or _scan_state.get("mode") == "user"
         ):
             raise HTTPException(status_code=409, detail="לא ניתן למחוק בזמן סריקה")
-    summary = cv_service.delete_cv(cv_id)
+    try:
+        summary = cv_service.delete_cv(cv_id)
+    except Exception as exc:  # noqa: BLE001 — surface delete failures clearly
+        raise HTTPException(
+            status_code=500,
+            detail=f"מחיקת הקובץ נכשלה: {exc}",
+        ) from exc
     return {"deleted": True, **summary}
 
 

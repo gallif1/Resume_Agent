@@ -331,6 +331,25 @@ export function deleteServerCv(cvId: string): Promise<{ deleted: boolean }> {
   return request(`/cvs/${cvId}`, { method: "DELETE" });
 }
 
+/** Clear workspace match/scan results; keep uploaded CV files. */
+export function resetJobMatches(): Promise<{
+  ok: boolean;
+  reset: string;
+  user_id: string;
+}> {
+  return request(`/jobs/matches/reset`, { method: "POST" });
+}
+
+/** Delete all uploaded CVs and clear workspace results/profiles. */
+export function resetAllCvs(): Promise<{
+  ok: boolean;
+  reset: string;
+  deleted_count: number;
+  deleted_cv_ids: string[];
+}> {
+  return request(`/cvs/reset`, { method: "POST" });
+}
+
 export interface JobSite {
   id: string;
   label: string;

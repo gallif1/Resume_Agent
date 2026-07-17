@@ -9,6 +9,8 @@ import {
   getJobMatchStatus,
   listJobSites,
   listServerCvs,
+  resetAllCvs,
+  resetJobMatches,
   runJobMatcher,
   stopJobMatcher,
   uploadCv,
@@ -281,9 +283,44 @@ export default function App() {
     try {
       await deleteServerCv(id);
       await refreshCvs();
-      showToast("קובץ קורות החיים נמחק");
+      showToast("קובץ קורות החיים נמחק — אפשר להעלות חדש ולסרוק מחדש");
     } catch (e) {
       showToast(`מחיקה נכשלה: ${e instanceof Error ? e.message : ""}`);
+    }
+  };
+
+  const handleResetResults = async () => {
+    if (scanRunningRef.current) {
+      showToast("לא ניתן לאפס בזמן סריקה");
+      return;
+    }
+    try {
+      await resetJobMatches();
+      setScanStatus(null);
+      setWorkspaceMatchCount(0);
+      setShowMatches(false);
+      await refreshCvs();
+      showToast("התוצאות אופסו — אפשר לסרוק מחדש");
+    } catch (e) {
+      showToast(`איפוס תוצאות נכשל: ${e instanceof Error ? e.message : ""}`);
+    }
+  };
+
+  const handleResetFiles = async () => {
+    if (scanRunningRef.current) {
+      showToast("לא ניתן לאפס בזמן סריקה");
+      return;
+    }
+    try {
+      await resetAllCvs();
+      setScanStatus(null);
+      setWorkspaceMatchCount(0);
+      setShowMatches(false);
+      setCvs([]);
+      await refreshCvs();
+      showToast("כל הקבצים והתוצאות נמחקו");
+    } catch (e) {
+      showToast(`איפוס קבצים נכשל: ${e instanceof Error ? e.message : ""}`);
     }
   };
 
@@ -453,6 +490,8 @@ export default function App() {
             onOpenMatches={() => {
               if (!scanActive) setShowMatches(true);
             }}
+            onResetResults={handleResetResults}
+            onResetFiles={handleResetFiles}
           />
         )}
       </main>

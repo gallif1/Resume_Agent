@@ -487,6 +487,30 @@ body {
   white-space: nowrap;
 }
 
+.reset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: -0.35rem 0 1rem;
+}
+
+.btn-reset {
+  font-size: 0.88rem;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.btn-reset:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+.btn-reset:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* ── Empty state ── */
 .empty-state {
   text-align: center;

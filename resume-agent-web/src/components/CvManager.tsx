@@ -17,6 +17,8 @@ interface Props {
   onRunAgent: () => void;
   onStopAgent: () => void;
   onOpenMatches: () => void;
+  onResetResults: () => Promise<void>;
+  onResetFiles: () => Promise<void>;
 }
 
 function fileIcon(name: string | null): string {
@@ -56,14 +58,23 @@ export default function CvManager({
   onRunAgent,
   onStopAgent,
   onOpenMatches,
+  onResetResults,
+  onResetFiles,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Cv | null>(null);
+  const [confirmReset, setConfirmReset] = useState<"results" | "files" | null>(
+    null
+  );
   const anyScanning = scanStatus?.running ?? false;
   const uiLocked = anyScanning;
+  const hasResults =
+    workspaceMatchCount > 0 ||
+    Boolean(scanStatus?.error) ||
+    (scanStatus?.steps?.length ?? 0) > 0;
 
   const validate = (files: File[]): string | null => {
     for (const f of files) {
@@ -221,6 +232,29 @@ export default function CvManager({
         </span>
       </div>
 
+      {(cvs.length > 0 || hasResults) && !anyScanning && (
+        <div className="reset-actions">
+          <button
+            type="button"
+            className="btn btn-ghost btn-reset"
+            disabled={uiLocked || busy || !hasResults}
+            onClick={() => setConfirmReset("results")}
+            title="מוחק התאמות משרה ותוצאות סריקה, משאיר את הקבצים"
+          >
+            אפס תוצאות
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-reset"
+            disabled={uiLocked || busy || cvs.length === 0}
+            onClick={() => setConfirmReset("files")}
+            title="מוחק את כל הקבצים שהועלו ואת התוצאות"
+          >
+            אפס קבצים
+          </button>
+        </div>
+      )}
+
       {cvs.length === 0 && !loading ? (
         <div className="empty-state">
           <div className="empty-icon">🗂️</div>
@@ -275,7 +309,7 @@ export default function CvManager({
             <h3>מחיקת קורות חיים</h3>
             <p>
               מחיקת "{confirmDelete.display_name || confirmDelete.file_name}" תסיר
-              את הקובץ מהרשימה. לאחר מכן הרץ שוב את הסוכן כדי לעדכן את הפרופיל המאוחד.
+              את הקובץ מהרשימה. לאחר מכן אפשר להעלות קובץ חדש ולהריץ שוב את הסוכן.
             </p>
             <div className="modal-actions">
               <button
@@ -293,6 +327,45 @@ export default function CvManager({
                 }}
               >
                 מחק לצמיתות
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmReset && !uiLocked && (
+        <div className="modal-overlay" onClick={() => setConfirmReset(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>
+              {confirmReset === "results" ? "איפוס תוצאות" : "איפוס קבצים"}
+            </h3>
+            <p>
+              {confirmReset === "results"
+                ? "פעולה זו תמחק את כל התאמות המשרה ותוצאות הסריקה. קבצי קורות החיים יישארו — אפשר לסרוק מחדש מיד."
+                : "פעולה זו תמחק את כל קבצי קורות החיים שהועלו ואת כל התוצאות. תצטרך להעלות קבצים מחדש לפני סריקה."}
+            </p>
+            <div className="modal-actions">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setConfirmReset(null)}
+              >
+                ביטול
+              </button>
+              <button
+                className="btn btn-danger"
+                onClick={async () => {
+                  const kind = confirmReset;
+                  setConfirmReset(null);
+                  setBusy(true);
+                  try {
+                    if (kind === "results") await onResetResults();
+                    else await onResetFiles();
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {confirmReset === "results" ? "אפס תוצאות" : "אפס קבצים"}
               </button>
             </div>
           </div>
