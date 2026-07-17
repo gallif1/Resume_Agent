@@ -1,4 +1,8 @@
-"""Deterministic ATS scoring engine — no AI in score calculation."""
+"""Deterministic ATS scoring engine — no AI in score calculation.
+
+Applies a strict recruiter-style rubric: heavy keyword penalties, domain
+misalignment deductions, and early-career caps against experienced roles.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from job_classifier import score_to_action, score_to_decision
 from skill_normalizer import find_matching_skills, normalize_skill, skills_match
 
 # Bump when scoring algorithm changes — used for match invalidation.
-ATS_SCORER_VERSION = "v2"
+ATS_SCORER_VERSION = "v3"
 
 # Section weights (must sum to 1.0).
 WEIGHT_MANDATORY = 0.35
@@ -27,6 +31,16 @@ WEIGHT_PREFERRED = 0.10
 MANDATORY_FAIL_CAP = 49
 # Soft ceiling when a junior candidate is a "potential" match (no hard Weak cap).
 POTENTIAL_MATCH_SOFT_CAP = 69
+# Early-career (0–1y) vs roles demanding 3+ years — hard ceiling.
+JUNIOR_UNDERQUALIFIED_CAP = 70
+EARLY_CAREER_MAX_YEARS = 1.0
+EXPERIENCED_ROLE_MIN_YEARS = 3.0
+# Nonlinear exponent: missing required keywords hurt more than linear ratio.
+REQUIRED_SKILLS_PENALTY_EXPONENT = 1.65
+# Domain mismatch (e.g. Web/eCommerce job vs Mobile-heavy CV).
+DOMAIN_MISALIGNMENT_PENALTY = 20
+# Extra per-keyword hit when critical JD terms are absent from the CV.
+CRITICAL_KEYWORD_PENALTY = 8
 
 # Junior profiles + entry-level-friendly jobs skip the hard mandatory fail cap.
 JUNIOR_SENIORITIES = frozenset({"student", "intern", "junior"})
@@ -34,6 +48,54 @@ POTENTIAL_MAX_YEARS = 3.0
 FOUNDATIONAL_SKILL_RATIO = 0.25
 # Lead/manager roles are never treated as potential junior matches.
 EXCLUDED_POTENTIAL_SENIORITIES = frozenset({"lead", "manager"})
+
+# Business-domain signals for Web/eCommerce vs Mobile misalignment checks.
+WEB_ECOMMERCE_MARKERS = (
+    "ecommerce",
+    "e-commerce",
+    "e commerce",
+    "web ",
+    " website",
+    "frontend",
+    "front-end",
+    "front end",
+    "fullstack",
+    "full-stack",
+    "full stack",
+    "responsive design",
+    "responsive",
+    "shopify",
+    "woocommerce",
+    "magento",
+    "next.js",
+    "nextjs",
+)
+MOBILE_MARKERS = (
+    "mobile",
+    "ios",
+    "android",
+    "react native",
+    "react-native",
+    "flutter",
+    "swift",
+    "kotlin",
+    "xamarin",
+    "expo",
+    "iphone",
+    "ipad",
+)
+CRITICAL_JD_KEYWORDS = (
+    "responsive design",
+    "ecommerce",
+    "e-commerce",
+    "e commerce",
+    "accessibility",
+    "seo",
+    "graphql",
+    "typescript",
+    "ci/cd",
+    "microservices",
+)
 
 SENIORITY_ORDER = {
     "student": 0,
@@ -174,6 +236,111 @@ def evaluate_potential_junior_match(
     return years_ok or skills_ok
 
 
+def _blob(*parts: Any) -> str:
+    return " ".join(str(p or "") for p in parts).lower()
+
+
+def _count_markers(text: str, markers: tuple[str, ...]) -> int:
+    return sum(1 for marker in markers if marker in text)
+
+
+def _job_text_blob(job_profile: JobProfile, job: dict[str, Any] | None) -> str:
+    parts: list[Any] = [
+        job_profile.title,
+        " ".join(job_profile.required_skills or []),
+        " ".join(job_profile.preferred_skills or []),
+        " ".join(job_profile.technologies or []),
+        " ".join(job_profile.mandatory_requirements or []),
+    ]
+    if job:
+        parts.extend(
+            [
+                job.get("title"),
+                job.get("description"),
+                job.get("full_description"),
+                job.get("company"),
+            ]
+        )
+    return _blob(*parts)
+
+
+def _candidate_text_blob(candidate: AtsCandidateProfile) -> str:
+    return _blob(
+        " ".join(candidate.skills),
+        " ".join(candidate.technologies),
+        " ".join(candidate.previous_roles),
+        " ".join(candidate.projects),
+        candidate.domain,
+    )
+
+
+def evaluate_domain_misalignment(
+    candidate: AtsCandidateProfile,
+    job_profile: JobProfile,
+    job: dict[str, Any] | None = None,
+) -> tuple[int, str | None]:
+    """Penalize Web/eCommerce jobs when the CV leans heavily Mobile (and vice versa)."""
+    job_text = _job_text_blob(job_profile, job)
+    cv_text = _candidate_text_blob(candidate)
+
+    job_web = _count_markers(job_text, WEB_ECOMMERCE_MARKERS)
+    job_mobile = _count_markers(job_text, MOBILE_MARKERS)
+    cv_web = _count_markers(cv_text, WEB_ECOMMERCE_MARKERS)
+    cv_mobile = _count_markers(cv_text, MOBILE_MARKERS)
+
+    job_is_web = job_web >= 2 and job_web > job_mobile
+    job_is_mobile = job_mobile >= 2 and job_mobile > job_web
+    cv_is_web = cv_web >= 2 and cv_web > cv_mobile
+    cv_is_mobile = cv_mobile >= 2 and cv_mobile > cv_web
+
+    if job_is_web and cv_is_mobile:
+        return (
+            DOMAIN_MISALIGNMENT_PENALTY,
+            "Domain misalignment: Web/eCommerce role vs Mobile-heavy CV "
+            f"(-{DOMAIN_MISALIGNMENT_PENALTY})",
+        )
+    if job_is_mobile and cv_is_web:
+        return (
+            DOMAIN_MISALIGNMENT_PENALTY,
+            "Domain misalignment: Mobile role vs Web-heavy CV "
+            f"(-{DOMAIN_MISALIGNMENT_PENALTY})",
+        )
+    return 0, None
+
+
+def evaluate_junior_underqualified_cap(
+    candidate: AtsCandidateProfile,
+    job: JobProfile,
+) -> bool:
+    """True when 0–1y candidate applies to a role demanding 3+ years."""
+    years = candidate.experience_years
+    required = job.years_experience_min
+    if years is None or required is None:
+        return False
+    return years <= EARLY_CAREER_MAX_YEARS and required >= EXPERIENCED_ROLE_MIN_YEARS
+
+
+def _critical_keyword_penalty(
+    candidate: AtsCandidateProfile,
+    job_profile: JobProfile,
+    job: dict[str, Any] | None = None,
+) -> tuple[int, list[str]]:
+    """Heavy hits for critical JD keywords that are missing or weak in the CV."""
+    job_text = _job_text_blob(job_profile, job)
+    cv_text = _candidate_text_blob(candidate)
+    missing: list[str] = []
+    for keyword in CRITICAL_JD_KEYWORDS:
+        if keyword in job_text and keyword not in cv_text:
+            # Also try loose skill match for single-token keywords.
+            if " " not in keyword and _candidate_has_skill(candidate, keyword):
+                continue
+            missing.append(keyword)
+    if not missing:
+        return 0, []
+    penalty = min(len(missing) * CRITICAL_KEYWORD_PENALTY, 32)
+    return penalty, missing
+
+
 def _seniority_distance(cv_seniority: str, job_seniority: str | None) -> float:
     cv_rank = SENIORITY_ORDER.get((cv_seniority or "unknown").lower(), 3)
     job_rank = SENIORITY_ORDER.get((job_seniority or "unknown").lower(), 3)
@@ -296,8 +463,13 @@ def _score_required_skills(
         candidate.all_skills_set, required, domain=candidate.domain
     )
     ratio = len(matched) / len(required) if required else 1.0
-    section_score = ratio * 100
+    # Nonlinear: missing keywords hurt harder than a linear ratio.
+    section_score = (ratio ** REQUIRED_SKILLS_PENALTY_EXPONENT) * 100
     reasons = [f"Required skills: {len(matched)}/{len(required)} matched"]
+    if missing:
+        reasons.append(
+            f"Missing keywords penalized heavily: {', '.join(missing[:5])}"
+        )
     return section_score, matched, missing, reasons
 
 
@@ -434,6 +606,17 @@ def score(
         + WEIGHT_PREFERRED * pref_score
     )
 
+    domain_penalty, domain_reason = evaluate_domain_misalignment(
+        candidate, job_profile, job
+    )
+    keyword_penalty, critical_missing = _critical_keyword_penalty(
+        candidate, job_profile, job
+    )
+    if domain_penalty:
+        weighted -= domain_penalty
+    if keyword_penalty:
+        weighted -= keyword_penalty
+
     mandatory_failed = bool(missing_mandatory)
     is_potential = False
     if mandatory_failed:
@@ -446,12 +629,32 @@ def score(
         else:
             weighted = min(weighted, MANDATORY_FAIL_CAP)
 
+    underqualified = evaluate_junior_underqualified_cap(candidate, job_profile)
+    if underqualified:
+        # No points for "potential": early-career vs 3y+ roles cannot clear 70.
+        weighted = min(weighted, JUNIOR_UNDERQUALIFIED_CAP)
+
     ats_score = clamp_score(round(weighted))
     label = score_label_for(ats_score)
     if is_potential and ats_score < 50:
         label = POTENTIAL_MATCH_LABEL
 
     all_reasons = mand_reasons + req_reasons + exp_reasons + sen_reasons + pref_reasons
+    if domain_reason:
+        all_reasons.insert(0, domain_reason)
+    if critical_missing:
+        all_reasons.insert(
+            0,
+            "Critical JD keywords missing/weak — no credit for potential: "
+            f"{', '.join(critical_missing[:5])} (-{keyword_penalty})",
+        )
+    if underqualified:
+        all_reasons.insert(
+            0,
+            f"Early-career (≤{EARLY_CAREER_MAX_YEARS:g}y) vs "
+            f"{job_profile.years_experience_min}+ year role — score capped at "
+            f"{JUNIOR_UNDERQUALIFIED_CAP}",
+        )
     if is_potential:
         all_reasons.insert(
             0,
@@ -461,6 +664,14 @@ def score(
         all_reasons.insert(0, "Hard requirements not met — score capped")
 
     improvements = _build_improvements(missing, missing_mandatory)
+    if critical_missing:
+        for kw in critical_missing[:3]:
+            improvements.insert(0, f"Add explicit evidence for critical keyword: {kw}")
+    if domain_penalty:
+        improvements.insert(
+            0,
+            "Align CV domain with the job (Web/eCommerce vs Mobile) — highlight matching product experience",
+        )
 
     return AtsMatchResult(
         ats_score=ats_score,
