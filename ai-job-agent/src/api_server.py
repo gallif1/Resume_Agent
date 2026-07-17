@@ -64,6 +64,14 @@ from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
+from scan_control import (
+    begin_scan,
+    is_cancelled,
+    load_scan_state,
+    mark_interrupted_if_stale,
+    request_cancel,
+    save_scan_state,
+)
 from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
 from tailor_cv_service import (
@@ -80,6 +88,12 @@ ALLOWED_CV_EXTENSIONS = cv_service.ALLOWED_CV_EXTENSIONS
 MAX_CV_SIZE = cv_service.MAX_CV_SIZE
 
 app = FastAPI(title="AI Job Agent API")
+
+# Mark any scan left "running" by a previous process as interrupted.
+try:
+    mark_interrupted_if_stale(db.DEFAULT_USER_ID)
+except Exception:  # noqa: BLE001
+    pass
 
 app.add_middleware(
     CORSMiddleware,
@@ -347,6 +361,32 @@ def _parse_scan_summary(summary: str | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _persist_scan_state() -> None:
+    """Mirror in-memory scan state to disk so refresh can resume the UI."""
+    with _scan_lock:
+        user_id = _scan_state.get("user_id") or db.DEFAULT_USER_ID
+        snapshot = {
+            "running": _scan_state["running"],
+            "mode": _scan_state.get("mode"),
+            "cv_id": _scan_state.get("cv_id"),
+            "user_id": user_id,
+            "scan_id": _scan_state.get("scan_id"),
+            "started_at": _scan_state.get("started_at"),
+            "finished_at": _scan_state.get("finished_at"),
+            "error": _scan_state.get("error"),
+            "warnings": list(_scan_state.get("warnings") or []),
+            "collection": _scan_state.get("collection"),
+            "steps": [dict(s) for s in (_scan_state.get("steps") or [])],
+            "log": list(_scan_state.get("log") or [])[-80:],
+            "current_detail": _scan_state.get("current_detail"),
+            "cancelled": is_cancelled(),
+        }
+    try:
+        save_scan_state(user_id, snapshot)
+    except OSError:
+        pass
+
+
 def _scan_log(line: str) -> None:
     with _scan_lock:
         log = _scan_state["log"]
@@ -357,14 +397,14 @@ def _scan_log(line: str) -> None:
         if stripped and not stripped.startswith(">>") and not stripped.startswith("--"):
             _scan_state["current_detail"] = stripped
         parsed = parse_agent_line(stripped)
-        if parsed is None:
-            return
-        if parsed.get("type") == "warning":
-            message = parsed.get("message")
-            if message and message not in _scan_state["warnings"]:
-                _scan_state["warnings"].append(message)
-        elif parsed.get("type") == "summary":
-            _scan_state["collection"] = parsed.get("summary")
+        if parsed is not None:
+            if parsed.get("type") == "warning":
+                message = parsed.get("message")
+                if message and message not in _scan_state["warnings"]:
+                    _scan_state["warnings"].append(message)
+            elif parsed.get("type") == "summary":
+                _scan_state["collection"] = parsed.get("summary")
+    _persist_scan_state()
 
 
 def _scan_set_step(key: str, status: str) -> None:
@@ -375,6 +415,7 @@ def _scan_set_step(key: str, status: str) -> None:
                 if status == "running":
                     _scan_state["current_detail"] = step["name"]
                 break
+    _persist_scan_state()
 
 
 def _running_step_key_from_steps(steps: list[dict]) -> str | None:
@@ -422,6 +463,7 @@ def _run_scan_thread(
             _scan_state["running"] = False
             _scan_state["finished_at"] = _utc_now()
             _scan_state["error"] = error
+        _persist_scan_state()
 
 
 def _run_user_scan_thread(
@@ -456,7 +498,10 @@ def _run_user_scan_thread(
         with _scan_lock:
             _scan_state["running"] = False
             _scan_state["finished_at"] = _utc_now()
+            if error is None and is_cancelled():
+                error = "הסריקה בוטלה על ידי המשתמש"
             _scan_state["error"] = error
+        _persist_scan_state()
 
 
 def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
@@ -485,6 +530,7 @@ def _start_user_scan(req: RunAgentRequest, user_id: str = db.DEFAULT_USER_ID) ->
     with _scan_lock:
         if _scan_state["running"]:
             raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+        begin_scan()
         _scan_state.update(
             {
                 "running": True,
@@ -505,6 +551,7 @@ def _start_user_scan(req: RunAgentRequest, user_id: str = db.DEFAULT_USER_ID) ->
                 ],
             }
         )
+    _persist_scan_state()
 
     thread = threading.Thread(
         target=_run_user_scan_thread,
@@ -519,10 +566,34 @@ def _start_user_scan(req: RunAgentRequest, user_id: str = db.DEFAULT_USER_ID) ->
     }
 
 
+def _stop_user_scan(user_id: str = db.DEFAULT_USER_ID) -> dict:
+    with _scan_lock:
+        running = bool(_scan_state["running"]) and _scan_state.get("user_id") == user_id
+        if not running:
+            # Also allow stop if persisted state still says running (rare race).
+            persisted = load_scan_state(user_id) or {}
+            if not persisted.get("running"):
+                raise HTTPException(status_code=409, detail="אין סריקה פעילה לעצור")
+        _scan_state["current_detail"] = "עוצר סריקה…"
+        if "!! מבטל סריקה" not in (_scan_state.get("log") or []):
+            _scan_state.setdefault("log", []).append("!! מבטל סריקה לפי בקשת המשתמש")
+    request_cancel()
+    _persist_scan_state()
+    return {"stopping": True, "user_id": user_id}
+
+
 def _user_scan_status(user_id: str = db.DEFAULT_USER_ID) -> dict:
     workspace_db = user_db_path(user_id)
     with _scan_lock:
-        if _scan_state.get("mode") == "user" and _scan_state.get("user_id") == user_id:
+        memory_matches = (
+            _scan_state.get("mode") == "user" and _scan_state.get("user_id") == user_id
+        )
+        if memory_matches and (
+            _scan_state["running"]
+            or _scan_state.get("finished_at")
+            or _scan_state.get("error")
+            or _scan_state.get("steps")
+        ):
             steps = [dict(s) for s in _scan_state["steps"]]
             live = {
                 "running": _scan_state["running"],
@@ -537,6 +608,25 @@ def _user_scan_status(user_id: str = db.DEFAULT_USER_ID) -> dict:
                 "log": list(_scan_state["log"][-20:]),
             }
         else:
+            live = None
+
+    if live is None:
+        persisted = load_scan_state(user_id)
+        if persisted:
+            steps = [dict(s) for s in (persisted.get("steps") or [])]
+            live = {
+                "running": bool(persisted.get("running")),
+                "started_at": persisted.get("started_at"),
+                "finished_at": persisted.get("finished_at"),
+                "error": persisted.get("error"),
+                "warnings": list(persisted.get("warnings") or []),
+                "collection": persisted.get("collection"),
+                "current_step": _running_step_key_from_steps(steps),
+                "detail": persisted.get("current_detail") or persisted.get("detail"),
+                "steps": steps,
+                "log": list(persisted.get("log") or [])[-20:],
+            }
+        else:
             live = {
                 "running": False,
                 "started_at": None,
@@ -549,15 +639,36 @@ def _user_scan_status(user_id: str = db.DEFAULT_USER_ID) -> dict:
                 "steps": [],
                 "log": [],
             }
+
+    # In-memory is source of truth while this process owns the scan.
+    with _scan_lock:
+        if _scan_state.get("running") and _scan_state.get("user_id") == user_id:
+            steps = [dict(s) for s in _scan_state["steps"]]
+            live = {
+                "running": True,
+                "started_at": _scan_state["started_at"],
+                "finished_at": None,
+                "error": None,
+                "warnings": list(_scan_state["warnings"]),
+                "collection": _scan_state.get("collection"),
+                "current_step": _running_step_key_from_steps(steps),
+                "detail": _scan_state.get("current_detail"),
+                "steps": steps,
+                "log": list(_scan_state["log"][-20:]),
+            }
+
     latest_scan = db.get_latest_scan(db.WORKSPACE_CV_ID, db_path=workspace_db)
     if latest_scan and not live.get("warnings"):
         summary_data = _parse_scan_summary(latest_scan.get("summary"))
         live["warnings"] = summary_data.get("warnings") or []
         if not live.get("collection"):
             live["collection"] = summary_data.get("collection")
+    if latest_scan and not live.get("error") and not live.get("running"):
+        live["error"] = latest_scan.get("error_message")
     live["latest_scan"] = latest_scan
     live["match_count"] = _workspace_match_count(user_id)
     live["cv_count"] = len(db.list_active_cvs_for_user(user_id))
+    live["can_stop"] = bool(live.get("running"))
     return live
 
 
@@ -655,6 +766,13 @@ def run_job_matcher(req: RunAgentRequest):
     return _start_user_scan(req)
 
 
+@app.post("/jobs/match/stop")
+def stop_job_matcher():
+    """Stop the currently running workspace job-matching scan."""
+    db.ensure_multi_cv_storage()
+    return _stop_user_scan()
+
+
 @app.get("/jobs/match-status")
 def job_match_status():
     db.ensure_multi_cv_storage()
@@ -681,6 +799,9 @@ async def upload_cv_multi(
     display_name: str | None = Form(None),
 ):
     db.ensure_multi_cv_storage()
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="לא ניתן להעלות קבצים בזמן סריקה")
     data = await file.read()
     try:
         cv = cv_service.upload_cv(
@@ -1301,7 +1422,7 @@ if FRONTEND_DIST.is_dir():
 
     @app.get("/{page_path:path}")
     async def frontend_spa(page_path: str):
-        if page_path.startswith(("api/", "cvs", "cvs/")):
+        if page_path.startswith(("api/", "cvs", "cvs/", "jobs", "jobs/")):
             raise HTTPException(status_code=404, detail="Not found")
         candidate = FRONTEND_DIST / page_path
         if candidate.is_file():
