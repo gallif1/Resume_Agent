@@ -719,6 +719,7 @@ def _regenerate_tailored_cv(
     job: dict[str, Any],
     *,
     use_cache: bool = False,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Improve a previous tailored draft using matcher gap feedback."""
     job_id = int(job["id"])
@@ -842,7 +843,7 @@ def tailor_cv_for_job(
     matcher and ask the LLM to close the measured gaps.
     """
     if regenerate:
-        return _regenerate_tailored_cv(cv_id, job, use_cache=False)
+        return _regenerate_tailored_cv(cv_id, job, use_cache=False, user_id=user_id)
 
     job_id = int(job["id"])
     if not force:
