@@ -11,9 +11,11 @@ interface Props {
   error: string | null;
   scanStatus: CvScanStatus | null;
   workspaceMatchCount: number;
+  stopping?: boolean;
   onUpload: (files: File[]) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
   onRunAgent: () => void;
+  onStopAgent: () => void;
   onOpenMatches: () => void;
 }
 
@@ -48,9 +50,11 @@ export default function CvManager({
   error,
   scanStatus,
   workspaceMatchCount,
+  stopping = false,
   onUpload,
   onDelete,
   onRunAgent,
+  onStopAgent,
   onOpenMatches,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -58,6 +62,8 @@ export default function CvManager({
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Cv | null>(null);
+  const anyScanning = scanStatus?.running ?? false;
+  const uiLocked = anyScanning;
 
   const validate = (files: File[]): string | null => {
     for (const f of files) {
@@ -73,7 +79,7 @@ export default function CvManager({
   };
 
   const handleFiles = async (files: File[]) => {
-    if (files.length === 0) return;
+    if (anyScanning || files.length === 0) return;
     const err = validate(files);
     if (err) {
       setLocalError(err);
@@ -91,13 +97,12 @@ export default function CvManager({
   const onDrop = (e: DragEvent) => {
     e.preventDefault();
     setDragging(false);
+    if (anyScanning) return;
     handleFiles(Array.from(e.dataTransfer.files));
   };
 
-  const anyScanning = scanStatus?.running ?? false;
-
   return (
-    <section>
+    <section className={uiLocked ? "scan-locked-section" : undefined}>
       <section className="hero">
         <h1>
           קורות החיים שלך, <span className="accent">מאוחדים לפרופיל אחד</span>
@@ -110,17 +115,21 @@ export default function CvManager({
 
       <div className="upload-section">
         <div
-          className={`dropzone ${dragging ? "dragging" : ""} ${busy ? "busy" : ""}`}
-          onClick={() => inputRef.current?.click()}
+          className={`dropzone ${dragging ? "dragging" : ""} ${busy ? "busy" : ""} ${uiLocked ? "dropzone-locked" : ""}`}
+          onClick={() => {
+            if (!uiLocked) inputRef.current?.click();
+          }}
           onDragOver={(e) => {
             e.preventDefault();
-            setDragging(true);
+            if (!uiLocked) setDragging(true);
           }}
           onDragLeave={() => setDragging(false)}
           onDrop={onDrop}
           role="button"
-          tabIndex={0}
+          tabIndex={uiLocked ? -1 : 0}
+          aria-disabled={uiLocked}
           onKeyDown={(e) => {
+            if (uiLocked) return;
             if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
           }}
         >
@@ -130,6 +139,7 @@ export default function CvManager({
             accept={ACCEPTED.join(",")}
             multiple
             hidden
+            disabled={uiLocked}
             onChange={(e) => {
               handleFiles(Array.from(e.target.files ?? []));
               e.target.value = "";
@@ -137,7 +147,11 @@ export default function CvManager({
           />
           <div className="dropzone-icon">{busy ? "⏳" : "⬆️"}</div>
           <div className="dropzone-title">
-            {busy ? "מעלה..." : "גרור לכאן קבצי קורות חיים או לחץ לבחירה"}
+            {uiLocked
+              ? "הסוכן רץ — לא ניתן להעלות קבצים כרגע"
+              : busy
+                ? "מעלה..."
+                : "גרור לכאן קבצי קורות חיים או לחץ לבחירה"}
           </div>
           <div className="dropzone-hint">
             אפשר להעלות כמה קבצים · PDF / DOC / DOCX / TXT / תמונה · עד {MAX_SIZE_MB}MB
@@ -151,24 +165,35 @@ export default function CvManager({
 
       {cvs.length > 0 && (
         <div className="run-agent-section">
-          <button
-            type="button"
-            className="btn btn-primary btn-run-agent"
-            disabled={anyScanning || loading}
-            onClick={onRunAgent}
-          >
-            {anyScanning ? "הסוכן רץ…" : "הפעל סוכן מציאת משרות"}
-          </button>
+          {anyScanning ? (
+            <button
+              type="button"
+              className="btn btn-danger btn-run-agent"
+              disabled={stopping}
+              onClick={onStopAgent}
+            >
+              {stopping ? "עוצר…" : "עצור סריקה"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary btn-run-agent"
+              disabled={loading}
+              onClick={onRunAgent}
+            >
+              הפעל סוכן מציאת משרות
+            </button>
+          )}
           <p className="run-agent-hint">
-            הסוכן ינתח את כל {cvs.length} הקבצים שהועלו, יאחד אותם לפרופיל מאוחד
-            ויחפש משרות מתאימות.
+            {anyScanning
+              ? "הסוכן רץ ברקע — אפשר לרענן את הדף, הסריקה תמשיך. אפשר לעצור בכל רגע."
+              : `הסוכן ינתח את כל ${cvs.length} הקבצים שהועלו, יאחד אותם לפרופיל מאוחד ויחפש משרות מתאימות.`}
           </p>
         </div>
       )}
 
-      {anyScanning && scanStatus && (
-        <PipelineProgress scanStatus={scanStatus} compact />
-      )}
+      {(anyScanning || scanStatus?.error || (scanStatus?.steps?.length ?? 0) > 0) &&
+        scanStatus && <PipelineProgress scanStatus={scanStatus} compact />}
 
       {workspaceMatchCount > 0 && !anyScanning && (
         <div className="workspace-matches-banner">
@@ -178,7 +203,12 @@ export default function CvManager({
               מבוסס על הפרופיל המאוחד של כל קורות החיים
             </span>
           </div>
-          <button type="button" className="btn btn-ghost" onClick={onOpenMatches}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            disabled={uiLocked}
+            onClick={onOpenMatches}
+          >
             צפה בתוצאות
           </button>
         </div>
@@ -200,7 +230,7 @@ export default function CvManager({
           </p>
         </div>
       ) : (
-        <ul className="cv-list">
+        <ul className={`cv-list ${uiLocked ? "cv-list-locked" : ""}`}>
           {cvs.map((cv) => (
             <li key={cv.id} className="cv-item cv-manager-item">
               <div className="cv-icon">{fileIcon(cv.file_name)}</div>
@@ -228,7 +258,7 @@ export default function CvManager({
               <div className="cv-actions">
                 <button
                   className="btn btn-ghost btn-delete"
-                  disabled={anyScanning}
+                  disabled={uiLocked}
                   onClick={() => setConfirmDelete(cv)}
                 >
                   מחק
@@ -239,7 +269,7 @@ export default function CvManager({
         </ul>
       )}
 
-      {confirmDelete && (
+      {confirmDelete && !uiLocked && (
         <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3>מחיקת קורות חיים</h3>
