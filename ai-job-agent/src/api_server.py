@@ -20,7 +20,7 @@ Multi-CV endpoints (each CV has isolated data):
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
-           (?regenerate=true runs matcher feedback loop to improve ATS score)
+           (?regenerate=true deep-scans original CVs + ATS gaps; score-guarded)
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf  download tailored CV as PDF
     POST   /cvs/{cv_id}/jobs/{job_id}/apply          start automated job application
     GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
@@ -1063,8 +1063,8 @@ def tailor_cv_endpoint(
 ):
     """Generate an ATS-optimized Markdown CV tailored to one job (no hallucinated experience).
 
-    Pass ``?regenerate=true`` to score the previous draft with the deterministic
-    matcher and ask the LLM to close measured keyword/skill gaps.
+    Pass ``?regenerate=true`` to deep-scan original source CVs against ATS gaps on
+    the current best draft (score guard keeps only strictly better results).
     """
     db.ensure_multi_cv_storage()
     if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
