@@ -10,6 +10,7 @@ import {
   listJobSites,
   listServerCvs,
   runJobMatcher,
+  stopJobMatcher,
   uploadCv,
   type Cv,
   type CvScanStatus,
@@ -28,6 +29,7 @@ export default function App() {
   const [showMatches, setShowMatches] = useState(false);
 
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [jobSites, setJobSites] = useState<JobSite[]>([
     {
       id: "drushim",
@@ -56,6 +58,7 @@ export default function App() {
   const pollRef = useRef<number | null>(null);
   const scanRunningRef = useRef(false);
   const healthFailCount = useRef(0);
+  const resumedRef = useRef(false);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -78,6 +81,9 @@ export default function App() {
 
   useEffect(() => {
     scanRunningRef.current = scanStatus?.running ?? false;
+    if (!(scanStatus?.running ?? false)) {
+      setStopping(false);
+    }
   }, [scanStatus?.running]);
 
   const applyHealthResult = useCallback(
@@ -197,6 +203,9 @@ export default function App() {
           if ((s.match_count ?? 0) > 0) {
             setWorkspaceMatchCount(s.match_count ?? 0);
           }
+          if (s.error) {
+            showToast(s.error);
+          }
         }
       } catch {
         /* server temporarily unreachable — keep polling */
@@ -206,7 +215,35 @@ export default function App() {
 
   useEffect(() => stopPolling, [stopPolling]);
 
+  // Resume UI polling after refresh if a scan is still running on the server.
+  useEffect(() => {
+    if (!serverUp || resumedRef.current) return;
+    resumedRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await getJobMatchStatus();
+        if (cancelled) return;
+        setScanStatus(s);
+        if (s.running) {
+          startPolling();
+        } else if ((s.match_count ?? 0) > 0) {
+          setWorkspaceMatchCount(s.match_count ?? 0);
+        }
+      } catch {
+        /* ignore — health poll will retry */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [serverUp, startPolling]);
+
   const handleUpload = async (files: File[]) => {
+    if (scanRunningRef.current) {
+      showToast("לא ניתן להעלות קבצים בזמן סריקה");
+      return;
+    }
     let uploaded = 0;
     for (const file of files) {
       try {
@@ -237,6 +274,10 @@ export default function App() {
   };
 
   const handleDelete = async (id: string) => {
+    if (scanRunningRef.current) {
+      showToast("לא ניתן למחוק קבצים בזמן סריקה");
+      return;
+    }
     try {
       await deleteServerCv(id);
       await refreshCvs();
@@ -247,6 +288,7 @@ export default function App() {
   };
 
   const handleRun = () => {
+    if (scanRunningRef.current) return;
     if (cvs.length === 0) {
       showToast("יש להעלות לפחות קובץ קורות חיים אחד");
       return;
@@ -254,10 +296,25 @@ export default function App() {
     window.setTimeout(() => setRunModalOpen(true), 0);
   };
 
+  const handleStop = async () => {
+    setStopping(true);
+    try {
+      await stopJobMatcher();
+      showToast("עוצר את הסריקה…");
+      startPolling();
+    } catch (e) {
+      setStopping(false);
+      showToast(
+        `עצירת הסריקה נכשלה: ${e instanceof Error ? e.message : ""}`
+      );
+    }
+  };
+
   const confirmRun = async (siteIds: string[]) => {
     setRunModalOpen(false);
     try {
       await runJobMatcher({ job_sites: siteIds });
+      setShowMatches(false);
       setScanStatus({
         running: true,
         started_at: new Date().toISOString(),
@@ -283,7 +340,21 @@ export default function App() {
   const scanActive = scanStatus?.running ?? false;
 
   return (
-    <div className="app">
+    <div className={`app ${scanActive ? "app-scan-locked" : ""}`}>
+      {scanActive && (
+        <div className="scan-lock-banner" role="status">
+          <span>הסוכן רץ — הממשק נעול. אפשר לעצור את הסריקה בלבד.</span>
+          <button
+            type="button"
+            className="btn btn-danger btn-sm"
+            disabled={stopping}
+            onClick={handleStop}
+          >
+            {stopping ? "עוצר…" : "עצור סריקה"}
+          </button>
+        </div>
+      )}
+
       <header className="header">
         <div className="header-inner">
           <div className="logo">
@@ -318,10 +389,13 @@ export default function App() {
                   ? "בודק חיבור..."
                   : "השרת לא זמין — לחץ לניסיון חוזר"
             }
-            onClick={() => pingServer()}
+            onClick={() => {
+              if (!scanActive) pingServer();
+            }}
             role="button"
-            tabIndex={0}
+            tabIndex={scanActive ? -1 : 0}
             onKeyDown={(e) => {
+              if (scanActive) return;
               if (e.key === "Enter" || e.key === " ") pingServer();
             }}
           >
@@ -356,7 +430,7 @@ export default function App() {
               {healthChecking ? "בודק..." : "נסה שוב"}
             </button>
           </div>
-        ) : showMatches && primaryCv ? (
+        ) : showMatches && primaryCv && !scanActive ? (
           <CvDetails
             cvId={primaryCv.id}
             cv={primaryCv}
@@ -371,10 +445,14 @@ export default function App() {
             error={cvsError}
             scanStatus={scanStatus}
             workspaceMatchCount={workspaceMatchCount}
+            stopping={stopping}
             onUpload={handleUpload}
             onDelete={handleDelete}
             onRunAgent={handleRun}
-            onOpenMatches={() => setShowMatches(true)}
+            onStopAgent={handleStop}
+            onOpenMatches={() => {
+              if (!scanActive) setShowMatches(true);
+            }}
           />
         )}
       </main>
@@ -387,7 +465,7 @@ export default function App() {
 
       {toast && <div className="toast">{toast}</div>}
 
-      {runModalOpen && (
+      {runModalOpen && !scanActive && (
         <RunAgentModal
           cvName={`${cvs.length} קבצי קורות חיים`}
           sites={jobSites}

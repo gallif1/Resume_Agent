@@ -360,9 +360,14 @@ export function runJobMatcher(
   });
 }
 
+export function stopJobMatcher(): Promise<{ stopping: boolean; user_id: string }> {
+  return request(`/jobs/match/stop`, { method: "POST" });
+}
+
 export function getJobMatchStatus(): Promise<CvScanStatus & {
   match_count?: number;
   cv_count?: number;
+  can_stop?: boolean;
 }> {
   return request(`/jobs/match-status`);
 }

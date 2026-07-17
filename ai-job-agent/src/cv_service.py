@@ -39,6 +39,12 @@ from config import (
 )
 from cv_aggregator_service import aggregate_and_save
 from profile_utils import save_profile_for_user
+from scan_control import (
+    ScanCancelled,
+    is_cancelled,
+    register_process,
+    unregister_process,
+)
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -380,6 +386,58 @@ def _load_parsed_cv_text(cv_id: str) -> str:
     return _cv_text_from_profile(profile)
 
 
+def _run_logged_subprocess(
+    args: list[str],
+    *,
+    env: dict[str, str],
+    log: Callable[[str], None] | None = None,
+    on_line: Callable[[str], None] | None = None,
+) -> int:
+    """Run a subprocess with live logging; abort early if the scan is cancelled."""
+    if is_cancelled():
+        raise ScanCancelled("scan cancelled")
+
+    proc = subprocess.Popen(
+        args,
+        cwd=str(PROJECT_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+    )
+    register_process(proc)
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if is_cancelled():
+                _terminate_proc(proc)
+                raise ScanCancelled("scan cancelled")
+            line = line.rstrip()
+            if line:
+                if log is not None:
+                    log(line)
+                if on_line is not None:
+                    on_line(line)
+        return proc.wait()
+    finally:
+        unregister_process(proc)
+
+
+def _terminate_proc(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
 def _parse_all_user_cvs(
     user_id: str,
     *,
@@ -395,26 +453,19 @@ def _parse_all_user_cvs(
         raise ValueError("no active CV files uploaded")
 
     for cv in active_cvs:
+        if is_cancelled():
+            raise ScanCancelled("scan cancelled")
         cv_id = cv["id"]
         if log:
             log(f"-- מנתח: {cv.get('display_name') or cv.get('file_name')}")
         env = {**os.environ, "AGENT_CV_ID": cv_id}
-        proc = subprocess.Popen(
+        # Avoid leaking workspace scope into per-CV parse.
+        env.pop("AGENT_USER_ID", None)
+        code = _run_logged_subprocess(
             [PYTHON, str(SRC / "parse_cv.py"), "--yes"],
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=env,
+            log=log,
         )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line and log:
-                log(line)
-        code = proc.wait()
         if code != 0:
             raise RuntimeError(f"parse failed for CV {cv_id}")
         sync_parsed_profile(cv_id, db_path=db_path)
@@ -520,6 +571,11 @@ def run_user_scan(
     cv_texts: list[str] | None = None
 
     for key, name, script, extra in USER_SCAN_STEPS:
+        if is_cancelled():
+            error = "הסריקה בוטלה על ידי המשתמש"
+            _log("!! הסריקה בוטלה")
+            break
+
         skipped = (key == "collect" and skip_collect) or (
             key == "enrich" and skip_enrich
         )
@@ -534,22 +590,34 @@ def run_user_scan(
         if key == "parse_cvs":
             try:
                 cv_texts = _parse_all_user_cvs(user_id, log=_log, db_path=db_path)
+            except ScanCancelled:
+                _step(key, "failed")
+                _log("!! הסריקה בוטלה")
+                error = "הסריקה בוטלה על ידי המשתמש"
+                break
             except (ValueError, RuntimeError) as exc:
                 _step(key, "failed")
                 _log(f"!! {name} נכשל: {exc}")
-                error = f"השלב '{name}' נכשל"
+                error = f"השלב '{name}' נכשל: {exc}"
                 break
             _step(key, "success")
             continue
 
         if key == "aggregate":
             try:
+                if is_cancelled():
+                    raise ScanCancelled("scan cancelled")
                 texts = cv_texts or _collect_active_cv_texts(user_id, db_path=db_path)
                 _aggregate_user_profile(user_id, texts, log=_log)
+            except ScanCancelled:
+                _step(key, "failed")
+                _log("!! הסריקה בוטלה")
+                error = "הסריקה בוטלה על ידי המשתמש"
+                break
             except Exception as exc:  # noqa: BLE001
                 _step(key, "failed")
                 _log(f"!! {name} נכשל: {exc}")
-                error = f"השלב '{name}' נכשל"
+                error = f"השלב '{name}' נכשל: {exc}"
                 break
             _step(key, "success")
             continue
@@ -558,32 +626,40 @@ def run_user_scan(
         if key == "collect" and selected_sites:
             extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
 
-        proc = subprocess.Popen(
-            [PYTHON, str(SRC / script), *extra_args],
-            cwd=str(PROJECT_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                _log(line)
-                if key == "collect":
-                    parsed = parse_agent_line(line)
-                    if parsed is None:
-                        continue
-                    if parsed.get("type") == "warning":
-                        message = parsed.get("message")
-                        if message and message not in warnings:
-                            warnings.append(message)
-                    elif parsed.get("type") == "summary":
-                        collection_summary = parsed.get("summary")
-        code = proc.wait()
+        collect_warnings: list[str] = []
+        collect_summary_holder: dict[str, Any] = {}
+
+        def _on_collect_line(line: str, *, _key: str = key) -> None:
+            if _key != "collect":
+                return
+            parsed = parse_agent_line(line)
+            if parsed is None:
+                return
+            if parsed.get("type") == "warning":
+                message = parsed.get("message")
+                if message and message not in collect_warnings:
+                    collect_warnings.append(message)
+            elif parsed.get("type") == "summary":
+                collect_summary_holder["summary"] = parsed.get("summary")
+
+        try:
+            code = _run_logged_subprocess(
+                [PYTHON, str(SRC / script), *extra_args],
+                env=env,
+                log=_log,
+                on_line=_on_collect_line if key == "collect" else None,
+            )
+        except ScanCancelled:
+            _step(key, "failed")
+            _log("!! הסריקה בוטלה")
+            error = "הסריקה בוטלה על ידי המשתמש"
+            break
+
+        for message in collect_warnings:
+            if message not in warnings:
+                warnings.append(message)
+        if collect_summary_holder.get("summary"):
+            collection_summary = collect_summary_holder["summary"]
 
         if code != 0:
             _step(key, "failed")

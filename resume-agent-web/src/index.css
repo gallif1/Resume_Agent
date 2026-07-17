@@ -252,6 +252,41 @@ body {
   letter-spacing: -0.01em;
 }
 
+.scan-lock-banner {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #3b1d1d;
+  color: #ffe8e8;
+  border-bottom: 1px solid #7a3030;
+  font-size: 0.92rem;
+}
+
+.app-scan-locked .header,
+.app-scan-locked .footer {
+  pointer-events: none;
+  opacity: 0.72;
+}
+
+.dropzone-locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.cv-list-locked {
+  opacity: 0.7;
+}
+
+.cv-list-locked .btn-delete {
+  pointer-events: none;
+}
+
 .run-agent-hint {
   margin: 0;
   text-align: center;
