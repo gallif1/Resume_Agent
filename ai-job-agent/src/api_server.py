@@ -9,7 +9,11 @@ Multi-CV endpoints (each CV has isolated data):
     POST   /cvs/upload                      upload a CV (dedup by content hash)
     GET    /cvs/{cv_id}                     one CV + its latest scan
     DELETE /cvs/{cv_id}                     delete a CV and all its data
-    POST   /cvs/{cv_id}/run-agent           run the agent for a single CV
+    POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
+    GET    /jobs/match-status                 live workspace scan progress
+    GET    /jobs/matches                      workspace job matches
+    PATCH  /jobs/matches/{id}/status          set application status for workspace match
+    POST   /jobs/{job_id}/tailor-cv           tailor CV from aggregated profile
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
     GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
