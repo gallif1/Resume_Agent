@@ -4,5 +4,8 @@
 **/.pytest_cache
 **/.env
 ai-job-agent/data/browser_profile
+ai-job-agent/resumes/cv.pdf
+ai-job-agent/data/cv_profile.json
+ai-job-agent/data/database_export.txt
 ai-job-agent/logs
 resume-agent-web/dist
