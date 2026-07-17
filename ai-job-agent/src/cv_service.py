@@ -38,7 +38,7 @@ from config import (
     user_master_profile_path,
 )
 from cv_aggregator_service import aggregate_and_save
-from profile_utils import save_profile_for_user
+from profile_utils import save_profile_for_cv, save_profile_for_user
 from scan_control import (
     ScanCancelled,
     is_cancelled,
@@ -221,11 +221,6 @@ def sync_parsed_profile(cv_id: str, db_path: Path = db.REGISTRY_DB_PATH) -> None
         json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     save_profile_for_cv(cv_id, profile)
-    db.update_cv(
-        cv_id,
-        {"parsed_profile": json.dumps(profile, ensure_ascii=False)},
-        db_path=db_path,
-    )
     db.update_cv(
         cv_id,
         {"parsed_profile": json.dumps(profile, ensure_ascii=False)},
