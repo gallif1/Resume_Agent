@@ -35,6 +35,21 @@ SKILLS_HEADING_RE = re.compile(
     r"skills|כישורים|טכנולוגיות|technologies|technical\s+skills",
     re.IGNORECASE,
 )
+# Plain / bold section titles the LLM sometimes emits without ## markers.
+SECTION_TITLE_RE = re.compile(
+    r"^\s*(?:\*\*|__)?\s*("
+    r"experience|work\s+experience|employment|work\s+history|professional\s+experience|"
+    r"projects?|personal\s+projects?|selected\s+projects?|"
+    r"skills|technical\s+skills|core\s+skills|technologies|tech\s+stack|"
+    r"summary|professional\s+summary|profile|objective|about(?:\s+me)?|"
+    r"education|academic\s+background|"
+    r"certifications?|certificates?|licenses?|"
+    r"languages?|interests?|awards?|"
+    r"ניסיון(?:\s+תעסוקתי|\s+מקצועי|\s+עבודה)?|פרויקטים|כישורים(?:\s+טכניים)?|"
+    r"מיומנויות|תקציר|פרופיל|השכלה|הסמכות|תעודות|שפות"
+    r")\s*(?:\*\*|__)?\s*:?\s*$",
+    re.IGNORECASE,
+)
 BULLET_RE = re.compile(r"^\s*[-*•]\s+(.+)$")
 MD_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -304,6 +319,17 @@ def _section_kind(title: str) -> str:
     return "other"
 
 
+def _looks_like_section_title(text: str) -> str | None:
+    """Return a cleaned section title if ``text`` is a known section heading."""
+    raw = _strip_md_inline(text)
+    if not raw or len(raw) > 60:
+        return None
+    match = SECTION_TITLE_RE.match(raw)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
 def _looks_like_skill_category_line(text: str) -> bool:
     if ":" not in text:
         return False
@@ -348,8 +374,10 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
             if level == 1 and not resume.name:
                 resume.name = text
                 continue
-            if level == 2:
-                ensure_section(text)
+            # H1 after the name (or any H2) is a section title — LLMs often use # Skills.
+            if level <= 2:
+                section_title = _looks_like_section_title(text) or text
+                ensure_section(section_title)
                 continue
             if level == 3:
                 if current_section is None:
@@ -363,19 +391,29 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
                 current_section.entries.append(current_entry)
                 continue
 
+        plain_for_title = _strip_md_inline(line)
+        plain_section = _looks_like_section_title(plain_for_title)
+        if plain_section:
+            ensure_section(plain_section)
+            continue
+
         # Header contact / target role before first section.
         if not header_done and current_section is None:
-            target = TARGET_ROLE_RE.match(_strip_md_inline(line))
+            target = TARGET_ROLE_RE.match(plain_for_title)
             if target:
                 resume.target_role = target.group(1).strip()
                 continue
             if _looks_like_contact_line(line) and not resume.contact:
                 resume.contact = _strip_md_inline(line)
                 continue
-            # Ignore stray preamble lines in header zone.
+            # First non-meta line becomes the name when H1 was missing.
             if not resume.name:
-                resume.name = _strip_md_inline(line)
-            continue
+                resume.name = plain_for_title
+                continue
+            # Name already set — remaining body starts a summary section rather
+            # than being silently dropped (this caused blank PDFs).
+            ensure_section("Summary")
+            # Fall through to process this line as summary content.
 
         if current_section is None:
             ensure_section("Summary")
@@ -391,7 +429,7 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
             current_entry.bullets.append(text)
             continue
 
-        plain = _strip_md_inline(line)
+        plain = plain_for_title
         target = TARGET_ROLE_RE.match(plain)
         if target and not resume.target_role:
             resume.target_role = target.group(1).strip()
@@ -446,6 +484,18 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
             current_section.paragraphs.append(plain)
 
     return resume
+
+
+def _section_has_content(section: ResumeSection) -> bool:
+    if section.paragraphs or section.skill_lines or section.flat_skills:
+        return True
+    return any(
+        entry.title or entry.subtitle or entry.bullets for entry in section.entries
+    )
+
+
+def _resume_has_body(resume: ParsedResume) -> bool:
+    return any(_section_has_content(section) for section in resume.sections)
 
 
 def _render_resume_row(left_class: str, left_text: str, right_text: str = "") -> str:
@@ -546,6 +596,37 @@ def parsed_resume_to_html(resume: ParsedResume) -> str:
     )
 
 
+def _generic_markdown_html(markdown: str) -> str:
+    """Fallback HTML when structured parsing cannot find resume sections."""
+    import markdown as md_lib
+
+    body = md_lib.markdown(
+        markdown,
+        extensions=["extra", "sane_lists"],
+        output_format="html5",
+    )
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="UTF-8"/>\n'
+        "<title>CV</title>\n"
+        f"<style>{RESUME_CSS}"
+        "h1{font-size:24pt;font-weight:700;color:#0f172a;text-align:center;"
+        "text-transform:uppercase;margin:0 0 1mm 0;}"
+        "h2{font-size:11pt;font-weight:700;color:#0f172a;border-bottom:1.5px solid #cbd5e1;"
+        "text-transform:uppercase;margin:4mm 0 2mm 0;padding-bottom:0.5mm;letter-spacing:0.5px;}"
+        "h3{font-size:10.5pt;font-weight:700;color:#0f172a;margin:2mm 0 0.5mm 0;}"
+        "p{margin:0 0 2mm 0;color:#334155;}"
+        "ul{margin:0.5mm 0 2.5mm 0;padding-left:4.5mm;}"
+        "li{margin-bottom:0.8mm;color:#334155;}"
+        "</style>\n"
+        "</head>\n"
+        f'<body>\n<div class="resume">\n{body}\n</div>\n</body>\n'
+        "</html>\n"
+    )
+
+
 def markdown_to_resume_html(markdown: str) -> str:
     """Convert CV Markdown into a structured HTML document with print CSS."""
     raw = (markdown or "").strip()
@@ -555,6 +636,12 @@ def markdown_to_resume_html(markdown: str) -> str:
     parsed = parse_resume_markdown(raw)
     if not parsed.name and not parsed.sections:
         raise PdfGeneratorError("קורות החיים ריקים — אין מה להמיר ל-PDF", status_code=400)
+
+    # Structured parse sometimes keeps only the header when the LLM omitted ##
+    # headings — fall back to generic Markdown rendering so the PDF is not blank.
+    if parsed.name and not _resume_has_body(parsed):
+        return _generic_markdown_html(raw)
+
     return parsed_resume_to_html(parsed)
 
 
