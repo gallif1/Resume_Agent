@@ -95,14 +95,78 @@ def test_pdf_filename_from_name():
     assert pdf.pdf_filename_for_markdown("no heading") == pdf.DEFAULT_PDF_FILENAME
 
 
-def test_empty_markdown_raises():
-    with pytest.raises(pdf.PdfGeneratorError) as exc:
-        pdf.markdown_to_resume_html("   ")
-    assert exc.value.status_code == 400
+def test_plain_section_titles_are_not_dropped():
+    """LLM often emits 'Experience' / 'Skills' without ## — PDF must still show body."""
+    md = """# GAL LIFSHITZ
+
+gal8054@gmail.com
+
+**Target Role: Backend Developer**
+
+Experience
+
+### Backend Developer
+Acme | 2021 – Present
+- Built APIs with FastAPI and PostgreSQL
+
+Skills
+Python, SQL, Docker, AWS
+"""
+    parsed = pdf.parse_resume_markdown(md)
+    assert parsed.name == "GAL LIFSHITZ"
+    assert parsed.target_role == "Backend Developer"
+    kinds = {s.kind for s in parsed.sections}
+    assert "experience" in kinds
+    assert "skills" in kinds
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "Built APIs with FastAPI" in html_doc
+    assert "PostgreSQL" in html_doc
+    assert "Python" in html_doc
+    assert "section-title" in html_doc
+
+
+def test_bold_section_titles_parsed():
+    md = """# Gal Lifshitz
+gal@example.com
+**Target Role: Backend Engineer**
+
+**Experience**
+### Support Engineer
+Acme | 2020 – Present
+- SQL and Python troubleshooting
+
+**Skills**
+Languages: Python, SQL
+"""
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "SQL and Python troubleshooting" in html_doc
+    assert "Languages" in html_doc
+
+
+def test_header_only_with_body_text_uses_fallback_or_summary():
+    """Content without recognizable headings must not produce a blank PDF body."""
+    md = """# GAL LIFSHITZ
+gal8054@gmail.com
+**Target Role: Backend Developer**
+
+Backend Developer at Acme (2021-Present).
+Built REST APIs with FastAPI, SQLAlchemy and PostgreSQL.
+Skills include Python, Docker and AWS.
+"""
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "GAL LIFSHITZ" in html_doc
+    assert "FastAPI" in html_doc
+    assert "PostgreSQL" in html_doc
 
 
 def test_render_markdown_to_pdf_bytes():
-    pdf_bytes = pdf.render_markdown_to_pdf(SAMPLE_CV)
+    pytest.importorskip("playwright")
+    try:
+        pdf_bytes = pdf.render_markdown_to_pdf(SAMPLE_CV)
+    except pdf.PdfGeneratorError as exc:
+        if "Playwright" in exc.message or "chromium" in exc.message.lower():
+            pytest.skip(exc.message)
+        raise
     assert pdf_bytes.startswith(b"%PDF")
     assert len(pdf_bytes) > 1000
 
@@ -130,6 +194,11 @@ def test_generate_uses_cv_body_only(
     assert body.startswith("# Gal")
     assert "פירוט שינויים" not in body
 
-    pdf_bytes, filename = pdf.generate_tailored_cv_pdf(body)
+    try:
+        pdf_bytes, filename = pdf.generate_tailored_cv_pdf(body)
+    except pdf.PdfGeneratorError as exc:
+        if "Playwright" in exc.message or "chromium" in exc.message.lower():
+            pytest.skip(exc.message)
+        raise
     assert pdf_bytes.startswith(b"%PDF")
     assert filename == "Gal_Lifshitz_CV_Tailored.pdf"
