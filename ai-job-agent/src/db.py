@@ -1549,56 +1549,78 @@ def set_cv_last_scan(cv_id: str, when: str | None = None, db_path: Path = REGIST
 
 
 def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
-    """Delete a CV registry row and clean up its matches, scans, and orphan jobs."""
+    """Delete a CV registry row and clean up its matches, scans, and orphan jobs.
+
+    Safe when the per-CV / workspace jobs DB is missing or has no jobs tables yet
+    (e.g. uploaded but never scanned) — the registry row is still removed so the
+    same file can be uploaded again.
+    """
     data_db = _resolve_cv_data_db(cv_id, db_path)
     deleted_matches = 0
     deleted_scans = 0
     deleted_jobs = 0
     orphaned_job_ids: list[int] = []
 
-    with get_connection(data_db) as conn:
-        deleted_matches = int(
-            conn.execute(
-                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?",
-                (cv_id,),
-            ).fetchone()["n"]
-        )
-        deleted_scans = int(
-            conn.execute(
-                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?",
-                (cv_id,),
-            ).fetchone()["n"]
-        )
-        job_ids = [
-            int(row["job_id"])
-            for row in conn.execute(
-                "SELECT DISTINCT job_id FROM cv_job_matches WHERE cv_id = ?",
-                (cv_id,),
-            ).fetchall()
-        ]
+    if data_db.exists():
+        with get_connection(data_db) as conn:
+            tables = _table_names(conn)
+            has_matches = "cv_job_matches" in tables
+            has_scans = "cv_scans" in tables
 
-        conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
-        conn.execute("DELETE FROM cv_scans WHERE cv_id = ?", (cv_id,))
+            if has_matches:
+                deleted_matches = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?",
+                        (cv_id,),
+                    ).fetchone()["n"]
+                )
+                job_ids = [
+                    int(row["job_id"])
+                    for row in conn.execute(
+                        "SELECT DISTINCT job_id FROM cv_job_matches WHERE cv_id = ?",
+                        (cv_id,),
+                    ).fetchall()
+                ]
+                conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
+            else:
+                job_ids = []
 
-        for job_id in job_ids:
-            still_referenced = conn.execute(
-                "SELECT 1 FROM cv_job_matches WHERE job_id = ? LIMIT 1",
-                (job_id,),
-            ).fetchone()
-            if still_referenced is not None:
-                continue
-            conn.execute(
-                "DELETE FROM job_application_steps WHERE application_id IN "
-                "(SELECT id FROM job_applications WHERE job_id = ?)",
-                (job_id,),
-            )
-            conn.execute("DELETE FROM job_applications WHERE job_id = ?", (job_id,))
-            conn.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
-            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-            orphaned_job_ids.append(job_id)
-            deleted_jobs += 1
+            if has_scans:
+                deleted_scans = int(
+                    conn.execute(
+                        "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?",
+                        (cv_id,),
+                    ).fetchone()["n"]
+                )
+                conn.execute("DELETE FROM cv_scans WHERE cv_id = ?", (cv_id,))
 
-        conn.commit()
+            if has_matches and "jobs" in tables:
+                for job_id in job_ids:
+                    still_referenced = conn.execute(
+                        "SELECT 1 FROM cv_job_matches WHERE job_id = ? LIMIT 1",
+                        (job_id,),
+                    ).fetchone()
+                    if still_referenced is not None:
+                        continue
+                    if "job_applications" in tables:
+                        if "job_application_steps" in tables:
+                            conn.execute(
+                                "DELETE FROM job_application_steps WHERE application_id IN "
+                                "(SELECT id FROM job_applications WHERE job_id = ?)",
+                                (job_id,),
+                            )
+                        conn.execute(
+                            "DELETE FROM job_applications WHERE job_id = ?", (job_id,)
+                        )
+                    if "applications" in tables:
+                        conn.execute(
+                            "DELETE FROM applications WHERE job_id = ?", (job_id,)
+                        )
+                    conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+                    orphaned_job_ids.append(job_id)
+                    deleted_jobs += 1
+
+            conn.commit()
 
     with get_connection(db_path) as conn:
         conn.execute("DELETE FROM cvs WHERE id = ?", (cv_id,))

@@ -106,6 +106,16 @@ def load_scan_state(user_id: str) -> dict[str, Any] | None:
         return None
 
 
+def clear_scan_state(user_id: str) -> None:
+    """Remove persisted scan UI state for a user workspace."""
+    path = scan_state_path(user_id)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def mark_interrupted_if_stale(user_id: str) -> None:
     """On server startup, mark a previously-running scan as interrupted."""
     state = load_scan_state(user_id)

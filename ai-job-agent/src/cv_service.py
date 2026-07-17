@@ -712,3 +712,89 @@ def _collect_active_cv_texts(
     if not texts:
         raise ValueError("could not extract text from uploaded CV files")
     return texts
+
+
+_WORKSPACE_ARTIFACTS = (
+    "master_profile.json",
+    "cv_profile.json",
+    "profile.json",
+    "ai_roles.json",
+    "ai_matching_strategy.json",
+    "pipeline_state.json",
+    "scan_state.json",
+)
+
+
+def reset_user_results(
+    user_id: str = db.DEFAULT_USER_ID,
+    *,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any]:
+    """Clear workspace match/scan results; keep uploaded CV files."""
+    from scan_control import clear_scan_state
+
+    user_db = user_db_path(user_id)
+    cleared_jobs = False
+    if user_db.exists():
+        db.reset_cv_job_pool(db.WORKSPACE_CV_ID, db_path=user_db)
+        with db.get_connection(user_db) as conn:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "cv_scans" in tables:
+                conn.execute("DELETE FROM cv_scans")
+            conn.commit()
+        cleared_jobs = True
+
+    for cv in db.list_cvs(user_id=user_id, db_path=db_path):
+        db.update_cv(cv["id"], {"last_scan_at": None}, db_path=db_path)
+
+    clear_scan_state(user_id)
+    return {
+        "reset": "results",
+        "user_id": user_id,
+        "cleared_workspace_db": cleared_jobs,
+    }
+
+
+def reset_user_files(
+    user_id: str = db.DEFAULT_USER_ID,
+    *,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any]:
+    """Delete all uploaded CVs for a user and clear workspace results/profiles."""
+    cvs = db.list_cvs(user_id=user_id, db_path=db_path)
+    deleted_ids: list[str] = []
+    for cv in cvs:
+        delete_cv(cv["id"], db_path=db_path)
+        deleted_ids.append(cv["id"])
+
+    results = reset_user_results(user_id, db_path=db_path)
+
+    workspace = user_data_dir(user_id)
+    removed_artifacts: list[str] = []
+    if workspace.exists():
+        for name in _WORKSPACE_ARTIFACTS:
+            path = workspace / name
+            if path.exists():
+                try:
+                    path.unlink()
+                    removed_artifacts.append(name)
+                except OSError:
+                    pass
+        cache_dir = workspace / "ai_cache"
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            removed_artifacts.append("ai_cache/")
+
+    return {
+        "reset": "files",
+        "user_id": user_id,
+        "deleted_cv_ids": deleted_ids,
+        "deleted_count": len(deleted_ids),
+        "removed_artifacts": removed_artifacts,
+        "results": results,
+    }
