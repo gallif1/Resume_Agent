@@ -508,13 +508,18 @@ def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
     workspace_db = user_db_path(user_id)
     if not workspace_db.exists():
         return 0
-    return len(
-        db.get_cv_matches(
-            db.WORKSPACE_CV_ID,
-            latest_only=True,
-            db_path=workspace_db,
+    try:
+        # Repair empty/partial DBs created by an earlier get_connection without init_db.
+        db.ensure_jobs_schema(workspace_db)
+        return len(
+            db.get_cv_matches(
+                db.WORKSPACE_CV_ID,
+                latest_only=True,
+                db_path=workspace_db,
+            )
         )
-    )
+    except Exception:  # noqa: BLE001 — listing CVs must not fail because of match counts
+        return 0
 
 
 def _start_user_scan(req: RunAgentRequest, user_id: str = db.DEFAULT_USER_ID) -> dict:

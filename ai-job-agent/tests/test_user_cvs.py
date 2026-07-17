@@ -87,6 +87,23 @@ def test_legacy_registry_without_user_id_migrates(tmp_path):
     assert len(active) == 1
 
 
+def test_empty_workspace_db_does_not_break_match_reads(tmp_path, monkeypatch):
+    """An empty jobs.db (created without init_db) must not raise on reads."""
+    empty_db = tmp_path / "jobs.db"
+    # Touch an empty sqlite file the way a stray get_connection would.
+    with db.get_connection(empty_db):
+        pass
+    assert empty_db.exists()
+
+    assert db.get_latest_scan("workspace", db_path=empty_db) is None
+    assert db.get_cv_matches("workspace", latest_only=True, db_path=empty_db) == []
+
+    db.ensure_jobs_schema(empty_db)
+    assert db.get_latest_scan("workspace", db_path=empty_db) is None
+    assert db.get_cv_matches("workspace", latest_only=True, db_path=empty_db) == []
+
+
+
 
 def test_list_cvs_does_not_auto_import_legacy_resume(monkeypatch):
     """Listing CVs must not import bundled resumes/cv.* into the registry."""

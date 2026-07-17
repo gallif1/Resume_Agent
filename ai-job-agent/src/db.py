@@ -1671,8 +1671,29 @@ def get_scan(scan_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+
+def ensure_jobs_schema(db_path: Path) -> None:
+    """Ensure a jobs/scans/matches database has the expected schema.
+
+    Safe to call on empty files created accidentally by ``get_connection``.
+    """
+    init_db(db_path)
+
+
 def get_latest_scan(cv_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | None:
+    if not Path(db_path).exists():
+        return None
     with get_connection(db_path) as conn:
+        if "cv_scans" not in _table_names(conn):
+            return None
         row = conn.execute(
             "SELECT * FROM cv_scans WHERE cv_id = ? ORDER BY id DESC LIMIT 1",
             (cv_id,),
@@ -1681,7 +1702,11 @@ def get_latest_scan(cv_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | Non
 
 
 def list_scans(cv_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
+    if not Path(db_path).exists():
+        return []
     with get_connection(db_path) as conn:
+        if "cv_scans" not in _table_names(conn):
+            return []
         rows = conn.execute(
             "SELECT * FROM cv_scans WHERE cv_id = ? ORDER BY id DESC", (cv_id,)
         ).fetchall()
@@ -1840,6 +1865,13 @@ def get_cv_matches(
     Sorted by best match score first. When ``latest_only`` is True, only the
     matches produced by the CV's most recent scan are returned.
     """
+    if not Path(db_path).exists():
+        return []
+    with get_connection(db_path) as conn:
+        tables = _table_names(conn)
+        if "cv_job_matches" not in tables or "jobs" not in tables:
+            return []
+
     conditions = ["m.cv_id = ?"]
     params: list[Any] = [cv_id]
 
