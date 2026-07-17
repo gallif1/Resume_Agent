@@ -32,12 +32,13 @@ from profile_matcher import score as profile_match_score
 from skill_normalizer import normalize_skill
 
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
-TAILOR_PROMPT_VERSION = "v3"
-REGENERATE_PROMPT_VERSION = "v1"
+TAILOR_PROMPT_VERSION = "v4"
+REGENERATE_PROMPT_VERSION = "v2"
 NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
 TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
-to maximize honest keyword/semantic alignment with ONE target job description.
+to maximize honest keyword/semantic alignment with ONE target job description, while producing a
+dense ONE-PAGE A4 resume body.
 
 Inputs (provided in the user message):
 - base_cv_data — the candidate's real CV text + structured facts (any profession / seniority)
@@ -75,7 +76,53 @@ REQUIRED MARKDOWN STRUCTURE for `markdown` (use these Hebrew headings):
 
 ## קורות החיים המעודכנים
 
-Then the full tailored resume in clean Markdown.
+Then the full tailored resume in clean Markdown using ## section headings:
+Summary, Experience, Projects (only if real projects exist), Skills, Education
+(only if education exists). Omit any empty section entirely.
+
+================================================================================
+STRICT CONTENT GOVERNANCE (ZERO-BUGS)
+================================================================================
+
+A) NEVER OMIT REAL EMPLOYMENT
+- Real professional employment history from base_cv_data (paid jobs / companies /
+  titles / dates) MUST remain the core of the EXPERIENCE section.
+- Example: a real employer entry such as "Support Specialist @ Acme Corp"
+  MUST appear under Experience — never drop real company experience in favor of
+  academic / personal projects.
+- Projects belong ONLY under Projects. Never duplicate a project under Experience
+  and Projects at the same time.
+
+B) ELIMINATE DUPLICATIONS
+- Each section heading (Summary, Experience, Projects, Skills, Education, …)
+  appears EXACTLY ONCE.
+- Do not repeat the same bullet, sentence, or paragraph.
+- Do not cut mid-sentence or leave truncated raw text fragments.
+
+C) HIDE GHOST SECTIONS
+- If Military Service, Volunteering, Awards, Languages, Certifications, Other,
+  or any section has NO real content for this candidate, OMIT the section title
+  and body completely. Never print an empty header.
+
+D) ACCURATE TECH CATEGORIZATION
+- Place tools under the correct Skills domain. Examples:
+  - SQLAlchemy → Frameworks / Libraries / ORM (NOT Cloud/DevOps)
+  - Expo → Mobile Frameworks / Toolkits (NOT Cloud/DevOps)
+  - Docker / Kubernetes / AWS / GCP → Cloud / DevOps
+  - PostgreSQL / MySQL / SQLite → Databases
+  - React / FastAPI / Django → Frameworks / Libraries
+- Prefer inline comma-separated skill rows by category (not vertical bullet lists).
+
+================================================================================
+ONE-PAGE DENSITY CONSTRAINTS (MANDATORY)
+================================================================================
+The resume body MUST fit on EXACTLY ONE A4 page. Enforce these hard caps:
+1) Summary: maximum 3 dense, impactful sentences. No fluff.
+2) Experience / Projects: maximum 3–4 concise, technical, metrics-driven bullets
+   per role or project. Prefer impact + tools over filler.
+3) Skills: inline category rows (e.g. `Languages: Python, SQL`) — minimal height.
+4) Prefer compact wording; drop low-value soft skills and redundant phrasing.
+5) Keep the resume body short enough for one printed A4 page with ~10–12mm margins.
 
 ================================================================================
 UNIVERSAL HIGH-ATS TAILORING RULES (apply in order)
@@ -89,38 +136,29 @@ UNIVERSAL HIGH-ATS TAILORING RULES (apply in order)
 - Do not invent a title that is not in the job posting.
 
 2) UNIVERSAL "TECH-FIRST" WORK EXPERIENCE REFRAMING
-- Analyze every employment entry in base_cv_data.
-- Rewrite each role's bullet points to emphasize tasks, methodologies, tools, and
-  technologies that overlap with job_description.
-- TRANSITION RULE: If a past job title differs from the target role (any field —
-  support, QA, ops, admin, sales, education, healthcare, finance, etc.), strip or
-  de-emphasize generic/non-overlapping tasks and maximize transferable achievements
-  that honestly appear in the source (analytical work, problem-solving, scripting,
-  automation, data handling, systems, documentation, cross-functional delivery,
-  stakeholder communication, domain tools used, etc.).
+- Analyze every REAL employment entry in base_cv_data and KEEP all of them.
+- Rewrite each role's bullet points (≤4) to emphasize tasks, methodologies, tools,
+  and technologies that overlap with job_description.
+- TRANSITION RULE: If a past job title differs from the target role, de-emphasize
+  generic/non-overlapping tasks and maximize transferable achievements that
+  honestly appear in the source.
 - STRICT CONSTRAINT: Do NOT change actual job titles, company names, or employment dates.
 
 3) DYNAMIC ACADEMIC / PERSONAL PROJECTS AMPLIFICATION
 - Locate projects and academic experience in base_cv_data (if any).
-- Rewrite and expand them to showcase hands-on work that maps to the JD — e.g.
-  development, analysis, database design, system architecture, API integration,
-  experimentation, tooling — using exact technologies named in job_description
-  ONLY when the candidate has foundational evidence for them in base_cv_data.
-- Prefer strong action verbs appropriate to the target domain (e.g. Architected,
-  Engineered, Optimized, Integrated, Analyzed, Automated, Designed, Implemented).
-- If there are no projects/academic items, do not invent any.
+- Put them ONLY under Projects (never under Experience).
+- Rewrite ≤4 bullets to showcase hands-on work that maps to the JD using technologies
+  named in job_description ONLY when foundational evidence exists in base_cv_data.
+- If there are no projects/academic items, omit the Projects section entirely.
 
 4) SEMANTIC SKILLS MATRIX ALIGNMENT
-- Dynamically rebuild the Technical Skills (or Skills) section.
-- Cross-reference the candidate's base skills, tools, education, and grounded
-  experience against job requirements.
-- Explicitly list every matching language, framework, library, platform, and tool
-  that is honestly evidenced in base_cv_data.
-- Organize skills into clear ATS-friendly categories when applicable, for example:
-  Languages | Frameworks/Libraries | Databases | Cloud/DevOps | Tools/Platforms |
-  Domain Skills — adapt category names to what the CV and JD actually contain.
-- Goal: maximize keyword coverage for ATS parsers without claiming skills the
-  candidate does not have.
+- Dynamically rebuild the Skills section as compact categorized inline rows.
+- Cross-reference the candidate's base skills/tools against job requirements.
+- Explicitly list matching languages, frameworks, libraries, platforms, and tools
+  honestly evidenced in base_cv_data.
+- Use accurate categories (Languages | Frameworks/Libraries | Databases |
+  Cloud/DevOps | Mobile | Tools/Platforms | Domain Skills) — adapt to CV + JD.
+- Goal: maximize ATS keyword coverage without claiming skills the candidate lacks.
 
 ================================================================================
 ZERO HALLUCINATION / HARD CONSTRAINTS
@@ -139,6 +177,8 @@ ZERO HALLUCINATION / HARD CONSTRAINTS
    the resume body.
 8. Keep `cv_markdown` identical to the body under "## קורות החיים המעודכנים"
    (without that heading). Keep `estimated_ats_score` consistent with section 2.
+9. Use Markdown ## headings for sections and ### for role/project titles so the
+   PDF renderer can parse the document cleanly.
 """
 
 REGENERATE_SYSTEM_PROMPT = (
@@ -154,10 +194,12 @@ You are refining a PREVIOUS tailored draft. The user message includes:
 - base_cv_data — ground truth (still the only allowed evidence)
 - job_description — the target job
 
-Your ONLY goal: raise the ATS score by closing the listed gaps.
+Your ONLY goal: raise the ATS score by closing the listed gaps WHILE staying on ONE A4 page.
 - Directly integrate missing keywords/skills into Skills, Experience bullets, and Projects
   WHEN they are honestly evidenced in base_cv_data (synonyms, adjacent tools, real usage).
 - Prefer the exact keyword spelling used in matcher_feedback / the JD when truthful.
+- Keep Summary ≤3 sentences and ≤4 bullets per role/project.
+- Preserve every real employment entry; do not drop companies to make room for keywords.
 - In "## פירוט שינויים", list which matcher gaps you addressed (and which you could not,
   honestly, in caveats).
 - Do NOT invent skills just because the matcher listed them as missing.
@@ -351,9 +393,12 @@ def build_tailor_user_prompt(
         "in the system prompt.\n"
         "Analyze ONLY the provided base_cv_data and job_description — do not assume "
         "any specific prior role, company, or career path beyond what appears here.\n"
+        "CRITICAL: keep EVERY real employer/job from base_cv_data in Experience; "
+        "never replace real employment with academic projects; omit empty sections; "
+        "Summary ≤3 sentences; ≤4 bullets per role/project; one-page density only.\n"
         "Remember: inject `Target Role: [exact JD title]`; reframe bullets "
-        "tech-first without renaming past titles/companies/dates; amplify real "
-        "projects; rebuild a categorized skills matrix from evidenced overlap.\n"
+        "tech-first without renaming past titles/companies/dates; put projects only "
+        "under Projects; rebuild an accurately categorized inline skills matrix.\n"
         "Return markdown with sections: פירוט שינויים, ציון התאמה למשרה, then ---, "
         "then קורות החיים המעודכנים.\n\n"
         "===== base_cv_data =====\n"

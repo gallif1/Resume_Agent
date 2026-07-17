@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -59,7 +60,9 @@ def test_markdown_to_html_has_resume_structure():
     assert "Acme Corp" in html_doc
     assert "2020" in html_doc
     assert "#1d4ed8" in html_doc
-    assert "margin: 15mm 15mm 15mm 15mm" in html_doc
+    assert "margin: 10mm 12mm 10mm 12mm" in html_doc
+    assert "background-color: #f1f5f9" in html_doc
+    assert "border-left: 3px solid #1d4ed8" in html_doc
     # Dates are on the same flex row as titles — not dump-style separate blocks only.
     assert 'class="meta-right"' in html_doc
     assert "<ul>" in html_doc and "<li>" in html_doc
@@ -157,6 +160,81 @@ Skills include Python, Docker and AWS.
     assert "GAL LIFSHITZ" in html_doc
     assert "FastAPI" in html_doc
     assert "PostgreSQL" in html_doc
+
+
+def test_duplicate_summary_heading_collapsed():
+    md = """# Gal Lifshitz
+gal@example.com
+**Target Role: Backend Engineer**
+
+## Summary
+Backend-leaning engineer with FastAPI experience.
+
+## Summary
+Backend-leaning engineer with FastAPI experience. Extra fluff sentence two. Extra fluff sentence three. Extra fluff sentence four should be trimmed.
+
+## Experience
+### Support Specialist
+Acme Corp | 2021 – Present
+- Supported ERP customers
+- Wrote SQL reports
+- Automated triage with Python
+- Extra bullet four
+- Extra bullet five that should be capped
+
+## Projects
+### Tribe Platform
+Personal | 2023
+- Built a React Native app with Expo
+
+## Military Service
+
+## Awards
+
+## Skills
+Cloud/DevOps: Docker, AWS, SQLAlchemy, Expo
+Languages: Python, SQL
+"""
+    parsed = pdf.parse_resume_markdown(md)
+    summary_sections = [s for s in parsed.sections if s.kind == "summary"]
+    assert len(summary_sections) == 1
+    # Ghost sections omitted.
+    titles = [s.title.lower() for s in parsed.sections]
+    assert not any("military" in t for t in titles)
+    assert not any("award" in t for t in titles)
+    # Real employment kept; project not duplicated into experience.
+    exp = next(s for s in parsed.sections if s.kind == "experience")
+    assert any("Acme" in (e.subtitle or e.title) for e in exp.entries)
+    assert all("Tribe" not in (e.title or "") for e in exp.entries)
+    assert len(exp.entries[0].bullets) <= 4
+    # Summary capped roughly to 3 sentences.
+    summary_text = " ".join(summary_sections[0].paragraphs)
+    assert summary_text.count(".") <= 3
+
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert html_doc.lower().count(">summary<") == 1
+    assert "Military" not in html_doc
+    assert "Awards" not in html_doc
+    assert "Acme Corp" in html_doc
+    assert "SQLAlchemy" in html_doc
+    # SQLAlchemy should not remain under a Cloud/DevOps label.
+    assert not re.search(
+        r"Cloud\s*/\s*DevOps:</span>\s*[^<]*SQLAlchemy",
+        html_doc,
+        flags=re.IGNORECASE,
+    )
+    assert "Frameworks / Libraries" in html_doc
+    assert "Mobile" in html_doc
+
+
+def test_one_page_css_contract():
+    html_doc = pdf.markdown_to_resume_html(SAMPLE_CV)
+    assert "margin: 10mm 12mm 10mm 12mm" in html_doc
+    assert "line-height: 1.35" in html_doc
+    assert "font-size: 9.5pt" in html_doc
+    assert "background-color: #f1f5f9" in html_doc
+    assert "border-left: 3px solid #1d4ed8" in html_doc
+    assert 'class="skills-container"' in html_doc
 
 
 def test_render_markdown_to_pdf_bytes():
