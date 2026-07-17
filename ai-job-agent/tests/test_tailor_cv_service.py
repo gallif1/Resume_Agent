@@ -215,7 +215,10 @@ def test_tailor_cv_for_job_calls_openai(
     assert svc.tailored_cv_path(cv_id, 9).exists()
     assert "Did not invent" in result["caveats"][0]
     # Cache namespace should include prompt version.
-    assert "v3" in svc.TAILOR_PROMPT_VERSION
+    assert "v4" in svc.TAILOR_PROMPT_VERSION
+    assert "ONE-PAGE" in svc.TAILOR_SYSTEM_PROMPT or "ONE PAGE" in svc.TAILOR_SYSTEM_PROMPT.upper()
+    assert "NEVER OMIT REAL EMPLOYMENT" in svc.TAILOR_SYSTEM_PROMPT
+    assert "SQLAlchemy" in svc.TAILOR_SYSTEM_PROMPT
 
 
 def test_tailor_system_prompt_is_role_agnostic():
@@ -226,6 +229,9 @@ def test_tailor_system_prompt_is_role_agnostic():
     assert "SEMANTIC SKILLS MATRIX" in prompt
     assert "base_cv_data" in prompt
     assert "job_description" in prompt
+    assert "NEVER OMIT REAL EMPLOYMENT" in prompt
+    assert "HIDE GHOST SECTIONS" in prompt
+    assert "ONE-PAGE DENSITY" in prompt
     # Examples of specific career paths must not be baked in as the default narrative.
     for banned in (
         "Technical Support",

@@ -45,9 +45,45 @@ SECTION_TITLE_RE = re.compile(
     r"education|academic\s+background|"
     r"certifications?|certificates?|licenses?|"
     r"languages?|interests?|awards?|"
+    r"military(?:\s+service)?|volunteering|volunteer(?:ing)?|other|"
     r"ניסיון(?:\s+תעסוקתי|\s+מקצועי|\s+עבודה)?|פרויקטים|כישורים(?:\s+טכניים)?|"
-    r"מיומנויות|תקציר|פרופיל|השכלה|הסמכות|תעודות|שפות"
+    r"מיומנויות|תקציר|פרופיל|השכלה|הסמכות|תעודות|שפות|"
+    r"שירות\s+צבאי|התנדבות|פרסים|אחר"
     r")\s*(?:\*\*|__)?\s*:?\s*$",
+    re.IGNORECASE,
+)
+MAX_BULLETS_PER_ENTRY = 4
+MAX_SUMMARY_SENTENCES = 3
+
+# Known tool → preferred skill category (for taxonomy cleanup).
+SKILL_CATEGORY_HINTS: dict[str, str] = {
+    "sqlalchemy": "Frameworks / Libraries",
+    "fastapi": "Frameworks / Libraries",
+    "django": "Frameworks / Libraries",
+    "flask": "Frameworks / Libraries",
+    "expo": "Mobile",
+    "react native": "Mobile",
+    "react": "Frameworks / Libraries",
+    "next.js": "Frameworks / Libraries",
+    "nextjs": "Frameworks / Libraries",
+    "postgresql": "Databases",
+    "postgres": "Databases",
+    "mysql": "Databases",
+    "sqlite": "Databases",
+    "mongodb": "Databases",
+    "redis": "Databases",
+    "docker": "Cloud / DevOps",
+    "kubernetes": "Cloud / DevOps",
+    "aws": "Cloud / DevOps",
+    "gcp": "Cloud / DevOps",
+    "azure": "Cloud / DevOps",
+    "python": "Languages",
+    "javascript": "Languages",
+    "typescript": "Languages",
+    "sql": "Languages",
+}
+CLOUD_CATEGORY_RE = re.compile(
+    r"cloud|devops|infrastructure|ops\b",
     re.IGNORECASE,
 )
 BULLET_RE = re.compile(r"^\s*[-*•]\s+(.+)$")
@@ -59,16 +95,16 @@ MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?
 RESUME_CSS = """
 @page {
     size: A4;
-    margin: 15mm 15mm 15mm 15mm;
+    margin: 10mm 12mm 10mm 12mm;
 }
 * {
     box-sizing: border-box;
 }
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     color: #1e293b;
-    line-height: 1.5;
-    font-size: 10pt;
+    line-height: 1.35;
+    font-size: 9.5pt;
     margin: 0;
     padding: 0;
     -webkit-print-color-adjust: exact;
@@ -76,20 +112,23 @@ body {
 }
 .header {
     text-align: center;
-    margin-bottom: 4mm;
+    margin-bottom: 3mm;
+    border-bottom: 2px solid #0f172a;
+    padding-bottom: 2mm;
 }
 .header h1 {
-    font-size: 24pt;
-    font-weight: 700;
+    font-size: 22pt;
+    font-weight: 800;
     color: #0f172a;
     margin: 0 0 1mm 0;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 .contact-info {
-    font-size: 9.5pt;
+    font-size: 9pt;
     color: #475569;
-    margin-bottom: 1mm;
+    font-weight: 500;
+    margin-bottom: 0;
 }
 .contact-info a {
     color: #475569;
@@ -97,26 +136,27 @@ body {
 }
 .target-role {
     font-size: 11pt;
-    font-weight: 600;
+    font-weight: 700;
     color: #1d4ed8;
     text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin: 0;
+    letter-spacing: 1px;
+    margin: 1mm 0 0 0;
 }
 h2.section-title {
     font-size: 11pt;
     font-weight: 700;
     color: #0f172a;
-    border-bottom: 1.5px solid #cbd5e1;
+    background-color: #f1f5f9;
+    padding: 1mm 2mm;
     text-transform: uppercase;
-    margin: 4mm 0 2mm 0;
-    padding-bottom: 0.5mm;
+    margin: 3mm 0 1.5mm 0;
     letter-spacing: 0.5px;
+    border-left: 3px solid #1d4ed8;
     page-break-after: avoid;
     break-after: avoid;
 }
 .resume-entry {
-    margin: 0 0 2.5mm 0;
+    margin: 0 0 2mm 0;
     page-break-inside: avoid;
     break-inside: avoid;
 }
@@ -125,12 +165,12 @@ h2.section-title {
     justify-content: space-between;
     align-items: baseline;
     gap: 4mm;
-    margin-bottom: 0.3mm;
+    margin-bottom: 0.2mm;
 }
 .title-main {
     font-weight: 700;
     color: #0f172a;
-    font-size: 10.5pt;
+    font-size: 10pt;
 }
 .title-sub {
     font-weight: 600;
@@ -138,7 +178,7 @@ h2.section-title {
     font-style: italic;
 }
 .meta-right {
-    font-size: 9.5pt;
+    font-size: 9pt;
     color: #64748b;
     font-weight: 500;
     text-align: right;
@@ -146,20 +186,24 @@ h2.section-title {
     flex-shrink: 0;
 }
 ul {
-    margin: 0.5mm 0 2.5mm 0;
-    padding-left: 4.5mm;
+    margin: 0.5mm 0 2mm 0;
+    padding-left: 4mm;
 }
 li {
-    margin-bottom: 0.8mm;
+    margin-bottom: 0.5mm;
     color: #334155;
     text-align: left;
 }
 li::marker {
     color: #64748b;
 }
+.skills-container {
+    margin-top: 1mm;
+    line-height: 1.4;
+}
 .skills-line {
-    margin-bottom: 1mm;
-    font-size: 10pt;
+    margin-bottom: 0.8mm;
+    font-size: 9.5pt;
     color: #334155;
 }
 .skills-category {
@@ -167,7 +211,7 @@ li::marker {
     color: #0f172a;
 }
 .summary-text {
-    margin: 0 0 2mm 0;
+    margin: 0 0 1.5mm 0;
     color: #334155;
 }
 """
@@ -345,18 +389,22 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
     current_section: ResumeSection | None = None
     current_entry: ResumeEntry | None = None
     header_done = False
+    sections_by_kind: dict[str, ResumeSection] = {}
 
     def ensure_section(title: str) -> ResumeSection:
+        """Create or reuse a section so headings like SUMMARY are never duplicated."""
         nonlocal current_section, current_entry, header_done
         header_done = True
         current_entry = None
-        current_section = ResumeSection(title=title, kind=_section_kind(title))
+        kind = _section_kind(title)
+        existing = sections_by_kind.get(kind)
+        if existing is not None and kind != "other":
+            current_section = existing
+            return existing
+        current_section = ResumeSection(title=title, kind=kind)
         resume.sections.append(current_section)
+        sections_by_kind[kind] = current_section
         return current_section
-
-    def close_entry() -> None:
-        nonlocal current_entry
-        current_entry = None
 
     i = 0
     while i < len(lines):
@@ -483,6 +531,103 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
         else:
             current_section.paragraphs.append(plain)
 
+    return _normalize_parsed_resume(resume)
+
+
+def _entry_identity(entry: ResumeEntry) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        f"{entry.title} {entry.subtitle}".strip().lower(),
+    )
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        key = re.sub(r"\s+", " ", item.strip().lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item.strip())
+    return out
+
+
+def _rebalance_skill_lines(
+    skill_lines: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Move mis-categorized tools (e.g. SQLAlchemy under Cloud) to better buckets."""
+    buckets: dict[str, list[str]] = {}
+    order: list[str] = []
+
+    def add(category: str, skill: str) -> None:
+        cat = category.strip() or "Tools"
+        skill = skill.strip()
+        if not skill:
+            return
+        if cat not in buckets:
+            buckets[cat] = []
+            order.append(cat)
+        if skill not in buckets[cat]:
+            buckets[cat].append(skill)
+
+    for category, values in skill_lines:
+        for raw in re.split(r"[,•|/]+", values):
+            skill = raw.strip()
+            if not skill:
+                continue
+            hint = SKILL_CATEGORY_HINTS.get(skill.lower())
+            if hint:
+                add(hint, skill)
+            elif CLOUD_CATEGORY_RE.search(category) and skill.lower() in {
+                "sqlalchemy",
+                "expo",
+                "fastapi",
+                "django",
+                "flask",
+                "react",
+                "react native",
+            }:
+                add(SKILL_CATEGORY_HINTS.get(skill.lower(), "Frameworks / Libraries"), skill)
+            else:
+                add(category, skill)
+
+    return [(cat, ", ".join(buckets[cat])) for cat in order if buckets[cat]]
+
+
+def _normalize_parsed_resume(resume: ParsedResume) -> ParsedResume:
+    """Deduplicate sections/entries, cap density, drop ghost sections."""
+    # Cap summary length.
+    for section in resume.sections:
+        if section.kind == "summary" and section.paragraphs:
+            text = " ".join(section.paragraphs)
+            sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+            sentences = [s for s in sentences if s]
+            section.paragraphs = [
+                " ".join(sentences[:MAX_SUMMARY_SENTENCES]).strip()
+            ] if sentences else []
+
+        if section.kind == "skills" and section.skill_lines:
+            section.skill_lines = _rebalance_skill_lines(section.skill_lines)
+
+        for entry in section.entries:
+            entry.bullets = _dedupe_strings(entry.bullets)[:MAX_BULLETS_PER_ENTRY]
+
+        section.paragraphs = _dedupe_strings(section.paragraphs)
+
+    # If the same titled entry appears in both Experience and Projects, keep it
+    # in Experience (real employment) and remove the Projects duplicate.
+    experience = next((s for s in resume.sections if s.kind == "experience"), None)
+    projects = next((s for s in resume.sections if s.kind == "projects"), None)
+    if experience and projects:
+        exp_ids = {_entry_identity(e) for e in experience.entries if _entry_identity(e)}
+        projects.entries = [
+            e for e in projects.entries if _entry_identity(e) not in exp_ids
+        ]
+
+    # Drop empty / ghost sections (Military, Awards, empty Other, etc.).
+    resume.sections = [s for s in resume.sections if _section_has_content(s)]
     return resume
 
 
@@ -514,9 +659,10 @@ def _render_entry(entry: ResumeEntry) -> str:
         parts.append(_render_resume_row("title-main", entry.title, entry.dates))
     if entry.subtitle or entry.location:
         parts.append(_render_resume_row("title-sub", entry.subtitle, entry.location))
-    if entry.bullets:
+    bullets = entry.bullets[:MAX_BULLETS_PER_ENTRY]
+    if bullets:
         parts.append("<ul>")
-        for bullet in entry.bullets:
+        for bullet in bullets:
             parts.append(f"<li>{_inline_html(bullet)}</li>")
         parts.append("</ul>")
     parts.append("</div>")
@@ -524,9 +670,13 @@ def _render_entry(entry: ResumeEntry) -> str:
 
 
 def _render_section(section: ResumeSection) -> str:
+    if not _section_has_content(section):
+        return ""
+
     chunks = [f'<h2 class="section-title">{html.escape(section.title)}</h2>']
 
     if section.kind == "skills":
+        chunks.append('<div class="skills-container">')
         if section.skill_lines:
             for category, values in section.skill_lines:
                 chunks.append(
@@ -539,6 +689,7 @@ def _render_section(section: ResumeSection) -> str:
             chunks.append(
                 f'<div class="skills-line">{html.escape(section.flat_skills)}</div>'
             )
+        chunks.append("</div>")
         return "\n".join(chunks)
 
     for paragraph in section.paragraphs:
@@ -566,10 +717,7 @@ def parsed_resume_to_html(resume: ParsedResume) -> str:
         )
     if resume.target_role:
         role = resume.target_role
-        if not role.lower().startswith("target role"):
-            role_display = role
-        else:
-            role_display = role
+        role_display = role
         header_parts.append(
             f'<p class="target-role">{html.escape(role_display)}</p>'
         )
@@ -577,7 +725,9 @@ def parsed_resume_to_html(resume: ParsedResume) -> str:
     body_parts.append("\n".join(header_parts))
 
     for section in resume.sections:
-        body_parts.append(_render_section(section))
+        rendered = _render_section(section)
+        if rendered:
+            body_parts.append(rendered)
 
     body_parts.append("</div>")
     body = "\n".join(body_parts)
@@ -612,14 +762,15 @@ def _generic_markdown_html(markdown: str) -> str:
         '<meta charset="UTF-8"/>\n'
         "<title>CV</title>\n"
         f"<style>{RESUME_CSS}"
-        "h1{font-size:24pt;font-weight:700;color:#0f172a;text-align:center;"
-        "text-transform:uppercase;margin:0 0 1mm 0;}"
-        "h2{font-size:11pt;font-weight:700;color:#0f172a;border-bottom:1.5px solid #cbd5e1;"
-        "text-transform:uppercase;margin:4mm 0 2mm 0;padding-bottom:0.5mm;letter-spacing:0.5px;}"
-        "h3{font-size:10.5pt;font-weight:700;color:#0f172a;margin:2mm 0 0.5mm 0;}"
-        "p{margin:0 0 2mm 0;color:#334155;}"
-        "ul{margin:0.5mm 0 2.5mm 0;padding-left:4.5mm;}"
-        "li{margin-bottom:0.8mm;color:#334155;}"
+        "h1{font-size:22pt;font-weight:800;color:#0f172a;text-align:center;"
+        "text-transform:uppercase;margin:0 0 1mm 0;letter-spacing:0.5px;}"
+        "h2{font-size:11pt;font-weight:700;color:#0f172a;background-color:#f1f5f9;"
+        "padding:1mm 2mm;text-transform:uppercase;margin:3mm 0 1.5mm 0;"
+        "letter-spacing:0.5px;border-left:3px solid #1d4ed8;}"
+        "h3{font-size:10pt;font-weight:700;color:#0f172a;margin:2mm 0 0.5mm 0;}"
+        "p{margin:0 0 1.5mm 0;color:#334155;}"
+        "ul{margin:0.5mm 0 2mm 0;padding-left:4mm;}"
+        "li{margin-bottom:0.5mm;color:#334155;}"
         "</style>\n"
         "</head>\n"
         f'<body>\n<div class="resume">\n{body}\n</div>\n</body>\n'
