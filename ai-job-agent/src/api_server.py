@@ -1120,16 +1120,14 @@ def tailor_cv_endpoint(
 def download_tailored_cv_pdf(cv_id: str, job_id: int):
     """Render the saved tailored CV Markdown to a professionally styled A4 PDF."""
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
+    # Workspace-mode matches store tailored CVs under the user workspace, while
+    # legacy per-CV scans store them under data/cvs/<cv_id>/. Accept either.
+    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None and cv_id != db.WORKSPACE_CV_ID:
         raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
 
-    cv_db = cv_db_path(cv_id)
-    db.init_db(cv_db)
-    job = db.get_job_by_id(job_id, db_path=cv_db)
-    if job is None:
-        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
-
     saved = load_saved_tailored_cv(cv_id, job_id)
+    if not saved and cv_id != db.WORKSPACE_CV_ID:
+        saved = load_saved_tailored_cv(db.WORKSPACE_CV_ID, job_id)
     if not saved:
         raise HTTPException(
             status_code=404,
@@ -1198,7 +1196,7 @@ def tailor_workspace_job(
 ):
     """Tailor CV for a workspace job using the aggregated master profile."""
     db.ensure_multi_cv_storage()
-    job, _, profile_cv_id = _resolve_job_context(job_id, source_cv_id)
+    job, workspace_db, profile_cv_id = _resolve_job_context(job_id, source_cv_id)
     force = (req.force if req else False) or regenerate
     try:
         result = tailor_cv_for_job(
@@ -1210,24 +1208,42 @@ def tailor_workspace_job(
         )
     except TailorCvError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except Exception as exc:  # noqa: BLE001 — never leak an opaque 500 to the UI
+        raise HTTPException(
+            status_code=500,
+            detail=f"התאמת קורות החיים נכשלה: {exc}",
+        ) from exc
+
     relative_path = f"data/users/{db.DEFAULT_USER_ID}/tailored_cvs/{job_id}.md"
+    # Record tailored metadata on the workspace match when content changed.
+    if not result.get("no_improvement"):
+        db.mark_cv_match_tailored(
+            db.WORKSPACE_CV_ID,
+            job_id,
+            tailored_cv_path=relative_path,
+            db_path=workspace_db,
+        )
+
+    cv_body = result.get("cv_markdown") or extract_cv_markdown_for_copy(
+        result.get("markdown") or ""
+    )
     return {
         "cv_id": profile_cv_id,
         "job_id": job_id,
         "title": job.get("title"),
         "company": job.get("company"),
         "markdown": result["markdown"],
-        "cv_markdown": extract_cv_markdown_for_copy(result),
-        "changes_breakdown": result.get("changes_breakdown"),
+        "cv_markdown": cv_body,
+        "changes_breakdown": result.get("changes_breakdown") or [],
         "estimated_ats_score": result.get("estimated_ats_score"),
-        "highlights": result.get("highlights", []),
-        "caveats": result.get("caveats", []),
-        "from_cache": result.get("from_cache", False),
+        "highlights": result.get("highlights") or [],
+        "caveats": result.get("caveats") or [],
+        "from_cache": bool(result.get("from_cache")),
         "saved_path": relative_path,
         "generated_at": result.get("generated_at"),
-        "regenerated": result.get("regenerated", False),
+        "regenerated": bool(result.get("regenerated")),
         "improved": result.get("improved"),
-        "no_improvement": result.get("no_improvement"),
+        "no_improvement": bool(result.get("no_improvement")),
         "message": result.get("message"),
         "matcher_feedback": result.get("matcher_feedback"),
     }

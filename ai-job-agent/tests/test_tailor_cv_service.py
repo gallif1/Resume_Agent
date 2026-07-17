@@ -43,6 +43,24 @@ def test_save_and_load_tailored_cv(cvs_dir: Path, monkeypatch: pytest.MonkeyPatc
     assert loaded.startswith("# Hello")
 
 
+def test_extract_cv_markdown_for_copy_accepts_result_dict():
+    """Regression: workspace API used to pass the whole result dict and 500."""
+    body = svc.extract_cv_markdown_for_copy(
+        {
+            "markdown": SAMPLE_STRUCTURED,
+            "cv_markdown": "# Gal Lifshiz\n\n## Experience\n",
+            "highlights": [],
+        }
+    )
+    assert body.startswith("# Gal Lifshiz")
+    assert "פירוט שינויים" not in body
+
+    from_markdown_only = svc.extract_cv_markdown_for_copy(
+        {"markdown": SAMPLE_STRUCTURED}
+    )
+    assert from_markdown_only.startswith("# Gal Lifshiz")
+
+
 def test_split_tailored_markdown_on_horizontal_rule():
     preamble, body = svc.split_tailored_markdown(SAMPLE_STRUCTURED)
     assert "פירוט שינויים" in preamble
