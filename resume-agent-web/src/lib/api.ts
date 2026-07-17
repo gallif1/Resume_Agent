@@ -24,12 +24,19 @@ export interface PipelineStep {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, init);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, init);
+  } catch {
+    throw new Error("השרת לא זמין כרגע — נסה לרענן בעוד דקה");
+  }
   if (!res.ok) {
     let detail = `שגיאה ${res.status}`;
     try {
       const body = await res.json();
-      if (body?.detail) detail = body.detail;
+      if (typeof body?.detail === "string") detail = body.detail;
+      else if (body?.detail?.message) detail = body.detail.message;
+      else if (body?.detail) detail = JSON.stringify(body.detail);
     } catch {
       /* keep generic message */
     }
@@ -290,10 +297,15 @@ export async function uploadCv(
   if (options?.asNewVersion) form.append("as_new_version", "true");
   if (options?.displayName) form.append("display_name", options.displayName);
 
-  const res = await fetch(`${BASE_URL}/cvs/upload`, {
-    method: "POST",
-    body: form,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/cvs/upload`, {
+      method: "POST",
+      body: form,
+    });
+  } catch {
+    throw new Error("השרת לא זמין כרגע — לא ניתן להעלות קבצים");
+  }
   if (res.status === 409) {
     const body = await res.json().catch(() => null);
     const existing = body?.detail?.existing as Cv | undefined;
@@ -305,6 +317,7 @@ export async function uploadCv(
     try {
       const body = await res.json();
       if (typeof body?.detail === "string") detail = body.detail;
+      else if (body?.detail?.message) detail = body.detail.message;
     } catch {
       /* keep generic message */
     }
