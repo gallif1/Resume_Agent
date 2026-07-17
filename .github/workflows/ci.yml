@@ -60,10 +60,10 @@ jobs:
           DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
         run: |
           if [ -z "$DEPLOY_HOOK" ]; then
-            echo "::error::חסר סוד RENDER_DEPLOY_HOOK ב-GitHub."
-            echo "Render → resume-agent → Settings → Deploy Hook → העתק URL"
-            echo "GitHub → Settings → Secrets → Actions → הוסף RENDER_DEPLOY_HOOK"
-            exit 1
+            echo "::warning::חסר סוד RENDER_DEPLOY_HOOK — דיפלוי אוטומטי דרך GitHub Actions לא רץ."
+            echo "אם Auto-Deploy מופעל ב-Render על master, הפריסה תקרה משם."
+            echo "אחרת: Render Dashboard → resume-agent → Manual Deploy."
+            exit 0
           fi
           curl -fsS -X POST "$DEPLOY_HOOK"
           echo "Render deploy triggered."

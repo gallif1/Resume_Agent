@@ -748,10 +748,18 @@ def _match_public(match: dict) -> dict:
 
 @app.get("/cvs")
 def list_cvs():
-    db.ensure_multi_cv_storage()
-    return {"cvs": [_cv_public(cv) for cv in db.list_cvs()],
+    try:
+        db.ensure_multi_cv_storage()
+        return {
+            "cvs": [_cv_public(cv) for cv in db.list_cvs()],
             "workspace_match_count": _workspace_match_count(),
-            "active_cv_count": len(db.list_active_cvs_for_user())}
+            "active_cv_count": len(db.list_active_cvs_for_user()),
+        }
+    except Exception as exc:  # noqa: BLE001 — never return an opaque 500 to the UI
+        raise HTTPException(
+            status_code=500,
+            detail=f"שגיאה בטעינת קורות החיים: {exc}",
+        ) from exc
 
 
 @app.post("/jobs/match")
@@ -793,11 +801,23 @@ async def upload_cv_multi(
     as_new_version: bool = Form(False),
     display_name: str | None = Form(None),
 ):
-    db.ensure_multi_cv_storage()
+    try:
+        db.ensure_multi_cv_storage()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"שגיאה באתחול מסד הנתונים: {exc}",
+        ) from exc
+
     with _scan_lock:
         if _scan_state["running"]:
             raise HTTPException(status_code=409, detail="לא ניתן להעלות קבצים בזמן סריקה")
-    data = await file.read()
+
+    try:
+        data = await file.read()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"לא ניתן לקרוא את הקובץ: {exc}") from exc
+
     try:
         cv = cv_service.upload_cv(
             file.filename or "cv",
@@ -815,6 +835,16 @@ async def upload_cv_multi(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"שגיאת שמירת קובץ בשרת (דיסק/הרשאות): {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"העלאת הקובץ נכשלה: {exc}",
+        ) from exc
     return {"cv": _cv_public(cv)}
 
 
@@ -1417,7 +1447,9 @@ if FRONTEND_DIST.is_dir():
 
     @app.get("/{page_path:path}")
     async def frontend_spa(page_path: str):
-        if page_path.startswith(("api/", "cvs", "cvs/", "jobs", "jobs/")):
+        # Never let the SPA catch-all shadow API routes if matching order slips.
+        first = (page_path or "").split("/", 1)[0]
+        if first in {"api", "cvs", "jobs"}:
             raise HTTPException(status_code=404, detail="Not found")
         candidate = FRONTEND_DIST / page_path
         if candidate.is_file():
