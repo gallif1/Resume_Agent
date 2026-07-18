@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import AuthView from "./components/AuthView";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
 import RunAgentModal from "./components/RunAgentModal";
 import {
   checkHealth,
+  clearAuthSession,
   deleteServerCv,
   DuplicateCvError,
+  getCurrentUser,
   getJobMatchStatus,
+  getStoredToken,
   listJobSites,
   listServerCvs,
   resetAllCvs,
   resetJobMatches,
   runJobMatcher,
+  setUnauthorizedHandler,
   stopJobMatcher,
   uploadCv,
+  type AuthUser,
   type Cv,
   type CvScanStatus,
   type JobSite,
@@ -22,6 +28,8 @@ import {
 export default function App() {
   const [serverUp, setServerUp] = useState(false);
   const [healthChecking, setHealthChecking] = useState(true);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authChecking, setAuthChecking] = useState(() => Boolean(getStoredToken()));
   const [toast, setToast] = useState<string | null>(null);
 
   const [cvs, setCvs] = useState<Cv[]>([]);
@@ -67,7 +75,51 @@ export default function App() {
     window.setTimeout(() => setToast(null), 4000);
   };
 
+  const handleLogout = useCallback(() => {
+    clearAuthSession();
+    setAuthUser(null);
+    setCvs([]);
+    setWorkspaceMatchCount(0);
+    setShowMatches(false);
+    setScanStatus(null);
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      handleLogout();
+      showToast("פג תוקף ההתחברות — התחבר מחדש");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [handleLogout]);
+
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) {
+      setAuthChecking(false);
+      return;
+    }
+    let cancelled = false;
+    setAuthChecking(true);
+    getCurrentUser()
+      .then((data) => {
+        if (!cancelled) setAuthUser(data.user);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          clearAuthSession();
+          setAuthUser(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setAuthChecking(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const refreshCvs = useCallback(async () => {
+    if (!authUser) return;
     setCvsLoading(true);
     setCvsError(null);
     try {
@@ -79,7 +131,7 @@ export default function App() {
     } finally {
       setCvsLoading(false);
     }
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     scanRunningRef.current = scanStatus?.running ?? false;
@@ -106,10 +158,10 @@ export default function App() {
     setHealthChecking(true);
     const up = await checkHealth();
     applyHealthResult(up);
-    if (up) refreshCvs();
+    if (up && authUser) refreshCvs();
     setHealthChecking(false);
     return up;
-  }, [refreshCvs, applyHealthResult]);
+  }, [refreshCvs, applyHealthResult, authUser]);
 
   useEffect(() => {
     let cancelled = false;
@@ -122,7 +174,7 @@ export default function App() {
         const next = await checkHealth();
         if (!cancelled) {
           applyHealthResult(next);
-          if (next) refreshCvs();
+          if (next && authUser) refreshCvs();
           setHealthChecking(false);
           schedule(next || scanRunningRef.current);
         }
@@ -134,7 +186,7 @@ export default function App() {
       if (cancelled) return;
       applyHealthResult(up);
       setHealthChecking(false);
-      if (up) refreshCvs();
+      if (up && authUser) refreshCvs();
       schedule(up || scanRunningRef.current);
     });
 
@@ -142,11 +194,11 @@ export default function App() {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [refreshCvs, applyHealthResult]);
+  }, [refreshCvs, applyHealthResult, authUser]);
 
   useEffect(() => {
-    if (serverUp) refreshCvs();
-  }, [serverUp, refreshCvs]);
+    if (serverUp && authUser) refreshCvs();
+  }, [serverUp, authUser, refreshCvs]);
 
   const refreshJobSites = useCallback(async () => {
     setJobSitesLoading(true);
@@ -219,7 +271,7 @@ export default function App() {
 
   // Resume UI polling after refresh if a scan is still running on the server.
   useEffect(() => {
-    if (!serverUp || resumedRef.current) return;
+    if (!serverUp || !authUser || resumedRef.current) return;
     resumedRef.current = true;
     let cancelled = false;
     (async () => {
@@ -239,7 +291,12 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [serverUp, startPolling]);
+  }, [serverUp, authUser, startPolling]);
+
+  useEffect(() => {
+    // Allow resume polling again after a new login.
+    resumedRef.current = false;
+  }, [authUser?.id]);
 
   const handleUpload = async (files: File[]) => {
     if (scanRunningRef.current) {
@@ -417,39 +474,67 @@ export default function App() {
             </span>
           </div>
 
-          <span
-            className={`server-status ${serverUp ? "up" : "down"}`}
-            title={
-              serverUp
-                ? "השרת מחובר"
-                : healthChecking
+          <div className="header-actions">
+            {authUser?.email && (
+              <span className="user-chip" title={authUser.email}>
+                {authUser.email}
+              </span>
+            )}
+            {authUser && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={handleLogout}
+                disabled={scanActive}
+              >
+                התנתק
+              </button>
+            )}
+            <span
+              className={`server-status ${serverUp ? "up" : "down"}`}
+              title={
+                serverUp
+                  ? "השרת מחובר"
+                  : healthChecking
+                    ? "בודק חיבור..."
+                    : "השרת לא זמין — לחץ לניסיון חוזר"
+              }
+              onClick={() => {
+                if (!scanActive) pingServer();
+              }}
+              role="button"
+              tabIndex={scanActive ? -1 : 0}
+              onKeyDown={(e) => {
+                if (scanActive) return;
+                if (e.key === "Enter" || e.key === " ") pingServer();
+              }}
+            >
+              <span className="status-dot" />
+              <span className="server-status-text">
+                {healthChecking
                   ? "בודק חיבור..."
-                  : "השרת לא זמין — לחץ לניסיון חוזר"
-            }
-            onClick={() => {
-              if (!scanActive) pingServer();
-            }}
-            role="button"
-            tabIndex={scanActive ? -1 : 0}
-            onKeyDown={(e) => {
-              if (scanActive) return;
-              if (e.key === "Enter" || e.key === " ") pingServer();
-            }}
-          >
-            <span className="status-dot" />
-            <span className="server-status-text">
-              {healthChecking
-                ? "בודק חיבור..."
-                : serverUp
-                  ? "סוכן מחובר"
-                  : "סוכן לא זמין"}
+                  : serverUp
+                    ? "סוכן מחובר"
+                    : "סוכן לא זמין"}
+              </span>
             </span>
-          </span>
+          </div>
         </div>
       </header>
 
       <main className="main">
-        {!serverUp && !scanActive ? (
+        {authChecking ? (
+          <div className="empty-state">
+            <p>בודק התחברות…</p>
+          </div>
+        ) : !authUser ? (
+          <AuthView
+            onAuthenticated={(user) => {
+              setAuthUser(user);
+              showToast("התחברת בהצלחה");
+            }}
+          />
+        ) : !serverUp && !scanActive ? (
           <div className="empty-state">
             <div className="empty-icon">🔌</div>
             <p>השרת של הסוכן לא זמין.</p>

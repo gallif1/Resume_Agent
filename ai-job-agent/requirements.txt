@@ -13,4 +13,7 @@ markdown
 fastapi
 uvicorn
 python-multipart
+passlib[bcrypt]
+bcrypt>=4.0.1,<4.1
+PyJWT>=2.7.0
 pytest

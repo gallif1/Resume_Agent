@@ -4,7 +4,12 @@ Run with:
     python src/api_server.py            # starts on http://localhost:8000 (or API_PORT from .env)
     python src/api_server.py --port 8001
 
-Multi-CV endpoints (each CV has isolated data):
+Auth:
+    POST   /api/auth/register               create account (email + password) → JWT
+    POST   /api/auth/login                  login → JWT
+    GET    /api/auth/me                     current user (Bearer token)
+
+Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     GET    /cvs                             list uploaded CVs + metadata
     POST   /cvs/upload                      upload a CV (dedup by content hash)
     GET    /cvs/{cv_id}                     one CV + its latest scan
@@ -13,11 +18,13 @@ Multi-CV endpoints (each CV has isolated data):
     POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
     GET    /jobs/match-status                 live workspace scan progress
     GET    /jobs/matches                      workspace job matches
+           (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/matches/reset                clear workspace match results
     PATCH  /jobs/matches/{id}/status          set application status for workspace match
     POST   /jobs/{job_id}/tailor-cv           tailor CV from aggregated profile
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
-    GET    /cvs/{cv_id}/matches             CV's job matches (query: latest, min_score)
+    GET    /cvs/{cv_id}/matches             CV's job matches
+           (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
            (?regenerate=true deep-scans original CVs + ATS gaps; score-guarded)
@@ -52,12 +59,13 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+import auth
 import cv_service
 import db
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
@@ -108,6 +116,72 @@ app.add_middleware(
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _require_owned_cv(cv_id: str, user: dict) -> dict:
+    """Return the CV row if it belongs to ``user``; otherwise 404."""
+    # Resolve REGISTRY_DB_PATH at call time so pytest monkeypatches apply.
+    cv = db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH)
+    if cv is None or cv.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    return cv
+
+
+def _parse_match_sort(sort_by: str | None, order: str | None) -> tuple[str | None, str | None]:
+    """Validate sort query params (None keeps DB defaults)."""
+    if sort_by is None and order is None:
+        return None, None
+    key = (sort_by or "score").strip().lower()
+    if key not in {"date", "score", "site"}:
+        raise HTTPException(
+            status_code=400,
+            detail="sort_by חייב להיות אחד מ: date, score, site",
+        )
+    direction = (order or ("desc" if key in {"score", "date"} else "asc")).strip().lower()
+    if direction not in {"asc", "desc"}:
+        raise HTTPException(status_code=400, detail="order חייב להיות asc או desc")
+    return key, direction
+
+
+# ---------------------------------------------------------------------------
+# Auth models + endpoints
+# ---------------------------------------------------------------------------
+
+
+class AuthRegisterRequest(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=6)
+
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/register")
+def auth_register(req: AuthRegisterRequest):
+    db.ensure_multi_cv_storage()
+    try:
+        user = auth.register_user(req.email, req.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token = auth.create_access_token(user["id"], user["email"])
+    return {"access_token": token, "token_type": "bearer", "user": auth.public_user(user)}
+
+
+@app.post("/api/auth/login")
+def auth_login(req: AuthLoginRequest):
+    db.ensure_multi_cv_storage()
+    user = auth.authenticate_user(req.email, req.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="אימייל או סיסמה שגויים")
+    token = auth.create_access_token(user["id"], user["email"] or "")
+    return {"access_token": token, "token_type": "bearer", "user": auth.public_user(user)}
+
+
+@app.get("/api/auth/me")
+def auth_me(user: dict = Depends(auth.get_current_user)):
+    return {"user": auth.public_user(user)}
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +796,14 @@ def _parse_json_list(value) -> list:
         return []
 
 
+def _job_description_text(match: dict) -> str:
+    """Prefer the enriched full description, fall back to the listing snippet."""
+    full = (match.get("full_description") or "").strip()
+    if full:
+        return full
+    return (match.get("description") or "").strip()
+
+
 def _match_public(match: dict) -> dict:
     return {
         "match_id": match.get("match_id"),
@@ -732,6 +814,10 @@ def _match_public(match: dict) -> dict:
         "location": match.get("location"),
         "job_url": match.get("job_url"),
         "source": match.get("source"),
+        "description": _job_description_text(match),
+        "job_created_at": match.get("job_created_at")
+        or match.get("first_seen_at")
+        or match.get("collected_at"),
         "match_score": match.get("match_score"),
         "match_reason": match.get("match_reason"),
         "explanation": match.get("ai_explanation") or match.get("match_reason"),
@@ -782,33 +868,34 @@ def _clear_live_scan_state(user_id: str = db.DEFAULT_USER_ID) -> None:
 
 
 @app.post("/jobs/matches/reset")
-def reset_job_matches():
+def reset_job_matches(user: dict = Depends(auth.get_current_user)):
     """Clear workspace match/scan results; keep uploaded CV files."""
     db.ensure_multi_cv_storage()
-    user_id = db.DEFAULT_USER_ID
+    user_id = user["id"]
     _clear_live_scan_state(user_id)
     summary = cv_service.reset_user_results(user_id)
     return {"ok": True, **summary}
 
 
 @app.post("/cvs/reset")
-def reset_all_cvs():
+def reset_all_cvs(user: dict = Depends(auth.get_current_user)):
     """Delete all uploaded CV files and clear workspace results/profiles."""
     db.ensure_multi_cv_storage()
-    user_id = db.DEFAULT_USER_ID
+    user_id = user["id"]
     _clear_live_scan_state(user_id)
     summary = cv_service.reset_user_files(user_id)
     return {"ok": True, **summary}
 
 
 @app.get("/cvs")
-def list_cvs():
+def list_cvs(user: dict = Depends(auth.get_current_user)):
     try:
         db.ensure_multi_cv_storage()
+        user_id = user["id"]
         return {
-            "cvs": [_cv_public(cv) for cv in db.list_cvs()],
-            "workspace_match_count": _workspace_match_count(),
-            "active_cv_count": len(db.list_active_cvs_for_user()),
+            "cvs": [_cv_public(cv) for cv in db.list_cvs(user_id=user_id)],
+            "workspace_match_count": _workspace_match_count(user_id),
+            "active_cv_count": len(db.list_active_cvs_for_user(user_id)),
         }
     except Exception as exc:  # noqa: BLE001 — never return an opaque 500 to the UI
         raise HTTPException(
@@ -818,35 +905,47 @@ def list_cvs():
 
 
 @app.post("/jobs/match")
-def run_job_matcher(req: RunAgentRequest):
-    """Run the job-matching agent across all uploaded CVs for the default user."""
+def run_job_matcher(req: RunAgentRequest, user: dict = Depends(auth.get_current_user)):
+    """Run the job-matching agent across all uploaded CVs for the current user."""
     db.ensure_multi_cv_storage()
-    return _start_user_scan(req)
+    return _start_user_scan(req, user_id=user["id"])
 
 
 @app.post("/jobs/match/stop")
-def stop_job_matcher():
+def stop_job_matcher(user: dict = Depends(auth.get_current_user)):
     """Stop the currently running workspace job-matching scan."""
     db.ensure_multi_cv_storage()
-    return _stop_user_scan()
+    return _stop_user_scan(user_id=user["id"])
 
 
 @app.get("/jobs/match-status")
-def job_match_status():
+def job_match_status(user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
-    return _user_scan_status()
+    return _user_scan_status(user_id=user["id"])
 
 
 @app.get("/jobs/matches")
-def get_job_matches(latest: bool = True, min_score: int | None = None):
+def get_job_matches(
+    latest: bool = True,
+    min_score: int | None = None,
+    sort_by: str | None = None,
+    order: str | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
-    workspace_db = user_db_path(db.DEFAULT_USER_ID)
-    matches = db.get_cv_matches(
-        db.WORKSPACE_CV_ID,
-        latest_only=latest,
-        min_score=min_score,
-        db_path=workspace_db,
-    )
+    sort_key, sort_order = _parse_match_sort(sort_by, order)
+    workspace_db = user_db_path(user["id"])
+    try:
+        matches = db.get_cv_matches(
+            db.WORKSPACE_CV_ID,
+            latest_only=latest,
+            min_score=min_score,
+            sort_by=sort_key,
+            order=sort_order,
+            db_path=workspace_db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"matches": [_match_public(_reshape_match_row(m)) for m in matches]}
 
 
@@ -855,6 +954,7 @@ async def upload_cv_multi(
     file: UploadFile = File(...),
     as_new_version: bool = Form(False),
     display_name: str | None = Form(None),
+    user: dict = Depends(auth.get_current_user),
 ):
     try:
         db.ensure_multi_cv_storage()
@@ -879,6 +979,7 @@ async def upload_cv_multi(
             data,
             display_name=display_name,
             as_new_version=as_new_version,
+            user_id=user["id"],
         )
     except cv_service.DuplicateCvError as exc:
         raise HTTPException(
@@ -904,24 +1005,25 @@ async def upload_cv_multi(
 
 
 @app.get("/cvs/{cv_id}")
-def get_cv(cv_id: str):
+def get_cv(cv_id: str, user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
-    cv = db.get_cv(cv_id)
-    if cv is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    cv = _require_owned_cv(cv_id, user)
     public = _cv_public(cv)
     public["latest_scan"] = db.get_latest_scan(cv_id, db_path=cv_db_path(cv_id))
     return {"cv": public}
 
 
 @app.delete("/cvs/{cv_id}")
-def delete_cv(cv_id: str):
+def delete_cv(cv_id: str, user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
     with _scan_lock:
         if _scan_state["running"] and (
-            _scan_state.get("cv_id") == cv_id or _scan_state.get("mode") == "user"
+            _scan_state.get("cv_id") == cv_id
+            or (
+                _scan_state.get("mode") == "user"
+                and _scan_state.get("user_id") == user["id"]
+            )
         ):
             raise HTTPException(status_code=409, detail="לא ניתן למחוק בזמן סריקה")
     try:
@@ -940,10 +1042,13 @@ def get_job_sites():
 
 
 @app.post("/cvs/{cv_id}/run-agent")
-def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
+def run_agent_for_cv(
+    cv_id: str,
+    req: RunAgentRequest,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
 
     try:
         normalize_job_board_ids(req.job_sites)
@@ -984,7 +1089,8 @@ def run_agent_for_cv(cv_id: str, req: RunAgentRequest):
 
 
 @app.get("/cvs/{cv_id}/scan-status")
-def cv_scan_status(cv_id: str):
+def cv_scan_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
+    _require_owned_cv(cv_id, user)
     cv_db = cv_db_path(cv_id)
     with _scan_lock:
         # Only report the live runner state when it belongs to this CV.
@@ -1026,13 +1132,30 @@ def cv_scan_status(cv_id: str):
 
 
 @app.get("/cvs/{cv_id}/matches")
-def get_cv_matches(cv_id: str, latest: bool = True, min_score: int | None = None):
+def get_cv_matches(
+    cv_id: str,
+    latest: bool = True,
+    min_score: int | None = None,
+    sort_by: str | None = None,
+    order: str | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
     cv_db = cv_db_path(cv_id)
     db.init_db(cv_db)
-    matches = db.get_cv_matches(cv_id, latest_only=latest, min_score=min_score, db_path=cv_db)
+    sort_key, sort_order = _parse_match_sort(sort_by, order)
+    try:
+        matches = db.get_cv_matches(
+            cv_id,
+            latest_only=latest,
+            min_score=min_score,
+            sort_by=sort_key,
+            order=sort_order,
+            db_path=cv_db,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     job_ids = [int(m["job_id"]) for m in matches]
     latest_apps = db.get_latest_job_applications_for_cv(cv_id, job_ids, db_path=cv_db)
     enriched = []
@@ -1060,6 +1183,7 @@ def tailor_cv_endpoint(
     job_id: int,
     regenerate: bool = False,
     req: TailorCvRequest | None = None,
+    user: dict = Depends(auth.get_current_user),
 ):
     """Generate an ATS-optimized Markdown CV tailored to one job (no hallucinated experience).
 
@@ -1067,8 +1191,7 @@ def tailor_cv_endpoint(
     the current best draft (score guard keeps only strictly better results).
     """
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
 
     cv_db = cv_db_path(cv_id)
     db.init_db(cv_db)
@@ -1117,13 +1240,19 @@ def tailor_cv_endpoint(
 
 
 @app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf")
-def download_tailored_cv_pdf(cv_id: str, job_id: int):
+def download_tailored_cv_pdf(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
     """Render the saved tailored CV Markdown to a professionally styled A4 PDF."""
     db.ensure_multi_cv_storage()
     # Workspace-mode matches store tailored CVs under the user workspace, while
     # legacy per-CV scans store them under data/cvs/<cv_id>/. Accept either.
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None and cv_id != db.WORKSPACE_CV_ID:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    if cv_id == db.WORKSPACE_CV_ID:
+        pass
+    else:
+        _require_owned_cv(cv_id, user)
 
     saved = load_saved_tailored_cv(cv_id, job_id)
     if not saved and cv_id != db.WORKSPACE_CV_ID:
@@ -1150,14 +1279,18 @@ def download_tailored_cv_pdf(cv_id: str, job_id: int):
 
 
 @app.patch("/jobs/matches/{match_id}/status")
-def update_workspace_match_status(match_id: int, req: MatchStatusRequest):
+def update_workspace_match_status(
+    match_id: int,
+    req: MatchStatusRequest,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
     if req.status not in db.CV_APP_STATUSES:
         raise HTTPException(
             status_code=400,
             detail=f"סטטוס לא חוקי: {req.status}",
         )
-    workspace_db = user_db_path(db.DEFAULT_USER_ID)
+    workspace_db = user_db_path(user["id"])
     updated = db.update_cv_match_status(
         db.WORKSPACE_CV_ID,
         match_id,
@@ -1173,9 +1306,11 @@ def update_workspace_match_status(match_id: int, req: MatchStatusRequest):
 def _resolve_job_context(
     job_id: int,
     cv_id: str | None = None,
+    *,
+    user_id: str = db.DEFAULT_USER_ID,
 ) -> tuple[dict[str, Any], Path, str]:
     """Find a job in the user workspace DB first, then per-CV DB."""
-    workspace_db = user_db_path(db.DEFAULT_USER_ID)
+    workspace_db = user_db_path(user_id)
     job = db.get_job_by_id(job_id, db_path=workspace_db)
     if job is not None:
         return job, workspace_db, db.WORKSPACE_CV_ID
@@ -1193,10 +1328,15 @@ def tailor_workspace_job(
     regenerate: bool = False,
     source_cv_id: str | None = None,
     req: TailorCvRequest | None = None,
+    user: dict = Depends(auth.get_current_user),
 ):
     """Tailor CV for a workspace job using the aggregated master profile."""
     db.ensure_multi_cv_storage()
-    job, workspace_db, profile_cv_id = _resolve_job_context(job_id, source_cv_id)
+    if source_cv_id:
+        _require_owned_cv(source_cv_id, user)
+    job, workspace_db, profile_cv_id = _resolve_job_context(
+        job_id, source_cv_id, user_id=user["id"]
+    )
     force = (req.force if req else False) or regenerate
     try:
         result = tailor_cv_for_job(
@@ -1204,7 +1344,7 @@ def tailor_workspace_job(
             job,
             force=force,
             regenerate=regenerate,
-            user_id=db.DEFAULT_USER_ID,
+            user_id=user["id"],
         )
     except TailorCvError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
@@ -1214,7 +1354,7 @@ def tailor_workspace_job(
             detail=f"התאמת קורות החיים נכשלה: {exc}",
         ) from exc
 
-    relative_path = f"data/users/{db.DEFAULT_USER_ID}/tailored_cvs/{job_id}.md"
+    relative_path = f"data/users/{user['id']}/tailored_cvs/{job_id}.md"
     # Record tailored metadata on the workspace match when content changed.
     if not result.get("no_improvement"):
         db.mark_cv_match_tailored(
@@ -1250,8 +1390,14 @@ def tailor_workspace_job(
 
 
 @app.patch("/cvs/{cv_id}/matches/{match_id}/status")
-def update_match_status(cv_id: str, match_id: int, req: MatchStatusRequest):
+def update_match_status(
+    cv_id: str,
+    match_id: int,
+    req: MatchStatusRequest,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
     if req.status not in db.CV_APP_STATUSES:
         raise HTTPException(
             status_code=400,
@@ -1277,10 +1423,14 @@ def _application_error_response(exc: ApplicationError) -> HTTPException:
 
 
 @app.post("/cvs/{cv_id}/jobs/{job_id}/apply")
-def apply_to_job(cv_id: str, job_id: int, req: ApplyJobRequest | None = None):
+def apply_to_job(
+    cv_id: str,
+    job_id: int,
+    req: ApplyJobRequest | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
 
     browser_ok, browser_error = _playwright_browser_ready()
     if not browser_ok:
@@ -1313,8 +1463,13 @@ def apply_to_job(cv_id: str, job_id: int, req: ApplyJobRequest | None = None):
 
 
 @app.get("/cvs/{cv_id}/job-applications/{application_id}")
-def get_job_application(cv_id: str, application_id: str):
+def get_job_application(
+    cv_id: str,
+    application_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
     cv_db = cv_db_path(cv_id)
     try:
         return get_application_for_cv(cv_id, application_id, cv_db)
@@ -1323,8 +1478,13 @@ def get_job_application(cv_id: str, application_id: str):
 
 
 @app.get("/cvs/{cv_id}/jobs/{job_id}/application-status")
-def job_application_status(cv_id: str, job_id: int):
+def job_application_status(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
     cv_db = cv_db_path(cv_id)
     try:
         status = get_job_application_status(cv_id, job_id, cv_db)
@@ -1337,8 +1497,13 @@ def job_application_status(cv_id: str, job_id: int):
 
 
 @app.post("/cvs/{cv_id}/job-applications/{application_id}/retry")
-def retry_job_application(cv_id: str, application_id: str):
+def retry_job_application(
+    cv_id: str,
+    application_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
     db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
     cv_db = cv_db_path(cv_id)
     try:
         existing = get_application_for_cv(cv_id, application_id, cv_db)
@@ -1379,19 +1544,21 @@ class SiteCredentialsUpdate(BaseModel):
 
 
 @app.get("/cvs/{cv_id}/site-credentials")
-def get_site_credentials(cv_id: str):
+def get_site_credentials(cv_id: str, user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
     return {"credentials": public_site_credentials(cv_id)}
 
 
 @app.put("/cvs/{cv_id}/site-credentials")
-def save_site_credentials(cv_id: str, req: SiteCredentialsUpdate):
-    """Save per-user site logins used for one-click job applications."""
+def save_site_credentials(
+    cv_id: str,
+    req: SiteCredentialsUpdate,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Save per-CV site logins used for one-click job applications."""
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
 
     linkedin_patch = None
     drushim_patch = None
@@ -1415,11 +1582,14 @@ def save_site_credentials(cv_id: str, req: SiteCredentialsUpdate):
 
 
 @app.put("/cvs/{cv_id}/site-sessions/linkedin")
-def save_linkedin_session(cv_id: str, req: LinkedInSessionRequest):
+def save_linkedin_session(
+    cv_id: str,
+    req: LinkedInSessionRequest,
+    user: dict = Depends(auth.get_current_user),
+):
     """Import Playwright storage_state cookies so the server can apply on LinkedIn."""
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
     if not req.cookies:
         raise HTTPException(status_code=400, detail="נדרש לפחות cookie אחד")
     payload = {"cookies": req.cookies, "origins": req.origins or []}
@@ -1428,10 +1598,9 @@ def save_linkedin_session(cv_id: str, req: LinkedInSessionRequest):
 
 
 @app.get("/cvs/{cv_id}/site-sessions/linkedin")
-def linkedin_session_status(cv_id: str):
+def linkedin_session_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
-    if db.get_cv(cv_id, db_path=db.REGISTRY_DB_PATH) is None:
-        raise HTTPException(status_code=404, detail="קורות חיים לא נמצאו")
+    _require_owned_cv(cv_id, user)
     path = linkedin_storage_state_path(cv_id)
     return {"configured": path.is_file(), "path": str(path)}
 

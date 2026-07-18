@@ -449,37 +449,38 @@ def test_api_upload_and_run_user_pipeline(pipeline_env, monkeypatch):
     monkeypatch.setattr(api_server, "begin_scan", lambda: None)
     monkeypatch.setattr(api_server, "is_cancelled", lambda: False)
 
-    client = TestClient(api_server.app)
+    from conftest import authed_client
 
-    for name, content in (("one.pdf", b"file-one"), ("two.pdf", b"file-two")):
-        response = client.post(
-            "/cvs/upload",
-            files={"file": (name, content, "application/pdf")},
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["cv"]["id"]
+    with authed_client() as client:
+        for name, content in (("one.pdf", b"file-one"), ("two.pdf", b"file-two")):
+            response = client.post(
+                "/cvs/upload",
+                files={"file": (name, content, "application/pdf")},
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["cv"]["id"]
 
-    listed = client.get("/cvs")
-    assert listed.status_code == 200
-    assert listed.json()["active_cv_count"] == 2
+        listed = client.get("/cvs")
+        assert listed.status_code == 200
+        assert listed.json()["active_cv_count"] == 2
 
-    started = client.post("/jobs/match", json={"skip_collect": False, "skip_enrich": False})
-    assert started.status_code == 200
-    assert started.json()["started"] is True
-    assert started.json()["cv_count"] == 2
+        started = client.post("/jobs/match", json={"skip_collect": False, "skip_enrich": False})
+        assert started.status_code == 200
+        assert started.json()["started"] is True
+        assert started.json()["cv_count"] == 2
 
-    assert completed.wait(timeout=5)
+        assert completed.wait(timeout=5)
 
-    # Allow the background thread to flip running=False.
-    deadline = time.time() + 5
-    status_payload: dict[str, Any] = {}
-    while time.time() < deadline:
-        status = client.get("/jobs/match-status")
-        assert status.status_code == 200
-        status_payload = status.json()
-        if not status_payload.get("running"):
-            break
-        time.sleep(0.05)
+        # Allow the background thread to flip running=False.
+        deadline = time.time() + 5
+        status_payload: dict[str, Any] = {}
+        while time.time() < deadline:
+            status = client.get("/jobs/match-status")
+            assert status.status_code == 200
+            status_payload = status.json()
+            if not status_payload.get("running"):
+                break
+            time.sleep(0.05)
 
     assert status_payload.get("running") is False
     assert status_payload.get("error") in (None, "")
@@ -497,7 +498,9 @@ def test_api_upload_and_run_user_pipeline(pipeline_env, monkeypatch):
 def test_api_rejects_match_without_uploads(pipeline_env, monkeypatch):
     _isolate_api_registry(monkeypatch, pipeline_env["db_path"])
     monkeypatch.setattr(api_server, "_persist_scan_state", lambda: None)
-    client = TestClient(api_server.app)
-    response = client.post("/jobs/match", json={})
+    from conftest import authed_client
+
+    with authed_client() as client:
+        response = client.post("/jobs/match", json={})
     assert response.status_code == 400
     assert "להעלות" in response.json()["detail"]

@@ -42,6 +42,8 @@ def test_match_public_parses_skill_lists_and_defaults_status():
         "match_id": 1,
         "job_id": 2,
         "title": "Dev",
+        "description": "short",
+        "full_description": "full job text",
         "matched_skills": '["python"]',
         "missing_skills": None,
         "ai_missing_skills": '["docker"]',
@@ -52,6 +54,7 @@ def test_match_public_parses_skill_lists_and_defaults_status():
     assert out["matched_skills"] == ["python"]
     assert out["missing_skills"] == ["docker"]  # falls back to ai_missing_skills
     assert out["application_status"] == db.CV_APP_NOT_SENT
+    assert out["description"] == "full job text"
 
 
 def test_match_public_includes_ats_fields():

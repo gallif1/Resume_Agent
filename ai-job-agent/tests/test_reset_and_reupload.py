@@ -227,25 +227,27 @@ def test_api_reset_results_and_files(reset_env, monkeypatch):
     _isolate_api(monkeypatch, db_path)
     monkeypatch.setattr(api_server, "_persist_scan_state", lambda: None)
 
-    client = TestClient(api_server.app)
-    up = client.post(
-        "/cvs/upload",
-        files={"file": ("a.pdf", b"api-file", "application/pdf")},
-    )
-    assert up.status_code == 200
+    from conftest import authed_client
 
-    res = client.post("/jobs/matches/reset")
-    assert res.status_code == 200
-    assert res.json()["ok"] is True
-    assert res.json()["reset"] == "results"
-    assert len(db.list_cvs(db_path=db_path)) == 1
+    with authed_client() as client:
+        up = client.post(
+            "/cvs/upload",
+            files={"file": ("a.pdf", b"api-file", "application/pdf")},
+        )
+        assert up.status_code == 200
 
-    files = client.post("/cvs/reset")
-    assert files.status_code == 200
-    body = files.json()
-    assert body["ok"] is True
-    assert body["deleted_count"] == 1
-    assert db.list_cvs(db_path=db_path) == []
+        res = client.post("/jobs/matches/reset")
+        assert res.status_code == 200
+        assert res.json()["ok"] is True
+        assert res.json()["reset"] == "results"
+        assert len(db.list_cvs(db_path=db_path)) == 1
+
+        files = client.post("/cvs/reset")
+        assert files.status_code == 200
+        body = files.json()
+        assert body["ok"] is True
+        assert body["deleted_count"] == 1
+        assert db.list_cvs(db_path=db_path) == []
 
 
 def test_api_reset_blocked_while_scan_running(reset_env, monkeypatch):
@@ -258,10 +260,12 @@ def test_api_reset_blocked_while_scan_running(reset_env, monkeypatch):
                 "user_id": db.DEFAULT_USER_ID,
             }
         )
-    client = TestClient(api_server.app)
+    from conftest import authed_client
+
     try:
-        assert client.post("/jobs/matches/reset").status_code == 409
-        assert client.post("/cvs/reset").status_code == 409
+        with authed_client() as client:
+            assert client.post("/jobs/matches/reset").status_code == 409
+            assert client.post("/cvs/reset").status_code == 409
     finally:
         with api_server._scan_lock:
             api_server._scan_state["running"] = False
