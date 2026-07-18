@@ -77,6 +77,20 @@ function scoreClass(score: number | null, isPotential = false): string {
   return "score-low";
 }
 
+/** Best available ATS/match score from a tailored-CV payload. */
+function getTailoredScore(result: TailoredCvResponse): number | null {
+  if (typeof result.estimated_ats_score === "number") {
+    return result.estimated_ats_score;
+  }
+  const fromFeedback = result.matcher_feedback?.current?.ats_score;
+  return typeof fromFeedback === "number" ? fromFeedback : null;
+}
+
+const IMPROVE_MATCH_HELPER =
+  "הבינה המלאכותית מלטשת את קורות החיים ומוסיפה מילות מפתח מתוך תיאור המשרה כדי להעלות את הציון במערכת הסינון (ATS).";
+
+const STAGNANT_ATTEMPTS_BEFORE_MAX = 2;
+
 function formatScoreLabel(label: string | null, isPotential = false): string | null {
   if (!label) {
     return isPotential ? SCORE_LABEL_HE["Potential Match"] : null;
@@ -163,11 +177,25 @@ export default function CvDetails({
   const [copyDone, setCopyDone] = useState(false);
   const [pdfDownloading, setPdfDownloading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [stagnantAttempts, setStagnantAttempts] = useState(0);
+  const [maxMatchReached, setMaxMatchReached] = useState(false);
+  const [previewAnimKey, setPreviewAnimKey] = useState(0);
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
   const prevRunning = useRef(false);
+  /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
+  const bestSessionRef = useRef<{
+    jobId: number;
+    score: number;
+    result: TailoredCvResponse;
+  } | null>(null);
   const running = scanStatus?.running ?? false;
+  const isGenerating =
+    regenerating ||
+    (tailoringId != null &&
+      (tailoredCv == null || tailoringId === tailoredCv.job_id));
 
   const { primaryMatches, potentialMatches } = useMemo(() => {
     const primary: CvMatch[] = [];
@@ -311,8 +339,38 @@ export default function CvDetails({
     }
   };
 
-  const applyTailoredResult = (result: TailoredCvResponse) => {
+  const trackSessionBest = (
+    result: TailoredCvResponse,
+    { resetSession = false }: { resetSession?: boolean } = {}
+  ) => {
+    const score = getTailoredScore(result) ?? 0;
+    const current = bestSessionRef.current;
+    if (
+      resetSession ||
+      !current ||
+      current.jobId !== result.job_id ||
+      score > current.score
+    ) {
+      bestSessionRef.current = {
+        jobId: result.job_id,
+        score,
+        result,
+      };
+    }
+    if (resetSession || !current || current.jobId !== result.job_id) {
+      setStagnantAttempts(0);
+      setMaxMatchReached(false);
+      setInfoMessage(null);
+    }
+  };
+
+  const applyTailoredResult = (
+    result: TailoredCvResponse,
+    { resetSession = false }: { resetSession?: boolean } = {}
+  ) => {
+    trackSessionBest(result, { resetSession });
     setTailoredCv(result);
+    setPreviewAnimKey((k) => k + 1);
     setMatches((prev) =>
       prev.map((m) =>
         m.job_id === result.job_id
@@ -330,12 +388,13 @@ export default function CvDetails({
   const handleTailorCv = async (match: CvMatch, force = false) => {
     setTailoringId(match.job_id);
     setError(null);
+    setInfoMessage(null);
     setCopyDone(false);
     try {
       const result = workspaceMode
         ? await tailorWorkspaceJob(match.job_id, { force, sourceCvId: cvId })
         : await tailorCvForJob(cvId, match.job_id, { force });
-      applyTailoredResult(result);
+      applyTailoredResult(result, { resetSession: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
     } finally {
@@ -384,30 +443,106 @@ export default function CvDetails({
   };
 
   const handleRegenerateOptimize = async () => {
-    if (!tailoredCv) return;
+    if (!tailoredCv || maxMatchReached || regenerating) return;
+
+    const previous = tailoredCv;
+    const sessionBest =
+      bestSessionRef.current?.jobId === previous.job_id
+        ? bestSessionRef.current
+        : {
+            jobId: previous.job_id,
+            score: getTailoredScore(previous) ?? 0,
+            result: previous,
+          };
+    bestSessionRef.current = sessionBest;
+
     setRegenerating(true);
     setError(null);
+    setInfoMessage(null);
     setCopyDone(false);
     try {
       const result = workspaceMode
-        ? await tailorWorkspaceJob(tailoredCv.job_id, {
+        ? await tailorWorkspaceJob(previous.job_id, {
             regenerate: true,
             sourceCvId: cvId,
           })
-        : await tailorCvForJob(cvId, tailoredCv.job_id, {
+        : await tailorCvForJob(cvId, previous.job_id, {
             regenerate: true,
           });
-      // Always apply returned payload — on score-guard miss it is the previous best draft.
-      applyTailoredResult(result);
-      if (result.no_improvement || result.message === "לא הצלחתי לייצר גרסה יותר טובה") {
-        setError(result.message || "לא הצלחתי לייצר גרסה יותר טובה");
+
+      const newScore = getTailoredScore(result);
+      const bestScore = sessionBest.score;
+      const scoreDropped =
+        newScore != null && Number.isFinite(bestScore) && newScore < bestScore;
+      const scoreUnchanged =
+        newScore != null && Number.isFinite(bestScore) && newScore === bestScore;
+      const backendNoGain =
+        Boolean(result.no_improvement) ||
+        result.message === "לא הצלחתי לייצר גרסה יותר טובה";
+
+      if (scoreDropped) {
+        // Keep the session-best layout text; never overwrite with a degraded draft.
+        setTailoredCv(sessionBest.result);
+        setInfoMessage(
+          "הגרסה החדשה הורידה את ציון ההתאמה — שמרנו את הגרסה הטובה ביותר מהסשן."
+        );
+        const nextStagnant = stagnantAttempts + 1;
+        setStagnantAttempts(nextStagnant);
+        if (nextStagnant >= STAGNANT_ATTEMPTS_BEFORE_MAX) {
+          setMaxMatchReached(true);
+        }
+        return;
       }
+
+      if (backendNoGain || scoreUnchanged) {
+        // Backend may return the previous best; retain our session-best markdown.
+        setTailoredCv(sessionBest.result);
+        const nextStagnant = stagnantAttempts + 1;
+        setStagnantAttempts(nextStagnant);
+        if (nextStagnant >= STAGNANT_ATTEMPTS_BEFORE_MAX || backendNoGain) {
+          setMaxMatchReached(true);
+          setInfoMessage("הגעת להתאמה מקסימלית");
+        } else {
+          setInfoMessage(
+            result.message || "הציון לא השתנה — ניתן לנסות שוב לשיפור קל."
+          );
+        }
+        return;
+      }
+
+      setStagnantAttempts(0);
+      applyTailoredResult(result);
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "שגיאה בשיפור קורות החיים המותאמים"
       );
     } finally {
       setRegenerating(false);
+    }
+  };
+
+  const handleForceRegenerate = async () => {
+    if (!tailoredCv || regenerating || tailoringId != null) return;
+    setTailoringId(tailoredCv.job_id);
+    setError(null);
+    setInfoMessage(null);
+    setCopyDone(false);
+    try {
+      const result = workspaceMode
+        ? await tailorWorkspaceJob(tailoredCv.job_id, {
+            force: true,
+            sourceCvId: cvId,
+          })
+        : await tailorCvForJob(cvId, tailoredCv.job_id, {
+            force: true,
+          });
+      applyTailoredResult(result, { resetSession: true });
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים"
+      );
+    } finally {
+      setTailoringId(null);
     }
   };
 
@@ -537,11 +672,19 @@ export default function CvDetails({
           <div className="cv-actions" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
-              className="btn btn-ghost btn-sm"
+              className={`btn btn-ghost btn-sm ${busyTailor ? "btn-loading" : ""}`}
               disabled={busyTailor}
               onClick={() => handleTailorCv(m)}
+              aria-busy={busyTailor}
             >
-              {busyTailor ? "מייצר קורות חיים..." : "התאם קורות חיים למשרה"}
+              {busyTailor ? (
+                <>
+                  <span className="btn-spinner" aria-hidden="true" />
+                  מייצר קורות חיים...
+                </>
+              ) : (
+                "ייצר קורות חיים"
+              )}
             </button>
             {renderApplyButton(m)}
             {app && (
@@ -579,6 +722,24 @@ export default function CvDetails({
             )}
           </div>
         </div>
+
+        {busyTailor && !tailoredCv && (
+          <div
+            className="cv-generating-feedback cv-generating-feedback-card"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="cv-generating-feedback-pulse" aria-hidden="true" />
+            <p className="cv-generating-feedback-title">
+              סוכן ה-AI מנתח את תיאור המשרה ומנסח עבורך קורות חיים מותאמים
+              במיוחד...
+            </p>
+            <p className="cv-generating-feedback-sub">
+              התהליך עשוי לקחת מספר שניות, אנא המתן בזמן שאנו משפרים את סיכויי
+              הקבלה שלך.
+            </p>
+          </div>
+        )}
 
         {expanded && (
           <div className="job-details">
@@ -697,11 +858,19 @@ export default function CvDetails({
       {error && (
         <div
           className={
-            error === "לא הצלחתי לייצר גרסה יותר טובה" ? "warning-box" : "error-box"
+            error === "לא הצלחתי לייצר גרסה יותר טובה" ||
+            error === "הגעת להתאמה מקסימלית"
+              ? "warning-box"
+              : "error-box"
           }
           role="status"
         >
           {error}
+        </div>
+      )}
+      {infoMessage && !error && (
+        <div className="warning-box" role="status">
+          {infoMessage}
         </div>
       )}
 
@@ -781,7 +950,7 @@ export default function CvDetails({
 
       {tailoredCv && (
         <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal tailored-cv-modal">
+          <div className="modal tailored-cv-modal" dir="rtl">
             <div className="tailored-cv-header">
               <div>
                 <h3>קורות חיים מותאמים למשרה</h3>
@@ -793,7 +962,11 @@ export default function CvDetails({
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setTailoredCv(null)}
+                onClick={() => {
+                  setTailoredCv(null);
+                  setInfoMessage(null);
+                }}
+                disabled={isGenerating}
               >
                 סגור
               </button>
@@ -835,78 +1008,111 @@ export default function CvDetails({
                 <b>הערות כנות:</b> {tailoredCv.caveats.join(" · ")}
               </p>
             )}
-            <div className="tailored-cv-body" dir="auto">
+            {infoMessage && (
+              <p className="tailored-cv-meta tailored-cv-info" role="status">
+                {infoMessage}
+              </p>
+            )}
+            {isGenerating && (
+              <div
+                className="cv-generating-feedback"
+                role="status"
+                aria-live="polite"
+              >
+                <div className="cv-generating-feedback-pulse" aria-hidden="true" />
+                <p className="cv-generating-feedback-title">
+                  סוכן ה-AI מנתח את תיאור המשרה ומנסח עבורך קורות חיים מותאמים
+                  במיוחד...
+                </p>
+                <p className="cv-generating-feedback-sub">
+                  התהליך עשוי לקחת מספר שניות, אנא המתן בזמן שאנו משפרים את סיכויי
+                  הקבלה שלך.
+                </p>
+              </div>
+            )}
+            <div
+              key={previewAnimKey}
+              className={`tailored-cv-body ${isGenerating ? "tailored-cv-body-dimmed" : "tailored-cv-body-fade-in"}`}
+              dir="auto"
+            >
               <Markdown>{tailoredCv.markdown}</Markdown>
+            </div>
+            <div className="improve-match-block">
+              <div className="modal-actions modal-actions-improve">
+                <button
+                  type="button"
+                  className={`btn btn-ghost btn-regenerate-optimize ${regenerating ? "btn-loading" : ""}`}
+                  onClick={handleRegenerateOptimize}
+                  title={IMPROVE_MATCH_HELPER}
+                  aria-describedby="improve-match-helper"
+                  disabled={
+                    maxMatchReached ||
+                    regenerating ||
+                    pdfDownloading ||
+                    tailoringId === tailoredCv.job_id
+                  }
+                  aria-busy={regenerating}
+                >
+                  <span className="btn-regen-icon" aria-hidden="true">
+                    {regenerating ? (
+                      <span className="btn-spinner" />
+                    ) : (
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                        <path
+                          d="M21 12a9 9 0 1 1-2.64-6.36"
+                          stroke="currentColor"
+                          strokeWidth="1.85"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M21 4v5h-5"
+                          stroke="currentColor"
+                          strokeWidth="1.85"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </span>
+                  {maxMatchReached
+                    ? "הגעת להתאמה מקסימלית"
+                    : regenerating
+                      ? "מנתח פערים ומייצר גרסה משופרת..."
+                      : "שפר התאמה"}
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-ghost ${tailoringId === tailoredCv.job_id ? "btn-loading" : ""}`}
+                  onClick={handleForceRegenerate}
+                  disabled={
+                    regenerating || tailoringId === tailoredCv.job_id
+                  }
+                  aria-busy={tailoringId === tailoredCv.job_id}
+                >
+                  {tailoringId === tailoredCv.job_id ? (
+                    <>
+                      <span className="btn-spinner" aria-hidden="true" />
+                      מייצר גרסה חדשה...
+                    </>
+                  ) : (
+                    "ייצר מחדש"
+                  )}
+                </button>
+              </div>
+              <p
+                id="improve-match-helper"
+                className="improve-match-helper"
+                title={IMPROVE_MATCH_HELPER}
+              >
+                {IMPROVE_MATCH_HELPER}
+              </p>
             </div>
             <div className="modal-actions">
               <button
                 type="button"
-                className="btn btn-ghost btn-regenerate-optimize"
-                onClick={handleRegenerateOptimize}
-                disabled={
-                  regenerating ||
-                  pdfDownloading ||
-                  tailoringId === tailoredCv.job_id
-                }
-              >
-                <span className="btn-regen-icon" aria-hidden="true">
-                  {regenerating ? (
-                    <span className="btn-spinner" />
-                  ) : (
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-                      <path
-                        d="M21 12a9 9 0 1 1-2.64-6.36"
-                        stroke="currentColor"
-                        strokeWidth="1.85"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M21 4v5h-5"
-                        stroke="currentColor"
-                        strokeWidth="1.85"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  )}
-                </span>
-                {regenerating
-                  ? "מנתח פערים ומייצר גרסה משופרת..."
-                  : "ייצר מחדש ושפר התאמה"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={async () => {
-                  setTailoringId(tailoredCv.job_id);
-                  setError(null);
-                  setCopyDone(false);
-                  try {
-                    const result = await tailorCvForJob(cvId, tailoredCv.job_id, {
-                      force: true,
-                    });
-                    applyTailoredResult(result);
-                  } catch (e) {
-                    setError(
-                      e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים"
-                    );
-                  } finally {
-                    setTailoringId(null);
-                  }
-                }}
-                disabled={
-                  regenerating || tailoringId === tailoredCv.job_id
-                }
-              >
-                {tailoringId === tailoredCv.job_id
-                  ? "מייצר קורות חיים..."
-                  : "צור מחדש"}
-              </button>
-              <button
-                type="button"
                 className="btn btn-ghost"
                 onClick={handleCopyTailored}
-                disabled={regenerating}
+                disabled={isGenerating}
               >
                 {copyDone ? "הועתק קו״ח!" : "העתק קורות חיים"}
               </button>
@@ -914,7 +1120,7 @@ export default function CvDetails({
                 type="button"
                 className="btn btn-ghost"
                 onClick={handleDownloadTailored}
-                disabled={regenerating}
+                disabled={isGenerating}
               >
                 הורד Markdown
               </button>

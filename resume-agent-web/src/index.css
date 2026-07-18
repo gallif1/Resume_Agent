@@ -893,7 +893,7 @@ body {
 
 .btn-primary:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: not-allowed;
   box-shadow: none;
 }
 
@@ -905,7 +905,7 @@ body {
 
 .btn:disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: not-allowed;
 }
 
 /* ── Jobs page ── */
@@ -2011,6 +2011,11 @@ code {
   border-right-color: transparent;
   border-radius: 50%;
   animation: btn-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.btn-loading {
+  cursor: not-allowed;
 }
 
 @keyframes btn-spin {
@@ -2026,6 +2031,118 @@ code {
 
 .tailored-cv-gaps {
   color: var(--text-muted);
+}
+
+.tailored-cv-info {
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-radius: var(--radius-xs);
+  padding: 0.55rem 0.75rem;
+}
+
+.improve-match-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.65rem;
+}
+
+.modal-actions-improve {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+
+.improve-match-helper {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  max-width: 42rem;
+}
+
+.cv-generating-feedback {
+  position: relative;
+  overflow: hidden;
+  margin: 0 0 12px;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  background: linear-gradient(
+    135deg,
+    rgba(37, 99, 235, 0.08),
+    rgba(16, 185, 129, 0.08)
+  );
+}
+
+.cv-generating-feedback-card {
+  margin: 0 16px 14px;
+}
+
+.cv-generating-feedback-pulse {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.55) 45%,
+    transparent 90%
+  );
+  animation: cv-feedback-pulse 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes cv-feedback-pulse {
+  0% {
+    opacity: 0.35;
+    transform: translateX(8%);
+  }
+  50% {
+    opacity: 0.85;
+    transform: translateX(-8%);
+  }
+  100% {
+    opacity: 0.35;
+    transform: translateX(8%);
+  }
+}
+
+.cv-generating-feedback-title,
+.cv-generating-feedback-sub {
+  position: relative;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.cv-generating-feedback-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cv-generating-feedback-sub {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.tailored-cv-body-dimmed {
+  opacity: 0.55;
+  transition: opacity 0.25s ease;
+}
+
+.tailored-cv-body-fade-in {
+  animation: tailored-preview-fade-in 0.45s ease-out both;
+}
+
+@keyframes tailored-preview-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .step-requires_user_action .apply-log-step-status {
@@ -2646,11 +2763,11 @@ code {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 1.1rem 1rem;
+  padding: 1.15rem 1.05rem;
   box-shadow: var(--shadow-sm);
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.3rem;
   animation: fade-up 0.45s ease-out both;
 }
 
@@ -2662,6 +2779,16 @@ code {
   animation-delay: 0.16s;
 }
 
+.scan-metric-card.metric-slate {
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  border-color: rgba(100, 116, 139, 0.22);
+}
+
+.scan-metric-card.metric-success-soft {
+  background: linear-gradient(180deg, #ecfdf5 0%, #f0fdf4 100%);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
 .scan-metric-value {
   font-size: 1.75rem;
   font-weight: 800;
@@ -2670,8 +2797,13 @@ code {
   line-height: 1.1;
 }
 
-.scan-metric-card.metric-success .scan-metric-value {
+.scan-metric-card.metric-success .scan-metric-value,
+.scan-metric-card.metric-success-soft .scan-metric-value {
   color: var(--success);
+}
+
+.scan-metric-card.metric-slate .scan-metric-value {
+  color: #475569; /* slate-600 */
 }
 
 .scan-metric-card.metric-accent .scan-metric-value {
@@ -2679,10 +2811,31 @@ code {
 }
 
 .scan-metric-label {
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  font-weight: 500;
+  font-size: 0.9rem;
+  color: var(--text);
+  font-weight: 650;
   line-height: 1.35;
+}
+
+.scan-metric-card.metric-success-soft .scan-metric-label {
+  color: #047857; /* emerald-700 */
+}
+
+.scan-metric-card.metric-slate .scan-metric-label {
+  color: #334155; /* slate-700 */
+}
+
+.scan-metric-subtitle {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  font-weight: 450;
+  line-height: 1.4;
+  margin-top: 0.1rem;
+}
+
+.scan-metric-card.metric-success-soft .scan-metric-subtitle {
+  color: #059669;
+  opacity: 0.85;
 }
 
 .fade-in-list {
