@@ -299,20 +299,26 @@ export function ScanSummaryCards({
   autoApplied?: number;
 }) {
   return (
-    <div className="scan-summary-grid">
-      <div className="scan-metric-card metric-accent">
-        <span className="icon-bubble icon-bubble-sm icon-bubble-blue" aria-hidden>
+    <div className="scan-summary-grid" dir="rtl">
+      <div className="scan-metric-card metric-slate">
+        <span className="icon-bubble icon-bubble-sm icon-bubble-slate" aria-hidden>
           <Radar size={18} />
         </span>
         <div className="scan-metric-value">{scraped}</div>
-        <div className="scan-metric-label">משרות שנסרקו מלוחות הדרושים</div>
+        <div className="scan-metric-label">משרות שנסרקו ברשת</div>
+        <div className="scan-metric-subtitle">
+          סך הכל משרות שנמצאו בלוחות השונים
+        </div>
       </div>
-      <div className="scan-metric-card metric-success">
+      <div className="scan-metric-card metric-success metric-success-soft">
         <span className="icon-bubble icon-bubble-sm icon-bubble-green" aria-hidden>
           <Sparkles size={18} />
         </span>
         <div className="scan-metric-value">{highMatches}</div>
-        <div className="scan-metric-label">התאמות גבוהות שנמצאו</div>
+        <div className="scan-metric-label">התאמות רלוונטיות</div>
+        <div className="scan-metric-subtitle">
+          משרות עם ציון התאמה מעל 60%
+        </div>
       </div>
       <div className="scan-metric-card">
         <span className="icon-bubble icon-bubble-sm icon-bubble-slate" aria-hidden>
@@ -320,6 +326,7 @@ export function ScanSummaryCards({
         </span>
         <div className="scan-metric-value">{autoApplied ?? 0}</div>
         <div className="scan-metric-label">הגשות אוטומטיות</div>
+        <div className="scan-metric-subtitle">הגשות שבוצעו אוטומטית</div>
       </div>
     </div>
   );
