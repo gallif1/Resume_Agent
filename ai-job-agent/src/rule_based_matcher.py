@@ -54,19 +54,12 @@ ISRAEL_LOCATION_HINTS = [
     "חולון",
 ]
 
+# Generic role keyword mappings for fallback matching.
+# These are examples only and should ideally be derived from the user's profile dynamically.
+# The primary matching logic now uses the AI-generated matching strategy which is profile-specific.
 ROLE_EXTRA_KEYWORDS = {
-    "backend": ["backend", "back-end", "back end", "python", "api", "developer"],
-    "it support": [
-        "it",
-        "support",
-        "helpdesk",
-        "help desk",
-        "technical support",
-        "טכנאי",
-        "תמיכה",
-        "help-desk",
-    ],
-    "soc": ["soc", "analyst", "cyber", "security", "סייבר", "אבטחת מידע", "noc"],
+    # Examples - in production these should come from the candidate's actual profile
+    # Format: "role_keyword": ["related_term_1", "related_term_2", "domain_keyword"]
 }
 
 

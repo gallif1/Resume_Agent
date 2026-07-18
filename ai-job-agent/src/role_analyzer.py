@@ -22,7 +22,7 @@ from config import (
 )
 from rule_based_matcher import ROLE_EXTRA_KEYWORDS, SENIOR_KEYWORDS
 
-MATCHING_STRATEGY_SYSTEM = """You are an expert technical recruiter and career advisor.
+MATCHING_STRATEGY_SYSTEM = """You are an expert career advisor and recruitment strategist.
 Analyze the candidate and produce a reusable job-matching strategy for local classification.
 
 Return ONE JSON object with this exact structure:
@@ -30,39 +30,39 @@ Return ONE JSON object with this exact structure:
   "candidate_summary": "2-3 sentence summary of the candidate",
   "best_fit_roles": [
     {
-      "role": "Junior Backend Developer",
+      "role": "Target Role Title",
       "score": 90,
       "reason": "1-2 sentences",
-      "missing_skills": ["Docker"],
+      "missing_skills": ["Skill Gap 1"],
       "realistic_for_application": true
     }
   ],
   "career_notes": "2-3 sentences on career direction",
   "job_categories": [
     {
-      "category": "backend",
-      "titles": ["backend developer", "python developer", "server developer", "מפתח backend", "מפתח תוכנה"],
-      "must_have_keywords": ["python", "api", "sql", "backend", "צד שרת", "מפתח"],
-      "nice_to_have_keywords": ["fastapi", "aws", "docker"],
-      "negative_keywords": ["senior", "lead", "principal", "manager", "בכיר", "ראש צוות"],
+      "category": "category_name",
+      "titles": ["Role Title 1", "Role Title 2", "Equivalent Title in Local Language"],
+      "must_have_keywords": ["core skill 1", "core skill 2", "domain keyword"],
+      "nice_to_have_keywords": ["bonus skill 1", "bonus skill 2"],
+      "negative_keywords": ["senior", "lead", "principal", "manager", "equivalent local language"],
       "score_weight": 1.0
     }
   ],
   "collection_queries": [
     {
-      "category": "backend",
+      "category": "category_name",
       "priority": 95,
-      "primary_role": "Junior Backend Developer",
-      "search_queries": ["Junior Backend Developer", "Backend Developer", "Python Developer", "FastAPI Developer", "Junior Software Developer"],
-      "hebrew_search_queries": ["מפתח Backend", "מפתח Python", "מפתח תוכנה ג׳וניור"],
-      "alternative_titles": ["Software Developer", "Server Developer"],
-      "exclude_keywords": ["senior", "lead", "manager", "ראש צוות", "בכיר"]
+      "primary_role": "Target Role Title",
+      "search_queries": ["Specific Role + Key Skill", "Role Title", "Adjacent Role Title"],
+      "hebrew_search_queries": ["Local language equivalent if applicable"],
+      "alternative_titles": ["Alternative Title 1", "Alternative Title 2"],
+      "exclude_keywords": ["senior", "lead", "manager", "equivalent local terms"]
     }
   ],
   "global_reject_rules": [
-    "Reject jobs requiring 3+ years if candidate has no direct experience",
-    "Reject senior/lead/manager roles",
-    "Reject unrelated sales/customer success jobs unless technical"
+    "Reject jobs requiring X+ years if candidate has limited direct experience",
+    "Reject senior/lead/manager roles if candidate is junior",
+    "Reject unrelated roles that don't align with target career path"
   ],
   "seniority_filters": {
     "reject_keywords": ["senior", "lead", "principal", "manager", "director", "head of"],
@@ -76,9 +76,9 @@ Return ONE JSON object with this exact structure:
     "negative_keyword_penalty": 15
   },
   "location_preferences": {
-    "preferred_locations": ["Israel", "Tel Aviv"],
+    "preferred_locations": ["Location 1", "Location 2"],
     "remote_ok": true,
-    "remote_keywords": ["remote", "hybrid", "work from home"],
+    "remote_keywords": ["remote", "hybrid", "work from home", "local language equivalents"],
     "location_bonus": 10,
     "remote_bonus": 8
   },
@@ -95,23 +95,21 @@ Rules:
 - Return one collection_queries entry per job_category (use the same category name).
 - collection_queries drive the actual job-board search, so each entry MUST contain
   concrete, ready-to-search job titles derived from the CV — NOT abstract skills.
-- search_queries: 4-8 English job titles a recruiter would post for this candidate.
+- search_queries: 4-8 English (or primary language) job titles a recruiter would post for this candidate.
   Prefer distinctive role+skill / role+domain titles from THIS CV
-  (e.g. "Python Backend Developer", not only generic "Software Engineer").
-- hebrew_search_queries: 2-5 Hebrew equivalents of those titles (Israel job market),
-  including mixed Hebrew+technology phrases when useful (e.g. "מפתח Python").
+  (e.g., combine the target role with key skills from their profile).
+- hebrew_search_queries (or local_language_queries): 2-5 local language equivalents of those titles,
+  including mixed language+technology phrases when useful.
 - alternative_titles: related/adjacent titles worth searching.
-- Avoid emitting only broad titles that return the same top board results for every CV.
+- Avoid emitting only broad titles that return the same top board results for every candidate.
 - exclude_keywords: words that should disqualify a result (seniority, unrelated roles),
-  in both English and Hebrew.
+  in both primary and local languages.
 - priority: 0-100 indicating how strongly the candidate fits that category.
-- Keywords should be lowercase. IMPORTANT: many job postings are written in Hebrew,
-  so titles, must_have_keywords, and negative_keywords MUST include Hebrew
-  equivalents for role/domain words (e.g. "תמיכה טכנית" for "technical support",
-  "רשתות" for "networking", "מפתח" for "developer"). Technology names (python,
-  sql, aws) stay in English.
+- Keywords should be lowercase. IMPORTANT: For multilingual job markets, titles, must_have_keywords,
+  and negative_keywords MUST include local language equivalents for role/domain words.
+  Technology/tool names typically stay in their common form (often English).
 - Base analysis ONLY on provided candidate data.
-- Consider Israel job market when relevant.
+- Consider the candidate's target market when relevant.
 - Return valid JSON only."""
 
 

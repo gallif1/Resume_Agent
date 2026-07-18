@@ -42,8 +42,11 @@ def is_hebrew_query(text: str) -> bool:
     return _is_hebrew(str(text or "").strip())
 
 
-def _query_specificity_score(query: str) -> int:
-    """Higher score = more CV-specific / less likely to return identical top results."""
+def _query_specificity_score(query: str, profile_technologies: list[str] | None = None) -> int:
+    """Higher score = more CV-specific / less likely to return identical top results.
+    
+    Uses dynamic profile technologies instead of hardcoded tech stacks.
+    """
     text = (query or "").strip()
     if not text:
         return -100
@@ -60,15 +63,15 @@ def _query_specificity_score(query: str) -> int:
     # Prefer role+tech / mixed-script queries that differentiate candidates.
     if _is_hebrew(text) and re.search(r"[A-Za-z]", text):
         score += 18
-    if re.search(
-        r"\b(python|java|react|angular|node|aws|azure|devops|nurse|"
-        r"qa|cyber|data|frontend|backend|fullstack|kotlin|swift|golang)\b",
-        text,
-        re.IGNORECASE,
-    ):
-        score += 20
-    if re.search(r"(פייתון|סיעוד|אחות|בדיקות|סייבר|פרונט|בקאנד)", text):
-        score += 16
+    
+    # Dynamic technology matching - check if query contains any candidate's technologies
+    if profile_technologies:
+        text_lower = text.lower()
+        for tech in profile_technologies:
+            if tech and tech.lower() in text_lower:
+                score += 20
+                break
+    
     # Bare single-token generic searches collapse across CVs.
     if len(words) == 1 and len(text) <= 12:
         score -= 10
@@ -93,12 +96,17 @@ def dedupe_queries(queries: list[str], *, max_items: int = MAX_QUERIES_TOTAL) ->
     return result
 
 
-def select_diverse_queries(queries: list[str], *, max_items: int) -> list[str]:
+def select_diverse_queries(
+    queries: list[str], 
+    *, 
+    max_items: int,
+    profile_technologies: list[str] | None = None
+) -> list[str]:
     """Pick up to max_items queries, preferring specific/varied terms over generics.
 
     When collection truncates to a small query budget (web UI defaults), taking the
-    first N titles often yields the same 'Software Engineer' / 'מפתח' searches for
-    every CV. Prefer technology-, domain-, and bilingual-specific queries first,
+    first N titles often yields the same generic searches for every candidate.
+    Prefer technology-, domain-, and bilingual-specific queries first,
     then fill remaining slots while preserving original relative order.
     """
     if max_items <= 0:
@@ -109,7 +117,7 @@ def select_diverse_queries(queries: list[str], *, max_items: int) -> list[str]:
 
     ranked = sorted(
         enumerate(cleaned),
-        key=lambda item: (-_query_specificity_score(item[1]), item[0]),
+        key=lambda item: (-_query_specificity_score(item[1], profile_technologies), item[0]),
     )
     chosen: list[str] = []
     chosen_keys: set[str] = set()
@@ -409,12 +417,13 @@ def queries_for_board(
     board_id: str,
     *,
     max_items: int,
+    profile_technologies: list[str] | None = None,
 ) -> list[str]:
     """Select search queries appropriate for a specific job board.
 
-    LinkedIn and GotFriends list Israeli tech roles almost exclusively in English,
-    so Hebrew/mixed terms like 'מפתח פייתון' return near-zero results. Drushim
-    remains bilingual.
+    LinkedIn and GotFriends list roles in certain markets almost exclusively in English,
+    so Hebrew/mixed terms may return near-zero results. Drushim remains bilingual.
+    Uses dynamic profile technologies for query ranking.
     """
     board = str(board_id or "").strip().lower()
     if max_items <= 0:
@@ -422,11 +431,11 @@ def queries_for_board(
 
     if board in ENGLISH_ONLY_BOARDS:
         english = _english_query_pool(entry)
-        selected = select_diverse_queries(english, max_items=max_items)
+        selected = select_diverse_queries(english, max_items=max_items, profile_technologies=profile_technologies)
         if selected:
             return selected
         # Absolute fallback: never send Hebrew to English-only boards.
         return []
 
     # Default / Drushim: keep bilingual capability.
-    return select_diverse_queries(_bilingual_query_pool(entry), max_items=max_items)
+    return select_diverse_queries(_bilingual_query_pool(entry), max_items=max_items, profile_technologies=profile_technologies)
