@@ -268,7 +268,12 @@ def test_missing_critical_keywords_penalized():
 def test_job_match_system_uses_strict_rubric():
     from job_matcher import JOB_MATCH_SYSTEM
 
-    assert "highly cynical Technical Recruiter" in JOB_MATCH_SYSTEM
-    assert "Do NOT give points for 'potential'" in JOB_MATCH_SYSTEM
-    assert "drop the score by at least 20 points" in JOB_MATCH_SYSTEM
-    assert "cannot score above 70%" in JOB_MATCH_SYSTEM
+    # Verify the prompt is industry-agnostic and focuses on Target Role
+    assert "industry-agnostic AI Career Agent" in JOB_MATCH_SYSTEM
+    assert "Target Role" in JOB_MATCH_SYSTEM
+    assert "POTENTIAL AND CAPABILITY" in JOB_MATCH_SYSTEM
+    assert "Employment History Bias" in JOB_MATCH_SYSTEM
+    assert "PROJECT-TO-EXPERIENCE TRANSLATION" in JOB_MATCH_SYSTEM
+    # Ensure it's not hardcoded to tech
+    assert "Technical Recruiter" not in JOB_MATCH_SYSTEM
+    assert "tech company" not in JOB_MATCH_SYSTEM.lower()
