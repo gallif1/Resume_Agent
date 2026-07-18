@@ -290,10 +290,10 @@ def test_api_apply_endpoint(db_path, cvs_dir, monkeypatch):
     job_id = db.insert_job("Dev", "https://example.com/job/6", db_path=db.cv_db_path(cv_id))
     _link_match(db_path, cv_id, job_id)
 
-    from fastapi.testclient import TestClient
+    from conftest import authed_client
 
-    client = TestClient(api_server.app)
-    res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
+    with authed_client() as client:
+        res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
     assert res.status_code == 200
     body = res.json()
     assert body["status"] == db.JOB_APP_PENDING
@@ -309,10 +309,10 @@ def test_api_apply_rejects_unauthorized_job(db_path, cvs_dir, monkeypatch):
     cv_id = _create_cv(db_path, cvs_dir)
     job_id = db.insert_job("Dev", "https://example.com/job/7", db_path=db.cv_db_path(cv_id))
 
-    from fastapi.testclient import TestClient
+    from conftest import authed_client
 
-    client = TestClient(api_server.app)
-    res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
+    with authed_client() as client:
+        res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
     assert res.status_code == 403
 
 
@@ -428,29 +428,29 @@ def test_api_site_credentials_roundtrip(db_path, cvs_dir, monkeypatch):
 
     cv_id = _create_cv(db_path, cvs_dir)
 
-    from fastapi.testclient import TestClient
+    from conftest import authed_client
 
-    client = TestClient(api_server.app)
-    empty = client.get(f"/cvs/{cv_id}/site-credentials")
-    assert empty.status_code == 200
-    assert empty.json()["credentials"]["linkedin"]["configured"] is False
+    with authed_client() as client:
+        empty = client.get(f"/cvs/{cv_id}/site-credentials")
+        assert empty.status_code == 200
+        assert empty.json()["credentials"]["linkedin"]["configured"] is False
 
-    saved = client.put(
-        f"/cvs/{cv_id}/site-credentials",
-        json={
-            "linkedin": {"email": "user@example.com", "password": "secret"},
-            "drushim": {"email": "0501234567", "password": "d-pass"},
-        },
-    )
-    assert saved.status_code == 200
-    body = saved.json()
-    assert body["saved"] is True
-    assert body["credentials"]["linkedin"]["configured"] is True
-    assert "password" not in body["credentials"]["linkedin"]
+        saved = client.put(
+            f"/cvs/{cv_id}/site-credentials",
+            json={
+                "linkedin": {"email": "user@example.com", "password": "secret"},
+                "drushim": {"email": "0501234567", "password": "d-pass"},
+            },
+        )
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body["saved"] is True
+        assert body["credentials"]["linkedin"]["configured"] is True
+        assert "password" not in body["credentials"]["linkedin"]
 
-    loaded = client.get(f"/cvs/{cv_id}/site-credentials")
-    assert loaded.json()["credentials"]["linkedin"]["email"] == "user@example.com"
-    assert loaded.json()["credentials"]["linkedin"]["password_set"] is True
+        loaded = client.get(f"/cvs/{cv_id}/site-credentials")
+        assert loaded.json()["credentials"]["linkedin"]["email"] == "user@example.com"
+        assert loaded.json()["credentials"]["linkedin"]["password_set"] is True
 
 
 def test_api_apply_rejects_when_playwright_unavailable(db_path, cvs_dir, monkeypatch):
@@ -468,10 +468,10 @@ def test_api_apply_rejects_when_playwright_unavailable(db_path, cvs_dir, monkeyp
     job_id = db.insert_job("Dev", "https://example.com/job/8", db_path=db.cv_db_path(cv_id))
     _link_match(db_path, cv_id, job_id)
 
-    from fastapi.testclient import TestClient
+    from conftest import authed_client
 
-    client = TestClient(api_server.app)
-    res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
+    with authed_client() as client:
+        res = client.post(f"/cvs/{cv_id}/jobs/{job_id}/apply", json={"force": False})
     assert res.status_code == 503
 
 

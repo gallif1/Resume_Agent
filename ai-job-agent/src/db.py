@@ -34,6 +34,8 @@ WORKSPACE_CV_ID = "workspace"
 _REGISTRY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
+    email TEXT UNIQUE,
+    hashed_password TEXT,
     display_name TEXT,
     created_at TEXT,
     updated_at TEXT
@@ -186,10 +188,22 @@ def init_registry_db(db_path: Path = REGISTRY_DB_PATH) -> None:
 def _apply_registry_migrations(conn: sqlite3.Connection) -> None:
     """Evolve the registry schema for multi-user CV support."""
     now = _utc_now()
+    user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for column, col_type in [
+        ("email", "TEXT"),
+        ("hashed_password", "TEXT"),
+    ]:
+        if column not in user_columns:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {column} {col_type}")
+    # Unique email index (NULL emails allowed for the legacy default user).
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email) "
+        "WHERE email IS NOT NULL AND email != ''"
+    )
     conn.execute(
         """
-        INSERT OR IGNORE INTO users (id, display_name, created_at, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT OR IGNORE INTO users (id, email, hashed_password, display_name, created_at, updated_at)
+        VALUES (?, NULL, NULL, ?, ?, ?)
         """,
         (DEFAULT_USER_ID, "Default User", now, now),
     )
@@ -1415,6 +1429,60 @@ CV_APP_STATUSES = (
 )
 
 
+def create_user(
+    user_id: str,
+    *,
+    email: str,
+    hashed_password: str,
+    display_name: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Insert an authenticated user into the registry and return the row."""
+    path = db_path or REGISTRY_DB_PATH
+    now = _utc_now()
+    init_registry_db(path)
+    with get_connection(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO users (id, email, hashed_password, display_name, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                email.strip().lower(),
+                hashed_password,
+                display_name or email.split("@")[0],
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    user = get_user_by_id(user_id, db_path=path)
+    assert user is not None
+    return user
+
+
+def get_user_by_id(user_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
+    path = db_path or REGISTRY_DB_PATH
+    init_registry_db(path)
+    with get_connection(path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+
+def get_user_by_email(email: str, db_path: Path | None = None) -> dict[str, Any] | None:
+    if not email:
+        return None
+    path = db_path or REGISTRY_DB_PATH
+    init_registry_db(path)
+    with get_connection(path) as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE lower(email) = ? LIMIT 1",
+            (email.strip().lower(),),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def create_cv(
     cv_id: str,
     *,
@@ -1427,13 +1495,14 @@ def create_cv(
     parsed_profile: str | None = None,
     user_id: str = DEFAULT_USER_ID,
     is_active: bool = True,
-    db_path: Path = REGISTRY_DB_PATH,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Insert a new CV record and return it."""
+    path = db_path or REGISTRY_DB_PATH
     now = _utc_now()
-    init_registry_db(db_path)
+    init_registry_db(path)
     init_cv_data_db(cv_id)
-    with get_connection(db_path) as conn:
+    with get_connection(path) as conn:
         conn.execute(
             """
             INSERT INTO cvs (
@@ -1458,25 +1527,41 @@ def create_cv(
             ),
         )
         conn.commit()
-    cv = get_cv(cv_id, db_path=db_path)
+    cv = get_cv(cv_id, db_path=path)
     assert cv is not None
     return cv
 
 
-def get_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any] | None:
-    with get_connection(db_path) as conn:
+def get_cv(cv_id: str, db_path: Path | None = None) -> dict[str, Any] | None:
+    path = db_path or REGISTRY_DB_PATH
+    with get_connection(path) as conn:
         row = conn.execute("SELECT * FROM cvs WHERE id = ?", (cv_id,)).fetchone()
         return dict(row) if row is not None else None
 
 
-def find_cv_by_hash(file_hash: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any] | None:
-    """Return an existing CV with the same file content hash, if any."""
+def find_cv_by_hash(
+    file_hash: str,
+    *,
+    user_id: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return an existing CV with the same file content hash, if any.
+
+    When ``user_id`` is set, only that owner's CVs are considered (data isolation).
+    """
     if not file_hash:
         return None
-    with get_connection(db_path) as conn:
-        row = conn.execute(
-            "SELECT * FROM cvs WHERE file_hash = ? LIMIT 1", (file_hash,)
-        ).fetchone()
+    path = db_path or REGISTRY_DB_PATH
+    with get_connection(path) as conn:
+        if user_id:
+            row = conn.execute(
+                "SELECT * FROM cvs WHERE file_hash = ? AND user_id = ? LIMIT 1",
+                (file_hash, user_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM cvs WHERE file_hash = ? LIMIT 1", (file_hash,)
+            ).fetchone()
         return dict(row) if row is not None else None
 
 
@@ -1484,10 +1569,11 @@ def list_cvs(
     *,
     user_id: str | None = None,
     active_only: bool = False,
-    db_path: Path = REGISTRY_DB_PATH,
+    db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Return CVs (newest first) with lightweight match/scan counts."""
-    init_registry_db(db_path)
+    path = db_path or REGISTRY_DB_PATH
+    init_registry_db(path)
     clauses: list[str] = []
     params: list[Any] = []
     if user_id:
@@ -1496,7 +1582,7 @@ def list_cvs(
     if active_only:
         clauses.append("c.is_active = 1")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    with get_connection(db_path) as conn:
+    with get_connection(path) as conn:
         rows = conn.execute(
             f"""
             SELECT c.*
@@ -1875,17 +1961,29 @@ def refresh_cv_job_match_scan(
         return cursor.rowcount > 0
 
 
+_MATCH_SORT_COLUMNS = {
+    "score": "m.match_score",
+    "date": "COALESCE(j.first_seen_at, j.collected_at, j.created_at)",
+    "site": "LOWER(COALESCE(j.source, ''))",
+}
+
+
 def get_cv_matches(
     cv_id: str,
     *,
     latest_only: bool = False,
     min_score: int | None = None,
+    sort_by: str | None = None,
+    order: str | None = None,
     db_path: Path = DB_PATH,
 ) -> list[dict[str, Any]]:
     """Return a CV's job matches joined with the global job record.
 
-    Sorted by best match score first. When ``latest_only`` is True, only the
-    matches produced by the CV's most recent scan are returned.
+    Default sort: best match score first (potential junior matches last).
+    Optional ``sort_by``: ``score``, ``date`` (scraped/created), or ``site``.
+    Optional ``order``: ``asc`` or ``desc`` (default depends on sort_by).
+    When ``latest_only`` is True, only the matches produced by the CV's most
+    recent scan are returned.
     """
     if not Path(db_path).exists():
         return []
@@ -1906,6 +2004,25 @@ def get_cv_matches(
     if min_score is not None:
         conditions.append("m.match_score IS NOT NULL AND m.match_score >= ?")
         params.append(min_score)
+
+    sort_key = (sort_by or "score").strip().lower()
+    if sort_key not in _MATCH_SORT_COLUMNS:
+        raise ValueError("sort_by must be one of: date, score, site")
+    order_key = (order or ("desc" if sort_key in {"score", "date"} else "asc")).strip().lower()
+    if order_key not in {"asc", "desc"}:
+        raise ValueError("order must be asc or desc")
+    sort_expr = _MATCH_SORT_COLUMNS[sort_key]
+    # Keep null scores at the end for score sorts regardless of direction.
+    nulls_last = "m.match_score IS NULL," if sort_key == "score" else ""
+    # Preserve the potential-junior bucket after the primary sort column.
+    order_sql = f"""
+        ORDER BY
+            CASE WHEN m.is_potential_junior_match = 1 AND COALESCE(m.match_score, 0) < 50
+                 THEN 1 ELSE 0 END,
+            {nulls_last}
+            {sort_expr} {order_key.upper()},
+            m.updated_at DESC
+    """
 
     where = " AND ".join(conditions)
     query = f"""
@@ -1942,16 +2059,15 @@ def get_cv_matches(
             j.location,
             j.job_url,
             j.source,
+            j.description,
+            j.full_description,
+            j.created_at AS job_created_at,
+            j.collected_at,
             j.first_seen_at
         FROM cv_job_matches m
         JOIN jobs j ON j.id = m.job_id
         WHERE {where}
-        ORDER BY
-            CASE WHEN m.is_potential_junior_match = 1 AND COALESCE(m.match_score, 0) < 50
-                 THEN 1 ELSE 0 END,
-            m.match_score IS NULL,
-            m.match_score DESC,
-            m.updated_at DESC
+        {order_sql}
     """
     with get_connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()

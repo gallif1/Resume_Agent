@@ -108,12 +108,14 @@ def upload_cv(
     *,
     display_name: str | None = None,
     as_new_version: bool = False,
+    user_id: str = db.DEFAULT_USER_ID,
     db_path: Path = db.REGISTRY_DB_PATH,
 ) -> dict[str, Any]:
     """Store an uploaded resume and create its CV record.
 
     Raises ``DuplicateCvError`` if an identical file was already uploaded, unless
     ``as_new_version`` is True (the user explicitly wants a separate version).
+    Deduplication is scoped to ``user_id`` so users do not share CV ownership.
     """
     ext = Path(filename or "").suffix.lower()
     if ext not in ALLOWED_CV_EXTENSIONS:
@@ -125,7 +127,7 @@ def upload_cv(
 
     file_hash = compute_file_hash(data)
     if not as_new_version:
-        existing = db.find_cv_by_hash(file_hash, db_path=db_path)
+        existing = db.find_cv_by_hash(file_hash, user_id=user_id, db_path=db_path)
         if existing is not None:
             raise DuplicateCvError(existing)
 
@@ -143,6 +145,7 @@ def upload_cv(
         file_ext=ext,
         file_size=len(data),
         file_hash=file_hash,
+        user_id=user_id,
         db_path=db_path,
     )
 

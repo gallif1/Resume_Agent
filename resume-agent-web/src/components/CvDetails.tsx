@@ -20,6 +20,8 @@ import {
   type CvScanStatus,
   type JobApplication,
   type JobApplicationStatus,
+  type MatchSortBy,
+  type MatchSortOrder,
   type TailoredCvResponse,
 } from "../lib/api";
 import PipelineProgress from "./PipelineProgress";
@@ -147,6 +149,8 @@ export default function CvDetails({
   const [matches, setMatches] = useState<CvMatch[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<MatchSortBy>("score");
+  const [sortOrder, setSortOrder] = useState<MatchSortOrder>("desc");
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [applyingId, setApplyingId] = useState<number | null>(null);
@@ -178,16 +182,24 @@ export default function CvDetails({
     setLoading(true);
     setError(null);
     try {
+      const sortOpts = { latest: true as const, sortBy, order: sortOrder };
       const data = workspaceMode
-        ? await getJobMatches({ latest: true })
-        : await getCvMatches(cvId, { latest: true });
+        ? await getJobMatches(sortOpts)
+        : await getCvMatches(cvId, sortOpts);
       setMatches(data.matches);
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
     } finally {
       setLoading(false);
     }
-  }, [cvId, workspaceMode]);
+  }, [cvId, workspaceMode, sortBy, sortOrder]);
+
+  const handleSortChange = (value: string) => {
+    // Encoded as "field:order" so one dropdown covers the common sorts.
+    const [field, direction] = value.split(":") as [MatchSortBy, MatchSortOrder];
+    setSortBy(field);
+    setSortOrder(direction);
+  };
 
   useEffect(() => {
     load();
@@ -569,41 +581,16 @@ export default function CvDetails({
 
         {expanded && (
           <div className="job-details">
-            {m.explanation && (
-              <p>
-                <b>הסבר התאמה:</b> {m.explanation}
-              </p>
-            )}
-            {m.score_reasons.length > 0 && (
-              <p>
-                <b>סיבות לציון:</b> {m.score_reasons.join(" · ")}
-              </p>
-            )}
-            {m.matched_skills.length > 0 && (
-              <p>
-                <b>כישורים תואמים:</b> {m.matched_skills.join(", ")}
-              </p>
-            )}
-            {m.missing_skills.length > 0 && (
-              <p>
-                <b>כישורים חסרים:</b> {m.missing_skills.join(", ")}
-              </p>
-            )}
-            {m.missing_mandatory.length > 0 && (
-              <p>
-                <b>דרישות חובה חסרות:</b> {m.missing_mandatory.join(", ")}
-              </p>
-            )}
-            {m.relevant_experience.length > 0 && (
-              <p>
-                <b>ניסיון רלוונטי:</b> {m.relevant_experience.join(", ")}
-              </p>
-            )}
-            {m.cv_improvements.length > 0 && (
-              <p>
-                <b>שיפורים מומלצים לקו&quot;ח:</b> {m.cv_improvements.join(" · ")}
-              </p>
-            )}
+            <div className="job-description-block">
+              <h4 className="job-description-title">תיאור המשרה</h4>
+              {m.description?.trim() ? (
+                <pre className="job-description-text" dir="auto">
+                  {m.description.trim()}
+                </pre>
+              ) : (
+                <p className="cv-meta">אין תיאור מלא למשרה זו</p>
+              )}
+            </div>
             {m.has_tailored_cv && (
               <p className="cv-meta">
                 קורות חיים מותאמים נשמרו
@@ -970,9 +957,27 @@ export default function CvDetails({
 
       <div className="history-header">
         <h2>התאמות מהסריקה האחרונה</h2>
-        <span className="history-count">
-          {loading ? "טוען..." : `${matches.length} משרות`}
-        </span>
+        <div className="matches-toolbar">
+          <label className="sort-control">
+            <span className="sort-label">מיון</span>
+            <select
+              className="sort-select"
+              value={`${sortBy}:${sortOrder}`}
+              onChange={(e) => handleSortChange(e.target.value)}
+              aria-label="מיון משרות"
+            >
+              <option value="score:desc">ציון התאמה (גבוה לנמוך)</option>
+              <option value="score:asc">ציון התאמה (נמוך לגבוה)</option>
+              <option value="date:desc">תאריך (חדש לישן)</option>
+              <option value="date:asc">תאריך (ישן לחדש)</option>
+              <option value="site:asc">אתר (א–ת)</option>
+              <option value="site:desc">אתר (ת–א)</option>
+            </select>
+          </label>
+          <span className="history-count">
+            {loading ? "טוען..." : `${matches.length} משרות`}
+          </span>
+        </div>
       </div>
 
       {matches.length === 0 && !loading ? (

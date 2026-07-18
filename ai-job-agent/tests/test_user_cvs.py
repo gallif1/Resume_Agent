@@ -114,14 +114,14 @@ def test_list_cvs_does_not_auto_import_legacy_resume(monkeypatch):
         lambda *args, **kwargs: adopt_calls.append(True),
     )
     monkeypatch.setattr(api_server.db, "ensure_multi_cv_storage", lambda: None)
-    monkeypatch.setattr(api_server.db, "list_cvs", lambda **kwargs: [])
-    monkeypatch.setattr(api_server, "_workspace_match_count", lambda: 0)
-    monkeypatch.setattr(api_server.db, "list_active_cvs_for_user", lambda **kwargs: [])
+    monkeypatch.setattr(api_server.db, "list_cvs", lambda *a, **kwargs: [])
+    monkeypatch.setattr(api_server, "_workspace_match_count", lambda *a, **k: 0)
+    monkeypatch.setattr(api_server.db, "list_active_cvs_for_user", lambda *a, **kwargs: [])
 
-    from fastapi.testclient import TestClient
+    from conftest import authed_client
 
-    client = TestClient(api_server.app)
-    response = client.get("/cvs")
+    with authed_client() as client:
+        response = client.get("/cvs")
 
     assert response.status_code == 200
     assert response.json()["cvs"] == []

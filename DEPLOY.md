@@ -42,8 +42,25 @@ PR ממוזג ל-master → בדיקות → פריסה אוטומטית ל-Rend
 | משתנה | תיאור |
 |--------|--------|
 | `OPENAI_API_KEY` | ניתוח חכם של קו"ח והתאמות |
+| `JWT_SECRET` | מפתח לחתימת JWT (מומלץ חזק בפרודקשן) |
 | `DRUSHIM_EMAIL` | התחברות לדרושים |
 | `DRUSHIM_PASSWORD` | סיסמת דרושים |
+
+## שמירת נתונים (Docker)
+
+קבצי SQLite והעלאות נשמרים תחת `ai-job-agent/data/` (כולל `registry.db` עם משתמשי ההתחברות).
+כשמריצים עם Docker, **חובה** לעשות mount לתיקייה הזו כ־volume קבוע, אחרת כל הנתונים יימחקו ב־restart:
+
+```bash
+docker run -v ./data:/app/ai-job-agent/data -p 8000:8000 resume-agent
+```
+
+ב-Compose:
+
+```yaml
+volumes:
+  - ./data:/app/ai-job-agent/data
+```
 
 ## הערות
 

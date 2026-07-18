@@ -5,6 +5,56 @@ const BASE_URL: string =
   (import.meta.env.VITE_API_URL as string | undefined) ??
   (import.meta.env.DEV ? "" : "http://127.0.0.1:8000");
 
+const TOKEN_KEY = "resume_agent_jwt";
+
+export type AuthUser = {
+  id: string;
+  email: string | null;
+  display_name: string | null;
+  created_at?: string | null;
+};
+
+export type AuthResponse = {
+  access_token: string;
+  token_type: string;
+  user: AuthUser;
+};
+
+let onUnauthorized: (() => void) | null = null;
+
+/** Register a callback invoked when any API call returns 401. */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  onUnauthorized = handler;
+}
+
+export function getStoredToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredToken(token: string | null) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode / storage blocked */
+  }
+}
+
+export function clearAuthSession() {
+  setStoredToken(null);
+}
+
+function authHeaders(extra?: HeadersInit): Headers {
+  const headers = new Headers(extra);
+  const token = getStoredToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
+}
+
 function fetchWithTimeout(
   url: string,
   init: RequestInit = {},
@@ -23,12 +73,21 @@ export interface PipelineStep {
   status: "pending" | "running" | "success" | "failed" | "skipped";
 }
 
+export type MatchSortBy = "date" | "score" | "site";
+export type MatchSortOrder = "asc" | "desc";
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = authHeaders(init?.headers);
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}${path}`, init);
+    res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
   } catch {
     throw new Error("השרת לא זמין כרגע — נסה לרענן בעוד דקה");
+  }
+  if (res.status === 401) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
   }
   if (!res.ok) {
     let detail = `שגיאה ${res.status}`;
@@ -43,6 +102,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail);
   }
   return res.json() as Promise<T>;
+}
+
+async function authRequest(path: string, email: string, password: string): Promise<AuthResponse> {
+  // Auth forms must not trigger the global 401 logout handler on bad credentials.
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch {
+    throw new Error("השרת לא זמין כרגע — נסה לרענן בעוד דקה");
+  }
+  if (!res.ok) {
+    let detail = `שגיאה ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body?.detail === "string") detail = body.detail;
+    } catch {
+      /* keep generic */
+    }
+    throw new Error(detail);
+  }
+  return res.json() as Promise<AuthResponse>;
+}
+
+export function registerUser(email: string, password: string): Promise<AuthResponse> {
+  return authRequest(`/api/auth/register`, email, password);
+}
+
+export function loginUser(email: string, password: string): Promise<AuthResponse> {
+  return authRequest(`/api/auth/login`, email, password);
+}
+
+export function getCurrentUser(): Promise<{ user: AuthUser }> {
+  return request(`/api/auth/me`);
 }
 
 export async function checkHealth(): Promise<boolean> {
@@ -169,6 +265,9 @@ export interface CvMatch {
   location: string | null;
   job_url: string | null;
   source: string | null;
+  /** Full job description text (enriched), for the expanded job view. */
+  description?: string | null;
+  job_created_at?: string | null;
   match_score: number | null;
   match_reason: string | null;
   explanation: string | null;
@@ -302,9 +401,15 @@ export async function uploadCv(
     res = await fetch(`${BASE_URL}/cvs/upload`, {
       method: "POST",
       body: form,
+      headers: authHeaders(),
     });
   } catch {
     throw new Error("השרת לא זמין כרגע — לא ניתן להעלות קבצים");
+  }
+  if (res.status === 401) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
   }
   if (res.status === 409) {
     const body = await res.json().catch(() => null);
@@ -405,11 +510,18 @@ export function getJobMatchStatus(): Promise<CvScanStatus & {
 }
 
 export function getJobMatches(
-  options?: { latest?: boolean; minScore?: number }
+  options?: {
+    latest?: boolean;
+    minScore?: number;
+    sortBy?: MatchSortBy;
+    order?: MatchSortOrder;
+  }
 ): Promise<{ matches: CvMatch[] }> {
   const params = new URLSearchParams();
   params.set("latest", String(options?.latest ?? true));
   if (options?.minScore != null) params.set("min_score", String(options.minScore));
+  if (options?.sortBy) params.set("sort_by", options.sortBy);
+  if (options?.order) params.set("order", options.order);
   return request(`/jobs/matches?${params.toString()}`);
 }
 
@@ -448,11 +560,18 @@ export function getCvScanStatus(cvId: string): Promise<CvScanStatus> {
 
 export function getCvMatches(
   cvId: string,
-  options?: { latest?: boolean; minScore?: number }
+  options?: {
+    latest?: boolean;
+    minScore?: number;
+    sortBy?: MatchSortBy;
+    order?: MatchSortOrder;
+  }
 ): Promise<{ matches: CvMatch[] }> {
   const params = new URLSearchParams();
   params.set("latest", String(options?.latest ?? true));
   if (options?.minScore != null) params.set("min_score", String(options.minScore));
+  if (options?.sortBy) params.set("sort_by", options.sortBy);
+  if (options?.order) params.set("order", options.order);
   return request(`/cvs/${cvId}/matches?${params.toString()}`);
 }
 
@@ -505,8 +624,14 @@ export async function downloadTailoredCvPdf(
   jobId: number
 ): Promise<void> {
   const res = await fetch(
-    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-pdf`
+    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-pdf`,
+    { headers: authHeaders() }
   );
+  if (res.status === 401) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
+  }
   if (!res.ok) {
     let detail = `שגיאה ${res.status}`;
     try {
@@ -566,9 +691,14 @@ export async function applyToJob(
 ): Promise<{ application_id: string; status: JobApplicationStatus; application: JobApplication }> {
   const res = await fetch(`${BASE_URL}/cvs/${cvId}/jobs/${jobId}/apply`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ force: options?.force ?? false }),
   });
+  if (res.status === 401) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw parseApplicationError(res, body);
@@ -596,7 +726,13 @@ export async function retryJobApplication(
 ): Promise<{ application_id: string; status: JobApplicationStatus; application: JobApplication }> {
   const res = await fetch(`${BASE_URL}/cvs/${cvId}/job-applications/${applicationId}/retry`, {
     method: "POST",
+    headers: authHeaders(),
   });
+  if (res.status === 401) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
+  }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw parseApplicationError(res, body);

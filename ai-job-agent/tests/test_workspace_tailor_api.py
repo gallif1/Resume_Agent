@@ -93,18 +93,21 @@ def test_workspace_tailor_endpoint_does_not_500(tailor_env, monkeypatch):
         }
 
     monkeypatch.setattr(api_server, "tailor_cv_for_job", fake_tailor)
+    real_get_cv = db.get_cv
     monkeypatch.setattr(
         api_server.db,
         "get_cv",
-        lambda cv_id, **kw: db.get_cv(cv_id, db_path=db_path),
+        lambda cv_id, **kw: real_get_cv(cv_id, db_path=db_path),
     )
 
-    client = TestClient(api_server.app)
-    res = client.post(
-        f"/jobs/{job_id}/tailor-cv",
-        params={"source_cv_id": cv["id"]},
-        json={"force": True},
-    )
+    from conftest import authed_client
+
+    with authed_client() as client:
+        res = client.post(
+            f"/jobs/{job_id}/tailor-cv",
+            params={"source_cv_id": cv["id"]},
+            json={"force": True},
+        )
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["job_id"] == job_id
