@@ -53,7 +53,7 @@ def main() -> None:
     parser.add_argument(
         "--skip-collect",
         action="store_true",
-        help="Skip job collection from Drushim, LinkedIn, and GotFriends",
+        help="Skip job collection from configured job boards",
     )
     parser.add_argument(
         "--skip-enrich",
@@ -97,7 +97,7 @@ def main() -> None:
             True,
         ),
         ("2/7  AI CV analysis + role strategy", "analyze_roles.py", None, True),
-        ("3/7  Collect jobs from Drushim + LinkedIn + GotFriends", "collect_jobs.py", None, not args.skip_collect),
+        ("3/7  Collect jobs from all configured boards", "collect_jobs.py", None, not args.skip_collect),
         (
             "4/7  Enrich job descriptions",
             "enrich_jobs.py",

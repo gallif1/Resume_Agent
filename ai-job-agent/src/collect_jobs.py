@@ -29,6 +29,7 @@ from collection_report import (
 )
 from config import (
     AGENT_CV_ID,
+    ALLJOBS_MAX_PAGES,
     COLLECT_MAX_CATEGORIES,
     COLLECT_MAX_QUERIES,
     DRUSHIM_API_BASE_URL,
@@ -40,8 +41,10 @@ from config import (
     DRUSHIM_MAX_PAGES,
     DRUSHIM_PAGE_WAIT_MS,
     DRUSHIM_SELECTOR_TIMEOUT_MS,
+    GEEKTIME_MAX_PAGES,
     GOTFRIENDS_MAX_PAGES,
     HEADLESS,
+    INDEED_MAX_PAGES,
     LINKEDIN_BASE_URL,
     LINKEDIN_GEO_ID,
     LINKEDIN_JOBS_PER_PAGE,
@@ -49,10 +52,15 @@ from config import (
     LINKEDIN_MAX_PAGES,
     LINKEDIN_MAX_RETRIES,
     LOGS_DIR,
+    SECRET_TEL_AVIV_MAX_PAGES,
 )
 from db import get_known_job_identity_keys, init_db, upsert_collected_job
-from gotfriends_collector import collect_gotfriends_jobs
 from job_boards import collection_searches, job_boards_label, normalize_job_board_ids
+from scrapers.alljobs_scraper import collect_alljobs_jobs
+from scrapers.geektime_scraper import collect_geektime_jobs
+from scrapers.gotfriends_scraper import collect_gotfriends_jobs
+from scrapers.indeed_israel_scraper import collect_indeed_jobs
+from scrapers.secret_tel_aviv_scraper import collect_secret_tel_aviv_jobs
 from job_identity import (
     compute_candidate_strategy_hash,
     compute_job_identity_key,
@@ -75,7 +83,20 @@ SITE_LABELS_HE = {
     "drushim": "דרושים",
     "linkedin": "לינקדאין",
     "gotfriends": "GotFriends",
+    "alljobs": "אולג'ובס",
+    "indeed": "אינדיד",
+    "secret_tel_aviv": "סיקרט תל אביב",
+    "geektime": "גיקטיים",
 }
+
+# Boards that expect English search terms (Hebrew queries return near-zero hits).
+_ENGLISH_QUERY_SITES = frozenset({
+    "linkedin",
+    "gotfriends",
+    "indeed",
+    "secret_tel_aviv",
+    "geektime",
+})
 
 
 def _interactive_retry_enabled() -> bool:
@@ -1049,10 +1070,15 @@ def _unwrap_collection_result(result: Any) -> tuple[list[dict], CollectionOutcom
 
 
 def _job_collectors() -> dict[str, Any]:
+    """Register every active board collector for the orchestration loop."""
     return {
         "drushim": collect_drushim_jobs,
         "linkedin": collect_linkedin_jobs,
         "gotfriends": collect_gotfriends_jobs,
+        "alljobs": collect_alljobs_jobs,
+        "indeed": collect_indeed_jobs,
+        "secret_tel_aviv": collect_secret_tel_aviv_jobs,
+        "geektime": collect_geektime_jobs,
     }
 
 
@@ -1065,7 +1091,10 @@ def _parse_sites_arg(raw: str | None) -> list[str] | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Collect jobs from Drushim, LinkedIn, and GotFriends using AI-generated search queries"
+        description=(
+            "Collect jobs from Drushim, LinkedIn, GotFriends, AllJobs, "
+            "Indeed Israel, Secret Tel Aviv, and Geektime using AI-generated search queries"
+        )
     )
     parser.add_argument(
         "--max-categories", type=int, default=COLLECT_MAX_CATEGORIES,
@@ -1079,7 +1108,10 @@ def main() -> None:
         "--sites",
         type=str,
         default=None,
-        help="Comma-separated job boards to search (drushim, linkedin, gotfriends)",
+        help=(
+            "Comma-separated job boards to search "
+            "(drushim, linkedin, gotfriends, alljobs, indeed, secret_tel_aviv, geektime)"
+        ),
     )
     args = parser.parse_args()
 
@@ -1116,7 +1148,9 @@ def main() -> None:
         f"Collection limits: max {args.max_queries} queries/category, "
         f"{args.max_categories if args.max_categories is not None else 'all'} categories; "
         f"board pages — Drushim ≤{DRUSHIM_MAX_PAGES}, LinkedIn ≤{LINKEDIN_MAX_PAGES}, "
-        f"GotFriends ≤{GOTFRIENDS_MAX_PAGES}"
+        f"GotFriends ≤{GOTFRIENDS_MAX_PAGES}, AllJobs ≤{ALLJOBS_MAX_PAGES}, "
+        f"Indeed ≤{INDEED_MAX_PAGES}, SecretTelAviv ≤{SECRET_TEL_AVIV_MAX_PAGES}, "
+        f"Geektime ≤{GEEKTIME_MAX_PAGES}"
     )
 
     seen_job_keys: set[str] = set()
@@ -1173,8 +1207,8 @@ def main() -> None:
                 if not queries:
                     message = (
                         "אין שאילתות באנגלית לחיפוש — "
-                        "LinkedIn/GotFriends דורשים מונחי חיפוש באנגלית"
-                        if site_name in ("linkedin", "gotfriends")
+                        "לוחות באנגלית דורשים מונחי חיפוש באנגלית"
+                        if site_name in _ENGLISH_QUERY_SITES
                         else "אין שאילתות חיפוש לקטגוריה זו"
                     )
                     emit_agent_warning(f"{_site_label(site_name)}: {message}")

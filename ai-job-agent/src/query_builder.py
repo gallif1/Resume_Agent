@@ -23,8 +23,14 @@ _GENERIC_QUERY_RE = re.compile(
 
 
 # Boards where Hebrew/mixed tech queries return near-zero relevant listings.
-ENGLISH_ONLY_BOARDS = frozenset({"linkedin", "gotfriends"})
-BILINGUAL_BOARDS = frozenset({"drushim"})
+ENGLISH_ONLY_BOARDS = frozenset({
+    "linkedin",
+    "gotfriends",
+    "indeed",
+    "secret_tel_aviv",
+    "geektime",
+})
+BILINGUAL_BOARDS = frozenset({"drushim", "alljobs"})
 
 
 def _is_hebrew(text: str) -> bool:
@@ -421,8 +427,9 @@ def queries_for_board(
 ) -> list[str]:
     """Select search queries appropriate for a specific job board.
 
-    LinkedIn and GotFriends list roles in certain markets almost exclusively in English,
-    so Hebrew/mixed terms may return near-zero results. Drushim remains bilingual.
+    LinkedIn, GotFriends, Indeed, Secret Tel Aviv, and Geektime list roles almost
+    exclusively in English, so Hebrew/mixed terms may return near-zero results.
+    Drushim and AllJobs remain bilingual.
     Uses dynamic profile technologies for query ranking.
     """
     board = str(board_id or "").strip().lower()

@@ -196,12 +196,65 @@ LINKEDIN_MAX_PAGES = int(os.getenv("LINKEDIN_MAX_PAGES", _DEFAULT_LINKEDIN_MAX_P
 # Retries with exponential backoff when LinkedIn returns 429/503.
 LINKEDIN_MAX_RETRIES = int(os.getenv("LINKEDIN_MAX_RETRIES", "3"))
 
-# GotFriends job search (public HTML — no login required)
+# GotFriends job search (public HTML / Playwright — Cloudflare often blocks datacenter IPs)
 GOTFRIENDS_BASE_URL = "https://www.gotfriends.co.il"
 GOTFRIENDS_ENABLED = os.getenv("GOTFRIENDS_ENABLED", "true").lower() in ("1", "true", "yes")
 # How many listing pages (~10 jobs each) to fetch per profession/category URL.
 _DEFAULT_GOTFRIENDS_MAX_PAGES = "3" if AGENT_CV_ID else "2"
 GOTFRIENDS_MAX_PAGES = int(os.getenv("GOTFRIENDS_MAX_PAGES", _DEFAULT_GOTFRIENDS_MAX_PAGES))
+# Playwright fallback is required to clear Cloudflare; disable only if Chromium is unavailable.
+_DEFAULT_GOTFRIENDS_BROWSER_FALLBACK = "true"
+GOTFRIENDS_BROWSER_FALLBACK = os.getenv(
+    "GOTFRIENDS_BROWSER_FALLBACK", _DEFAULT_GOTFRIENDS_BROWSER_FALLBACK
+).lower() in ("1", "true", "yes")
+
+# AllJobs (alljobs.co.il) — guest HTML search
+ALLJOBS_BASE_URL = os.getenv("ALLJOBS_BASE_URL", "https://www.alljobs.co.il").rstrip("/")
+ALLJOBS_ENABLED = os.getenv("ALLJOBS_ENABLED", "true").lower() in ("1", "true", "yes")
+_DEFAULT_ALLJOBS_MAX_PAGES = "3" if AGENT_CV_ID else "2"
+ALLJOBS_MAX_PAGES = int(os.getenv("ALLJOBS_MAX_PAGES", _DEFAULT_ALLJOBS_MAX_PAGES))
+ALLJOBS_HTTP_TIMEOUT_SEC = int(os.getenv("ALLJOBS_HTTP_TIMEOUT_SEC", "30"))
+
+# Indeed Israel (il.indeed.com)
+INDEED_BASE_URL = os.getenv("INDEED_BASE_URL", "https://il.indeed.com").rstrip("/")
+INDEED_ENABLED = os.getenv("INDEED_ENABLED", "true").lower() in ("1", "true", "yes")
+INDEED_LOCATION = os.getenv("INDEED_LOCATION", "Israel").strip() or "Israel"
+_DEFAULT_INDEED_MAX_PAGES = "3" if AGENT_CV_ID else "2"
+INDEED_MAX_PAGES = int(os.getenv("INDEED_MAX_PAGES", _DEFAULT_INDEED_MAX_PAGES))
+INDEED_RESULTS_PER_PAGE = int(os.getenv("INDEED_RESULTS_PER_PAGE", "15"))
+INDEED_HTTP_TIMEOUT_SEC = int(os.getenv("INDEED_HTTP_TIMEOUT_SEC", "30"))
+_DEFAULT_INDEED_BROWSER_FALLBACK = "false" if AGENT_CV_ID else "true"
+INDEED_BROWSER_FALLBACK = os.getenv(
+    "INDEED_BROWSER_FALLBACK", _DEFAULT_INDEED_BROWSER_FALLBACK
+).lower() in ("1", "true", "yes")
+
+# Secret Tel Aviv Jobs (jobs.secrettelaviv.com)
+SECRET_TEL_AVIV_BASE_URL = os.getenv(
+    "SECRET_TEL_AVIV_BASE_URL", "https://jobs.secrettelaviv.com"
+).rstrip("/")
+SECRET_TEL_AVIV_ENABLED = os.getenv("SECRET_TEL_AVIV_ENABLED", "true").lower() in (
+    "1", "true", "yes",
+)
+_DEFAULT_SECRET_TEL_AVIV_MAX_PAGES = "3" if AGENT_CV_ID else "2"
+SECRET_TEL_AVIV_MAX_PAGES = int(
+    os.getenv("SECRET_TEL_AVIV_MAX_PAGES", _DEFAULT_SECRET_TEL_AVIV_MAX_PAGES)
+)
+SECRET_TEL_AVIV_HTTP_TIMEOUT_SEC = int(os.getenv("SECRET_TEL_AVIV_HTTP_TIMEOUT_SEC", "30"))
+_DEFAULT_SECRET_TEL_AVIV_BROWSER_FALLBACK = "false" if AGENT_CV_ID else "true"
+SECRET_TEL_AVIV_BROWSER_FALLBACK = os.getenv(
+    "SECRET_TEL_AVIV_BROWSER_FALLBACK", _DEFAULT_SECRET_TEL_AVIV_BROWSER_FALLBACK
+).lower() in ("1", "true", "yes")
+
+# Geektime Insider careers portal
+GEEKTIME_BASE_URL = os.getenv("GEEKTIME_BASE_URL", "https://insider.geektime.co.il").rstrip("/")
+GEEKTIME_ENABLED = os.getenv("GEEKTIME_ENABLED", "true").lower() in ("1", "true", "yes")
+_DEFAULT_GEEKTIME_MAX_PAGES = "2" if AGENT_CV_ID else "2"
+GEEKTIME_MAX_PAGES = int(os.getenv("GEEKTIME_MAX_PAGES", _DEFAULT_GEEKTIME_MAX_PAGES))
+GEEKTIME_HTTP_TIMEOUT_SEC = int(os.getenv("GEEKTIME_HTTP_TIMEOUT_SEC", "30"))
+_DEFAULT_GEEKTIME_BROWSER_FALLBACK = "false" if AGENT_CV_ID else "true"
+GEEKTIME_BROWSER_FALLBACK = os.getenv(
+    "GEEKTIME_BROWSER_FALLBACK", _DEFAULT_GEEKTIME_BROWSER_FALLBACK
+).lower() in ("1", "true", "yes")
 
 # Drushim JSON search API (paginated; HTML scrape only returns the first SSR page).
 DRUSHIM_API_BASE_URL = os.getenv("DRUSHIM_API_BASE_URL", "https://webapi.drushim.co.il").rstrip("/")
