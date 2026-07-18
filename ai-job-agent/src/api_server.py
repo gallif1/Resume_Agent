@@ -797,14 +797,34 @@ def _parse_json_list(value) -> list:
 
 
 def _job_description_text(match: dict) -> str:
-    """Prefer the enriched full description, fall back to the listing snippet."""
+    """Prefer the enriched full description, fall back to the listing snippet.
+
+    Always injects a Hebrew publication-date header at the top of the text box.
+    """
+    from date_utils import inject_posted_date_header, normalize_posted_date
+
     full = (match.get("full_description") or "").strip()
-    if full:
-        return full
-    return (match.get("description") or "").strip()
+    body = full if full else (match.get("description") or "").strip()
+    posted = normalize_posted_date(
+        match.get("posted_date")
+        or match.get("first_seen_at")
+        or match.get("collected_at")
+        or match.get("job_created_at"),
+        default_to_today=True,
+    )
+    return inject_posted_date_header(body, posted)
 
 
 def _match_public(match: dict) -> dict:
+    from date_utils import normalize_posted_date
+
+    posted_date = normalize_posted_date(
+        match.get("posted_date")
+        or match.get("first_seen_at")
+        or match.get("collected_at")
+        or match.get("job_created_at"),
+        default_to_today=True,
+    )
     return {
         "match_id": match.get("match_id"),
         "job_id": match.get("job_id"),
@@ -815,7 +835,10 @@ def _match_public(match: dict) -> dict:
         "job_url": match.get("job_url"),
         "source": match.get("source"),
         "description": _job_description_text(match),
-        "job_created_at": match.get("job_created_at")
+        "posted_date": posted_date,
+        # Prefer board publication date for chronological UI sorting.
+        "job_created_at": posted_date
+        or match.get("job_created_at")
         or match.get("first_seen_at")
         or match.get("collected_at"),
         "match_score": match.get("match_score"),

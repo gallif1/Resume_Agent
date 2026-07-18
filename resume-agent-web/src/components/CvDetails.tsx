@@ -111,6 +111,29 @@ function formatDate(iso: string | null): string {
   }).format(d);
 }
 
+/** Parse board/API dates into a numeric timestamp for chronological sorting. */
+function matchDateMs(match: CvMatch): number {
+  const raw = (match.posted_date || match.job_created_at || "").trim();
+  if (!raw) return 0;
+  // YYYY-MM-DD → UTC midnight so lexicographic ISO dates sort as real dates.
+  const normalized =
+    /^\d{4}-\d{2}-\d{2}$/.test(raw) ? `${raw}T00:00:00.000Z` : raw.replace(" ", "T");
+  const ms = Date.parse(normalized);
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+function sortMatchesChronologically(
+  items: CvMatch[],
+  order: MatchSortOrder
+): CvMatch[] {
+  const dir = order === "asc" ? 1 : -1;
+  return [...items].sort((a, b) => {
+    const diff = matchDateMs(a) - matchDateMs(b);
+    if (diff !== 0) return diff * dir;
+    return (b.match_id ?? 0) - (a.match_id ?? 0);
+  });
+}
+
 function isActiveApplication(status: JobApplicationStatus | undefined): boolean {
   return status === "pending" || status === "in_progress";
 }
@@ -204,8 +227,16 @@ export default function CvDetails({
       if (isPotentialMatch(m)) potential.push(m);
       else primary.push(m);
     }
+    // Re-apply chronological compare on the client so date sort never falls
+    // back to alphabetical string ordering after bucket splits.
+    if (sortBy === "date") {
+      return {
+        primaryMatches: sortMatchesChronologically(primary, sortOrder),
+        potentialMatches: sortMatchesChronologically(potential, sortOrder),
+      };
+    }
     return { primaryMatches: primary, potentialMatches: potential };
-  }, [matches]);
+  }, [matches, sortBy, sortOrder]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -746,7 +777,7 @@ export default function CvDetails({
             <div className="job-description-block">
               <h4 className="job-description-title">תיאור המשרה</h4>
               {m.description?.trim() ? (
-                <pre className="job-description-text" dir="auto">
+                <pre className="job-description-text" dir="rtl" lang="he">
                   {m.description.trim()}
                 </pre>
               ) : (
@@ -1167,17 +1198,17 @@ export default function CvDetails({
         <h2>התאמות מהסריקה האחרונה</h2>
         <div className="matches-toolbar">
           <label className="sort-control">
-            <span className="sort-label">מיון</span>
+            <span className="sort-label">מיין לפי</span>
             <select
               className="sort-select"
               value={`${sortBy}:${sortOrder}`}
               onChange={(e) => handleSortChange(e.target.value)}
-              aria-label="מיון משרות"
+              aria-label="מיין לפי תאריך או ציון"
             >
               <option value="score:desc">ציון התאמה (גבוה לנמוך)</option>
               <option value="score:asc">ציון התאמה (נמוך לגבוה)</option>
-              <option value="date:desc">תאריך (חדש לישן)</option>
-              <option value="date:asc">תאריך (ישן לחדש)</option>
+              <option value="date:desc">מיין לפי תאריך (חדש לישן)</option>
+              <option value="date:asc">מיין לפי תאריך (ישן לחדש)</option>
               <option value="site:asc">אתר (א–ת)</option>
               <option value="site:desc">אתר (ת–א)</option>
             </select>

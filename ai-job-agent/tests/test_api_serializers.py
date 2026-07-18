@@ -44,6 +44,7 @@ def test_match_public_parses_skill_lists_and_defaults_status():
         "title": "Dev",
         "description": "short",
         "full_description": "full job text",
+        "posted_date": "2026-07-08",
         "matched_skills": '["python"]',
         "missing_skills": None,
         "ai_missing_skills": '["docker"]',
@@ -54,7 +55,9 @@ def test_match_public_parses_skill_lists_and_defaults_status():
     assert out["matched_skills"] == ["python"]
     assert out["missing_skills"] == ["docker"]  # falls back to ai_missing_skills
     assert out["application_status"] == db.CV_APP_NOT_SENT
-    assert out["description"] == "full job text"
+    assert out["description"].startswith("📅 תאריך פרסום: 08/07/2026")
+    assert "full job text" in out["description"]
+    assert out["posted_date"] == "2026-07-08"
 
 
 def test_match_public_includes_ats_fields():

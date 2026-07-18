@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from config import DB_PATH, LEGACY_DB_PATH, REGISTRY_DB_PATH, cv_db_path
+from date_utils import normalize_posted_date, today_iso
 from job_identity import (
     compute_job_content_hash,
     compute_job_hash,
@@ -272,6 +273,7 @@ def _apply_jobs_migrations(conn: sqlite3.Connection) -> None:
             ("job_profile", "TEXT"),
             ("job_profile_hash", "TEXT"),
             ("is_analyzed", "INTEGER DEFAULT 0"),
+            ("posted_date", "TEXT"),
         ]:
         try:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {col_type}")
@@ -282,6 +284,30 @@ def _apply_jobs_migrations(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_hash ON jobs(job_hash)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # job_url is UNIQUE in the base schema; reinforce for older DBs that lost it.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_url ON jobs(job_url)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET posted_date = substr(
+                COALESCE(first_seen_at, collected_at, created_at), 1, 10
+            )
+            WHERE posted_date IS NULL
+              AND COALESCE(first_seen_at, collected_at, created_at) IS NOT NULL
+            """
         )
         conn.commit()
     except sqlite3.OperationalError:
@@ -700,13 +726,19 @@ def insert_job(
     source_query: str | None = None,
     source_category: str | None = None,
     source_strategy_hash: str | None = None,
+    posted_date: str | None = None,
     db_path: Path = DB_PATH,
 ) -> int | None:
-    """Insert a job record. Returns the new row id, or None if the job already exists."""
+    """Insert a job record. Returns the new row id, or None if the job already exists.
+
+    Uses ``INSERT OR IGNORE`` so UNIQUE ``job_url`` / ``job_hash`` collisions are
+    idempotent across re-runs of the collect agent.
+    """
     canonical_url = normalize_job_url(job_url) or job_url.strip()
     job_hash = compute_job_hash(canonical_url, title, company or "", location or "")
     now = _utc_now()
     content_hash = listing_content_hash(title, company or "", location or "", description or "")
+    posted = normalize_posted_date(posted_date, default_to_today=True) or today_iso()
     source_queries_json = json.dumps(
         [source_query] if source_query else [], ensure_ascii=False
     )
@@ -728,14 +760,14 @@ def insert_job(
         try:
             cursor = conn.execute(
                 """
-                INSERT INTO jobs (
+                INSERT OR IGNORE INTO jobs (
                     title, company, location, job_url, source, description, match_score,
                     job_hash, collected_at, first_seen_at, last_seen_at, job_content_hash,
                     source_query, source_category, source_strategy_hash,
                     source_queries, source_categories, seen_count,
-                    is_enriched, is_matched, enrich_attempts
+                    is_enriched, is_matched, enrich_attempts, posted_date
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, ?)
                 """,
                 (
                     title,
@@ -755,9 +787,12 @@ def insert_job(
                     source_strategy_hash,
                     source_queries_json,
                     source_categories_json,
+                    posted,
                 ),
             )
             conn.commit()
+            if cursor.rowcount == 0 or not cursor.lastrowid:
+                return None
             return cursor.lastrowid
         except sqlite3.IntegrityError:
             return None
@@ -773,14 +808,16 @@ def touch_existing_job(
     source_query: str | None = None,
     source_category: str | None = None,
     source_strategy_hash: str | None = None,
+    posted_date: str | None = None,
     db_path: Path = DB_PATH,
 ) -> tuple[int | None, bool]:
     """Update an existing job: merge sources, bump seen_count, touch last_seen_at.
 
-    Returns (job_id, content_changed). Does not reset enrichment/matching unless
-    the collected listing content actually changed.
+    Returns (job_id, content_changed). Never resets enrichment/matching — re-running
+    collect for an already-known job must skip Enrich/Match entirely.
     """
     canonical_url = normalize_job_url(job_url) or job_url.strip()
+    incoming_posted = normalize_posted_date(posted_date, default_to_today=False)
 
     with get_connection(db_path) as conn:
         row = find_existing_job(
@@ -813,6 +850,12 @@ def touch_existing_job(
         )
         seen_count = int(row["seen_count"] or 1) + 1
         first_seen = row["first_seen_at"] or row["collected_at"] or now
+        # Prefer an earlier (older) board publication date when we learn a better one.
+        existing_posted = row["posted_date"] if "posted_date" in row.keys() else None
+        if incoming_posted and existing_posted:
+            posted = min(str(incoming_posted), str(existing_posted))
+        else:
+            posted = incoming_posted or existing_posted
 
         if content_changed:
             conn.execute(
@@ -823,8 +866,7 @@ def touch_existing_job(
                     last_seen_at = ?, first_seen_at = COALESCE(first_seen_at, ?),
                     source_query = ?, source_category = ?, source_strategy_hash = ?,
                     source_queries = ?, source_categories = ?, seen_count = ?,
-                    is_enriched = 0, is_matched = 0, full_description = NULL,
-                    enrich_status = NULL
+                    posted_date = COALESCE(?, posted_date)
                 WHERE id = ?
                 """,
                 (
@@ -843,6 +885,7 @@ def touch_existing_job(
                     merged_queries,
                     merged_categories,
                     seen_count,
+                    posted,
                     row["id"],
                 ),
             )
@@ -857,7 +900,8 @@ def touch_existing_job(
                     source_category = COALESCE(?, source_category),
                     source_strategy_hash = COALESCE(?, source_strategy_hash),
                     source_queries = ?, source_categories = ?,
-                    seen_count = ?
+                    seen_count = ?,
+                    posted_date = COALESCE(?, posted_date)
                 WHERE id = ?
                 """,
                 (
@@ -872,6 +916,7 @@ def touch_existing_job(
                     merged_queries,
                     merged_categories,
                     seen_count,
+                    posted,
                     row["id"],
                 ),
             )
@@ -889,6 +934,7 @@ def upsert_collected_job(
     source_query: str | None = None,
     source_category: str | None = None,
     source_strategy_hash: str | None = None,
+    posted_date: str | None = None,
     db_path: Path = DB_PATH,
 ) -> tuple[int | None, bool]:
     """Insert a new job or touch last_seen_at. Returns (job_id, is_new)."""
@@ -902,6 +948,7 @@ def upsert_collected_job(
         source_query=source_query,
         source_category=source_category,
         source_strategy_hash=source_strategy_hash,
+        posted_date=posted_date,
         db_path=db_path,
     )
     if job_id is not None:
@@ -916,6 +963,7 @@ def upsert_collected_job(
         source_query=source_query,
         source_category=source_category,
         source_strategy_hash=source_strategy_hash,
+        posted_date=posted_date,
         db_path=db_path,
     )
     return existing_id, False
@@ -1961,9 +2009,16 @@ def refresh_cv_job_match_scan(
         return cursor.rowcount > 0
 
 
+# Date sort uses YYYY-MM-DD posted_date first so ORDER BY is chronological,
+# not lexicographic across mixed timestamp string formats.
 _MATCH_SORT_COLUMNS = {
     "score": "m.match_score",
-    "date": "COALESCE(j.first_seen_at, j.collected_at, j.created_at)",
+    "date": (
+        "COALESCE("
+        "j.posted_date, "
+        "substr(COALESCE(j.first_seen_at, j.collected_at, j.created_at), 1, 10)"
+        ")"
+    ),
     "site": "LOWER(COALESCE(j.source, ''))",
 }
 
@@ -1980,7 +2035,7 @@ def get_cv_matches(
     """Return a CV's job matches joined with the global job record.
 
     Default sort: best match score first (potential junior matches last).
-    Optional ``sort_by``: ``score``, ``date`` (scraped/created), or ``site``.
+    Optional ``sort_by``: ``score``, ``date`` (board posted_date), or ``site``.
     Optional ``order``: ``asc`` or ``desc`` (default depends on sort_by).
     When ``latest_only`` is True, only the matches produced by the CV's most
     recent scan are returned.
@@ -2061,6 +2116,7 @@ def get_cv_matches(
             j.source,
             j.description,
             j.full_description,
+            j.posted_date,
             j.created_at AS job_created_at,
             j.collected_at,
             j.first_seen_at

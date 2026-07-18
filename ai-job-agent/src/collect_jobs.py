@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -54,6 +55,7 @@ from config import (
     LOGS_DIR,
     SECRET_TEL_AVIV_MAX_PAGES,
 )
+from date_utils import normalize_posted_date, pick_raw_posted_date
 from db import get_known_job_identity_keys, init_db, upsert_collected_job
 from job_boards import collection_searches, job_boards_label, normalize_job_board_ids
 from scrapers.alljobs_scraper import collect_alljobs_jobs
@@ -176,6 +178,13 @@ EXTRACT_JOBS_JS = """
         const href = link
             ? new URL(link.getAttribute("href"), window.location.origin).href
             : "";
+        const dateEl = item.querySelector(
+            "time[datetime], .job-details-sub time, [class*='date'], [class*='Date'], .display-14"
+        );
+        const posted_date =
+            dateEl?.getAttribute?.("datetime") ||
+            dateEl?.innerText?.trim() ||
+            "";
 
         if (!title || !href) {
             continue;
@@ -188,12 +197,44 @@ EXTRACT_JOBS_JS = """
             job_url: href,
             source: "drushim",
             description: description || "",
+            posted_date: posted_date || "",
         });
     }
 
     return jobs;
 }
 """
+
+
+def _extract_drushim_posted_raw(item: dict[str, Any], content: dict, info: dict) -> Any:
+    """Pull the best available publication-date field from a Drushim API card.
+
+    Absolute ISO/timestamp fields are preferred over Hebrew relative strings.
+    """
+    return pick_raw_posted_date(
+        info.get("DateActual"),
+        info.get("dateActual"),
+        info.get("FirstPublishDate"),
+        info.get("firstPublishDate"),
+        info.get("PublishDate"),
+        info.get("publishDate"),
+        info.get("CreateDate"),
+        info.get("createDate"),
+        info.get("UpdateDate"),
+        info.get("updateDate"),
+        info.get("Date"),
+        content.get("DateActual"),
+        content.get("dateActual"),
+        content.get("FirstPublishDate"),
+        item.get("datePosted"),
+        item.get("DatePosted"),
+        item.get("postedAt"),
+        item.get("PostedAt"),
+        info.get("JumpDateString"),
+        info.get("jumpDateString"),
+        content.get("JumpDateString"),
+        item.get("JumpDateString"),
+    )
 
 
 def build_drushim_search_url(query: str) -> str:
@@ -289,6 +330,10 @@ def parse_drushim_api_jobs(payload: dict[str, Any] | list[Any] | None) -> list[d
             or ""
         ).strip()
         description = _strip_html_text(content.get("Description"))
+        posted_date = normalize_posted_date(
+            _extract_drushim_posted_raw(item, content, info),
+            default_to_today=True,
+        )
 
         jobs.append({
             "title": title,
@@ -297,6 +342,7 @@ def parse_drushim_api_jobs(payload: dict[str, Any] | list[Any] | None) -> list[d
             "job_url": canonical,
             "source": "drushim",
             "description": description,
+            "posted_date": posted_date,
         })
 
     return jobs
@@ -316,6 +362,9 @@ def parse_drushim_search_html(html: str) -> list[dict]:
         location_el = item.select_one(".job-details-sub .display-18 span")
         description_el = item.select_one(".job-intro p, .vacancyMain p")
         link_el = item.select_one('a[href*="/job/"]')
+        date_el = item.select_one(
+            "time[datetime], .job-details-sub time, [class*='date'], [class*='Date']"
+        )
 
         title = title_el.get_text(strip=True) if title_el else ""
         href = (link_el.get("href") or "").strip() if link_el else ""
@@ -332,6 +381,22 @@ def parse_drushim_search_html(html: str) -> list[dict]:
         location = location_el.get_text(strip=True) if location_el else ""
         location = location.rstrip("|").strip()
 
+        raw_date = ""
+        if date_el is not None:
+            raw_date = (date_el.get("datetime") or date_el.get_text(strip=True) or "").strip()
+        if not raw_date:
+            # Fallback: Hebrew relative fragments often sit in the details sub-row.
+            for span in item.select(".job-details-sub span, .display-14, .display-16"):
+                text = span.get_text(strip=True)
+                if text and (
+                    "היום" in text
+                    or "אתמול" in text
+                    or "לפני" in text
+                    or re_search_date(text)
+                ):
+                    raw_date = text
+                    break
+
         jobs.append({
             "title": title,
             "company": company_el.get_text(strip=True) if company_el else "",
@@ -339,9 +404,18 @@ def parse_drushim_search_html(html: str) -> list[dict]:
             "job_url": job_url,
             "source": "drushim",
             "description": description_el.get_text(strip=True) if description_el else "",
+            "posted_date": normalize_posted_date(raw_date, default_to_today=True),
         })
 
     return jobs
+
+
+def re_search_date(text: str) -> bool:
+    """True when text looks like a short numeric/relative date fragment."""
+    return bool(
+        re.search(r"\d{1,2}[./-]\d{1,2}", text)
+        or re.search(r"\d+\s*(יום|ימים|שעה|שעות|שבוע)", text)
+    )
 
 
 def collect_drushim_jobs_api(
@@ -796,10 +870,19 @@ def _parse_linkedin_cards(html: str) -> list[dict]:
         title_el = card.select_one("h3.base-search-card__title, h3")
         company_el = card.select_one("h4.base-search-card__subtitle a, h4 a, h4")
         location_el = card.select_one("span.job-search-card__location")
+        date_el = card.select_one(
+            "time.job-search-card__listdate, "
+            "time.job-search-card__listdate--new, "
+            "time[datetime]"
+        )
 
         title = title_el.get_text(strip=True) if title_el else ""
         if not title:
             continue
+
+        raw_date = ""
+        if date_el is not None:
+            raw_date = (date_el.get("datetime") or date_el.get_text(strip=True) or "").strip()
 
         jobs.append({
             "title": title,
@@ -808,6 +891,7 @@ def _parse_linkedin_cards(html: str) -> list[dict]:
             "job_url": href,
             "source": "linkedin",
             "description": "",
+            "posted_date": normalize_posted_date(raw_date, default_to_today=True),
         })
 
     return jobs
@@ -965,8 +1049,8 @@ def save_jobs_to_db(
 ) -> tuple[int, int, int, int, int, int, int]:
     """Upsert jobs into SQLite with strict run-level deduplication.
 
-    All scraped jobs are saved — seniority/experience exclude keywords are NOT
-    applied during collection (they belong in matching/scoring only).
+    Already-known jobs (by identity key / UNIQUE job_url) are lightly touched
+    only — Enrich and Match must not re-process them on subsequent agent runs.
 
     Returns:
         (raw_found, unique_processed, duplicates_skipped, already_in_db,
@@ -997,6 +1081,9 @@ def save_jobs_to_db(
         already_known = job_key in known_db_keys
         seen_job_keys.add(job_key)
         unique_processed += 1
+        posted_date = normalize_posted_date(
+            job.get("posted_date"), default_to_today=True
+        )
 
         job_id, is_new = upsert_collected_job(
             title=title,
@@ -1008,8 +1095,10 @@ def save_jobs_to_db(
             source_query=source_query,
             source_category=source_category,
             source_strategy_hash=source_strategy_hash,
+            posted_date=posted_date,
         )
         if already_known and not is_new:
+            # Existing identity — skip Enrich/Match by never resetting pipeline flags.
             already_in_db += 1
             if job_id is not None and job_key not in touched_job_keys:
                 touched_once += 1
@@ -1020,9 +1109,13 @@ def save_jobs_to_db(
             inserted += 1
             known_db_keys.add(job_key)
             touched_job_keys.add(job_key)
-        elif job_id is not None and job_key not in touched_job_keys:
-            touched_once += 1
-            touched_job_keys.add(job_key)
+        elif job_id is not None:
+            # Collision via UNIQUE constraint (URL/hash) — treat as already in DB.
+            already_in_db += 1
+            if job_key not in touched_job_keys:
+                touched_once += 1
+                touched_job_keys.add(job_key)
+            known_db_keys.add(job_key)
 
     return (
         raw_found,

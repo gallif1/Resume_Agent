@@ -22,6 +22,7 @@ SAMPLE_LINKEDIN_HTML = """
       </a>
       <h4 class="base-search-card__subtitle"><a>Acme</a></h4>
       <span class="job-search-card__location">Tel Aviv, Israel</span>
+      <time class="job-search-card__listdate--new" datetime="2026-07-18">1 day ago</time>
     </div>
   </li>
   <li>
@@ -31,6 +32,7 @@ SAMPLE_LINKEDIN_HTML = """
       </a>
       <h4 class="base-search-card__subtitle"><a>Beta</a></h4>
       <span class="job-search-card__location">Israel</span>
+      <time class="job-search-card__listdate" datetime="2026-07-10">1 week ago</time>
     </div>
   </li>
 </ul>
@@ -56,6 +58,8 @@ def test_parse_linkedin_cards_extracts_jobs():
     assert jobs[0]["company"] == "Acme"
     assert jobs[0]["job_url"] == "https://www.linkedin.com/jobs/view/1111111"
     assert jobs[0]["source"] == "linkedin"
+    assert jobs[0]["posted_date"] == "2026-07-18"
+    assert jobs[1]["posted_date"] == "2026-07-10"
 
 
 def test_collect_linkedin_jobs_paginates_with_actual_page_size():

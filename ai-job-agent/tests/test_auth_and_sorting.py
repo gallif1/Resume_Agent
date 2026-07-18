@@ -117,13 +117,99 @@ def test_match_sorting_by_site_and_score(db_path):
     assert [m["source"] for m in by_site] == ["drushim", "gotfriends", "linkedin"]
 
 
+def test_match_sorting_by_posted_date_chronological(db_path):
+    db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
+    oldest = insert_job(db_path, title="Old", url="https://x/old")
+    newest = insert_job(db_path, title="New", url="https://x/new")
+    middle = insert_job(db_path, title="Mid", url="https://x/mid")
+
+    with db.get_connection(db_path) as conn:
+        conn.execute("UPDATE jobs SET posted_date = ? WHERE id = ?", ("2026-01-01", oldest))
+        conn.execute("UPDATE jobs SET posted_date = ? WHERE id = ?", ("2026-07-18", newest))
+        conn.execute("UPDATE jobs SET posted_date = ? WHERE id = ?", ("2026-03-15", middle))
+        conn.commit()
+
+    scan = db.create_scan("cv-a", db_path=db_path)
+    for job_id in (oldest, newest, middle):
+        db.upsert_cv_job_match("cv-a", job_id, _match_fields(70), scan_id=scan, db_path=db_path)
+
+    desc = db.get_cv_matches(
+        "cv-a", latest_only=True, sort_by="date", order="desc", db_path=db_path
+    )
+    assert [m["job_id"] for m in desc] == [newest, middle, oldest]
+
+    asc = db.get_cv_matches(
+        "cv-a", latest_only=True, sort_by="date", order="asc", db_path=db_path
+    )
+    assert [m["job_id"] for m in asc] == [oldest, middle, newest]
+
+
+def test_recollect_does_not_duplicate_or_reset_enrichment(db_path):
+    first = db.insert_job(
+        title="Engineer",
+        job_url="https://www.drushim.co.il/job/999/abc",
+        company="Acme",
+        location="Tel Aviv",
+        source="drushim",
+        description="v1",
+        posted_date="2026-07-01",
+        db_path=db_path,
+    )
+    assert first is not None
+    with db.get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET is_enriched = 1, enrich_status = 'success',
+                full_description = 'full', is_matched = 1
+            WHERE id = ?
+            """,
+            (first,),
+        )
+        conn.commit()
+
+    second, is_new = db.upsert_collected_job(
+        title="Engineer",
+        job_url="https://www.drushim.co.il/job/999/abc/?utm_source=x",
+        company="Acme",
+        location="Tel Aviv",
+        source="drushim",
+        description="v2 changed snippet",
+        posted_date="2026-07-02",
+        db_path=db_path,
+    )
+    assert is_new is False
+    assert second == first
+
+    row = db.get_job_by_id(first, db_path=db_path)
+    assert row is not None
+    assert row["is_enriched"] == 1
+    assert row["full_description"] == "full"
+    assert row["is_matched"] == 1
+    # Keep the earlier board publication date.
+    assert row["posted_date"] == "2026-07-01"
+
+    again = db.insert_job(
+        title="Engineer",
+        job_url="https://www.drushim.co.il/job/999/abc",
+        company="Acme",
+        source="drushim",
+        db_path=db_path,
+    )
+    assert again is None
+
+
 def test_match_payload_includes_full_description(db_path):
     db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
     job_id = insert_job(db_path, title="Dev", url="https://x/desc")
     with db.get_connection(db_path) as conn:
         conn.execute(
-            "UPDATE jobs SET description = ?, full_description = ? WHERE id = ?",
-            ("short", "תיאור מלא של המשרה\nשורה שנייה", job_id),
+            """
+            UPDATE jobs
+            SET description = ?, full_description = ?, posted_date = ?
+            WHERE id = ?
+            """,
+            ("short", "תיאור מלא של המשרה\nשורה שנייה", "2026-07-08", job_id),
         )
         conn.commit()
     scan = db.create_scan("cv-a", db_path=db_path)
@@ -131,8 +217,10 @@ def test_match_payload_includes_full_description(db_path):
 
     rows = db.get_cv_matches("cv-a", latest_only=True, db_path=db_path)
     public = api_server._match_public(rows[0])
+    assert public["description"].startswith("📅 תאריך פרסום: 08/07/2026")
     assert "תיאור מלא" in public["description"]
     assert "שורה שנייה" in public["description"]
+    assert public["posted_date"] == "2026-07-08"
 
 
 def test_password_hash_roundtrip():

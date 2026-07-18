@@ -267,6 +267,8 @@ export interface CvMatch {
   source: string | null;
   /** Full job description text (enriched), for the expanded job view. */
   description?: string | null;
+  /** Board publication date as YYYY-MM-DD (preferred for chronological sort). */
+  posted_date?: string | null;
   job_created_at?: string | null;
   match_score: number | null;
   match_reason: string | null;
