@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import { ArrowRight, Search } from "lucide-react";
 import {
   applyToJob,
   downloadTailoredCvPdf,
@@ -650,7 +651,8 @@ export default function CvDetails({
     <section>
       <div className="details-topbar">
         <button className="btn btn-ghost" onClick={onBack}>
-          ← חזרה
+          <ArrowRight size={16} aria-hidden />
+          חזרה
         </button>
         <div className="details-title">
           <h2>{title}</h2>
@@ -982,7 +984,11 @@ export default function CvDetails({
 
       {matches.length === 0 && !loading ? (
         <div className="empty-state">
-          <div className="empty-icon">🔍</div>
+          <div className="empty-icon" aria-hidden>
+            <span className="icon-bubble icon-bubble-blue">
+              <Search size={22} />
+            </span>
+          </div>
           <p>אין עדיין התאמות לקובץ הזה.</p>
           {displayWarnings.length > 0 ? (
             <p className="empty-hint">

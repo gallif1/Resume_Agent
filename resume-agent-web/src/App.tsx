@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FileText, PlugZap, RefreshCw } from "lucide-react";
 import AuthView from "./components/AuthView";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
-import RunAgentModal from "./components/RunAgentModal";
 import {
   checkHealth,
   clearAuthSession,
@@ -64,7 +64,6 @@ export default function App() {
     },
   ]);
   const [jobSitesLoading, setJobSitesLoading] = useState(false);
-  const [runModalOpen, setRunModalOpen] = useState(false);
   const pollRef = useRef<number | null>(null);
   const scanRunningRef = useRef(false);
   const healthFailCount = useRef(0);
@@ -251,12 +250,12 @@ export default function App() {
       try {
         const s = await getJobMatchStatus();
         setScanStatus(s);
+        if (typeof s.match_count === "number") {
+          setWorkspaceMatchCount(s.match_count);
+        }
         if (!s.running) {
           stopPolling();
           refreshCvs();
-          if ((s.match_count ?? 0) > 0) {
-            setWorkspaceMatchCount(s.match_count ?? 0);
-          }
           if (s.error) {
             showToast(s.error);
           }
@@ -381,31 +380,16 @@ export default function App() {
     }
   };
 
-  const handleRun = () => {
+  const handleRun = async (siteIds: string[]) => {
     if (scanRunningRef.current) return;
     if (cvs.length === 0) {
       showToast("יש להעלות לפחות קובץ קורות חיים אחד");
       return;
     }
-    window.setTimeout(() => setRunModalOpen(true), 0);
-  };
-
-  const handleStop = async () => {
-    setStopping(true);
-    try {
-      await stopJobMatcher();
-      showToast("עוצר את הסריקה…");
-      startPolling();
-    } catch (e) {
-      setStopping(false);
-      showToast(
-        `עצירת הסריקה נכשלה: ${e instanceof Error ? e.message : ""}`
-      );
+    if (siteIds.length === 0) {
+      showToast("יש לבחור לפחות אתר אחד לסריקה");
+      return;
     }
-  };
-
-  const confirmRun = async (siteIds: string[]) => {
-    setRunModalOpen(false);
     try {
       await runJobMatcher({ job_sites: siteIds });
       setShowMatches(false);
@@ -426,6 +410,20 @@ export default function App() {
     } catch (e) {
       showToast(
         `הרצת הסוכן נכשלה: ${e instanceof Error ? e.message : ""}`
+      );
+    }
+  };
+
+  const handleStop = async () => {
+    setStopping(true);
+    try {
+      await stopJobMatcher();
+      showToast("עוצר את הסריקה…");
+      startPolling();
+    } catch (e) {
+      setStopping(false);
+      showToast(
+        `עצירת הסריקה נכשלה: ${e instanceof Error ? e.message : ""}`
       );
     }
   };
@@ -453,21 +451,7 @@ export default function App() {
         <div className="header-inner">
           <div className="logo">
             <span className="logo-icon" aria-hidden="true">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="M14 2v6h6M8 13h8M8 17h5"
-                  stroke="currentColor"
-                  strokeWidth="1.75"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <FileText size={20} strokeWidth={2} />
             </span>
             <span className="logo-text">
               Resume<b>Agent</b>
@@ -536,7 +520,11 @@ export default function App() {
           />
         ) : !serverUp && !scanActive ? (
           <div className="empty-state">
-            <div className="empty-icon">🔌</div>
+            <div className="empty-icon" aria-hidden>
+              <span className="icon-bubble icon-bubble-amber">
+                <PlugZap size={22} />
+              </span>
+            </div>
             <p>השרת של הסוכן לא זמין.</p>
             <p className="empty-hint">
               הרץ מהשורש: <code>./scripts/share-dev.sh</code>
@@ -549,6 +537,7 @@ export default function App() {
               disabled={healthChecking}
               onClick={() => pingServer()}
             >
+              <RefreshCw size={16} aria-hidden />
               {healthChecking ? "בודק..." : "נסה שוב"}
             </button>
           </div>
@@ -567,6 +556,8 @@ export default function App() {
             error={cvsError}
             scanStatus={scanStatus}
             workspaceMatchCount={workspaceMatchCount}
+            jobSites={jobSites}
+            jobSitesLoading={jobSitesLoading}
             stopping={stopping}
             onUpload={handleUpload}
             onDelete={handleDelete}
@@ -588,16 +579,6 @@ export default function App() {
       </footer>
 
       {toast && <div className="toast">{toast}</div>}
-
-      {runModalOpen && !scanActive && (
-        <RunAgentModal
-          cvName={`${cvs.length} קבצי קורות חיים`}
-          sites={jobSites}
-          loading={jobSitesLoading}
-          onConfirm={confirmRun}
-          onCancel={() => setRunModalOpen(false)}
-        />
-      )}
     </div>
   );
 }

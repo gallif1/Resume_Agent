@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { FileText } from "lucide-react";
 import {
   loginUser,
   registerUser,
@@ -42,21 +43,7 @@ export default function AuthView({ onAuthenticated }: Props) {
       <div className="auth-panel">
         <div className="auth-brand">
           <span className="logo-icon" aria-hidden="true">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinejoin="round"
-              />
-              <path
-                d="M14 2v6h6M8 13h8M8 17h5"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
+            <FileText size={26} strokeWidth={2} />
           </span>
           <h1 className="auth-title">
             Resume<b>Agent</b>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Briefcase, Check, Globe, Play } from "lucide-react";
 import { type JobSite } from "../lib/api";
 
 interface Props {
@@ -91,7 +92,7 @@ export default function RunAgentModal({
               return (
                 <label
                   key={site.id}
-                  className={`site-option ${site.enabled ? "" : "site-option-disabled"}`}
+                  className={`site-option ${checked ? "selected" : ""} ${site.enabled ? "" : "site-option-disabled"}`}
                 >
                   <input
                     type="checkbox"
@@ -99,12 +100,27 @@ export default function RunAgentModal({
                     disabled={!site.enabled}
                     onChange={() => toggle(site.id)}
                   />
+                  <span
+                    className={`icon-bubble icon-bubble-sm ${
+                      checked ? "icon-bubble-blue" : "icon-bubble-slate"
+                    }`}
+                    aria-hidden
+                  >
+                    {site.id === "linkedin" ? (
+                      <Globe size={18} />
+                    ) : (
+                      <Briefcase size={18} />
+                    )}
+                  </span>
                   <span className="site-option-text">
                     <span className="site-option-title">{site.label_he}</span>
                     <span className="site-option-desc">
                       {site.enabled ? site.description_he : "לא זמין בשרת"}
                     </span>
                   </span>
+                  {checked && (
+                    <Check size={16} color="var(--accent)" aria-hidden />
+                  )}
                 </label>
               );
             })}
@@ -144,7 +160,8 @@ export default function RunAgentModal({
             disabled={loading || selected.length === 0}
             onClick={() => onConfirm(selected)}
           >
-            ▶ התחל סריקה
+            <Play size={16} aria-hidden />
+            התחל סריקה חכמה
           </button>
         </div>
       </div>
