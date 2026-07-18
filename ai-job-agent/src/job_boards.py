@@ -4,9 +4,24 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from config import GOTFRIENDS_ENABLED, LINKEDIN_ENABLED
+from config import (
+    ALLJOBS_ENABLED,
+    GEEKTIME_ENABLED,
+    GOTFRIENDS_ENABLED,
+    INDEED_ENABLED,
+    LINKEDIN_ENABLED,
+    SECRET_TEL_AVIV_ENABLED,
+)
 
-JOB_BOARD_ORDER = ("drushim", "linkedin", "gotfriends")
+JOB_BOARD_ORDER = (
+    "drushim",
+    "linkedin",
+    "gotfriends",
+    "alljobs",
+    "indeed",
+    "secret_tel_aviv",
+    "geektime",
+)
 
 JOB_BOARD_META: dict[str, dict[str, str]] = {
     "drushim": {
@@ -24,17 +39,42 @@ JOB_BOARD_META: dict[str, dict[str, str]] = {
         "label_he": "גוטפרנדס",
         "description_he": "gotfriends.co.il",
     },
+    "alljobs": {
+        "label": "AllJobs",
+        "label_he": "אולג'ובס",
+        "description_he": "alljobs.co.il",
+    },
+    "indeed": {
+        "label": "Indeed Israel",
+        "label_he": "אינדיד",
+        "description_he": "il.indeed.com",
+    },
+    "secret_tel_aviv": {
+        "label": "Secret Tel Aviv",
+        "label_he": "סיקרט תל אביב",
+        "description_he": "jobs.secrettelaviv.com",
+    },
+    "geektime": {
+        "label": "Geektime Insider",
+        "label_he": "גיקטיים",
+        "description_he": "insider.geektime.co.il",
+    },
+}
+
+_BOARD_ENABLED_FLAGS: dict[str, Callable[[], bool]] = {
+    "drushim": lambda: True,
+    "linkedin": lambda: LINKEDIN_ENABLED,
+    "gotfriends": lambda: GOTFRIENDS_ENABLED,
+    "alljobs": lambda: ALLJOBS_ENABLED,
+    "indeed": lambda: INDEED_ENABLED,
+    "secret_tel_aviv": lambda: SECRET_TEL_AVIV_ENABLED,
+    "geektime": lambda: GEEKTIME_ENABLED,
 }
 
 
 def is_board_enabled(board_id: str) -> bool:
-    if board_id == "drushim":
-        return True
-    if board_id == "linkedin":
-        return LINKEDIN_ENABLED
-    if board_id == "gotfriends":
-        return GOTFRIENDS_ENABLED
-    return False
+    checker = _BOARD_ENABLED_FLAGS.get(board_id)
+    return bool(checker and checker())
 
 
 def list_job_boards() -> list[dict[str, Any]]:
@@ -69,6 +109,11 @@ def normalize_job_board_ids(site_ids: list[str] | None) -> list[str]:
         board_id = (raw or "").strip().lower()
         if not board_id or board_id in seen:
             continue
+        # Friendly aliases
+        if board_id in {"secrettelaviv", "secret-tel-aviv", "sta"}:
+            board_id = "secret_tel_aviv"
+        if board_id in {"indeed_israel", "indeed-israel"}:
+            board_id = "indeed"
         if board_id not in JOB_BOARD_META:
             raise ValueError(f"אתר לא נתמך: {board_id}")
         if not is_board_enabled(board_id):
@@ -91,4 +136,4 @@ def collection_searches(
     collectors: dict[str, Callable[..., Any]],
 ) -> list[tuple[str, Callable[..., Any]]]:
     selected = normalize_job_board_ids(site_ids)
-    return [(board_id, collectors[board_id]) for board_id in selected]
+    return [(board_id, collectors[board_id]) for board_id in selected if board_id in collectors]

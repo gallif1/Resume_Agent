@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import gotfriends_collector as gf
+from collection_report import CollectionOutcome
 
 
 SAMPLE_LISTING_HTML = """
@@ -38,16 +39,43 @@ def test_parse_gotfriends_listing_returns_empty_for_cloudflare_page():
     assert gf.parse_gotfriends_listing(html) == []
 
 
+def test_parse_gotfriends_listing_reads_next_data_json():
+    html = """
+    <html><body>
+      <script id="__NEXT_DATA__" type="application/json">
+      {"props":{"pageProps":{"jobs":[
+        {"title":"DevOps Engineer בחברת CloudCo","url":"/jobslobby/system/99911/","company":"CloudCo"}
+      ]}}}
+      </script>
+    </body></html>
+    """
+    jobs = gf.parse_gotfriends_listing(html)
+    assert len(jobs) == 1
+    assert jobs[0]["title"].startswith("DevOps Engineer")
+    assert "99911" in jobs[0]["job_url"]
+
+
 def test_fetch_gotfriends_html_uses_playwright_on_http_403():
     blocked = "<html><title>Attention Required! | Cloudflare</title></html>"
     ok = SAMPLE_LISTING_HTML
 
-    with patch("gotfriends_collector.requests.get") as mock_get, patch(
-        "gotfriends_collector.fetch_html_with_playwright",
-        return_value=(200, ok),
-    ) as mock_playwright:
-        mock_get.return_value.status_code = 403
-        mock_get.return_value.text = blocked
+    mock_response = MagicMock()
+    mock_response.status_code = 403
+    mock_response.text = blocked
+
+    with patch("scrapers.gotfriends_scraper._session") as mock_session, patch(
+        "scrapers.gotfriends_scraper._fetch_gotfriends_with_playwright",
+        return_value=(200, ok, []),
+    ) as mock_playwright, patch(
+        "scrapers.gotfriends_scraper.GOTFRIENDS_BROWSER_FALLBACK", True
+    ), patch(
+        "scrapers.gotfriends_scraper._gotfriends_access_blocked", None
+    ):
+        session = MagicMock()
+        session.cookies = MagicMock()
+        session.cookies.__bool__.return_value = True
+        session.get.return_value = mock_response
+        mock_session.return_value = session
 
         status, html = gf.fetch_gotfriends_html("https://www.gotfriends.co.il/jobslobby/software/")
 
@@ -58,20 +86,22 @@ def test_fetch_gotfriends_html_uses_playwright_on_http_403():
 
 def test_collect_gotfriends_jobs_parses_listing_pages():
     with patch(
-        "gotfriends_collector.resolve_gotfriends_listing_urls",
+        "scrapers.gotfriends_scraper.resolve_gotfriends_listing_urls",
         return_value=["https://www.gotfriends.co.il/jobslobby/software/backend-developer/"],
     ), patch(
-        "gotfriends_collector.fetch_gotfriends_html",
-        return_value=(200, SAMPLE_LISTING_HTML),
+        "scrapers.gotfriends_scraper.fetch_gotfriends_page",
+        return_value=(200, SAMPLE_LISTING_HTML, []),
     ):
-        jobs = gf.collect_gotfriends_jobs("backend developer", max_pages=1)
+        outcome = gf.collect_gotfriends_jobs("backend developer", max_pages=1)
 
-    assert len(jobs) == 2
-    assert all(job["source"] == "gotfriends" for job in jobs)
+    assert isinstance(outcome, CollectionOutcome)
+    assert outcome.status == "ok"
+    assert len(outcome.jobs) == 2
+    assert all(job["source"] == "gotfriends" for job in outcome.jobs)
 
 
 def test_resolve_gotfriends_prefers_specific_profession_over_broad_developer():
-    with patch("gotfriends_collector.fetch_profession_slugs", return_value={}):
+    with patch("scrapers.gotfriends_scraper.fetch_profession_slugs", return_value={}):
         urls = gf.resolve_gotfriends_listing_urls("Python Developer")
 
     assert any("python-developer" in url for url in urls)
@@ -80,7 +110,7 @@ def test_resolve_gotfriends_prefers_specific_profession_over_broad_developer():
 
 def test_resolve_gotfriends_caps_broad_lobby_fanout():
     with patch(
-        "gotfriends_collector.fetch_profession_slugs",
+        "scrapers.gotfriends_scraper.fetch_profession_slugs",
         return_value={
             "software": [f"slug-{i}" for i in range(10)],
         },
@@ -90,16 +120,24 @@ def test_resolve_gotfriends_caps_broad_lobby_fanout():
     assert len(urls) <= 3
 
 
-def test_fetch_gotfriends_html_skips_playwright_on_server_mode():
+def test_fetch_gotfriends_html_skips_playwright_when_fallback_disabled():
     blocked = "<html><title>Attention Required! | Cloudflare</title></html>"
+    mock_response = MagicMock()
+    mock_response.status_code = 403
+    mock_response.text = blocked
 
-    with patch("gotfriends_collector.requests.get") as mock_get, patch(
-        "gotfriends_collector.fetch_html_with_playwright"
-    ) as mock_playwright, patch.dict("os.environ", {"AGENT_CV_ID": "cv-test"}, clear=False), patch(
-        "gotfriends_collector.AGENT_CV_ID", "cv-test"
+    with patch("scrapers.gotfriends_scraper._session") as mock_session, patch(
+        "scrapers.gotfriends_scraper._fetch_gotfriends_with_playwright"
+    ) as mock_playwright, patch(
+        "scrapers.gotfriends_scraper.GOTFRIENDS_BROWSER_FALLBACK", False
+    ), patch(
+        "scrapers.gotfriends_scraper._gotfriends_access_blocked", None
     ):
-        mock_get.return_value.status_code = 403
-        mock_get.return_value.text = blocked
+        session = MagicMock()
+        session.cookies = MagicMock()
+        session.cookies.__bool__.return_value = True
+        session.get.return_value = mock_response
+        mock_session.return_value = session
 
         status, html = gf.fetch_gotfriends_html("https://www.gotfriends.co.il/jobslobby/software/")
 
