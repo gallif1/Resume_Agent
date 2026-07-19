@@ -55,8 +55,13 @@ from config import (
     LOGS_DIR,
     SECRET_TEL_AVIV_MAX_PAGES,
 )
-from date_utils import normalize_posted_date, pick_raw_posted_date
-from db import get_known_job_identity_keys, init_db, upsert_collected_job
+from date_utils import (
+    JOB_MAX_AGE_DAYS,
+    filter_jobs_by_max_age,
+    normalize_posted_date,
+    pick_raw_posted_date,
+)
+from db import get_known_job_identity_keys, get_known_job_urls, init_db, upsert_collected_job
 from job_boards import collection_searches, job_boards_label, normalize_job_board_ids
 from scrapers.alljobs_scraper import collect_alljobs_jobs
 from scrapers.geektime_scraper import collect_geektime_jobs
@@ -80,6 +85,8 @@ from role_analyzer import (
 )
 
 DEFAULT_MAX_QUERIES_PER_CATEGORY = COLLECT_MAX_QUERIES
+# Prefer at least 3–4 expanded queries per category when the strategy provides them.
+MIN_EXPANDED_QUERIES = 3
 
 SITE_LABELS_HE = {
     "drushim": "דרושים",
@@ -414,14 +421,60 @@ def re_search_date(text: str) -> bool:
     """True when text looks like a short numeric/relative date fragment."""
     return bool(
         re.search(r"\d{1,2}[./-]\d{1,2}", text)
-        or re.search(r"\d+\s*(יום|ימים|שעה|שעות|שבוע)", text)
+        or re.search(
+            r"\d+\s*(יום|ימים|שעה|שעות|שבוע|שבועות|חודש|חודשים|שנה|שנים)",
+            text,
+        )
+        or re.search(r"(חודשיים|שבועיים|שנתיים|לפני\s+שנה|לפני\s+חודשיים)", text)
     )
+
+
+def _is_known_job_url(job_url: str, known_job_urls: set[str] | None) -> bool:
+    """True when ``job_url`` is already stored (skip before description work)."""
+    if not known_job_urls:
+        return False
+    canonical = normalize_job_url(job_url)
+    return bool(canonical) and canonical in known_job_urls
+
+
+def _apply_collect_filters(
+    page_jobs: list[dict],
+    *,
+    known_job_urls: set[str] | None = None,
+    max_age_days: int = JOB_MAX_AGE_DAYS,
+    apply_age_filter: bool = True,
+) -> tuple[list[dict], int, int, bool]:
+    """Filter one page of scraped jobs for freshness and known URLs.
+
+    Returns ``(kept, age_skipped, known_skipped, all_dated_were_old)``.
+    Known URLs are dropped before age accounting so early-exit only reflects
+    publication dates.
+    """
+    if not page_jobs:
+        return [], 0, 0, False
+
+    known_skipped = 0
+    candidates: list[dict] = []
+    for job in page_jobs:
+        if _is_known_job_url(job.get("job_url", ""), known_job_urls):
+            known_skipped += 1
+            continue
+        candidates.append(job)
+
+    if not apply_age_filter:
+        return candidates, 0, known_skipped, False
+
+    kept, age_skipped, all_old = filter_jobs_by_max_age(
+        candidates, max_age_days=max_age_days
+    )
+    return kept, age_skipped, known_skipped, all_old
 
 
 def collect_drushim_jobs_api(
     query: str,
     *,
     max_pages: int = DRUSHIM_MAX_PAGES,
+    known_job_urls: set[str] | None = None,
 ) -> CollectionOutcome:
     """Fetch Drushim search results via the paginated JSON API."""
     print(f"Searching Drushim (API) for: {query} (max {max_pages} page(s))")
@@ -429,6 +482,8 @@ def collect_drushim_jobs_api(
     seen_urls: set[str] = set()
     last_status: int | None = None
     pages_fetched = 0
+    total_age_skipped = 0
+    total_known_skipped = 0
 
     # Page schedule: initial batch (no page param), then page=1..N-1.
     page_numbers: list[int | None] = [None]
@@ -486,8 +541,20 @@ def collect_drushim_jobs_api(
         if not page_jobs:
             break
 
+        kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
+            page_jobs, known_job_urls=known_job_urls
+        )
+        total_age_skipped += age_skipped
+        total_known_skipped += known_skipped
+        if all_old:
+            print(
+                f"  Drushim API page: all {len(page_jobs)} job(s) older than "
+                f"{JOB_MAX_AGE_DAYS} days — early exit"
+            )
+            break
+
         added = 0
-        for job in page_jobs:
+        for job in kept:
             url_key = job.get("job_url") or ""
             if not url_key or url_key in seen_urls:
                 continue
@@ -498,10 +565,16 @@ def collect_drushim_jobs_api(
         pages_fetched += 1
         next_page = payload.get("NextPageNumber") if isinstance(payload, dict) else None
         # API uses NextPageNumber=-1 when there are no further pages.
-        if added == 0 or next_page in (-1, "-1"):
+        if next_page in (-1, "-1"):
             break
         if index < len(page_numbers) - 1:
             time.sleep(0.75)
+
+    if total_age_skipped or total_known_skipped:
+        print(
+            f"  Drushim API filters: skipped {total_age_skipped} old, "
+            f"{total_known_skipped} already in DB"
+        )
 
     if all_jobs:
         print(
@@ -518,9 +591,15 @@ def collect_drushim_jobs_api(
     )
 
 
-def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
+def collect_drushim_jobs_http(
+    query: str,
+    *,
+    known_job_urls: set[str] | None = None,
+) -> CollectionOutcome:
     """Fetch Drushim search results with plain HTTP (API first, HTML fallback)."""
-    api_outcome = collect_drushim_jobs_api(query, max_pages=DRUSHIM_MAX_PAGES)
+    api_outcome = collect_drushim_jobs_api(
+        query, max_pages=DRUSHIM_MAX_PAGES, known_job_urls=known_job_urls
+    )
     if api_outcome.status == "ok" and api_outcome.jobs:
         return api_outcome
 
@@ -568,8 +647,22 @@ def collect_drushim_jobs_http(query: str) -> CollectionOutcome:
 
     jobs = parse_drushim_search_html(response.text)
     if jobs:
-        print(f"  Drushim HTML extracted {len(jobs)} job card(s) for '{query}'")
-        return CollectionOutcome(jobs=jobs, status="ok")
+        kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
+            jobs, known_job_urls=known_job_urls
+        )
+        if age_skipped or known_skipped:
+            print(
+                f"  Drushim HTML filters: skipped {age_skipped} old, "
+                f"{known_skipped} already in DB"
+            )
+        if all_old:
+            print(
+                f"  Drushim HTML: all {len(jobs)} job(s) older than "
+                f"{JOB_MAX_AGE_DAYS} days — stopping"
+            )
+        if kept:
+            print(f"  Drushim HTML extracted {len(kept)} job card(s) for '{query}'")
+            return CollectionOutcome(jobs=kept, status="ok")
 
     return api_outcome if api_outcome.status != "ok" else CollectionOutcome(
         status="empty",
@@ -627,6 +720,7 @@ def _collect_drushim_with_page(
     *,
     headless: bool,
     allow_visible_retry: bool = True,
+    known_job_urls: set[str] | None = None,
 ) -> CollectionOutcome:
     """Extract Drushim jobs using an existing Playwright page."""
     search_url = build_drushim_search_url(query)
@@ -645,7 +739,9 @@ def _collect_drushim_with_page(
         debug = save_debug_artifacts(page, reason)
         if headless and allow_visible_retry and _interactive_retry_enabled():
             print(f"{reason}. Retrying with a visible browser...")
-            return collect_drushim_jobs(query, headless=False)
+            return collect_drushim_jobs(
+                query, headless=False, known_job_urls=known_job_urls
+            )
         return CollectionOutcome(
             status="http_error",
             reason=reason,
@@ -670,14 +766,20 @@ def _collect_drushim_with_page(
 
         if headless and allow_visible_retry and _interactive_retry_enabled():
             print("Headless extraction failed. Retrying with a visible browser...")
-            return collect_drushim_jobs(query, headless=False)
+            return collect_drushim_jobs(
+                query, headless=False, known_job_urls=known_job_urls
+            )
 
         if _interactive_retry_enabled():
             print("Inspect the browser window, then press Enter to retry extraction.")
             input()
             jobs = extract_jobs_from_page(page)
             if jobs:
-                return CollectionOutcome(jobs=jobs, status="ok")
+                kept, _, _, _ = _apply_collect_filters(
+                    jobs, known_job_urls=known_job_urls
+                )
+                if kept:
+                    return CollectionOutcome(jobs=kept, status="ok")
             save_debug_artifacts(page, "Extraction still failed after manual inspection")
         return CollectionOutcome(
             status=status,
@@ -689,8 +791,22 @@ def _collect_drushim_with_page(
 
     jobs = extract_jobs_from_page(page)
     if jobs:
-        print(f"  Drushim extracted {len(jobs)} job card(s) for '{query}'")
-        return CollectionOutcome(jobs=jobs, status="ok")
+        kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
+            jobs, known_job_urls=known_job_urls
+        )
+        if age_skipped or known_skipped:
+            print(
+                f"  Drushim browser filters: skipped {age_skipped} old, "
+                f"{known_skipped} already in DB"
+            )
+        if all_old:
+            print(
+                f"  Drushim browser: all {len(jobs)} job(s) older than "
+                f"{JOB_MAX_AGE_DAYS} days — stopping"
+            )
+        if kept:
+            print(f"  Drushim extracted {len(kept)} job card(s) for '{query}'")
+            return CollectionOutcome(jobs=kept, status="ok")
 
     reason = "Job cards were present but fields could not be parsed"
     reason_he = "דרושים: נמצאו כרטיסי משרות אך לא ניתן לחלץ את הנתונים (ייתכן שהאתר שינה מבנה)"
@@ -699,14 +815,18 @@ def _collect_drushim_with_page(
 
     if headless and allow_visible_retry and _interactive_retry_enabled():
         print("Could not parse jobs in headless mode. Retrying visibly...")
-        return collect_drushim_jobs(query, headless=False)
+        return collect_drushim_jobs(
+            query, headless=False, known_job_urls=known_job_urls
+        )
 
     if _interactive_retry_enabled():
         print("Inspect the browser window, then press Enter to retry extraction.")
         input()
         jobs = extract_jobs_from_page(page)
         if jobs:
-            return CollectionOutcome(jobs=jobs, status="ok")
+            kept, _, _, _ = _apply_collect_filters(jobs, known_job_urls=known_job_urls)
+            if kept:
+                return CollectionOutcome(jobs=kept, status="ok")
         save_debug_artifacts(page, "Extraction still failed after manual inspection")
 
     return CollectionOutcome(
@@ -740,15 +860,26 @@ class DrushimBrowserSession:
         if self._playwright is not None:
             self._playwright.stop()
 
-    def collect(self, query: str) -> CollectionOutcome:
+    def collect(
+        self,
+        query: str,
+        *,
+        known_job_urls: set[str] | None = None,
+    ) -> CollectionOutcome:
         if self.page is None:
             raise RuntimeError("Drushim browser session is not open")
         # Prefer paginated API even when a browser session is open for fallback.
-        api_outcome = collect_drushim_jobs_api(query, max_pages=DRUSHIM_MAX_PAGES)
+        api_outcome = collect_drushim_jobs_api(
+            query, max_pages=DRUSHIM_MAX_PAGES, known_job_urls=known_job_urls
+        )
         if api_outcome.status == "ok" and api_outcome.jobs:
             return api_outcome
         return _collect_drushim_with_page(
-            self.page, query, headless=self.headless, allow_visible_retry=False
+            self.page,
+            query,
+            headless=self.headless,
+            allow_visible_retry=False,
+            known_job_urls=known_job_urls,
         )
 
 
@@ -757,14 +888,17 @@ def collect_drushim_jobs(
     headless: bool = HEADLESS,
     *,
     page: Page | None = None,
+    known_job_urls: set[str] | None = None,
 ) -> CollectionOutcome:
     """Collect Drushim jobs — paginated JSON API first, then HTML/browser fallback."""
     if page is not None:
-        return _collect_drushim_with_page(page, query, headless=headless)
+        return _collect_drushim_with_page(
+            page, query, headless=headless, known_job_urls=known_job_urls
+        )
 
     # Always try the paginated JSON API (and HTML SSR fallback) before Chromium.
     # The HTML search page alone capped results at ~20–24 jobs per query.
-    http_outcome = collect_drushim_jobs_http(query)
+    http_outcome = collect_drushim_jobs_http(query, known_job_urls=known_job_urls)
     if http_outcome.status == "ok" and http_outcome.jobs:
         return http_outcome
     if not DRUSHIM_BROWSER_FALLBACK:
@@ -780,6 +914,7 @@ def collect_drushim_jobs(
             query,
             headless=headless,
             allow_visible_retry=_interactive_retry_enabled(),
+            known_job_urls=known_job_urls,
         )
 
 
@@ -809,13 +944,16 @@ def _linkedin_headers(*, user_agent: str | None = None) -> dict[str, str]:
 def build_linkedin_search_url(query: str, start: int = 0) -> str:
     """Build a LinkedIn guest jobs-search API URL (no login required).
 
-    Uses broad location defaults (Israel + geoId). No seniority / experience
-    filters — those belong in matching, not collection.
+    Uses broad location defaults (Israel + geoId) and a past-month time filter
+    (``f_TPR=r2592000``). No seniority / experience filters — those belong in
+    matching, not collection.
     """
     params: dict[str, str | int] = {
         "keywords": query,
         "location": LINKEDIN_LOCATION,
         "start": max(0, int(start)),
+        # Past month only (2_592_000 seconds) — skip stale guest listings.
+        "f_TPR": "r2592000",
     }
     if LINKEDIN_GEO_ID:
         params["geoId"] = LINKEDIN_GEO_ID
@@ -951,6 +1089,8 @@ def _fetch_linkedin_page(
 def collect_linkedin_jobs(
     query: str,
     max_pages: int = LINKEDIN_MAX_PAGES,
+    *,
+    known_job_urls: set[str] | None = None,
 ) -> CollectionOutcome:
     """Fetch job cards from LinkedIn's public guest search API with pagination."""
     location_label = LINKEDIN_LOCATION
@@ -959,12 +1099,13 @@ def collect_linkedin_jobs(
     print(
         f"Searching LinkedIn for: {query} "
         f"(location: {location_label}, up to {max_pages} page(s), "
-        f"~{LINKEDIN_JOBS_PER_PAGE}/page)"
+        f"~{LINKEDIN_JOBS_PER_PAGE}/page, f_TPR=r2592000)"
     )
     all_jobs: list[dict] = []
     seen_ids: set[str] = set()
     page_size = max(1, LINKEDIN_JOBS_PER_PAGE)
     last_status: int | None = None
+    total_known_skipped = 0
 
     for page_index in range(max_pages):
         start = page_index * page_size
@@ -1009,8 +1150,16 @@ def collect_linkedin_jobs(
         if page_index == 0:
             page_size = max(len(page_jobs), 1)
 
+        # Guest API already filters via f_TPR; still skip known URLs early.
+        kept, _age_skipped, known_skipped, _all_old = _apply_collect_filters(
+            page_jobs,
+            known_job_urls=known_job_urls,
+            apply_age_filter=False,
+        )
+        total_known_skipped += known_skipped
+
         added = 0
-        for job in page_jobs:
+        for job in kept:
             job_id = extract_linkedin_job_id(job.get("job_url"))
             key = job_id or normalize_job_url(job.get("job_url"))
             if not key or key in seen_ids:
@@ -1025,6 +1174,8 @@ def collect_linkedin_jobs(
         if page_index < max_pages - 1:
             time.sleep(1.5)
 
+    if total_known_skipped:
+        print(f"  LinkedIn skipped {total_known_skipped} job(s) already in DB")
     print(f"  LinkedIn returned {len(all_jobs)} job card(s) for '{query}'")
     if not all_jobs:
         return CollectionOutcome(
@@ -1046,11 +1197,13 @@ def save_jobs_to_db(
     seen_job_keys: set[str],
     known_db_keys: set[str],
     touched_job_keys: set[str],
+    known_job_urls: set[str] | None = None,
 ) -> tuple[int, int, int, int, int, int, int]:
     """Upsert jobs into SQLite with strict run-level deduplication.
 
-    Already-known jobs (by identity key / UNIQUE job_url) are lightly touched
-    only — Enrich and Match must not re-process them on subsequent agent runs.
+    Already-known jobs (by identity key / UNIQUE job_url) are skipped immediately
+    before any description persistence — Enrich and Match must not re-process
+    them on subsequent agent runs.
 
     Returns:
         (raw_found, unique_processed, duplicates_skipped, already_in_db,
@@ -1064,6 +1217,7 @@ def save_jobs_to_db(
     excluded = 0
     inserted = 0
     touched_once = 0
+    url_index = known_job_urls if known_job_urls is not None else set()
 
     for job in jobs:
         title = job.get("title", "")
@@ -1071,6 +1225,18 @@ def save_jobs_to_db(
         location = job.get("location", "")
         url = normalize_job_url(job.get("job_url", ""))
         if not url:
+            continue
+
+        # Fast path: known URL — skip before description / upsert work.
+        if url in url_index:
+            job_key = compute_job_identity_key(url, title, company, location)
+            if job_key in seen_job_keys:
+                duplicates_skipped += 1
+                continue
+            seen_job_keys.add(job_key)
+            known_db_keys.add(job_key)
+            already_in_db += 1
+            unique_processed += 1
             continue
 
         job_key = compute_job_identity_key(url, title, company, location)
@@ -1100,6 +1266,7 @@ def save_jobs_to_db(
         if already_known and not is_new:
             # Existing identity — skip Enrich/Match by never resetting pipeline flags.
             already_in_db += 1
+            url_index.add(url)
             if job_id is not None and job_key not in touched_job_keys:
                 touched_once += 1
                 touched_job_keys.add(job_key)
@@ -1109,6 +1276,7 @@ def save_jobs_to_db(
             inserted += 1
             known_db_keys.add(job_key)
             touched_job_keys.add(job_key)
+            url_index.add(url)
         elif job_id is not None:
             # Collision via UNIQUE constraint (URL/hash) — treat as already in DB.
             already_in_db += 1
@@ -1116,6 +1284,7 @@ def save_jobs_to_db(
                 touched_once += 1
                 touched_job_keys.add(job_key)
             known_db_keys.add(job_key)
+            url_index.add(url)
 
     return (
         raw_found,
@@ -1296,8 +1465,12 @@ def main() -> None:
         plan = plan[: args.max_categories]
 
     known_db_keys = get_known_job_identity_keys()
+    known_job_urls = get_known_job_urls()
     if known_db_keys:
-        print(f"Jobs already in database: {len(known_db_keys)} (will skip re-processing)")
+        print(
+            f"Jobs already in database: {len(known_db_keys)} "
+            f"({len(known_job_urls)} URLs — will skip before description work)"
+        )
 
     try:
         selected_sites = normalize_job_board_ids(_parse_sites_arg(args.sites))
@@ -1311,8 +1484,10 @@ def main() -> None:
         print(f"Strategy hash: {strategy_hash[:12]}...")
     print(f"Categories to search: {len(plan)}")
     print(
-        f"Collection limits: max {args.max_queries} queries/category, "
+        f"Collection limits: max {args.max_queries} queries/category "
+        f"(CV strategy expands to ~{MIN_EXPANDED_QUERIES}–4 distinct titles), "
         f"{args.max_categories if args.max_categories is not None else 'all'} categories; "
+        f"freshness ≤{JOB_MAX_AGE_DAYS} days; "
         f"board pages — Drushim ≤{DRUSHIM_MAX_PAGES}, LinkedIn ≤{LINKEDIN_MAX_PAGES}, "
         f"GotFriends ≤{GOTFRIENDS_MAX_PAGES}, AllJobs ≤{ALLJOBS_MAX_PAGES}, "
         f"Indeed ≤{INDEED_MAX_PAGES}, SecretTelAviv ≤{SECRET_TEL_AVIV_MAX_PAGES}, "
@@ -1392,7 +1567,13 @@ def main() -> None:
 
                     try:
                         if site_name == "drushim" and drushim_session is not None:
-                            raw_result = drushim_session.collect(query)
+                            raw_result = drushim_session.collect(
+                                query, known_job_urls=known_job_urls
+                            )
+                        elif site_name in ("drushim", "linkedin", "gotfriends"):
+                            raw_result = collect_fn(
+                                query, known_job_urls=known_job_urls
+                            )
                         else:
                             raw_result = collect_fn(query)
                         jobs, outcome = _unwrap_collection_result(raw_result)
@@ -1438,6 +1619,7 @@ def main() -> None:
                         seen_job_keys=seen_job_keys,
                         known_db_keys=known_db_keys,
                         touched_job_keys=touched_job_keys,
+                        known_job_urls=known_job_urls,
                     )
                     total_raw_found += raw
                     total_unique += unique

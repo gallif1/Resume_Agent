@@ -10,6 +10,10 @@ from typing import Any
 _HE_TODAY = re.compile(r"^(היום|today)$", re.IGNORECASE)
 _HE_YESTERDAY = re.compile(r"^(אתמול|yesterday)$", re.IGNORECASE)
 _HE_TWO_DAYS = re.compile(r"^(לפני\s+יומיים|יומיים)$")
+_HE_TWO_WEEKS = re.compile(r"^(לפני\s+)?שבועיים$")
+_HE_TWO_MONTHS = re.compile(r"^(לפני\s+)?חודשיים$")
+_HE_ONE_YEAR = re.compile(r"^(לפני\s+)?שנה$")
+_HE_TWO_YEARS = re.compile(r"^(לפני\s+)?שנתיים$")
 _HE_DAYS = re.compile(
     r"^(?:לפני\s+)?(\d+)\s*(?:ימים|יום|days?|d)$",
     re.IGNORECASE,
@@ -26,10 +30,26 @@ _HE_MONTHS = re.compile(
     r"^(?:לפני\s+)?(\d+)\s*(?:חודשים|חודש|months?|mo)$",
     re.IGNORECASE,
 )
+_HE_YEARS = re.compile(
+    r"^(?:לפני\s+)?(\d+)\s*(?:שנים|שנה|years?|yrs?|y)$",
+    re.IGNORECASE,
+)
 _HE_MINUTES = re.compile(
     r"^(?:לפני\s+)?(\d+)\s*(?:דקות|דקה|minutes?|mins?|m)$",
     re.IGNORECASE,
 )
+
+# Absolute stale markers that always mean older than ~30 days.
+_STALE_HEBREW_MARKERS = (
+    "לפני חודשיים",
+    "לפני שנה",
+    "לפני שנתיים",
+    "חודשיים",
+    "לפני שנים",
+)
+
+# Default collect-time freshness window (past month).
+JOB_MAX_AGE_DAYS = 30
 
 _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
 _DMY_SLASH = re.compile(r"^(\d{1,2})[/.](\d{1,2})[/.](\d{2,4})$")
@@ -107,6 +127,14 @@ def _parse_relative_hebrew(text: str, *, reference: date) -> date | None:
         return reference - timedelta(days=1)
     if _HE_TWO_DAYS.match(cleaned):
         return reference - timedelta(days=2)
+    if _HE_TWO_WEEKS.match(cleaned):
+        return reference - timedelta(weeks=2)
+    if _HE_TWO_MONTHS.match(cleaned):
+        return reference - timedelta(days=60)
+    if _HE_ONE_YEAR.match(cleaned):
+        return reference - timedelta(days=365)
+    if _HE_TWO_YEARS.match(cleaned):
+        return reference - timedelta(days=730)
 
     m = _HE_MINUTES.match(cleaned) or _HE_HOURS.match(cleaned)
     if m:
@@ -125,9 +153,13 @@ def _parse_relative_hebrew(text: str, *, reference: date) -> date | None:
         # Approximate month length; good enough for sorting buckets.
         return reference - timedelta(days=30 * int(m.group(1)))
 
+    m = _HE_YEARS.match(cleaned)
+    if m:
+        return reference - timedelta(days=365 * int(m.group(1)))
+
     # English relatives: "2 days ago", "3 weeks ago"
     m = re.match(
-        r"^(\d+)\s*(minutes?|mins?|hours?|hrs?|days?|weeks?|months?)\s+ago$",
+        r"^(\d+)\s*(minutes?|mins?|hours?|hrs?|days?|weeks?|months?|years?)\s+ago$",
         cleaned,
         re.IGNORECASE,
     )
@@ -142,8 +174,95 @@ def _parse_relative_hebrew(text: str, *, reference: date) -> date | None:
             return reference - timedelta(weeks=n)
         if unit.startswith("month"):
             return reference - timedelta(days=30 * n)
+        if unit.startswith("year"):
+            return reference - timedelta(days=365 * n)
 
     return None
+
+
+def looks_like_stale_posted_text(value: Any) -> bool:
+    """True when raw listing text clearly indicates a posting older than ~1 month."""
+    if value is None:
+        return False
+    text = re.sub(r"\s+", " ", str(value).strip())
+    if not text:
+        return False
+    lowered = text.casefold()
+    for marker in _STALE_HEBREW_MARKERS:
+        if marker in text:
+            return True
+    # English / numeric long-range relatives.
+    if re.search(r"\b([2-9]|\d{2,})\s+months?\s+ago\b", lowered):
+        return True
+    if re.search(r"\b\d+\s+years?\s+ago\b", lowered):
+        return True
+    if re.search(r"לפני\s+([2-9]|\d{2,})\s+חודשים", text):
+        return True
+    if re.search(r"לפני\s+\d+\s+שנים?", text):
+        return True
+    return False
+
+
+def is_posted_older_than(
+    value: Any,
+    *,
+    max_age_days: int = JOB_MAX_AGE_DAYS,
+    reference: date | None = None,
+) -> bool:
+    """True when ``value`` is a known posting date older than ``max_age_days``.
+
+    Unknown / unparseable dates return False so scrapers keep ambiguous cards.
+    Raw Hebrew markers like "לפני חודשיים" / "לפני שנה" always count as stale.
+    """
+    if looks_like_stale_posted_text(value):
+        return True
+
+    ref = reference or datetime.now(timezone.utc).date()
+    iso = normalize_posted_date(value, default_to_today=False, reference=ref)
+    if not iso:
+        return False
+    try:
+        posted = date.fromisoformat(iso)
+    except ValueError:
+        return False
+    return posted < (ref - timedelta(days=max(0, int(max_age_days))))
+
+
+def filter_jobs_by_max_age(
+    jobs: list[dict[str, Any]],
+    *,
+    max_age_days: int = JOB_MAX_AGE_DAYS,
+    reference: date | None = None,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """Drop jobs older than ``max_age_days``.
+
+    Returns ``(kept, skipped_count, all_dated_jobs_were_old)``.
+    ``all_dated_jobs_were_old`` is True when the input was non-empty and every
+    job with a resolvable date was stale (used for pagination early-exit).
+    Jobs with unknown dates are kept and prevent early-exit.
+    """
+    if not jobs:
+        return [], 0, False
+
+    kept: list[dict[str, Any]] = []
+    skipped = 0
+    dated = 0
+    dated_old = 0
+    for job in jobs:
+        raw = job.get("posted_date") or job.get("posted_date_raw") or ""
+        if is_posted_older_than(raw, max_age_days=max_age_days, reference=reference):
+            skipped += 1
+            dated += 1
+            dated_old += 1
+            continue
+        # Count as "dated" when we can resolve a calendar day.
+        iso = normalize_posted_date(raw, default_to_today=False, reference=reference)
+        if iso:
+            dated += 1
+        kept.append(job)
+
+    all_old = dated > 0 and dated_old == dated and skipped == len(jobs)
+    return kept, skipped, all_old
 
 
 def normalize_posted_date(

@@ -43,8 +43,8 @@ Analyze the candidate and return ONE JSON object with exactly these keys:
       "category": "short_category_slug",
       "priority": 90,
       "primary_role": "Primary Role Title",
-      "search_queries": ["4-8 English job titles"],
-      "hebrew_search_queries": ["2-5 Hebrew titles"],
+      "search_queries": ["3-4 distinct English job titles"],
+      "hebrew_search_queries": ["2-4 Hebrew titles"],
       "alternative_titles": ["related titles"],
       "exclude_keywords": ["senior", "manager", "בכיר"]
     }
@@ -63,6 +63,10 @@ Rules:
 - search_keywords_he must include Hebrew equivalents for role/domain words when relevant.
 - technologies_tools: include only when the CV mentions specific tools; otherwise return [].
 - collection_queries: 1-4 categories covering realistic job search; concrete searchable titles.
+- search_queries: return a JSON array of exactly 3-4 DISTINCT, highly relevant English
+  search queries derived from the CV (not near-duplicates). These drive board scraping,
+  so expand beyond a single role name. Example for a Backend-focused CV:
+  ["Python Developer", "FastAPI Junior", "Backend Engineer"].
 - Prefer DISTINCTIVE, skill-/domain-specific search titles over generic ones
   (avoid bare "Software Engineer" / "Developer" / "מפתח" as the only queries).
   Include role+technology / role+domain phrases derived from THIS CV

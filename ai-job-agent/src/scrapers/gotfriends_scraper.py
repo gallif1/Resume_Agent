@@ -25,7 +25,12 @@ from config import (
     GOTFRIENDS_MAX_PAGES,
     HEADLESS,
 )
-from date_utils import normalize_posted_date, pick_raw_posted_date
+from date_utils import (
+    JOB_MAX_AGE_DAYS,
+    filter_jobs_by_max_age,
+    normalize_posted_date,
+    pick_raw_posted_date,
+)
 from job_identity import normalize_job_url
 from scrapers.base import BaseScraper
 
@@ -637,11 +642,20 @@ def parse_gotfriends_listing(html: str) -> list[dict[str, Any]]:
                 raw_date = (date_el.get("datetime") or date_el.get_text(" ", strip=True) or "").strip()
             if not raw_date:
                 card_text = card.get_text(" ", strip=True)
-                for token in ("היום", "אתמול", "לפני יומיים", "לפני"):
+                for token in (
+                    "היום",
+                    "אתמול",
+                    "לפני יומיים",
+                    "לפני חודשיים",
+                    "לפני שנה",
+                    "לפני שנתיים",
+                    "לפני",
+                ):
                     if token in card_text:
                         # Capture a short relative fragment from the card text.
                         m = re.search(
-                            r"(היום|אתמול|לפני\s+יומיים|לפני\s+\d+\s*(?:ימים|יום|שעות|שעה|שבועות|שבוע))",
+                            r"(היום|אתמול|לפני\s+יומיים|לפני\s+חודשיים|לפני\s+שנתיים|"
+                            r"לפני\s+שנה|לפני\s+\d+\s*(?:ימים|יום|שעות|שעה|שבועות|שבוע|חודשים|חודש|שנים))",
                             card_text,
                         )
                         raw_date = m.group(0) if m else token
@@ -661,6 +675,7 @@ class GotfriendsScraper(BaseScraper):
         *,
         max_pages: int = GOTFRIENDS_MAX_PAGES,
         headless: bool = HEADLESS,
+        known_job_urls: set[str] | None = None,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         listing_urls = resolve_gotfriends_listing_urls(query)
@@ -676,6 +691,8 @@ class GotfriendsScraper(BaseScraper):
         seen_urls: set[str] = set()
         last_status: int | None = None
         blocked = False
+        total_age_skipped = 0
+        total_known_skipped = 0
 
         for listing_url in listing_urls:
             for page_index in range(max_pages):
@@ -709,10 +726,33 @@ class GotfriendsScraper(BaseScraper):
                 if not page_jobs:
                     break
 
-                added = 0
+                # Drop known URLs first, then apply 30-day freshness filter.
+                candidates: list[dict[str, Any]] = []
+                known_skipped = 0
                 for job in page_jobs:
                     if broad_search and not _title_matches_query(job.get("title", ""), query):
                         continue
+                    url = job.get("job_url", "")
+                    if not url or url in seen_urls:
+                        continue
+                    canonical = normalize_job_url(url)
+                    if known_job_urls and canonical and canonical in known_job_urls:
+                        known_skipped += 1
+                        continue
+                    candidates.append(job)
+
+                total_known_skipped += known_skipped
+                kept, age_skipped, all_old = filter_jobs_by_max_age(candidates)
+                total_age_skipped += age_skipped
+                if all_old:
+                    print(
+                        f"  GotFriends page {page_index + 1}: all dated jobs older than "
+                        f"{JOB_MAX_AGE_DAYS} days — early exit"
+                    )
+                    break
+
+                added = 0
+                for job in kept:
                     url = job.get("job_url", "")
                     if not url or url in seen_urls:
                         continue
@@ -720,12 +760,17 @@ class GotfriendsScraper(BaseScraper):
                     all_jobs.append(job)
                     added += 1
 
-                if added == 0 and broad_search:
+                if added == 0 and broad_search and not known_skipped and not age_skipped:
                     break
                 if len(page_jobs) < 8:
                     break
                 time.sleep(1.0)
 
+        if total_age_skipped or total_known_skipped:
+            print(
+                f"  GotFriends filters: skipped {total_age_skipped} old, "
+                f"{total_known_skipped} already in DB"
+            )
         print(f"  GotFriends returned {len(all_jobs)} job card(s)")
         if all_jobs:
             return self.ok_outcome(all_jobs, http_status=last_status)
@@ -749,6 +794,12 @@ def collect_gotfriends_jobs(
     *,
     max_pages: int = GOTFRIENDS_MAX_PAGES,
     headless: bool = HEADLESS,
+    known_job_urls: set[str] | None = None,
 ) -> CollectionOutcome:
     """Fetch job cards from GotFriends listing pages for a search query."""
-    return GotfriendsScraper().collect(query, max_pages=max_pages, headless=headless)
+    return GotfriendsScraper().collect(
+        query,
+        max_pages=max_pages,
+        headless=headless,
+        known_job_urls=known_job_urls,
+    )
