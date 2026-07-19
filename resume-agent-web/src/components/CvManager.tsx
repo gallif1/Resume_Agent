@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 import {
   Briefcase,
   Check,
   FileText,
   Globe,
+  Loader2,
+  Plus,
   Rocket,
   Square,
   Trash2,
@@ -42,6 +44,8 @@ const DEFAULT_SITES: JobSite[] = [
   },
 ];
 
+type FlowStep = "config" | "analyzing" | "domains";
+
 interface Props {
   cvs: Cv[];
   loading: boolean;
@@ -51,11 +55,15 @@ interface Props {
   jobSites?: JobSite[];
   jobSitesLoading?: boolean;
   stopping?: boolean;
+  analyzing?: boolean;
+  suggestedDomains?: string[];
+  candidateSummary?: string;
   onUpload: (files: File[]) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onRunAgent: (siteIds: string[]) => void;
+  onAnalyze: (cvId: string) => Promise<void>;
+  onStartSearch: (cvId: string, domains: string[], siteIds: string[]) => void;
   onStopAgent: () => void;
-  onOpenMatches: () => void;
+  onOpenMatches: (cvId: string) => void;
   onResetResults: () => Promise<void>;
   onResetFiles: () => Promise<void>;
 }
@@ -96,9 +104,13 @@ export default function CvManager({
   jobSites = [],
   jobSitesLoading = false,
   stopping = false,
+  analyzing = false,
+  suggestedDomains = [],
+  candidateSummary = "",
   onUpload,
   onDelete,
-  onRunAgent,
+  onAnalyze,
+  onStartSearch,
   onStopAgent,
   onOpenMatches,
   onResetResults,
@@ -116,9 +128,12 @@ export default function CvManager({
   const displaySites = jobSites.length > 0 ? jobSites : DEFAULT_SITES;
   const enabledIds = displaySites.filter((s) => s.enabled).map((s) => s.id);
   const [selectedSites, setSelectedSites] = useState<string[]>(enabledIds);
+  const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
+  const [customDomain, setCustomDomain] = useState("");
+  const [flowStep, setFlowStep] = useState<FlowStep>("config");
 
   const anyScanning = scanStatus?.running ?? false;
-  const uiLocked = anyScanning;
+  const uiLocked = anyScanning || analyzing;
   const hasResults =
     workspaceMatchCount > 0 ||
     Boolean(scanStatus?.error) ||
@@ -144,6 +159,26 @@ export default function CvManager({
     const sites = jobSites.length > 0 ? jobSites : DEFAULT_SITES;
     setSelectedSites(sites.filter((s) => s.enabled).map((s) => s.id));
   }, [jobSites]);
+
+  useEffect(() => {
+    if (analyzing) {
+      setFlowStep("analyzing");
+      return;
+    }
+    if (!anyScanning && suggestedDomains.length > 0) {
+      setFlowStep("domains");
+      setSelectedDomains([...suggestedDomains]);
+    } else if (!anyScanning && !analyzing && flowStep === "analyzing") {
+      // Analysis finished with no suggestions — still allow custom domains.
+      setFlowStep("domains");
+    }
+  }, [analyzing, suggestedDomains, anyScanning]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (anyScanning) {
+      setFlowStep("config");
+    }
+  }, [anyScanning]);
 
   const validate = (files: File[]): string | null => {
     for (const f of files) {
@@ -187,17 +222,57 @@ export default function CvManager({
     );
   };
 
+  const toggleDomain = (domain: string) => {
+    setSelectedDomains((prev) =>
+      prev.includes(domain)
+        ? prev.filter((d) => d !== domain)
+        : [...prev, domain]
+    );
+  };
+
+  const addCustomDomain = (e?: FormEvent) => {
+    e?.preventDefault();
+    const value = customDomain.trim();
+    if (!value) return;
+    setSelectedDomains((prev) =>
+      prev.some((d) => d.toLowerCase() === value.toLowerCase())
+        ? prev
+        : [...prev, value]
+    );
+    setCustomDomain("");
+  };
+
+  const handleAnalyzeClick = async () => {
+    if (!selectedCvId || selectedSites.length === 0) return;
+    setLocalError(null);
+    setFlowStep("analyzing");
+    try {
+      await onAnalyze(selectedCvId);
+    } catch (err) {
+      setFlowStep("config");
+      setLocalError(err instanceof Error ? err.message : "ניתוח קורות החיים נכשל");
+    }
+  };
+
+  const handleStartSearch = () => {
+    if (!selectedCvId || selectedDomains.length === 0 || selectedSites.length === 0) {
+      return;
+    }
+    onStartSearch(selectedCvId, selectedDomains, selectedSites);
+  };
+
   const metrics = computeScanMetrics(scanStatus, workspaceMatchCount);
+  const showDomainPicker = flowStep === "domains" && !anyScanning && !analyzing;
 
   return (
     <section className={uiLocked ? "scan-locked-section" : undefined}>
       <section className="hero">
         <h1>
-          קורות החיים שלך, <span className="accent">מאוחדים לפרופיל אחד</span>
+          קורות החיים שלך, <span className="accent">חיפוש משרות ממוקד</span>
         </h1>
         <p>
-          העלה כמה קבצי קורות חיים — הסוכן יאחד את כולם לפרופיל מועמד מקיף
-          ויחפש משרות שמתאימות לכל הניסיון והמיומנויות שלך יחד.
+          העלה קורות חיים — הסוכן יציע תחומים רלוונטיים, תבחרו מה לחפש, ואז
+          נאסוף משרות חדשות בלי למחוק תוצאות קודמות.
         </p>
       </section>
 
@@ -240,7 +315,9 @@ export default function CvManager({
           </div>
           <div className="dropzone-title">
             {uiLocked
-              ? "הסוכן רץ — לא ניתן להעלות קבצים כרגע"
+              ? analyzing
+                ? "מנתח את קורות החיים…"
+                : "הסוכן רץ — לא ניתן להעלות קבצים כרגע"
               : busy
                 ? "מעלה..."
                 : "גרור לכאן קבצי קורות חיים או לחץ לבחירה"}
@@ -255,24 +332,24 @@ export default function CvManager({
         )}
       </div>
 
-      {/* A. Trigger State — configuration before scan */}
-      {cvs.length > 0 && !anyScanning && (
+      {/* Step 1 — CV + sites, then analyze */}
+      {cvs.length > 0 && !anyScanning && flowStep !== "domains" && !analyzing && (
         <div className="scan-config">
           <div className="scan-config-header">
             <span className="icon-bubble icon-bubble-blue" aria-hidden>
               <Rocket size={22} />
             </span>
             <div>
-              <h2>הגדרת סריקה חכמה</h2>
+              <h2>שלב 1 — ניתוח קורות חיים</h2>
               <p>
-                בחרו קורות חיים פעילים ואתרי דרושים — ואז שלחו את הסוכן לחפש
-                עבורכם.
+                בחרו קובץ ואתרי דרושים, ואז ננתח את קורות החיים ונציע תחומי
+                חיפוש רלוונטיים.
               </p>
             </div>
           </div>
 
           <div>
-            <span className="scan-config-label">קורות חיים פעילים בסריקה</span>
+            <span className="scan-config-label">קורות חיים לסריקה</span>
             <div className="cv-picker" role="listbox" aria-label="בחירת קורות חיים">
               {cvs.map((cv) => {
                 const selected = selectedCvId === cv.id;
@@ -283,7 +360,10 @@ export default function CvManager({
                     role="option"
                     aria-selected={selected}
                     className={`cv-picker-card ${selected ? "selected" : ""}`}
-                    onClick={() => setSelectedCvId(cv.id)}
+                    onClick={() => {
+                      setSelectedCvId(cv.id);
+                      setFlowStep("config");
+                    }}
                   >
                     <span className="icon-bubble icon-bubble-sm icon-bubble-blue" aria-hidden>
                       <FileText size={18} />
@@ -304,10 +384,6 @@ export default function CvManager({
                 );
               })}
             </div>
-            <p className="run-agent-hint" style={{ marginTop: "0.65rem", textAlign: "start" }}>
-              הסוכן מאחד את כל הקבצים שהועלו לפרופיל אחד — הבחירה מסמנת את הקובץ
-              המוצג כעיקרי.
-            </p>
           </div>
 
           <div>
@@ -359,16 +435,143 @@ export default function CvManager({
           <button
             type="button"
             className="btn btn-scan-cta"
-            disabled={loading || selectedSites.length === 0 || cvs.length === 0}
-            onClick={() => onRunAgent(selectedSites)}
+            disabled={
+              loading ||
+              selectedSites.length === 0 ||
+              !selectedCvId ||
+              analyzing
+            }
+            onClick={handleAnalyzeClick}
           >
             <Rocket size={20} aria-hidden />
-            שגר סוכן לסריקה
+            נתח קורות חיים והצע תחומים
           </button>
         </div>
       )}
 
-      {/* B. Progress State */}
+      {/* Step 1 loading */}
+      {analyzing && (
+        <div className="scan-config domain-analyzing">
+          <div className="domain-analyzing-inner">
+            <Loader2 className="domain-analyzing-spinner" size={28} aria-hidden />
+            <div>
+              <h2>מנתח קורות חיים ומחלץ תחומים…</h2>
+              <p>זה עשוי לקחת כמה רגעים — מזהים תפקידים ותחומים רלוונטיים מהקובץ.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2 — domain multi-select */}
+      {showDomainPicker && (
+        <div className="scan-config">
+          <div className="scan-config-header">
+            <span className="icon-bubble icon-bubble-blue" aria-hidden>
+              <Briefcase size={22} />
+            </span>
+            <div>
+              <h2>שלב 2 — בחירת תחומי חיפוש</h2>
+              <p>
+                סמנו תחומים מוצעים או הוסיפו תחום משלכם. חיפוש חדש יוסיף משרות
+                בלי למחוק תוצאות קודמות.
+              </p>
+            </div>
+          </div>
+
+          {candidateSummary && (
+            <p className="domain-summary">{candidateSummary}</p>
+          )}
+
+          <div>
+            <span className="scan-config-label">תחומים מומלצים</span>
+            <div className="domain-chip-grid" role="group" aria-label="בחירת תחומים">
+              {(suggestedDomains.length > 0
+                ? suggestedDomains
+                : selectedDomains
+              ).map((domain) => {
+                const selected = selectedDomains.includes(domain);
+                return (
+                  <button
+                    key={domain}
+                    type="button"
+                    className={`domain-chip ${selected ? "selected" : ""}`}
+                    onClick={() => toggleDomain(domain)}
+                    aria-pressed={selected}
+                  >
+                    {selected && <Check size={14} strokeWidth={3} aria-hidden />}
+                    {domain}
+                  </button>
+                );
+              })}
+              {selectedDomains
+                .filter((d) => !suggestedDomains.includes(d))
+                .map((domain) => (
+                  <button
+                    key={`custom-${domain}`}
+                    type="button"
+                    className="domain-chip selected"
+                    onClick={() => toggleDomain(domain)}
+                    aria-pressed
+                  >
+                    <Check size={14} strokeWidth={3} aria-hidden />
+                    {domain}
+                  </button>
+                ))}
+            </div>
+          </div>
+
+          <form className="domain-custom-row" onSubmit={addCustomDomain}>
+            <input
+              type="text"
+              className="domain-custom-input"
+              placeholder="הוסיפו תחום מותאם אישית (למשל Fullstack Developer)"
+              value={customDomain}
+              onChange={(e) => setCustomDomain(e.target.value)}
+              dir="auto"
+            />
+            <button
+              type="submit"
+              className="btn btn-secondary"
+              disabled={!customDomain.trim()}
+            >
+              <Plus size={16} aria-hidden />
+              הוסף
+            </button>
+          </form>
+
+          {selectedDomains.length === 0 && (
+            <div className="error-box">יש לבחור לפחות תחום אחד.</div>
+          )}
+
+          <div className="domain-actions">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => {
+                setFlowStep("config");
+                setSelectedDomains([]);
+              }}
+            >
+              חזרה
+            </button>
+            <button
+              type="button"
+              className="btn btn-scan-cta"
+              disabled={
+                selectedDomains.length === 0 ||
+                selectedSites.length === 0 ||
+                !selectedCvId
+              }
+              onClick={handleStartSearch}
+            >
+              <Rocket size={20} aria-hidden />
+              התחל חיפוש משרות
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Progress State */}
       {anyScanning && (
         <div className="run-agent-section" style={{ marginBottom: "1rem" }}>
           <button
@@ -396,7 +599,6 @@ export default function CvManager({
           />
         )}
 
-      {/* C. Success State — summary metrics */}
       {scanFinished && !scanStatus?.error && workspaceMatchCount >= 0 && hasResults && (
         <div className="fade-in-list">
           <ScanSummaryCards
@@ -407,19 +609,19 @@ export default function CvManager({
         </div>
       )}
 
-      {workspaceMatchCount > 0 && !anyScanning && (
+      {workspaceMatchCount > 0 && !anyScanning && selectedCvId && (
         <div className="workspace-matches-banner fade-in-list">
           <div>
             <strong>{workspaceMatchCount} התאמות משרה</strong>
             <span className="workspace-matches-sub">
-              מבוסס על הפרופיל המאוחד של כל קורות החיים
+              כולל תוצאות מכל הסריקות הקודמות לקורות החיים האלה
             </span>
           </div>
           <button
             type="button"
             className="btn btn-primary"
             disabled={uiLocked}
-            onClick={onOpenMatches}
+            onClick={() => onOpenMatches(selectedCvId)}
           >
             צפה בתוצאות
           </button>
@@ -449,62 +651,56 @@ export default function CvManager({
             className="btn btn-ghost btn-reset"
             disabled={uiLocked || busy || cvs.length === 0}
             onClick={() => setConfirmReset("files")}
-            title="מוחק את כל הקבצים שהועלו ואת התוצאות"
+            title="מוחק את כל קבצי קורות החיים והתוצאות"
           >
-            אפס קבצים
+            מחק את כל הקבצים
           </button>
         </div>
       )}
 
       {cvs.length === 0 && !loading ? (
-        <div className="empty-state">
-          <div className="empty-icon" aria-hidden>
-            <span className="icon-bubble icon-bubble-slate">
-              <FileText size={22} />
-            </span>
-          </div>
-          <p>עדיין לא העלית קורות חיים.</p>
-          <p className="empty-hint">
-            העלה קובץ אחד או יותר — לאחר מכן הגדירו מקורות ולחצו על "שגר סוכן
-            לסריקה".
-          </p>
+        <div className="empty-state compact">
+          <p>עדיין לא הועלו קבצים.</p>
         </div>
       ) : (
-        <ul className={`cv-list ${uiLocked ? "cv-list-locked" : ""}`}>
+        <ul className="cv-list">
           {cvs.map((cv) => (
-            <li key={cv.id} className="cv-item cv-manager-item">
-              <div className="cv-icon" aria-hidden>
-                <FileText size={20} />
-              </div>
-
-              <div className="cv-info">
-                <div className="cv-name">
-                  {cv.display_name || cv.file_name}
-                </div>
-                <div className="cv-meta">
-                  הועלה {formatDate(cv.created_at)}
-                  {cv.file_size != null && ` · ${formatSize(cv.file_size)}`}
-                  {cv.last_scan_at && ` · נכלל בסריקה ${formatDate(cv.last_scan_at)}`}
-                </div>
-                {cv.profile && (
-                  <div className="cv-meta cv-profile-meta">
-                    {cv.profile.name && <span>{cv.profile.name}</span>}
-                    {cv.profile.seniority && <span> · {cv.profile.seniority}</span>}
-                    {cv.profile.best_fit_roles.length > 0 && (
-                      <span> · {cv.profile.best_fit_roles.slice(0, 3).join(", ")}</span>
-                    )}
+            <li key={cv.id} className="cv-card">
+              <div className="cv-card-main">
+                <span className="icon-bubble icon-bubble-sm icon-bubble-blue" aria-hidden>
+                  <FileText size={18} />
+                </span>
+                <div>
+                  <div className="cv-name">{cv.display_name || cv.file_name}</div>
+                  <div className="cv-meta">
+                    הועלה {formatDate(cv.created_at)}
+                    {cv.file_size != null && ` · ${formatSize(cv.file_size)}`}
+                    {cv.last_scan_at && ` · נסרק ${formatDate(cv.last_scan_at)}`}
                   </div>
-                )}
+                  {cv.match_count != null && cv.match_count > 0 && (
+                    <span className="badge">{cv.match_count} התאמות</span>
+                  )}
+                </div>
               </div>
-
               <div className="cv-actions">
+                {(cv.match_count ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={uiLocked}
+                    onClick={() => onOpenMatches(cv.id)}
+                  >
+                    תוצאות
+                  </button>
+                )}
                 <button
-                  className="btn btn-ghost btn-delete"
+                  type="button"
+                  className="btn btn-ghost btn-sm"
                   disabled={uiLocked}
                   onClick={() => setConfirmDelete(cv)}
+                  aria-label="מחק"
                 >
-                  <Trash2 size={15} aria-hidden />
-                  מחק
+                  <Trash2 size={16} />
                 </button>
               </div>
             </li>
@@ -512,69 +708,73 @@ export default function CvManager({
         </ul>
       )}
 
-      {confirmDelete && !uiLocked && (
-        <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>מחיקת קורות חיים</h3>
+      {confirmDelete && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
+            <h3>למחוק את הקובץ?</h3>
             <p>
-              מחיקת "{confirmDelete.display_name || confirmDelete.file_name}" תסיר
-              את הקובץ מהרשימה. לאחר מכן אפשר להעלות קובץ חדש ולהריץ שוב את הסוכן.
+              פעולה זו תמחק את{" "}
+              <strong>{confirmDelete.display_name || confirmDelete.file_name}</strong>{" "}
+              ואת כל הנתונים הקשורים אליו.
             </p>
             <div className="modal-actions">
               <button
+                type="button"
                 className="btn btn-ghost"
                 onClick={() => setConfirmDelete(null)}
               >
                 ביטול
               </button>
               <button
+                type="button"
                 className="btn btn-danger"
-                onClick={() => {
+                onClick={async () => {
                   const id = confirmDelete.id;
                   setConfirmDelete(null);
-                  onDelete(id);
+                  await onDelete(id);
                 }}
               >
-                מחק לצמיתות
+                מחק
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {confirmReset && !uiLocked && (
-        <div className="modal-overlay" onClick={() => setConfirmReset(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+      {confirmReset && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal">
             <h3>
-              {confirmReset === "results" ? "איפוס תוצאות" : "איפוס קבצים"}
+              {confirmReset === "results"
+                ? "לאפס את תוצאות החיפוש?"
+                : "למחוק את כל הקבצים?"}
             </h3>
             <p>
               {confirmReset === "results"
-                ? "פעולה זו תמחק את כל התאמות המשרה ותוצאות הסריקה. קבצי קורות החיים יישארו — אפשר לסרוק מחדש מיד."
-                : "פעולה זו תמחק את כל קבצי קורות החיים שהועלו ואת כל התוצאות. תצטרך להעלות קבצים מחדש לפני סריקה."}
+                ? "ההתאמות ותוצאות הסריקה יימחקו. קבצי קורות החיים יישארו."
+                : "כל קבצי קורות החיים והתוצאות יימחקו לצמיתות."}
             </p>
             <div className="modal-actions">
               <button
+                type="button"
                 className="btn btn-ghost"
                 onClick={() => setConfirmReset(null)}
               >
                 ביטול
               </button>
               <button
+                type="button"
                 className="btn btn-danger"
                 onClick={async () => {
                   const kind = confirmReset;
                   setConfirmReset(null);
-                  setBusy(true);
-                  try {
-                    if (kind === "results") await onResetResults();
-                    else await onResetFiles();
-                  } finally {
-                    setBusy(false);
-                  }
+                  if (kind === "results") await onResetResults();
+                  else await onResetFiles();
+                  setFlowStep("config");
+                  setSelectedDomains([]);
                 }}
               >
-                {confirmReset === "results" ? "אפס תוצאות" : "אפס קבצים"}
+                אישור
               </button>
             </div>
           </div>

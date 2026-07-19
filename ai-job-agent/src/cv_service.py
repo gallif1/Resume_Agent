@@ -62,6 +62,18 @@ SCAN_STEPS = [
     ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
 ]
 
+# Interactive two-step flow: analyze CV first, then search with user-selected domains.
+ANALYZE_STEPS = [
+    ("parse_cv", "ניתוח קורות החיים", "parse_cv.py", ["--yes"]),
+    ("analyze_roles", "בניית אסטרטגיית חיפוש", "analyze_roles.py", []),
+]
+
+SEARCH_STEPS = [
+    ("collect", "איסוף משרות", "collect_jobs.py", []),
+    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", []),
+    ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
+]
+
 # Unified multi-CV pipeline: parse all uploads, aggregate, then match jobs.
 USER_SCAN_STEPS = [
     ("parse_cvs", "ניתוח כל קבצי קורות החיים", None, []),
@@ -75,6 +87,7 @@ USER_SCAN_STEPS = [
 # Steps that abort the scan when they fail (same policy as run_all.py).
 CRITICAL_STEPS = {"parse_cv", "parse_cvs", "aggregate", "analyze_roles", "match"}
 USER_CRITICAL_STEPS = CRITICAL_STEPS
+SEARCH_CRITICAL_STEPS = {"match"}
 
 
 class DuplicateCvError(Exception):
@@ -231,12 +244,270 @@ def sync_parsed_profile(cv_id: str, db_path: Path = db.REGISTRY_DB_PATH) -> None
     )
 
 
+def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
+    """Build a de-duplicated list of suggested job domains/roles from a strategy."""
+    if not strategy:
+        return []
+
+    domains: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        key = text.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        domains.append(text)
+
+    for entry in strategy.get("best_fit_roles") or []:
+        if isinstance(entry, dict):
+            _add(entry.get("role"))
+        else:
+            _add(entry)
+
+    for entry in strategy.get("job_categories") or []:
+        if not isinstance(entry, dict):
+            continue
+        titles = entry.get("titles") or []
+        if titles:
+            for title in titles[:3]:
+                _add(title)
+        else:
+            _add(entry.get("category"))
+
+    for entry in strategy.get("collection_queries") or []:
+        if isinstance(entry, dict):
+            _add(entry.get("primary_role"))
+
+    return domains
+
+
+def analyze_cv(
+    cv_id: str,
+    *,
+    log: Callable[[str], None] | None = None,
+    set_step_status: Callable[[str, str], None] | None = None,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any]:
+    """Parse a CV and analyze roles; return recommended domains without scraping."""
+    import os
+
+    from role_analyzer import load_matching_strategy
+
+    cv = db.get_cv(cv_id, db_path=db_path)
+    if cv is None:
+        raise ValueError(f"unknown cv_id: {cv_id}")
+
+    def _log(line: str) -> None:
+        if log is not None:
+            log(line)
+
+    def _step(key: str, status: str) -> None:
+        if set_step_status is not None:
+            set_step_status(key, status)
+
+    env = {**os.environ, "AGENT_CV_ID": cv_id}
+    env.pop("AGENT_USER_ID", None)
+    env.pop("AGENT_SCAN_ID", None)
+
+    for key, name, script, extra in ANALYZE_STEPS:
+        _step(key, "running")
+        _log(f">> {name}")
+        code = _run_logged_subprocess(
+            [PYTHON, str(SRC / script), *extra],
+            env=env,
+            log=_log,
+        )
+        if code != 0:
+            _step(key, "failed")
+            _log(f"!! {name} נכשל (קוד {code})")
+            raise RuntimeError(f"השלב '{name}' נכשל")
+        _step(key, "success")
+        if key == "parse_cv":
+            sync_parsed_profile(cv_id, db_path=db_path)
+
+    strategy = load_matching_strategy() or {}
+    domains = extract_recommended_domains(strategy)
+    if not domains:
+        # Fall back to any roles already stored on the parsed profile.
+        profile_path = cv_data_dir(cv_id) / "cv_profile.json"
+        if profile_path.exists():
+            try:
+                profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                profile = {}
+            for role in profile.get("best_fit_roles") or []:
+                text = str(role or "").strip()
+                if text and text not in domains:
+                    domains.append(text)
+
+    return {
+        "cv_id": cv_id,
+        "domains": domains,
+        "candidate_summary": strategy.get("candidate_summary") or "",
+        "career_notes": strategy.get("career_notes") or "",
+        "best_fit_roles": strategy.get("best_fit_roles") or [],
+    }
+
+
+def run_search(
+    cv_id: str,
+    *,
+    domains: list[str],
+    skip_enrich: bool = False,
+    job_sites: list[str] | None = None,
+    log: Callable[[str], None] | None = None,
+    set_step_status: Callable[[str, str], None] | None = None,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any]:
+    """Collect/enrich/match for selected domains without wiping prior job history.
+
+    New jobs are inserted incrementally (``INSERT OR IGNORE`` / identity dedupe).
+    Already-known jobs are skipped by enrich/match and remain in the listing.
+    """
+    import os
+
+    from job_boards import normalize_job_board_ids
+
+    cleaned_domains = [str(d).strip() for d in domains if str(d).strip()]
+    if not cleaned_domains:
+        raise ValueError("יש לבחור לפחות תחום אחד לחיפוש")
+
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+
+    cv = db.get_cv(cv_id, db_path=db_path)
+    if cv is None:
+        raise ValueError(f"unknown cv_id: {cv_id}")
+
+    strategy_path = cv_data_dir(cv_id) / "ai_matching_strategy.json"
+    if not strategy_path.exists():
+        raise ValueError("יש לנתח את קורות החיים לפני תחילת החיפוש")
+
+    def _log(line: str) -> None:
+        if log is not None:
+            log(line)
+
+    def _step(key: str, status: str) -> None:
+        if set_step_status is not None:
+            set_step_status(key, status)
+
+    # Intentionally do NOT call reset_cv_job_pool — preserve prior scan history.
+    scan_id = db.create_scan(cv_id, db_path=cv_db)
+    env = {**os.environ, "AGENT_CV_ID": cv_id, "AGENT_SCAN_ID": str(scan_id)}
+    env.pop("AGENT_USER_ID", None)
+
+    try:
+        selected_sites = normalize_job_board_ids(job_sites)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
+
+    error: str | None = None
+    warnings: list[str] = []
+    collection_summary: dict[str, Any] | None = None
+    domains_arg = ",".join(cleaned_domains)
+
+    for key, name, script, extra in SEARCH_STEPS:
+        skipped = key == "enrich" and skip_enrich
+        if skipped:
+            _step(key, "skipped")
+            _log(f"-- מדלג על: {name}")
+            continue
+
+        _step(key, "running")
+        _log(f">> {name}")
+
+        extra_args = list(extra)
+        if key == "collect":
+            extra_args = [*extra_args, "--domains", domains_arg]
+            if selected_sites:
+                extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
+
+        collect_warnings: list[str] = []
+        collect_summary_holder: dict[str, Any] = {}
+
+        def _on_collect_line(line: str, *, _key: str = key) -> None:
+            if _key != "collect":
+                return
+            parsed = parse_agent_line(line)
+            if parsed is None:
+                return
+            if parsed.get("type") == "warning":
+                message = parsed.get("message")
+                if message and message not in collect_warnings:
+                    collect_warnings.append(message)
+            elif parsed.get("type") == "summary":
+                collect_summary_holder["summary"] = parsed.get("summary")
+
+        try:
+            code = _run_logged_subprocess(
+                [PYTHON, str(SRC / script), *extra_args],
+                env=env,
+                log=_log,
+                on_line=_on_collect_line if key == "collect" else None,
+            )
+        except ScanCancelled:
+            _step(key, "failed")
+            _log("!! הסריקה בוטלה")
+            error = "הסריקה בוטלה על ידי המשתמש"
+            break
+
+        for message in collect_warnings:
+            if message not in warnings:
+                warnings.append(message)
+        if collect_summary_holder.get("summary"):
+            collection_summary = collect_summary_holder["summary"]
+
+        if code != 0:
+            _step(key, "failed")
+            _log(f"!! {name} נכשל (קוד {code})")
+            if key in SEARCH_CRITICAL_STEPS:
+                error = f"השלב '{name}' נכשל"
+                break
+        else:
+            _step(key, "success")
+
+    # All historical matches for this CV (past + current scans).
+    match_count = len(db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db))
+    summary_payload: dict[str, Any] = {
+        "matches": match_count,
+        "domains": cleaned_domains,
+    }
+    if collection_summary:
+        summary_payload["collection"] = collection_summary
+    if warnings:
+        summary_payload["warnings"] = warnings
+    summary = json.dumps(summary_payload, ensure_ascii=False)
+
+    if error:
+        db.finish_scan(
+            scan_id, db.SCAN_FAILED, summary=summary, error_message=error, db_path=cv_db
+        )
+    else:
+        db.finish_scan(scan_id, db.SCAN_SUCCESS, summary=summary, db_path=cv_db)
+        db.set_cv_last_scan(cv_id, db_path=db_path)
+
+    scan_record = db.get_scan(scan_id, db_path=cv_db) or {}
+    if warnings:
+        scan_record["warnings"] = warnings
+    if collection_summary:
+        scan_record["collection"] = collection_summary
+    scan_record["domains"] = cleaned_domains
+    scan_record["match_count"] = match_count
+    return scan_record
+
+
 def run_scan(
     cv_id: str,
     *,
     skip_collect: bool = False,
     skip_enrich: bool = False,
     job_sites: list[str] | None = None,
+    domains: list[str] | None = None,
+    reset_jobs: bool = False,
     log: Callable[[str], None] | None = None,
     set_step_status: Callable[[str, str], None] | None = None,
     db_path: Path = db.REGISTRY_DB_PATH,
@@ -246,6 +517,9 @@ def run_scan(
     Returns the finished scan record. The heavy steps run as subprocesses with
     AGENT_CV_ID / AGENT_SCAN_ID set so all generated data is stored under this
     CV id and never mixes with another CV's results.
+
+    By default prior jobs/matches are retained (incremental). Pass
+    ``reset_jobs=True`` only when an explicit wipe is requested.
     """
     import os
 
@@ -267,7 +541,8 @@ def run_scan(
             set_step_status(key, status)
 
     scan_id = db.create_scan(cv_id, db_path=cv_db)
-    db.reset_cv_job_pool(cv_id)
+    if reset_jobs:
+        db.reset_cv_job_pool(cv_id)
     env = {**os.environ, "AGENT_CV_ID": cv_id, "AGENT_SCAN_ID": str(scan_id)}
 
     try:
@@ -275,6 +550,7 @@ def run_scan(
     except ValueError as exc:
         raise ValueError(str(exc)) from exc
 
+    cleaned_domains = [str(d).strip() for d in (domains or []) if str(d).strip()]
     error: str | None = None
     warnings: list[str] = []
     collection_summary: dict[str, Any] | None = None
@@ -291,8 +567,11 @@ def run_scan(
         _log(f">> {name}")
 
         extra_args = list(extra)
-        if key == "collect" and selected_sites:
-            extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
+        if key == "collect":
+            if cleaned_domains:
+                extra_args = [*extra_args, "--domains", ",".join(cleaned_domains)]
+            if selected_sites:
+                extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
 
         proc = subprocess.Popen(
             [PYTHON, str(SRC / script), *extra_args],
@@ -332,11 +611,12 @@ def run_scan(
             if key == "parse_cv":
                 sync_parsed_profile(cv_id, db_path=db_path)
 
-    latest_scan = db.get_latest_scan(cv_id, db_path=cv_db)
     match_count = len(
-        db.get_cv_matches(cv_id, latest_only=True, db_path=cv_db)
+        db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db)
     )
     summary_payload: dict[str, Any] = {"matches": match_count}
+    if cleaned_domains:
+        summary_payload["domains"] = cleaned_domains
     if collection_summary:
         summary_payload["collection"] = collection_summary
     if warnings:
@@ -351,7 +631,6 @@ def run_scan(
         db.finish_scan(scan_id, db.SCAN_SUCCESS, summary=summary, db_path=cv_db)
         db.set_cv_last_scan(cv_id, db_path=db_path)
 
-    _ = latest_scan
     scan_record = db.get_scan(scan_id, db_path=cv_db) or {}
     if warnings:
         scan_record["warnings"] = warnings
@@ -549,7 +828,7 @@ def run_user_scan(
             set_step_status(key, status)
 
     scan_id = db.create_scan(workspace_cv_id, db_path=user_db)
-    db.reset_cv_job_pool(workspace_cv_id, db_path=user_db)
+    # Keep prior workspace jobs/matches; collection dedupes incrementally.
     env = {
         **os.environ,
         "AGENT_USER_ID": user_id,
@@ -669,7 +948,7 @@ def run_user_scan(
             _step(key, "success")
 
     match_count = len(
-        db.get_cv_matches(workspace_cv_id, latest_only=True, db_path=user_db)
+        db.get_cv_matches(workspace_cv_id, latest_only=False, db_path=user_db)
     )
     summary_payload: dict[str, Any] = {
         "matches": match_count,

@@ -4,18 +4,19 @@ import AuthView from "./components/AuthView";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
 import {
+  analyzeCv,
   checkHealth,
   clearAuthSession,
   deleteServerCv,
   DuplicateCvError,
   getCurrentUser,
-  getJobMatchStatus,
+  getCvScanStatus,
   getStoredToken,
   listJobSites,
   listServerCvs,
   resetAllCvs,
   resetJobMatches,
-  runJobMatcher,
+  searchJobsForCv,
   setUnauthorizedHandler,
   stopJobMatcher,
   uploadCv,
@@ -37,9 +38,14 @@ export default function App() {
   const [cvsError, setCvsError] = useState<string | null>(null);
   const [workspaceMatchCount, setWorkspaceMatchCount] = useState(0);
   const [showMatches, setShowMatches] = useState(false);
+  const [matchesCvId, setMatchesCvId] = useState<string | null>(null);
 
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [suggestedDomains, setSuggestedDomains] = useState<string[]>([]);
+  const [candidateSummary, setCandidateSummary] = useState("");
+  const [activeCvId, setActiveCvId] = useState<string | null>(null);
   const [jobSites, setJobSites] = useState<JobSite[]>([
     {
       id: "drushim",
@@ -68,6 +74,7 @@ export default function App() {
   const scanRunningRef = useRef(false);
   const healthFailCount = useRef(0);
   const resumedRef = useRef(false);
+  const activeCvIdRef = useRef<string | null>(null);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -80,7 +87,11 @@ export default function App() {
     setCvs([]);
     setWorkspaceMatchCount(0);
     setShowMatches(false);
+    setMatchesCvId(null);
     setScanStatus(null);
+    setSuggestedDomains([]);
+    setCandidateSummary("");
+    setActiveCvId(null);
   }, []);
 
   useEffect(() => {
@@ -90,6 +101,10 @@ export default function App() {
     });
     return () => setUnauthorizedHandler(null);
   }, [handleLogout]);
+
+  useEffect(() => {
+    activeCvIdRef.current = activeCvId;
+  }, [activeCvId]);
 
   useEffect(() => {
     const token = getStoredToken();
@@ -124,7 +139,15 @@ export default function App() {
     try {
       const data = await listServerCvs();
       setCvs(data.cvs);
-      setWorkspaceMatchCount(data.workspace_match_count ?? 0);
+      const focusedId = activeCvIdRef.current;
+      const focused = focusedId
+        ? data.cvs.find((c) => c.id === focusedId)
+        : undefined;
+      if (focused?.match_count != null) {
+        setWorkspaceMatchCount(focused.match_count);
+      } else {
+        setWorkspaceMatchCount(data.workspace_match_count ?? 0);
+      }
     } catch (e) {
       setCvsError(e instanceof Error ? e.message : "שגיאה בטעינת קורות החיים");
     } finally {
@@ -244,27 +267,30 @@ export default function App() {
     }
   }, []);
 
-  const startPolling = useCallback(() => {
-    stopPolling();
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const s = await getJobMatchStatus();
-        setScanStatus(s);
-        if (typeof s.match_count === "number") {
-          setWorkspaceMatchCount(s.match_count);
-        }
-        if (!s.running) {
-          stopPolling();
-          refreshCvs();
-          if (s.error) {
-            showToast(s.error);
+  const startPolling = useCallback(
+    (cvId: string) => {
+      stopPolling();
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const s = await getCvScanStatus(cvId);
+          setScanStatus(s);
+          if (typeof s.match_count === "number") {
+            setWorkspaceMatchCount(s.match_count);
           }
+          if (!s.running) {
+            stopPolling();
+            refreshCvs();
+            if (s.error) {
+              showToast(s.error);
+            }
+          }
+        } catch {
+          /* server temporarily unreachable — keep polling */
         }
-      } catch {
-        /* server temporarily unreachable — keep polling */
-      }
-    }, 2500);
-  }, [stopPolling, refreshCvs]);
+      }, 2500);
+    },
+    [stopPolling, refreshCvs]
+  );
 
   useEffect(() => stopPolling, [stopPolling]);
 
@@ -275,13 +301,20 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const s = await getJobMatchStatus();
+        const data = await listServerCvs();
+        if (cancelled) return;
+        const candidate =
+          data.cvs.find((c) => c.last_scan_at) ?? data.cvs[0] ?? null;
+        if (!candidate) return;
+        const s = await getCvScanStatus(candidate.id);
         if (cancelled) return;
         setScanStatus(s);
+        setActiveCvId(candidate.id);
+        if (typeof s.match_count === "number") {
+          setWorkspaceMatchCount(s.match_count);
+        }
         if (s.running) {
-          startPolling();
-        } else if ((s.match_count ?? 0) > 0) {
-          setWorkspaceMatchCount(s.match_count ?? 0);
+          startPolling(candidate.id);
         }
       } catch {
         /* ignore — health poll will retry */
@@ -293,7 +326,6 @@ export default function App() {
   }, [serverUp, authUser, startPolling]);
 
   useEffect(() => {
-    // Allow resume polling again after a new login.
     resumedRef.current = false;
   }, [authUser?.id]);
 
@@ -355,6 +387,8 @@ export default function App() {
       setScanStatus(null);
       setWorkspaceMatchCount(0);
       setShowMatches(false);
+      setSuggestedDomains([]);
+      setCandidateSummary("");
       await refreshCvs();
       showToast("התוצאות אופסו — אפשר לסרוק מחדש");
     } catch (e) {
@@ -373,6 +407,9 @@ export default function App() {
       setWorkspaceMatchCount(0);
       setShowMatches(false);
       setCvs([]);
+      setSuggestedDomains([]);
+      setCandidateSummary("");
+      setActiveCvId(null);
       await refreshCvs();
       showToast("כל הקבצים והתוצאות נמחקו");
     } catch (e) {
@@ -380,10 +417,37 @@ export default function App() {
     }
   };
 
-  const handleRun = async (siteIds: string[]) => {
+  const handleAnalyze = async (cvId: string) => {
     if (scanRunningRef.current) return;
-    if (cvs.length === 0) {
-      showToast("יש להעלות לפחות קובץ קורות חיים אחד");
+    setAnalyzing(true);
+    setActiveCvId(cvId);
+    setSuggestedDomains([]);
+    setCandidateSummary("");
+    try {
+      const result = await analyzeCv(cvId);
+      setSuggestedDomains(result.domains ?? []);
+      setCandidateSummary(result.candidate_summary ?? "");
+      if (!(result.domains ?? []).length) {
+        showToast("לא נמצאו תחומים מומלצים — אפשר להוסיף תחום ידנית");
+      }
+    } catch (e) {
+      showToast(
+        `ניתוח קורות החיים נכשל: ${e instanceof Error ? e.message : ""}`
+      );
+      throw e;
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const handleStartSearch = async (
+    cvId: string,
+    domains: string[],
+    siteIds: string[]
+  ) => {
+    if (scanRunningRef.current) return;
+    if (domains.length === 0) {
+      showToast("יש לבחור לפחות תחום אחד");
       return;
     }
     if (siteIds.length === 0) {
@@ -391,7 +455,8 @@ export default function App() {
       return;
     }
     try {
-      await runJobMatcher({ job_sites: siteIds });
+      await searchJobsForCv(cvId, { domains, job_sites: siteIds });
+      setActiveCvId(cvId);
       setShowMatches(false);
       setScanStatus({
         running: true,
@@ -401,15 +466,15 @@ export default function App() {
         warnings: [],
         collection: null,
         current_step: null,
-        detail: "מתחיל סריקה…",
+        detail: "מתחיל חיפוש משרות…",
         steps: [],
         log: [],
         latest_scan: null,
       });
-      startPolling();
+      startPolling(cvId);
     } catch (e) {
       showToast(
-        `הרצת הסוכן נכשלה: ${e instanceof Error ? e.message : ""}`
+        `הרצת החיפוש נכשלה: ${e instanceof Error ? e.message : ""}`
       );
     }
   };
@@ -419,7 +484,7 @@ export default function App() {
     try {
       await stopJobMatcher();
       showToast("עוצר את הסריקה…");
-      startPolling();
+      if (activeCvId) startPolling(activeCvId);
     } catch (e) {
       setStopping(false);
       showToast(
@@ -428,7 +493,10 @@ export default function App() {
     }
   };
 
-  const primaryCv = cvs[0];
+  const matchesCv =
+    (matchesCvId && cvs.find((c) => c.id === matchesCvId)) ||
+    (activeCvId && cvs.find((c) => c.id === activeCvId)) ||
+    cvs[0];
   const scanActive = scanStatus?.running ?? false;
 
   return (
@@ -541,12 +609,12 @@ export default function App() {
               {healthChecking ? "בודק..." : "נסה שוב"}
             </button>
           </div>
-        ) : showMatches && primaryCv && !scanActive ? (
+        ) : showMatches && matchesCv && !scanActive ? (
           <CvDetails
-            cvId={primaryCv.id}
-            cv={primaryCv}
+            cvId={matchesCv.id}
+            cv={matchesCv}
             scanStatus={scanStatus}
-            workspaceMode
+            workspaceMode={false}
             onBack={() => setShowMatches(false)}
           />
         ) : (
@@ -559,12 +627,20 @@ export default function App() {
             jobSites={jobSites}
             jobSitesLoading={jobSitesLoading}
             stopping={stopping}
+            analyzing={analyzing}
+            suggestedDomains={suggestedDomains}
+            candidateSummary={candidateSummary}
             onUpload={handleUpload}
             onDelete={handleDelete}
-            onRunAgent={handleRun}
+            onAnalyze={handleAnalyze}
+            onStartSearch={handleStartSearch}
             onStopAgent={handleStop}
-            onOpenMatches={() => {
-              if (!scanActive) setShowMatches(true);
+            onOpenMatches={(cvId) => {
+              if (!scanActive) {
+                setMatchesCvId(cvId);
+                setActiveCvId(cvId);
+                setShowMatches(true);
+              }
             }}
             onResetResults={handleResetResults}
             onResetFiles={handleResetFiles}
@@ -572,13 +648,11 @@ export default function App() {
         )}
       </main>
 
-      <footer className="footer">
-        <span>Resume Agent</span>
-        <span className="footer-sep">·</span>
-        <span>סוכן חיפוש עבודה חכם</span>
-      </footer>
-
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <div className="toast" role="status">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

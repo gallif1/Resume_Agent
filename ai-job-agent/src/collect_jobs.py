@@ -1155,6 +1155,61 @@ def build_collection_plan(
     return plan, None, "profile.json target_roles (last-resort fallback)"
 
 
+def _parse_domains_arg(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _entry_matches_domain(entry: dict, domain: str) -> bool:
+    needle = domain.casefold().strip()
+    if not needle:
+        return False
+    haystacks = [
+        str(entry.get("category") or ""),
+        str(entry.get("primary_role") or ""),
+        *[str(q) for q in (entry.get("queries") or [])],
+        *[str(q) for q in (entry.get("queries_en") or [])],
+        *[str(q) for q in (entry.get("queries_he") or [])],
+        *[str(q) for q in (entry.get("queries_mixed") or [])],
+        *[str(q) for q in (entry.get("search_queries") or [])],
+        *[str(q) for q in (entry.get("hebrew_search_queries") or [])],
+        *[str(q) for q in (entry.get("alternative_titles") or [])],
+    ]
+    for hay in haystacks:
+        text = hay.casefold().strip()
+        if not text:
+            continue
+        if needle in text or text in needle:
+            return True
+    return False
+
+
+def filter_plan_by_domains(
+    plan: list[dict],
+    domains: list[str],
+) -> list[dict]:
+    """Keep strategy entries matching selected domains; append custom domains."""
+    cleaned = [str(d).strip() for d in domains if str(d).strip()]
+    if not cleaned:
+        return plan
+
+    selected: list[dict] = []
+    covered: set[str] = set()
+    for entry in plan:
+        for domain in cleaned:
+            if _entry_matches_domain(entry, domain):
+                selected.append(entry)
+                covered.add(domain.casefold())
+                break
+
+    missing = [d for d in cleaned if d.casefold() not in covered]
+    if missing:
+        selected.extend(collection_plan_from_roles(missing))
+
+    return selected or collection_plan_from_roles(cleaned)
+
+
 def _unwrap_collection_result(result: Any) -> tuple[list[dict], CollectionOutcome | None]:
     if isinstance(result, CollectionOutcome):
         return result.jobs, result
@@ -1206,6 +1261,16 @@ def main() -> None:
             "(drushim, linkedin, gotfriends, alljobs, indeed, secret_tel_aviv, geektime)"
         ),
     )
+    parser.add_argument(
+        "--domains",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated job domains/roles selected by the user. "
+            "When set, collection searches only these domains "
+            "(matching strategy entries plus any custom titles)."
+        ),
+    )
     args = parser.parse_args()
 
     print("AI Job Agent — job collection")
@@ -1213,10 +1278,18 @@ def main() -> None:
     init_db()
     profile = load_profile()
     plan, strategy_hash, source_label = build_collection_plan(profile)
+    selected_domains = _parse_domains_arg(args.domains)
+    if selected_domains:
+        plan = filter_plan_by_domains(plan, selected_domains)
+        source_label = (
+            f"user-selected domains ({len(selected_domains)}): "
+            + ", ".join(selected_domains)
+        )
+        print(f"Selected domains: {', '.join(selected_domains)}")
 
     if not plan:
         print("No search queries found. Run: python src/analyze_roles.py")
-        print("Or add target_roles to profile.json")
+        print("Or add target_roles to profile.json / pass --domains")
         return
 
     if args.max_categories is not None:

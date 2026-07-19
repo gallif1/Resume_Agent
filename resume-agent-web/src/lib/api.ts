@@ -342,6 +342,7 @@ export interface CvScanStatus {
   steps: PipelineStep[];
   log: string[];
   latest_scan: CvScan | null;
+  match_count?: number;
 }
 
 export function parseScanSummary(summary: string | null | undefined): {
@@ -475,12 +476,52 @@ export function runAgentForCv(
     skip_collect?: boolean;
     skip_enrich?: boolean;
     job_sites?: string[];
+    domains?: string[];
   }
 ): Promise<{ started: boolean; cv_id: string }> {
   return request(`/cvs/${cvId}/run-agent`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(options ?? {}),
+  });
+}
+
+export interface AnalyzeCvResponse {
+  cv_id: string;
+  domains: string[];
+  candidate_summary?: string;
+  career_notes?: string;
+  best_fit_roles?: Array<{
+    role: string;
+    score?: number;
+    reason?: string;
+    missing_skills?: string[];
+    realistic_for_application?: boolean;
+  }>;
+}
+
+/** Parse the CV and return recommended job domains/roles. */
+export function analyzeCv(cvId: string): Promise<AnalyzeCvResponse> {
+  return request(`/cvs/${cvId}/analyze`, { method: "POST" });
+}
+
+/** Start an incremental job search for selected domains. */
+export function searchJobsForCv(
+  cvId: string,
+  options: {
+    domains: string[];
+    skip_enrich?: boolean;
+    job_sites?: string[];
+  }
+): Promise<{ started: boolean; cv_id: string; domains: string[] }> {
+  return request(`/cvs/${cvId}/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      domains: options.domains,
+      skip_enrich: options.skip_enrich,
+      job_sites: options.job_sites,
+    }),
   });
 }
 
@@ -520,7 +561,7 @@ export function getJobMatches(
   }
 ): Promise<{ matches: CvMatch[] }> {
   const params = new URLSearchParams();
-  params.set("latest", String(options?.latest ?? true));
+  params.set("latest", String(options?.latest ?? false));
   if (options?.minScore != null) params.set("min_score", String(options.minScore));
   if (options?.sortBy) params.set("sort_by", options.sortBy);
   if (options?.order) params.set("order", options.order);
@@ -570,7 +611,7 @@ export function getCvMatches(
   }
 ): Promise<{ matches: CvMatch[] }> {
   const params = new URLSearchParams();
-  params.set("latest", String(options?.latest ?? true));
+  params.set("latest", String(options?.latest ?? false));
   if (options?.minScore != null) params.set("min_score", String(options.minScore));
   if (options?.sortBy) params.set("sort_by", options.sortBy);
   if (options?.order) params.set("order", options.order);
