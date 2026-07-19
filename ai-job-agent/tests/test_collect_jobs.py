@@ -23,6 +23,7 @@ SAMPLE_DRUSHIM_HTML = """
     <h3><span class="job-url">Python Developer</span></h3>
     <div class="job-details-top"><a><span>Acme Ltd</span></a></div>
     <div class="job-details-sub"><span class="display-18"><span>Tel Aviv|</span></span></div>
+    <div class="job-details-sub"><span class="display-14">לפני יומיים</span></div>
     <div class="job-intro"><p>Great role</p></div>
     <a href="/job/12345/abc/">link</a>
   </div>
@@ -40,7 +41,12 @@ SAMPLE_DRUSHIM_API_PAGE = {
                 "Description": "<p>Build APIs</p>",
                 "Regions": [{"NameInHebrew": "תל אביב"}],
             },
-            "JobInfo": {"Link": "/job/111/abcd/", "Hash": "ABCD"},
+            "JobInfo": {
+                "Link": "/job/111/abcd/",
+                "Hash": "ABCD",
+                "JumpDateString": "היום",
+                "DateActual": "2026-07-18T08:00:00Z",
+            },
         },
         {
             "Code": 222,
@@ -70,6 +76,7 @@ def test_parse_drushim_search_html_extracts_job_fields():
     assert jobs[0]["job_url"] == "https://www.drushim.co.il/job/12345/abc/"
     assert jobs[0]["source"] == "drushim"
     assert jobs[0]["description"] == "Great role"
+    assert jobs[0]["posted_date"]  # normalized ISO date from "לפני יומיים"
 
 
 def test_parse_drushim_api_jobs_extracts_fields():
@@ -82,6 +89,7 @@ def test_parse_drushim_api_jobs_extracts_fields():
     assert jobs[0]["job_url"] == "https://www.drushim.co.il/job/111/abcd"
     assert jobs[0]["description"] == "Build APIs"
     assert jobs[0]["source"] == "drushim"
+    assert jobs[0]["posted_date"] == "2026-07-18"
 
 
 def test_build_drushim_api_search_url_pagination():
@@ -170,7 +178,15 @@ def test_page_looks_blocked_drushim_does_not_flag_search_results_with_meta_robot
 
 
 def test_extract_jobs_js_includes_expected_job_fields():
-    for key in ("title", "company", "location", "job_url", "source", "description"):
+    for key in (
+        "title",
+        "company",
+        "location",
+        "job_url",
+        "source",
+        "description",
+        "posted_date",
+    ):
         assert key in EXTRACT_JOBS_JS
 
 

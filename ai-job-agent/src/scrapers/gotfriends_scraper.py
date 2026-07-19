@@ -25,6 +25,7 @@ from config import (
     GOTFRIENDS_MAX_PAGES,
     HEADLESS,
 )
+from date_utils import normalize_posted_date, pick_raw_posted_date
 from job_identity import normalize_job_url
 from scrapers.base import BaseScraper
 
@@ -199,6 +200,7 @@ def _make_job(
     company: str = "",
     location: str = "",
     description: str = "",
+    posted_date: str | None = None,
 ) -> dict[str, Any] | None:
     title = (title or "").strip()
     canonical = normalize_job_url(_absolute_gotfriends_url(job_url))
@@ -211,6 +213,7 @@ def _make_job(
         "job_url": canonical,
         "source": "gotfriends",
         "description": (description or "").strip(),
+        "posted_date": normalize_posted_date(posted_date, default_to_today=True),
     }
 
 
@@ -276,6 +279,14 @@ def _parse_jobs_from_json_payload(payload: Any) -> list[dict[str, Any]]:
             href = f"/jobslobby/{category}/{job_id}/"
 
         if title and href and ("jobslobby" in href or str(job_id or "").isdigit()):
+            raw_date = pick_raw_posted_date(
+                node.get("datePosted"),
+                node.get("postedAt"),
+                node.get("publishDate"),
+                node.get("createdAt"),
+                node.get("updatedAt"),
+                node.get("date"),
+            )
             job = _make_job(
                 title=title,
                 job_url=href,
@@ -287,6 +298,7 @@ def _parse_jobs_from_json_payload(payload: Any) -> list[dict[str, Any]]:
                     or node.get("requirements")
                     or ""
                 ).strip(),
+                posted_date=str(raw_date).strip() if raw_date is not None else None,
             )
             if job and job["job_url"] not in seen:
                 seen.add(job["job_url"])
@@ -538,12 +550,18 @@ def _parse_json_ld_jobs(html: str) -> list[dict[str, Any]]:
                     or address.get("addressRegion")
                     or ""
                 ).strip()
+            raw_date = pick_raw_posted_date(
+                item.get("datePosted"),
+                item.get("datePublished"),
+                item.get("validThrough"),
+            )
             job = _make_job(
                 title=title,
                 job_url=href,
                 company=company,
                 location=location,
                 description=str(item.get("description") or "").strip(),
+                posted_date=str(raw_date).strip() if raw_date is not None else None,
             )
             if job:
                 jobs.append(job)
@@ -613,7 +631,22 @@ def parse_gotfriends_listing(html: str) -> list[dict[str, Any]]:
             link = card.select_one("a[href*='/jobslobby/']")
             href = link.get("href") if link else f"/jobslobby/software/{job_id}/"
             title = title_el.get_text(" ", strip=True) if title_el else (link.get_text(" ", strip=True) if link else "")
-            _add(_make_job(title=title, job_url=href))
+            date_el = card.select_one("time[datetime], [class*='date'], [class*='Date']")
+            raw_date = ""
+            if date_el is not None:
+                raw_date = (date_el.get("datetime") or date_el.get_text(" ", strip=True) or "").strip()
+            if not raw_date:
+                card_text = card.get_text(" ", strip=True)
+                for token in ("היום", "אתמול", "לפני יומיים", "לפני"):
+                    if token in card_text:
+                        # Capture a short relative fragment from the card text.
+                        m = re.search(
+                            r"(היום|אתמול|לפני\s+יומיים|לפני\s+\d+\s*(?:ימים|יום|שעות|שעה|שבועות|שבוע))",
+                            card_text,
+                        )
+                        raw_date = m.group(0) if m else token
+                        break
+            _add(_make_job(title=title, job_url=href, posted_date=raw_date or None))
 
     return jobs
 
