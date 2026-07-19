@@ -531,7 +531,12 @@ def extract_list_items(section_text: str, max_items: int = 10) -> list[str]:
 # Step 8: best-fit roles and strengths
 # ---------------------------------------------------------------------------
 def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> list[str]:
-    """Suggest up to 10 generic role families from skills + seniority."""
+    """Suggest role families from skills + past job titles (any profession).
+
+    Returns every role with positive evidence — no fixed count limit. Scoring is
+    driven by skill-category signals and prior job titles, without favoring a
+    particular industry.
+    """
     def cat(name: str) -> set[str]:
         return set(skills.get(name, []))
 
@@ -556,7 +561,8 @@ def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> li
         cat("cloud_devops_tools") & {"Linux", "Windows"}
     ) | {s for s in cyber if s in {"Networking", "TCP/IP"}}
 
-    # role -> signal strength (count of supporting evidence)
+    job_titles = [str(t).strip() for t in (experience.get("job_titles") or []) if str(t).strip()]
+
     scores: dict[str, int] = {}
 
     def add(role: str, strength: int) -> None:
@@ -595,13 +601,17 @@ def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> li
         add("Surgeon", len(healthcare))
     add("Customer Support", len(soft & {"Customer Service"}))
 
-    # Management roles when there is leadership/management evidence.
     if experience.get("management_experience"):
         add("Project Manager", 1)
         add("Product Manager", 1)
 
+    # Past titles are profession-agnostic evidence for additional search domains.
+    for title in job_titles:
+        if 3 <= len(title) <= 60:
+            add(title, 5)
+
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    return [role for role, _ in ranked][:10]
+    return [role for role, _ in ranked]
 
 
 def generate_strengths(skills: dict[str, list[str]], experience: dict) -> list[str]:
