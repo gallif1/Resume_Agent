@@ -37,7 +37,7 @@ test.describe("Phase 6–8 — Job flow", () => {
       test.skip(true, auth.blockedReason || "auth blocked");
     }
 
-    await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
     const fixtures = await prepareAllFixtures();
     await cleanupTestResumes(page);
 
@@ -277,7 +277,7 @@ test.describe("Phase 6–8 — Job flow", () => {
   test("scan button disabled states without sites", async ({ page }) => {
     const auth = await ensureAuthenticated(page);
     if (!auth.ok) test.skip(true, auth.blockedReason || "auth blocked");
-    await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
     const fixtures = await prepareAllFixtures();
     // Ensure at least one CV for config UI
     const hasCv = (await page.locator(".cv-list .cv-item").count()) > 0;

@@ -48,7 +48,7 @@ test.describe("Phase 4 — Resume management", () => {
       test.skip(true, auth.blockedReason || "auth blocked");
     }
 
-    await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
     const fixtures = await prepareAllFixtures();
 
     // Start clean for marker files only
@@ -180,7 +180,7 @@ test.describe("Phase 5 — Resume-specific data separation", () => {
       test.skip(true, auth.blockedReason || "auth blocked");
     }
 
-    await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
     const fixtures = await prepareAllFixtures();
     await cleanupTestResumes(page);
 

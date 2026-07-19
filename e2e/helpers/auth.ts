@@ -12,8 +12,8 @@ export async function gotoApp(page: Page) {
 }
 
 export async function waitForServerConnected(page: Page) {
-  // Header shows "סוכן מחובר" when /api/health is OK
-  await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+  // On viewports <768px the status label is CSS-hidden; the green status control remains.
+  await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
 }
 
 export async function switchAuthTab(page: Page, mode: "login" | "register") {

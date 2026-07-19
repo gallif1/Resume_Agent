@@ -1,5 +1,4 @@
 node_modules/
-artifacts/
 test-results/
 .env
 fixtures/*.pdf
@@ -7,4 +6,13 @@ fixtures/*.exe
 artifacts/test-results/
 artifacts/html-report/
 artifacts/videos/
+artifacts/diagnostics/
 *.trace.zip
+*.webm
+# Keep committed evidence under artifacts/reports and artifacts/screenshots
+!artifacts/reports/
+!artifacts/reports/**
+!artifacts/screenshots/
+!artifacts/screenshots/**
+!artifacts/discovery/
+!artifacts/discovery/**

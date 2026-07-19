@@ -108,7 +108,7 @@ test.describe("Phase 1 — Application discovery", () => {
     }
 
     await test.step("Authenticated workspace discovery", async () => {
-      await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+      await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
       await screenshotViewport(page, "discovery-workspace-empty");
 
       const headings = await page.locator("h1, h2, h3").allTextContents();

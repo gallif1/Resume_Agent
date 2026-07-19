@@ -14,7 +14,7 @@ export async function uploadResume(page: Page, filePath: string) {
 }
 
 export async function waitForCvsLoaded(page: Page) {
-  await expect(page.getByText("סוכן מחובר")).toBeVisible({ timeout: 60_000 });
+  await expect(page.locator(".server-status.up")).toBeVisible({ timeout: 60_000 });
   // history-count shows "טוען..." while fetching
   await expect(page.locator(".history-count")).not.toHaveText(/טוען/, {
     timeout: 60_000,

@@ -1,0 +1,98 @@
+<testsuites id="" name="" tests="12" failures="0" skipped="5" errors="0" time="122.147041">
+<testsuite name="accessibility.spec.ts" timestamp="2026-07-19T09:04:05.489Z" hostname="chromium-desktop" tests="2" failures="0" skipped="0" time="25.344" errors="0">
+<testcase name="Phase 11 — Accessibility › auth: labels, roles, keyboard, axe" classname="accessibility.spec.ts" time="1.682">
+<properties>
+<property name="defect-candidate" value="Email input may lack a visible focus indicator">
+</property>
+<property name="defect" value="DEF-002 axe serious: color-contrast">
+</property>
+</properties>
+</testcase>
+<testcase name="Phase 11 — Accessibility › authenticated: headings, modal escape, axe" classname="accessibility.spec.ts" time="23.662">
+<properties>
+<property name="defect-candidate" value="Delete confirmation modal does not close on Escape; closed via Cancel instead">
+</property>
+<property name="a11y-violations" value="color-contrast">
+</property>
+<property name="env" value="Used generated throwaway credentials">
+</property>
+</properties>
+</testcase>
+</testsuite>
+<testsuite name="responsive-rtl.spec.ts" timestamp="2026-07-19T09:04:05.489Z" hostname="chromium-desktop" tests="2" failures="0" skipped="0" time="46.359" errors="0">
+<testcase name="Phase 9 — Responsive UI › auth + workspace layout at current viewport" classname="responsive-rtl.spec.ts" time="24.56">
+</testcase>
+<testcase name="Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth" classname="responsive-rtl.spec.ts" time="21.799">
+</testcase>
+</testsuite>
+<testsuite name="accessibility.spec.ts" timestamp="2026-07-19T09:04:05.489Z" hostname="chromium-mobile" tests="2" failures="0" skipped="1" time="1.802" errors="0">
+<testcase name="Phase 11 — Accessibility › auth: labels, roles, keyboard, axe" classname="accessibility.spec.ts" time="1.681">
+<properties>
+<property name="defect-candidate" value="Email input may lack a visible focus indicator">
+</property>
+<property name="defect" value="DEF-002 axe serious: color-contrast">
+</property>
+</properties>
+</testcase>
+<testcase name="Phase 11 — Accessibility › authenticated: headings, modal escape, axe" classname="accessibility.spec.ts">
+<properties>
+<property name="skip" value="Authenticated a11y once on desktop">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="responsive-rtl.spec.ts" timestamp="2026-07-19T09:04:05.489Z" hostname="chromium-mobile" tests="2" failures="0" skipped="1" time="23.274" errors="0">
+<testcase name="Phase 9 — Responsive UI › auth + workspace layout at current viewport" classname="responsive-rtl.spec.ts" time="23.118">
+<properties>
+<property name="note" value="On ≤767px, .server-status-text is CSS-hidden; only the status dot remains (index.css)">
+</property>
+</properties>
+</testcase>
+<testcase name="Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth" classname="responsive-rtl.spec.ts">
+<properties>
+<property name="skip" value="RTL deep check on desktop">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="accessibility.spec.ts" timestamp="2026-07-19T09:04:05.489Z" hostname="chromium-small-mobile" tests="2" failures="0" skipped="2" time="0.001" errors="0">
+<testcase name="Phase 11 — Accessibility › auth: labels, roles, keyboard, axe" classname="accessibility.spec.ts">
+<properties>
+<property name="skip" value="A11y on desktop + mobile">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+<testcase name="Phase 11 — Accessibility › authenticated: headings, modal escape, axe" classname="accessibility.spec.ts">
+<properties>
+<property name="skip" value="A11y on desktop + mobile">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+<testsuite name="responsive-rtl.spec.ts" timestamp="2026-07-19T09:04:05.489Z" hostname="chromium-small-mobile" tests="2" failures="0" skipped="1" time="23.451" errors="0">
+<testcase name="Phase 9 — Responsive UI › auth + workspace layout at current viewport" classname="responsive-rtl.spec.ts" time="23.372">
+<properties>
+<property name="note" value="On ≤767px, .server-status-text is CSS-hidden; only the status dot remains (index.css)">
+</property>
+<property name="defect" value="DEF-003: document.scrollWidth=330 &gt; clientWidth=320">
+</property>
+</properties>
+</testcase>
+<testcase name="Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth" classname="responsive-rtl.spec.ts">
+<properties>
+<property name="skip" value="RTL deep check on desktop">
+</property>
+</properties>
+<skipped>
+</skipped>
+</testcase>
+</testsuite>
+</testsuites>
