@@ -1,0 +1,10 @@
+node_modules/
+artifacts/
+test-results/
+.env
+fixtures/*.pdf
+fixtures/*.exe
+artifacts/test-results/
+artifacts/html-report/
+artifacts/videos/
+*.trace.zip
