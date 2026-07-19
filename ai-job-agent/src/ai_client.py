@@ -157,7 +157,11 @@ def clamp_score(value: Any, default: int = 0) -> int:
     return max(0, min(100, score))
 
 
-def normalize_string_list(value: Any, max_items: int = 15) -> list[str]:
+def normalize_string_list(value: Any, max_items: int | None = 15) -> list[str]:
+    """Normalize a list of strings with optional de-dupe and length cap.
+
+    When ``max_items`` is ``None``, all non-empty unique items are kept.
+    """
     if not isinstance(value, list):
         return []
     items: list[str] = []
@@ -165,7 +169,7 @@ def normalize_string_list(value: Any, max_items: int = 15) -> list[str]:
         text = str(item).strip()
         if text and text not in items:
             items.append(text)
-        if len(items) >= max_items:
+        if max_items is not None and len(items) >= max_items:
             break
     return items
 

@@ -248,20 +248,16 @@ def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
     """Build a de-duplicated list of suggested job domains/roles from a strategy.
 
     Surfaces every career track encoded in the matching strategy — best-fit roles,
-    category titles, and collection search titles (EN + HE) — so Step 2 chips
-    cover secondary tracks (support, cyber, tech-specific) and not only the
-    single strongest role.
+    category titles, and collection search titles (EN + HE) — with no fixed
+    count limit so Step 2 chips cover all relevant tracks from the CV.
     """
     if not strategy:
         return []
 
     domains: list[str] = []
     seen: set[str] = set()
-    max_domains = 14
 
     def _add(value: Any) -> None:
-        if len(domains) >= max_domains:
-            return
         text = str(value or "").strip()
         if not text:
             return
@@ -282,7 +278,7 @@ def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
             continue
         titles = entry.get("titles") or []
         if titles:
-            for title in titles[:5]:
+            for title in titles:
                 _add(title)
         else:
             _add(entry.get("category"))
@@ -303,9 +299,7 @@ def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
             values = entry.get(key) or []
             if not isinstance(values, list):
                 continue
-            # Prefer a few distinctive titles per bucket; avoid flooding the UI.
-            limit = 3 if key.startswith("hebrew") or key.endswith("_he") else 4
-            for title in values[:limit]:
+            for title in values:
                 _add(title)
 
     return domains
@@ -363,7 +357,7 @@ def analyze_cv(
     strategy = load_matching_strategy(strategy_path) or {}
     domains = extract_recommended_domains(strategy)
     # Always merge rule/AI roles from the parsed profile so secondary tracks
-    # (support, cyber, past titles) survive even if the strategy truncated them.
+    # survive even if the strategy truncated them.
     profile_path = cv_data_dir(cv_id) / "cv_profile.json"
     profile: dict[str, Any] = {}
     if profile_path.exists():
@@ -379,17 +373,12 @@ def analyze_cv(
             continue
         domains.append(text)
         seen.add(text.casefold())
-        if len(domains) >= 14:
-            break
-    if len(domains) < 14:
-        for title in (profile.get("experience") or {}).get("job_titles") or []:
-            text = str(title or "").strip()
-            if not text or text.casefold() in seen:
-                continue
-            domains.append(text)
-            seen.add(text.casefold())
-            if len(domains) >= 14:
-                break
+    for title in (profile.get("experience") or {}).get("job_titles") or []:
+        text = str(title or "").strip()
+        if not text or text.casefold() in seen:
+            continue
+        domains.append(text)
+        seen.add(text.casefold())
 
     return {
         "cv_id": cv_id,

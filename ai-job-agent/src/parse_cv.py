@@ -531,7 +531,12 @@ def extract_list_items(section_text: str, max_items: int = 10) -> list[str]:
 # Step 8: best-fit roles and strengths
 # ---------------------------------------------------------------------------
 def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> list[str]:
-    """Suggest up to 12 generic role families from skills + seniority + job titles."""
+    """Suggest role families from skills + past job titles (any profession).
+
+    Returns every role with positive evidence — no fixed count limit. Scoring is
+    driven by skill-category signals and prior job titles, without favoring a
+    particular industry.
+    """
     def cat(name: str) -> set[str]:
         return set(skills.get(name, []))
 
@@ -556,11 +561,8 @@ def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> li
         cat("cloud_devops_tools") & {"Linux", "Windows"}
     ) | {s for s in cyber if s in {"Networking", "TCP/IP"}}
 
-    # Past titles are strong evidence for secondary career tracks.
     job_titles = [str(t).strip() for t in (experience.get("job_titles") or []) if str(t).strip()]
-    title_blob = " ".join(job_titles).casefold()
 
-    # role -> signal strength (count of supporting evidence)
     scores: dict[str, int] = {}
 
     def add(role: str, strength: int) -> None:
@@ -569,10 +571,6 @@ def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> li
 
     add("Software Developer", len(prog) + len(frameworks))
     add("Backend Developer", len(backend) + len(databases))
-    if "Python" in prog:
-        add("Python Developer", 2 + (1 if backend else 0))
-    if "FastAPI" in frameworks:
-        add("FastAPI Developer", 3)
     add("Frontend Developer", len(frontend))
     if backend and frontend:
         add("Full Stack Developer", len(backend) + len(frontend))
@@ -582,26 +580,9 @@ def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> li
                                          "LLM", "NLP", "Computer Vision",
                                          "Data Science"}))
     add("SOC Analyst", len(cyber))
-    if cyber:
-        add("Cybersecurity Analyst", len(cyber))
     add("DevOps Engineer", len(cloud & {"Docker", "Kubernetes", "CI/CD",
                                         "Terraform", "Jenkins", "AWS", "Azure"}))
     add("IT Support", len(it_support_signals))
-    # Title/keyword boosts for support & cyber tracks that skills alone may miss.
-    if any(token in title_blob for token in (
-        "support", "help desk", "helpdesk", "service desk", "תמיכה", "טכני"
-    )):
-        add("Technical Support Specialist", 4)
-        add("IT Support", 3)
-    if any(token in title_blob for token in (
-        "soc", "cyber", "security", "סייבר", "אבטחת"
-    )):
-        add("SOC Analyst", 3)
-        add("Cybersecurity Analyst", 2)
-    if any(token in title_blob for token in ("backend", "python", "fastapi", "צד שרת")):
-        add("Backend Developer", 2)
-        if "python" in title_blob or "Python" in prog:
-            add("Python Developer", 2)
     add("UX/UI Designer", len(design & {"Figma", "UX", "UI"}))
     add("Graphic Designer", len(design & {"Photoshop", "Illustrator", "InDesign",
                                           "Canva", "Branding"}))
@@ -620,18 +601,17 @@ def suggest_best_fit_roles(skills: dict[str, list[str]], experience: dict) -> li
         add("Surgeon", len(healthcare))
     add("Customer Support", len(soft & {"Customer Service"}))
 
-    # Management roles when there is leadership/management evidence.
     if experience.get("management_experience"):
         add("Project Manager", 1)
         add("Product Manager", 1)
 
-    # Prefer concrete past titles when they look like searchable roles.
-    for title in job_titles[:6]:
-        if 3 <= len(title) <= 50:
+    # Past titles are profession-agnostic evidence for additional search domains.
+    for title in job_titles:
+        if 3 <= len(title) <= 60:
             add(title, 5)
 
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    return [role for role, _ in ranked][:12]
+    return [role for role, _ in ranked]
 
 
 def generate_strengths(skills: dict[str, list[str]], experience: dict) -> list[str]:

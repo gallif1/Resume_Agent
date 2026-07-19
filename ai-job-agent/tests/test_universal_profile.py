@@ -10,6 +10,19 @@ from universal_profile import (
 )
 
 
+def test_normalize_keeps_all_preferred_role_titles():
+    many = [f"Role {i}" for i in range(1, 25)]
+    profile = normalize_universal_profile({
+        "preferred_role_titles": many,
+        "alternative_role_titles": ["Adjacent A", "Adjacent B"],
+        "seniority_level": "mid",
+    })
+    assert len(profile["preferred_role_titles"]) == 24
+    assert profile["preferred_role_titles"][0] == "Role 1"
+    assert profile["preferred_role_titles"][-1] == "Role 24"
+    assert "Adjacent A" in profile["alternative_role_titles"]
+
+
 def test_build_universal_profile_fallback():
     rule_based = {
         "best_fit_roles": ["Accountant", "Bookkeeper"],
@@ -50,7 +63,7 @@ def test_apply_universal_profile_to_cv():
 
 
 def test_apply_universal_profile_keeps_rule_based_secondary_tracks():
-    """AI preferred titles must not erase rule-based support/cyber tracks."""
+    """AI preferred titles must not erase other rule-based / past-title tracks."""
     cv = {
         "experience": {"job_titles": ["Technical Support Specialist"]},
         "ai_insights": {},

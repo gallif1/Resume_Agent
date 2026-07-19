@@ -54,7 +54,7 @@ Return ONE JSON object with this exact structure:
       "category": "category_name",
       "priority": 95,
       "primary_role": "Target Role Title",
-      "search_queries": ["Python Developer", "FastAPI Junior", "Backend Engineer"],
+      "search_queries": ["Role Title A", "Role Title B", "Role + Specialty"],
       "hebrew_search_queries": ["Local language equivalent if applicable"],
       "alternative_titles": ["Alternative Title 1", "Alternative Title 2"],
       "exclude_keywords": ["senior", "lead", "manager", "equivalent local terms"]
@@ -91,18 +91,18 @@ Return ONE JSON object with this exact structure:
 }
 
 Rules:
-- Return 4-8 best_fit_roles ranked by fit.
-- Return 3-6 job_categories covering the candidate's realistic job search.
-- Return one collection_queries entry per job_category (use the same category name).
+- Work for ANY profession equally — do not favor IT/software over other fields.
+- best_fit_roles: return EVERY distinct, highly relevant role the candidate fits,
+  ranked by fit. There is NO fixed count limit — cover all evidenced career tracks.
+- job_categories: return categories covering the candidate's realistic job search
+  (as many as needed; one collection_queries entry per category).
 - collection_queries drive the actual job-board search, so each entry MUST contain
   concrete, ready-to-search job titles derived from the CV — NOT abstract skills.
-- search_queries: return a JSON array of exactly 3-4 DISTINCT, highly relevant English
-  (or primary language) job titles derived from the CV. Expand beyond a single hardcoded
-  role name so scrapers catch missed listings. Example for a Backend target:
-  ["Python Developer", "FastAPI Junior", "Backend Engineer"].
-  Prefer distinctive role+skill / role+domain titles from THIS CV.
-- hebrew_search_queries (or local_language_queries): 2-4 local language equivalents of those titles,
-  including mixed language+technology phrases when useful.
+- search_queries: DISTINCT, highly relevant job titles derived from THIS CV.
+  Expand beyond a single role name. Prefer distinctive role+skill / role+domain
+  titles over bare generics.
+- hebrew_search_queries (or local_language_queries): local language equivalents of
+  those titles, including mixed language+specialty phrases when useful.
 - alternative_titles: related/adjacent titles worth searching.
 - Avoid emitting only broad titles that return the same top board results for every candidate.
 - exclude_keywords: words that should disqualify a result (seniority, unrelated roles),
@@ -169,7 +169,7 @@ def normalize_category_entry(entry: Any) -> dict[str, Any] | None:
         return None
     return {
         "category": category,
-        "titles": normalize_string_list(entry.get("titles", []), max_items=12),
+        "titles": normalize_string_list(entry.get("titles", []), max_items=None),
         "must_have_keywords": normalize_string_list(entry.get("must_have_keywords", []), max_items=20),
         "nice_to_have_keywords": normalize_string_list(entry.get("nice_to_have_keywords", []), max_items=20),
         "negative_keywords": normalize_string_list(entry.get("negative_keywords", []), max_items=15),
@@ -402,8 +402,8 @@ def normalize_matching_strategy(
     if not isinstance(location_prefs, dict):
         location_prefs = {}
 
-    capped_categories = categories[:8]
-    capped_roles = roles[:10]
+    capped_categories = categories
+    capped_roles = roles
 
     return {
         "analyzed_at": data.get("analyzed_at") or datetime.now(timezone.utc).isoformat(),
@@ -514,13 +514,13 @@ def fallback_matching_strategy(profile: dict[str, Any], cv_profile: dict[str, An
         })
         categories.append(_category_from_role(role, len(categories)))
 
-    for index, role in enumerate(cv_profile.get("best_fit_roles", [])[:6]):
-        add_role(str(role), 85 - index * 5, "Suggested from CV analysis (rule-based fallback)")
+    for index, role in enumerate(cv_profile.get("best_fit_roles", [])):
+        add_role(str(role), 85 - min(index, 10) * 5, "Suggested from CV analysis (rule-based fallback)")
 
     insights = cv_profile.get("ai_insights", {})
     if isinstance(insights, dict):
-        for index, role in enumerate(insights.get("recommended_job_types", [])[:4]):
-            add_role(str(role), 75 - index * 5, "Recommended job type from CV insights (fallback)")
+        for index, role in enumerate(insights.get("recommended_job_types", [])):
+            add_role(str(role), 75 - min(index, 8) * 5, "Recommended job type from CV insights (fallback)")
 
     for index, role in enumerate(profile.get("target_roles", [])):
         add_role(str(role), 70 - index * 3, "Listed in profile.json target_roles (fallback)")
@@ -531,7 +531,7 @@ def fallback_matching_strategy(profile: dict[str, Any], cv_profile: dict[str, An
         "source": "fallback",
         "career_notes": "OpenAI unavailable — using profile and CV role suggestions.",
         "best_fit_roles": roles,
-        "job_categories": categories[:8],
+        "job_categories": categories,
         "global_reject_rules": [
             "Reject senior/lead/manager roles",
             "Reject roles with no overlap to target roles or skills",
