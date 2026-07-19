@@ -1357,26 +1357,68 @@ def _entry_matches_domain(entry: dict, domain: str) -> bool:
 def filter_plan_by_domains(
     plan: list[dict],
     domains: list[str],
+    *,
+    candidate_summary: str = "",
+    use_ai: bool = True,
 ) -> list[dict]:
-    """Keep strategy entries matching selected domains; append custom domains."""
+    """Keep strategy entries matching selected domains; append custom domains.
+
+    For every selected domain (any profession), the AI invents concrete board
+    titles / synonyms; those queries are pinned first (``priority_queries``) so
+    boards search titles like "Technical Support Engineer" when the user picks
+    "Technical Support" — without a fixed synonym dictionary.
+    """
+    from domain_query_expander import (
+        expand_selected_domains_with_ai,
+        flatten_expansion_queries,
+    )
+    from query_builder import inject_domain_query_expansions
+
     cleaned = [str(d).strip() for d in domains if str(d).strip()]
     if not cleaned:
         return plan
 
+    ai_by_domain = expand_selected_domains_with_ai(
+        cleaned,
+        candidate_summary=candidate_summary,
+        use_ai=use_ai,
+    )
+    for domain in cleaned:
+        queries = flatten_expansion_queries(ai_by_domain.get(domain))
+        if queries:
+            print(f"  AI domain queries for '{domain}': {', '.join(queries[:8])}")
+
     selected: list[dict] = []
-    covered: set[str] = set()
-    for entry in plan:
-        for domain in cleaned:
+    for domain in cleaned:
+        queries = flatten_expansion_queries(ai_by_domain.get(domain))
+        matched_entry: dict | None = None
+        for entry in plan:
             if _entry_matches_domain(entry, domain):
-                selected.append(entry)
-                covered.add(domain.casefold())
+                matched_entry = dict(entry)
                 break
+        if matched_entry is not None:
+            selected.append(
+                inject_domain_query_expansions(
+                    matched_entry, domain, queries=queries
+                )
+            )
+        else:
+            custom = collection_plan_from_roles([domain])
+            selected.extend(
+                inject_domain_query_expansions(dict(entry), domain, queries=queries)
+                for entry in custom
+            )
 
-    missing = [d for d in cleaned if d.casefold() not in covered]
-    if missing:
-        selected.extend(collection_plan_from_roles(missing))
-
-    return selected or collection_plan_from_roles(cleaned)
+    return selected or [
+        inject_domain_query_expansions(
+            dict(entry),
+            domain,
+            queries=flatten_expansion_queries(ai_by_domain.get(domain)),
+        )
+        for domain, entry in zip(
+            cleaned, collection_plan_from_roles(cleaned), strict=False
+        )
+    ]
 
 
 def _unwrap_collection_result(result: Any) -> tuple[list[dict], CollectionOutcome | None]:
@@ -1449,7 +1491,21 @@ def main() -> None:
     plan, strategy_hash, source_label = build_collection_plan(profile)
     selected_domains = _parse_domains_arg(args.domains)
     if selected_domains:
-        plan = filter_plan_by_domains(plan, selected_domains)
+        candidate_bits = [
+            str(profile.get("summary") or "").strip(),
+            str(profile.get("headline") or "").strip(),
+            ", ".join(
+                str(r).strip()
+                for r in (profile.get("target_roles") or [])
+                if str(r).strip()
+            ),
+        ]
+        candidate_summary = " | ".join(bit for bit in candidate_bits if bit)
+        plan = filter_plan_by_domains(
+            plan,
+            selected_domains,
+            candidate_summary=candidate_summary,
+        )
         source_label = (
             f"user-selected domains ({len(selected_domains)}): "
             + ", ".join(selected_domains)
@@ -1462,7 +1518,12 @@ def main() -> None:
         return
 
     if args.max_categories is not None:
-        plan = plan[: args.max_categories]
+        # Never drop user-selected domains because of a tight category budget
+        # (production used to set COLLECT_MAX_CATEGORIES=1).
+        category_limit = args.max_categories
+        if selected_domains:
+            category_limit = max(category_limit, len(selected_domains))
+        plan = plan[:category_limit]
 
     known_db_keys = get_known_job_identity_keys()
     known_job_urls = get_known_job_urls()

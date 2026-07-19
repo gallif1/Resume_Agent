@@ -51,8 +51,33 @@
   },
   "technical_support": {
     "canonical": "Technical Support",
-    "synonyms_en": ["help desk", "helpdesk", "IT support"],
-    "synonyms_he": ["תמיכה טכנית", "תמיכה"]
+    "synonyms_en": [
+      "help desk",
+      "helpdesk",
+      "IT support",
+      "technical support engineer",
+      "technical support specialist",
+      "technical support technician",
+      "support engineer",
+      "support technician",
+      "help desk technician",
+      "help desk specialist",
+      "IT support specialist",
+      "IT support engineer",
+      "desktop support",
+      "customer support engineer",
+      "application support",
+      "technical support representative",
+      "technical support agent"
+    ],
+    "synonyms_he": [
+      "תמיכה טכנית",
+      "תמיכה",
+      "הלפדסק",
+      "טכנאי תמיכה",
+      "מומחה תמיכה טכנית",
+      "נציג תמיכה טכנית"
+    ]
   },
   "cybersecurity": {
     "canonical": "Cybersecurity",

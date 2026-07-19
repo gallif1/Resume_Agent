@@ -6,6 +6,8 @@ from query_builder import (
     build_collection_queries,
     build_mixed_queries,
     dedupe_queries,
+    expand_domain_search_queries,
+    inject_domain_query_expansions,
     queries_for_board,
     select_diverse_queries,
     split_keywords_by_script,
@@ -131,3 +133,68 @@ def test_queries_for_board_recovers_english_from_flat_legacy_list():
     assert "Python Developer" in linkedin
     assert "Backend Developer" in linkedin
     assert "מפתח פייתון" not in linkedin
+
+
+def test_expand_domain_search_queries_is_exact_fallback_only():
+    """Offline helper must not invent dictionary/morphology synonyms."""
+    assert expand_domain_search_queries("Technical Support") == ["Technical Support"]
+    assert expand_domain_search_queries("Marketing") == ["Marketing"]
+    assert expand_domain_search_queries("Registered Nurse") == ["Registered Nurse"]
+
+
+def test_pinned_domain_expansions_survive_small_query_budget():
+    """Even with max_queries=2, AI-provided pinned expansions must not be dropped."""
+    entry = inject_domain_query_expansions(
+        {
+            "primary_role": "IT Support Specialist",
+            "queries_en": [
+                "IT Support Specialist",
+                "Help Desk Technician",
+                "Support Technician",
+            ],
+            "search_queries": [
+                "IT Support Specialist",
+                "Help Desk Technician",
+                "Support Technician",
+            ],
+            "queries": [],
+        },
+        "Technical Support",
+        queries=[
+            "Technical Support",
+            "Technical Support Engineer",
+            "Help Desk",
+            "IT Support",
+        ],
+    )
+    linkedin = queries_for_board(entry, "linkedin", max_items=2)
+    assert len(linkedin) == 2
+    assert any(
+        "technical support" in q.casefold() for q in linkedin
+    ), linkedin
+
+
+def test_select_diverse_queries_keeps_pinned_first():
+    selected = select_diverse_queries(
+        ["Generic Developer", "Software Engineer", "Python Backend"],
+        max_items=2,
+        pinned=["Technical Support Engineer", "Help Desk"],
+    )
+    assert selected[0] == "Technical Support Engineer"
+    assert "Help Desk" in selected
+
+
+def test_inject_uses_provided_ai_queries_for_any_profession():
+    """AI query list is pinned for non-IT domains too (no dictionary)."""
+    entry = inject_domain_query_expansions(
+        {"primary_role": "x", "queries_en": [], "search_queries": [], "queries": []},
+        "Marketing",
+        queries=["Marketing", "Marketing Specialist", "Marketing Coordinator"],
+    )
+    assert entry["priority_queries"][:3] == [
+        "Marketing",
+        "Marketing Specialist",
+        "Marketing Coordinator",
+    ]
+    linkedin = queries_for_board(entry, "linkedin", max_items=3)
+    assert "Marketing Specialist" in linkedin

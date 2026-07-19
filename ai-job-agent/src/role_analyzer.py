@@ -762,7 +762,11 @@ def get_collection_query_plan(strategy: dict[str, Any] | None) -> list[dict[str,
 
 
 def collection_plan_from_roles(roles: list[str]) -> list[dict[str, Any]]:
-    """Build a minimal collection plan from plain role-title strings (last-resort)."""
+    """Build a minimal collection plan from plain role-title strings (last-resort).
+
+    Uses the exact role label only. Synonym / category expansion is done by the
+    AI domain expander when the user selects domains for collect.
+    """
     from query_builder import is_english_query, is_hebrew_query
 
     plan: list[dict[str, Any]] = []
@@ -771,11 +775,14 @@ def collection_plan_from_roles(roles: list[str]) -> list[dict[str, Any]]:
         if not role:
             continue
         en = [role] if is_english_query(role) else []
-        he = [role] if is_hebrew_query(role) and not en else []
+        he = [role] if is_hebrew_query(role) else []
+        if not en and not he:
+            en = [role]
         plan.append({
             "category": role.lower().replace(" ", "_")[:40] or f"role_{index}",
             "priority": max(40, 90 - index * 10),
-            "primary_role": role if en else (en[0] if en else role),
+            "primary_role": role,
+            "priority_queries": [role],
             "queries_en": en,
             "queries_he": he,
             "queries_mixed": [],
