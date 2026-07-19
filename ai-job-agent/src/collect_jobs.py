@@ -1358,25 +1358,39 @@ def filter_plan_by_domains(
     plan: list[dict],
     domains: list[str],
 ) -> list[dict]:
-    """Keep strategy entries matching selected domains; append custom domains."""
+    """Keep strategy entries matching selected domains; append custom domains.
+
+    Each selected domain becomes its own plan entry with synonym expansions
+    pinned first (``priority_queries``), so boards actually search titles like
+    "Technical Support Engineer" when the user picks "Technical Support".
+    """
+    from query_builder import inject_domain_query_expansions
+
     cleaned = [str(d).strip() for d in domains if str(d).strip()]
     if not cleaned:
         return plan
 
     selected: list[dict] = []
-    covered: set[str] = set()
-    for entry in plan:
-        for domain in cleaned:
+    for domain in cleaned:
+        matched_entry: dict | None = None
+        for entry in plan:
             if _entry_matches_domain(entry, domain):
-                selected.append(entry)
-                covered.add(domain.casefold())
+                matched_entry = dict(entry)
                 break
+        if matched_entry is not None:
+            selected.append(inject_domain_query_expansions(matched_entry, domain))
+        else:
+            custom = collection_plan_from_roles([domain])
+            selected.extend(
+                inject_domain_query_expansions(dict(entry), domain) for entry in custom
+            )
 
-    missing = [d for d in cleaned if d.casefold() not in covered]
-    if missing:
-        selected.extend(collection_plan_from_roles(missing))
-
-    return selected or collection_plan_from_roles(cleaned)
+    return selected or [
+        inject_domain_query_expansions(dict(entry), domain)
+        for domain, entry in zip(
+            cleaned, collection_plan_from_roles(cleaned), strict=False
+        )
+    ]
 
 
 def _unwrap_collection_result(result: Any) -> tuple[list[dict], CollectionOutcome | None]:
@@ -1462,7 +1476,12 @@ def main() -> None:
         return
 
     if args.max_categories is not None:
-        plan = plan[: args.max_categories]
+        # Never drop user-selected domains because of a tight category budget
+        # (production used to set COLLECT_MAX_CATEGORIES=1).
+        category_limit = args.max_categories
+        if selected_domains:
+            category_limit = max(category_limit, len(selected_domains))
+        plan = plan[:category_limit]
 
     known_db_keys = get_known_job_identity_keys()
     known_job_urls = get_known_job_urls()
