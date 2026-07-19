@@ -762,26 +762,40 @@ def get_collection_query_plan(strategy: dict[str, Any] | None) -> list[dict[str,
 
 
 def collection_plan_from_roles(roles: list[str]) -> list[dict[str, Any]]:
-    """Build a minimal collection plan from plain role-title strings (last-resort)."""
-    from query_builder import is_english_query, is_hebrew_query
+    """Build a minimal collection plan from plain role-title strings (last-resort).
+
+    Expands each role via the synonym dictionary so boards search common
+    title variants (e.g. Technical Support → Technical Support Engineer).
+    """
+    from query_builder import (
+        expand_domain_search_queries,
+        is_english_query,
+        is_hebrew_query,
+    )
 
     plan: list[dict[str, Any]] = []
     for index, role in enumerate(roles):
         role = str(role or "").strip()
         if not role:
             continue
-        en = [role] if is_english_query(role) else []
-        he = [role] if is_hebrew_query(role) and not en else []
+        expansions = expand_domain_search_queries(role)
+        en = [q for q in expansions if is_english_query(q)]
+        he = [q for q in expansions if is_hebrew_query(q)]
+        if not en and is_english_query(role):
+            en = [role]
+        if not he and is_hebrew_query(role) and not en:
+            he = [role]
         plan.append({
             "category": role.lower().replace(" ", "_")[:40] or f"role_{index}",
             "priority": max(40, 90 - index * 10),
-            "primary_role": role if en else (en[0] if en else role),
+            "primary_role": role,
+            "priority_queries": list(expansions),
             "queries_en": en,
             "queries_he": he,
             "queries_mixed": [],
             "search_queries": en,
             "hebrew_search_queries": he,
-            "queries": [role],
+            "queries": expansions or [role],
             "exclude_keywords": list(SENIOR_KEYWORDS[:6]),
         })
     return plan

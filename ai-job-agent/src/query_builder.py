@@ -103,23 +103,37 @@ def dedupe_queries(queries: list[str], *, max_items: int = MAX_QUERIES_TOTAL) ->
 
 
 def select_diverse_queries(
-    queries: list[str], 
-    *, 
+    queries: list[str],
+    *,
     max_items: int,
-    profile_technologies: list[str] | None = None
+    profile_technologies: list[str] | None = None,
+    pinned: list[str] | None = None,
 ) -> list[str]:
     """Pick up to max_items queries, preferring specific/varied terms over generics.
 
-    When collection truncates to a small query budget (web UI defaults), taking the
-    first N titles often yields the same generic searches for every candidate.
-    Prefer technology-, domain-, and bilingual-specific queries first,
-    then fill remaining slots while preserving original relative order.
+    ``pinned`` queries (e.g. user-selected domain + synonym expansions) are always
+    kept first so truncation cannot drop the exact titles the user asked to search.
+    Remaining slots prefer technology-/domain-specific queries.
     """
     if max_items <= 0:
         return []
-    cleaned = dedupe_queries(queries, max_items=max(len(queries), max_items))
-    if len(cleaned) <= max_items:
-        return cleaned
+
+    pinned_clean = dedupe_queries(list(pinned or []), max_items=max_items)
+    remaining_budget = max_items - len(pinned_clean)
+    if remaining_budget <= 0:
+        return pinned_clean[:max_items]
+
+    pinned_keys = {q.casefold() for q in pinned_clean}
+    cleaned = [
+        q
+        for q in dedupe_queries(queries, max_items=max(len(queries), max_items))
+        if q.casefold() not in pinned_keys
+    ]
+    if not cleaned:
+        return pinned_clean
+
+    if len(cleaned) <= remaining_budget:
+        return dedupe_queries(pinned_clean + cleaned, max_items=max_items)
 
     ranked = sorted(
         enumerate(cleaned),
@@ -127,20 +141,132 @@ def select_diverse_queries(
     )
     chosen: list[str] = []
     chosen_keys: set[str] = set()
-    # First pass: take the most specific queries.
     for _, query in ranked:
-        if len(chosen) >= max_items:
+        if len(chosen) >= remaining_budget:
             break
-        key = query.lower()
+        key = query.casefold()
         if key in chosen_keys:
             continue
         chosen.append(query)
         chosen_keys.add(key)
 
-    # Keep output roughly in original order for readability/logs.
-    order = {q.lower(): index for index, q in enumerate(cleaned)}
-    chosen.sort(key=lambda q: order.get(q.lower(), 0))
-    return chosen
+    order = {q.casefold(): index for index, q in enumerate(cleaned)}
+    chosen.sort(key=lambda q: order.get(q.casefold(), 0))
+    return dedupe_queries(pinned_clean + chosen, max_items=max_items)
+
+
+def _title_case_query(text: str) -> str:
+    """Light title-casing for English board keywords; leave Hebrew unchanged."""
+    value = str(text or "").strip()
+    if not value or _is_hebrew(value):
+        return value
+    # Preserve known short acronyms.
+    parts = []
+    for token in value.split():
+        upper = token.upper()
+        if upper in {"IT", "QA", "HR", "SOC", "NOC", "AWS", "RN"} or (
+            len(token) <= 3 and token.isupper()
+        ):
+            parts.append(upper if len(token) <= 3 else token)
+        elif token.isupper() and len(token) <= 4:
+            parts.append(token)
+        else:
+            parts.append(token[:1].upper() + token[1:] if token else token)
+    return " ".join(parts)
+
+
+def expand_domain_search_queries(domain: str, *, max_items: int = 16) -> list[str]:
+    """Expand a user-selected domain into concrete board search titles.
+
+    Always includes the exact selected label, then synonym-dictionary variants
+    (EN + HE). Profession-agnostic: uses the shared dictionary rather than
+    hard-coded industry boosts.
+
+    English multi-word job titles (e.g. "Technical Support Engineer") are ranked
+    ahead of short fragments so LinkedIn actually searches the titles employers use.
+    """
+    text = str(domain or "").strip()
+    if not text:
+        return []
+
+    raw_variants: list[str] = [text]
+    try:
+        from multilingual_normalizer import expand_synonyms
+    except Exception:
+        expand_synonyms = None  # type: ignore[assignment]
+
+    if expand_synonyms is not None:
+        for alias in expand_synonyms(text):
+            alias_text = str(alias or "").strip()
+            if not alias_text:
+                continue
+            pretty = _title_case_query(alias_text)
+            if pretty:
+                raw_variants.append(pretty)
+            if alias_text.casefold() != pretty.casefold():
+                raw_variants.append(alias_text)
+
+    domain_tokens = {
+        tok for tok in re.split(r"\s+", text.casefold()) if len(tok) >= 3
+    }
+
+    def _rank(query: str) -> tuple[int, int, int, str]:
+        q = query.casefold()
+        is_he = bool(_HEBREW_RE.search(query))
+        words = [w for w in re.split(r"\s+", q) if w]
+        overlap = sum(1 for tok in domain_tokens if tok in q)
+        # Prefer: exact domain, then EN titles overlapping the domain, then other EN, then HE.
+        if q == text.casefold():
+            bucket = 0
+        elif not is_he and overlap >= max(1, len(domain_tokens)):
+            bucket = 1
+        elif not is_he and overlap > 0:
+            bucket = 2
+        elif not is_he:
+            bucket = 3
+        else:
+            bucket = 4
+        # Longer titles first within a bucket (Engineer/Specialist before fragments).
+        return (bucket, -len(words), -len(q), q)
+
+    unique = dedupe_queries(raw_variants, max_items=max(len(raw_variants), max_items))
+    unique.sort(key=_rank)
+    return unique[:max_items]
+
+
+def inject_domain_query_expansions(entry: dict[str, Any], domain: str) -> dict[str, Any]:
+    """Prepend domain + synonym expansions so they survive query-budget truncation."""
+    enriched = dict(entry)
+    expansions = expand_domain_search_queries(domain)
+    if not expansions:
+        return enriched
+
+    en = [q for q in expansions if is_english_query(q)]
+    he = [q for q in expansions if is_hebrew_query(q)]
+
+    enriched["primary_role"] = domain
+    enriched["priority_queries"] = list(expansions)
+    enriched["queries_en"] = dedupe_queries(
+        en + list(enriched.get("queries_en") or []),
+        max_items=MAX_QUERIES_TOTAL,
+    )
+    enriched["search_queries"] = dedupe_queries(
+        en + list(enriched.get("search_queries") or []),
+        max_items=MAX_QUERIES_TOTAL,
+    )
+    enriched["queries_he"] = dedupe_queries(
+        he + list(enriched.get("queries_he") or []),
+        max_items=MAX_QUERIES_HE,
+    )
+    enriched["hebrew_search_queries"] = dedupe_queries(
+        he + list(enriched.get("hebrew_search_queries") or []),
+        max_items=MAX_QUERIES_HE,
+    )
+    enriched["queries"] = dedupe_queries(
+        expansions + list(enriched.get("queries") or []),
+        max_items=MAX_QUERIES_TOTAL,
+    )
+    return enriched
 
 
 def split_keywords_by_script(keywords: list[str]) -> tuple[list[str], list[str]]:
@@ -431,18 +557,31 @@ def queries_for_board(
     exclusively in English, so Hebrew/mixed terms may return near-zero results.
     Drushim and AllJobs remain bilingual.
     Uses dynamic profile technologies for query ranking.
+    User-selected domain expansions in ``priority_queries`` are pinned first.
     """
     board = str(board_id or "").strip().lower()
     if max_items <= 0:
         return []
 
+    pinned_raw = list(entry.get("priority_queries") or [])
     if board in ENGLISH_ONLY_BOARDS:
+        pinned = [q for q in pinned_raw if is_english_query(q)]
         english = _english_query_pool(entry)
-        selected = select_diverse_queries(english, max_items=max_items, profile_technologies=profile_technologies)
+        selected = select_diverse_queries(
+            english,
+            max_items=max_items,
+            profile_technologies=profile_technologies,
+            pinned=pinned,
+        )
         if selected:
             return selected
         # Absolute fallback: never send Hebrew to English-only boards.
         return []
 
     # Default / Drushim: keep bilingual capability.
-    return select_diverse_queries(_bilingual_query_pool(entry), max_items=max_items, profile_technologies=profile_technologies)
+    return select_diverse_queries(
+        _bilingual_query_pool(entry),
+        max_items=max_items,
+        profile_technologies=profile_technologies,
+        pinned=pinned_raw,
+    )

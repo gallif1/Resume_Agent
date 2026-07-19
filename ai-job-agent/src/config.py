@@ -262,10 +262,12 @@ DRUSHIM_API_BASE_URL = os.getenv("DRUSHIM_API_BASE_URL", "https://webapi.drushim
 _DEFAULT_DRUSHIM_MAX_PAGES = "4" if AGENT_CV_ID else "5"
 DRUSHIM_MAX_PAGES = int(os.getenv("DRUSHIM_MAX_PAGES", _DEFAULT_DRUSHIM_MAX_PAGES))
 
-# Job collection limits — web UI defaults aim for ~50–100 jobs/scan while staying polite.
-_DEFAULT_COLLECT_MAX_QUERIES = "5" if AGENT_CV_ID else "8"
+# Job collection limits — web UI defaults aim for solid recall while staying polite.
+# Keep enough query variants so synonym expansions (e.g. Technical Support Engineer)
+# are actually searched on LinkedIn, not truncated away.
+_DEFAULT_COLLECT_MAX_QUERIES = "6" if AGENT_CV_ID else "8"
 COLLECT_MAX_QUERIES = int(os.getenv("COLLECT_MAX_QUERIES", _DEFAULT_COLLECT_MAX_QUERIES))
-_DEFAULT_COLLECT_MAX_CATEGORIES = "3" if AGENT_CV_ID else ""
+_DEFAULT_COLLECT_MAX_CATEGORIES = "5" if AGENT_CV_ID else ""
 _collect_max_categories_raw = os.getenv("COLLECT_MAX_CATEGORIES", _DEFAULT_COLLECT_MAX_CATEGORIES)
 COLLECT_MAX_CATEGORIES = (
     int(_collect_max_categories_raw) if _collect_max_categories_raw.strip() else None

@@ -232,6 +232,30 @@ def test_filter_plan_by_domains_keeps_matches_and_adds_custom():
     assert any("devops" in str(e.get("primary_role", "")).lower() for e in filtered)
 
 
+def test_filter_plan_by_domains_expands_technical_support_for_linkedin():
+    """User-selected Technical Support must search Technical Support Engineer etc."""
+    from query_builder import queries_for_board
+
+    plan = [
+        {
+            "category": "it_support",
+            "priority": 80,
+            "primary_role": "IT Support Specialist",
+            "queries_en": ["IT Support Specialist", "Help Desk Technician"],
+            "search_queries": ["IT Support Specialist", "Help Desk Technician"],
+            "hebrew_search_queries": ["מומחה תמיכה טכנית"],
+            "queries": ["IT Support Specialist", "Help Desk Technician"],
+        }
+    ]
+    filtered = filter_plan_by_domains(plan, ["Technical Support"])
+    assert len(filtered) == 1
+    assert filtered[0]["primary_role"] == "Technical Support"
+    linkedin = queries_for_board(filtered[0], "linkedin", max_items=6)
+    joined = " | ".join(q.casefold() for q in linkedin)
+    assert "technical support" in joined
+    assert "technical support engineer" in joined
+
+
 def test_analyze_endpoint_returns_domains(interactive_env):
     with interactive_env["authed_client"]() as client:
         upload = client.post(
