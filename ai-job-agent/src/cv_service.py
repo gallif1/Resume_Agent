@@ -245,14 +245,23 @@ def sync_parsed_profile(cv_id: str, db_path: Path = db.REGISTRY_DB_PATH) -> None
 
 
 def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
-    """Build a de-duplicated list of suggested job domains/roles from a strategy."""
+    """Build a de-duplicated list of suggested job domains/roles from a strategy.
+
+    Surfaces every career track encoded in the matching strategy — best-fit roles,
+    category titles, and collection search titles (EN + HE) — so Step 2 chips
+    cover secondary tracks (support, cyber, tech-specific) and not only the
+    single strongest role.
+    """
     if not strategy:
         return []
 
     domains: list[str] = []
     seen: set[str] = set()
+    max_domains = 14
 
     def _add(value: Any) -> None:
+        if len(domains) >= max_domains:
+            return
         text = str(value or "").strip()
         if not text:
             return
@@ -273,14 +282,31 @@ def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
             continue
         titles = entry.get("titles") or []
         if titles:
-            for title in titles[:3]:
+            for title in titles[:5]:
                 _add(title)
         else:
             _add(entry.get("category"))
 
     for entry in strategy.get("collection_queries") or []:
-        if isinstance(entry, dict):
-            _add(entry.get("primary_role"))
+        if not isinstance(entry, dict):
+            continue
+        _add(entry.get("primary_role"))
+        for key in (
+            "search_queries",
+            "queries_en",
+            "queries",
+            "alternative_titles",
+            "hebrew_search_queries",
+            "queries_he",
+            "queries_mixed",
+        ):
+            values = entry.get(key) or []
+            if not isinstance(values, list):
+                continue
+            # Prefer a few distinctive titles per bucket; avoid flooding the UI.
+            limit = 3 if key.startswith("hebrew") or key.endswith("_he") else 4
+            for title in values[:limit]:
+                _add(title)
 
     return domains
 
@@ -336,18 +362,34 @@ def analyze_cv(
     strategy_path = cv_data_dir(cv_id) / "ai_matching_strategy.json"
     strategy = load_matching_strategy(strategy_path) or {}
     domains = extract_recommended_domains(strategy)
-    if not domains:
-        # Fall back to any roles already stored on the parsed profile.
-        profile_path = cv_data_dir(cv_id) / "cv_profile.json"
-        if profile_path.exists():
-            try:
-                profile = json.loads(profile_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                profile = {}
-            for role in profile.get("best_fit_roles") or []:
-                text = str(role or "").strip()
-                if text and text not in domains:
-                    domains.append(text)
+    # Always merge rule/AI roles from the parsed profile so secondary tracks
+    # (support, cyber, past titles) survive even if the strategy truncated them.
+    profile_path = cv_data_dir(cv_id) / "cv_profile.json"
+    profile: dict[str, Any] = {}
+    if profile_path.exists():
+        try:
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            profile = {}
+
+    seen = {d.casefold() for d in domains}
+    for role in profile.get("best_fit_roles") or []:
+        text = str(role or "").strip()
+        if not text or text.casefold() in seen:
+            continue
+        domains.append(text)
+        seen.add(text.casefold())
+        if len(domains) >= 14:
+            break
+    if len(domains) < 14:
+        for title in (profile.get("experience") or {}).get("job_titles") or []:
+            text = str(title or "").strip()
+            if not text or text.casefold() in seen:
+                continue
+            domains.append(text)
+            seen.add(text.casefold())
+            if len(domains) >= 14:
+                break
 
     return {
         "cv_id": cv_id,
