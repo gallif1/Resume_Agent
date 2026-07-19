@@ -46,9 +46,9 @@ def test_build_linkedin_search_url_uses_broad_israel_defaults():
     assert "location=Israel" in url
     assert "geoId=101620260" in url
     assert "start=10" in url
-    # No seniority / experience guest filters.
+    # Past-month guest time filter; no seniority / experience filters.
+    assert "f_TPR=r2592000" in url
     assert "f_E=" not in url
-    assert "f_TPR=" not in url
 
 
 def test_parse_linkedin_cards_extracts_jobs():
@@ -108,46 +108,89 @@ def test_collect_linkedin_jobs_retries_on_429_with_backoff():
     assert mock_sleep.called
 
 
-def test_save_jobs_to_db_does_not_drop_senior_titles():
-    """Collection must save all scraped jobs; seniority filtering is matching-only."""
-    saved: list[str] = []
+def test_save_jobs_to_db_skips_known_urls_without_upsert():
+    """Known job_url must be skipped before description persistence / upsert."""
+    upsert_calls: list[str] = []
 
     def fake_upsert(**kwargs):
-        saved.append(kwargs["title"])
-        return len(saved), True
+        upsert_calls.append(kwargs["job_url"])
+        return 1, True
 
+    known_url = "https://www.linkedin.com/jobs/view/999001"
     jobs = [
         {
-            "title": "Senior Software Engineer",
+            "title": "Already Seen",
             "company": "Acme",
             "location": "Israel",
-            "job_url": "https://www.linkedin.com/jobs/view/999001",
+            "job_url": known_url,
             "source": "linkedin",
-            "description": "",
+            "description": "should not be written",
         },
         {
-            "title": "Lead Developer",
+            "title": "Brand New",
             "company": "Beta",
             "location": "Israel",
             "job_url": "https://www.linkedin.com/jobs/view/999002",
             "source": "linkedin",
-            "description": "",
+            "description": "ok",
         },
     ]
     with patch("collect_jobs.upsert_collected_job", side_effect=fake_upsert):
-        raw, unique, _dup, _already, excluded, inserted, _touched = save_jobs_to_db(
+        raw, unique, _dup, already, _ex, inserted, _touched = save_jobs_to_db(
             jobs,
             source_query="Software Engineer",
             source_category="backend",
             source_strategy_hash="h",
-            exclude_keywords=["senior", "lead", "manager"],
             seen_job_keys=set(),
             known_db_keys=set(),
             touched_job_keys=set(),
+            known_job_urls={known_url},
         )
 
     assert raw == 2
     assert unique == 2
-    assert excluded == 0
-    assert inserted == 2
-    assert saved == ["Senior Software Engineer", "Lead Developer"]
+    assert already == 1
+    assert inserted == 1
+    assert upsert_calls == ["https://www.linkedin.com/jobs/view/999002"]
+
+
+def test_apply_collect_filters_skips_old_and_known():
+    from collect_jobs import _apply_collect_filters
+    from job_identity import normalize_job_url
+
+    known = {normalize_job_url("https://www.drushim.co.il/job/1/")}
+    jobs = [
+        {
+            "title": "Old",
+            "job_url": "https://www.drushim.co.il/job/2/",
+            "posted_date": "לפני חודשיים",
+        },
+        {
+            "title": "Known",
+            "job_url": "https://www.drushim.co.il/job/1/",
+            "posted_date": "היום",
+        },
+        {
+            "title": "Fresh",
+            "job_url": "https://www.drushim.co.il/job/3/",
+            "posted_date": "היום",
+        },
+    ]
+    kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
+        jobs, known_job_urls=known
+    )
+    assert [j["title"] for j in kept] == ["Fresh"]
+    assert age_skipped == 1
+    assert known_skipped == 1
+    assert all_old is False
+
+    only_old = [
+        {"title": "a", "job_url": "https://www.drushim.co.il/job/9/", "posted_date": "לפני שנה"},
+        {"title": "b", "job_url": "https://www.drushim.co.il/job/8/", "posted_date": "לפני חודשיים"},
+    ]
+    kept2, age2, known2, all_old2 = _apply_collect_filters(only_old)
+    assert kept2 == []
+    assert age2 == 2
+    assert known2 == 0
+    assert all_old2 is True
+

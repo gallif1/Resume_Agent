@@ -54,7 +54,7 @@ Return ONE JSON object with this exact structure:
       "category": "category_name",
       "priority": 95,
       "primary_role": "Target Role Title",
-      "search_queries": ["Specific Role + Key Skill", "Role Title", "Adjacent Role Title"],
+      "search_queries": ["Python Developer", "FastAPI Junior", "Backend Engineer"],
       "hebrew_search_queries": ["Local language equivalent if applicable"],
       "alternative_titles": ["Alternative Title 1", "Alternative Title 2"],
       "exclude_keywords": ["senior", "lead", "manager", "equivalent local terms"]
@@ -96,10 +96,12 @@ Rules:
 - Return one collection_queries entry per job_category (use the same category name).
 - collection_queries drive the actual job-board search, so each entry MUST contain
   concrete, ready-to-search job titles derived from the CV — NOT abstract skills.
-- search_queries: 4-8 English (or primary language) job titles a recruiter would post for this candidate.
-  Prefer distinctive role+skill / role+domain titles from THIS CV
-  (e.g., combine the target role with key skills from their profile).
-- hebrew_search_queries (or local_language_queries): 2-5 local language equivalents of those titles,
+- search_queries: return a JSON array of exactly 3-4 DISTINCT, highly relevant English
+  (or primary language) job titles derived from the CV. Expand beyond a single hardcoded
+  role name so scrapers catch missed listings. Example for a Backend target:
+  ["Python Developer", "FastAPI Junior", "Backend Engineer"].
+  Prefer distinctive role+skill / role+domain titles from THIS CV.
+- hebrew_search_queries (or local_language_queries): 2-4 local language equivalents of those titles,
   including mixed language+technology phrases when useful.
 - alternative_titles: related/adjacent titles worth searching.
 - Avoid emitting only broad titles that return the same top board results for every candidate.

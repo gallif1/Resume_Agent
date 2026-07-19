@@ -715,6 +715,35 @@ def get_known_job_identity_keys(db_path: Path = DB_PATH) -> set[str]:
     return keys
 
 
+def get_known_job_urls(db_path: Path = DB_PATH) -> set[str]:
+    """Return canonical ``job_url`` values already stored in SQLite.
+
+    Used by collectors to skip known listings before any description fetch /
+    enrichment work.
+    """
+    urls: set[str] = set()
+    with get_connection(db_path) as conn:
+        rows = conn.execute("SELECT job_url FROM jobs").fetchall()
+        for row in rows:
+            canonical = normalize_job_url(row["job_url"] or "")
+            if canonical:
+                urls.add(canonical)
+    return urls
+
+
+def job_url_exists(job_url: str, db_path: Path = DB_PATH) -> bool:
+    """True when ``job_url`` (after normalization) is already in the database."""
+    canonical = normalize_job_url(job_url)
+    if not canonical:
+        return False
+    with get_connection(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM jobs WHERE job_url = ? LIMIT 1",
+            (canonical,),
+        ).fetchone()
+        return row is not None
+
+
 def insert_job(
     title: str,
     job_url: str,
