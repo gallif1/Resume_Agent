@@ -44,8 +44,8 @@ function stageStatus(
 ): StageStatus {
   const relevant = steps.filter((s) => keys.includes(s.key));
   if (relevant.length === 0) {
-    // Fall back: if backend uses unknown keys, derive from overall running state later.
-    return "pending";
+    // Search-only runs omit analyze steps — treat missing stages as skipped.
+    return steps.length > 0 ? "skipped" : "pending";
   }
   if (relevant.some((s) => s.status === "failed")) return "failed";
   if (relevant.some((s) => s.status === "running")) return "running";

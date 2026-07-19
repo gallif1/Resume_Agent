@@ -15,6 +15,12 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     GET    /cvs/{cv_id}                     one CV + its latest scan
     DELETE /cvs/{cv_id}                     delete a CV and all its data
     POST   /cvs/reset                       delete all CVs + clear workspace
+    POST   /cvs/{cv_id}/analyze             parse CV + suggest job domains/roles
+    POST   /cvs/{cv_id}/search              scrape jobs for selected domains (incremental)
+    POST   /cvs/{cv_id}/run-agent           run full per-CV pipeline (incremental)
+    GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
+    GET    /cvs/{cv_id}/matches             CV's job matches (all scans by default)
+           (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
     GET    /jobs/match-status                 live workspace scan progress
     GET    /jobs/matches                      workspace job matches
@@ -22,9 +28,6 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     POST   /jobs/matches/reset                clear workspace match results
     PATCH  /jobs/matches/{id}/status          set application status for workspace match
     POST   /jobs/{job_id}/tailor-cv           tailor CV from aggregated profile
-    GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
-    GET    /cvs/{cv_id}/matches             CV's job matches
-           (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
            (?regenerate=true deep-scans original CVs + ATS gaps; score-guarded)
@@ -284,6 +287,20 @@ class RunAgentRequest(BaseModel):
     skip_collect: bool = False
     skip_enrich: bool = False
     job_sites: list[str] | None = None
+    domains: list[str] | None = None
+
+
+class SearchJobsRequest(BaseModel):
+    domains: list[str] = Field(default_factory=list)
+    skip_enrich: bool = False
+    job_sites: list[str] | None = None
+
+    # Accept either {"domains": [...]} or {"selected_domains": [...]}
+    selected_domains: list[str] | None = None
+
+    def resolved_domains(self) -> list[str]:
+        raw = self.domains or self.selected_domains or []
+        return [str(d).strip() for d in raw if str(d).strip()]
 
 
 @app.post("/api/pipeline/run")
@@ -512,6 +529,7 @@ def _run_scan_thread(
     skip_collect: bool,
     skip_enrich: bool,
     job_sites: list[str] | None,
+    domains: list[str] | None = None,
 ) -> None:
     error: str | None = None
     try:
@@ -520,6 +538,7 @@ def _run_scan_thread(
             skip_collect=skip_collect,
             skip_enrich=skip_enrich,
             job_sites=job_sites,
+            domains=domains,
             log=_scan_log,
             set_step_status=_scan_set_step,
         )
@@ -541,6 +560,55 @@ def _run_scan_thread(
             _scan_state["finished_at"] = _utc_now()
             _scan_state["error"] = error
         _persist_scan_state()
+
+
+def _run_search_thread(
+    cv_id: str,
+    domains: list[str],
+    skip_enrich: bool,
+    job_sites: list[str] | None,
+) -> None:
+    error: str | None = None
+    try:
+        scan = cv_service.run_search(
+            cv_id,
+            domains=domains,
+            skip_enrich=skip_enrich,
+            job_sites=job_sites,
+            log=_scan_log,
+            set_step_status=_scan_set_step,
+        )
+        if scan.get("status") == db.SCAN_FAILED:
+            error = scan.get("error_message") or "הסריקה נכשלה"
+        with _scan_lock:
+            scan_warnings = scan.get("warnings") or []
+            for message in scan_warnings:
+                if message and message not in _scan_state["warnings"]:
+                    _scan_state["warnings"].append(message)
+            if scan.get("collection"):
+                _scan_state["collection"] = scan.get("collection")
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+        _scan_log(f"!! שגיאה: {exc}")
+    finally:
+        with _scan_lock:
+            _scan_state["running"] = False
+            _scan_state["finished_at"] = _utc_now()
+            if error is None and is_cancelled():
+                error = "הסריקה בוטלה על ידי המשתמש"
+            _scan_state["error"] = error
+        _persist_scan_state()
+
+
+def _cv_match_count(cv_id: str) -> int:
+    cv_db = cv_db_path(cv_id)
+    if not cv_db.exists():
+        return 0
+    try:
+        db.ensure_jobs_schema(cv_db)
+        return len(db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _run_user_scan_thread(
@@ -591,7 +659,7 @@ def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
         return len(
             db.get_cv_matches(
                 db.WORKSPACE_CV_ID,
-                latest_only=True,
+                latest_only=False,
                 db_path=workspace_db,
             )
         )
@@ -949,7 +1017,7 @@ def job_match_status(user: dict = Depends(auth.get_current_user)):
 
 @app.get("/jobs/matches")
 def get_job_matches(
-    latest: bool = True,
+    latest: bool = False,
     min_score: int | None = None,
     sort_by: str | None = None,
     order: str | None = None,
@@ -1064,6 +1132,96 @@ def get_job_sites():
     return {"sites": list_job_boards()}
 
 
+@app.post("/cvs/{cv_id}/analyze")
+def analyze_cv_domains(cv_id: str, user: dict = Depends(auth.get_current_user)):
+    """Parse the CV and return recommended job domains/roles for user selection."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+
+    begin_scan()
+    try:
+        result = cv_service.analyze_cv(cv_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"ניתוח קורות החיים נכשל: {exc}",
+        ) from exc
+
+    return {
+        "cv_id": cv_id,
+        "domains": result.get("domains") or [],
+        "candidate_summary": result.get("candidate_summary") or "",
+        "career_notes": result.get("career_notes") or "",
+        "best_fit_roles": result.get("best_fit_roles") or [],
+    }
+
+
+@app.post("/cvs/{cv_id}/search")
+def search_jobs_for_cv(
+    cv_id: str,
+    req: SearchJobsRequest,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Start an incremental job search for the user-selected domains."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+
+    domains = req.resolved_domains()
+    if not domains:
+        raise HTTPException(status_code=400, detail="יש לבחור לפחות תחום אחד לחיפוש")
+
+    try:
+        normalize_job_board_ids(req.job_sites)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+        begin_scan()
+        _scan_state.update(
+            {
+                "running": True,
+                "mode": "cv_search",
+                "cv_id": cv_id,
+                "user_id": user["id"],
+                "scan_id": None,
+                "started_at": _utc_now(),
+                "finished_at": None,
+                "error": None,
+                "warnings": [],
+                "collection": None,
+                "log": [],
+                "current_detail": "מתחיל חיפוש משרות…",
+                "steps": [
+                    {"key": key, "name": name, "status": "pending"}
+                    for key, name, _, _ in cv_service.SEARCH_STEPS
+                ],
+            }
+        )
+    _persist_scan_state()
+
+    thread = threading.Thread(
+        target=_run_search_thread,
+        args=(cv_id, domains, req.skip_enrich, req.job_sites),
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "started": True,
+        "cv_id": cv_id,
+        "domains": domains,
+    }
+
+
 @app.post("/cvs/{cv_id}/run-agent")
 def run_agent_for_cv(
     cv_id: str,
@@ -1081,12 +1239,13 @@ def run_agent_for_cv(
     with _scan_lock:
         if _scan_state["running"]:
             raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+        begin_scan()
         _scan_state.update(
             {
                 "running": True,
                 "mode": "cv",
                 "cv_id": cv_id,
-                "user_id": None,
+                "user_id": user["id"],
                 "scan_id": None,
                 "started_at": _utc_now(),
                 "finished_at": None,
@@ -1101,10 +1260,11 @@ def run_agent_for_cv(
                 ],
             }
         )
+    _persist_scan_state()
 
     thread = threading.Thread(
         target=_run_scan_thread,
-        args=(cv_id, req.skip_collect, req.skip_enrich, req.job_sites),
+        args=(cv_id, req.skip_collect, req.skip_enrich, req.job_sites, req.domains),
         daemon=True,
     )
     thread.start()
@@ -1130,6 +1290,7 @@ def cv_scan_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
                 "detail": _scan_state.get("current_detail"),
                 "steps": steps,
                 "log": list(_scan_state["log"][-20:]),
+                "match_count": _cv_match_count(cv_id),
             }
         else:
             live = {
@@ -1143,6 +1304,7 @@ def cv_scan_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
                 "detail": None,
                 "steps": [],
                 "log": [],
+                "match_count": _cv_match_count(cv_id),
             }
     latest_scan = db.get_latest_scan(cv_id, db_path=cv_db)
     if latest_scan and not live.get("warnings"):
@@ -1157,7 +1319,7 @@ def cv_scan_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
 @app.get("/cvs/{cv_id}/matches")
 def get_cv_matches(
     cv_id: str,
-    latest: bool = True,
+    latest: bool = False,
     min_score: int | None = None,
     sort_by: str | None = None,
     order: str | None = None,
