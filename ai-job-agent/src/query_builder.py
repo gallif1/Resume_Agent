@@ -155,89 +155,37 @@ def select_diverse_queries(
     return dedupe_queries(pinned_clean + chosen, max_items=max_items)
 
 
-def _title_case_query(text: str) -> str:
-    """Light title-casing for English board keywords; leave Hebrew unchanged."""
-    value = str(text or "").strip()
-    if not value or _is_hebrew(value):
-        return value
-    # Preserve known short acronyms.
-    parts = []
-    for token in value.split():
-        upper = token.upper()
-        if upper in {"IT", "QA", "HR", "SOC", "NOC", "AWS", "RN"} or (
-            len(token) <= 3 and token.isupper()
-        ):
-            parts.append(upper if len(token) <= 3 else token)
-        elif token.isupper() and len(token) <= 4:
-            parts.append(token)
-        else:
-            parts.append(token[:1].upper() + token[1:] if token else token)
-    return " ".join(parts)
-
-
 def expand_domain_search_queries(domain: str, *, max_items: int = 16) -> list[str]:
-    """Expand a user-selected domain into concrete board search titles.
+    """Exact-domain fallback only.
 
-    Always includes the exact selected label, then synonym-dictionary variants
-    (EN + HE). Profession-agnostic: uses the shared dictionary rather than
-    hard-coded industry boosts.
-
-    English multi-word job titles (e.g. "Technical Support Engineer") are ranked
-    ahead of short fragments so LinkedIn actually searches the titles employers use.
+    Real synonym/category expansion happens via ``domain_query_expander``
+    (OpenAI) when the user selects domains for collect. This helper remains for
+    offline / AI-unavailable paths so boards still search the selected label.
     """
     text = str(domain or "").strip()
     if not text:
         return []
-
-    raw_variants: list[str] = [text]
-    try:
-        from multilingual_normalizer import expand_synonyms
-    except Exception:
-        expand_synonyms = None  # type: ignore[assignment]
-
-    if expand_synonyms is not None:
-        for alias in expand_synonyms(text):
-            alias_text = str(alias or "").strip()
-            if not alias_text:
-                continue
-            pretty = _title_case_query(alias_text)
-            if pretty:
-                raw_variants.append(pretty)
-            if alias_text.casefold() != pretty.casefold():
-                raw_variants.append(alias_text)
-
-    domain_tokens = {
-        tok for tok in re.split(r"\s+", text.casefold()) if len(tok) >= 3
-    }
-
-    def _rank(query: str) -> tuple[int, int, int, str]:
-        q = query.casefold()
-        is_he = bool(_HEBREW_RE.search(query))
-        words = [w for w in re.split(r"\s+", q) if w]
-        overlap = sum(1 for tok in domain_tokens if tok in q)
-        # Prefer: exact domain, then EN titles overlapping the domain, then other EN, then HE.
-        if q == text.casefold():
-            bucket = 0
-        elif not is_he and overlap >= max(1, len(domain_tokens)):
-            bucket = 1
-        elif not is_he and overlap > 0:
-            bucket = 2
-        elif not is_he:
-            bucket = 3
-        else:
-            bucket = 4
-        # Longer titles first within a bucket (Engineer/Specialist before fragments).
-        return (bucket, -len(words), -len(q), q)
-
-    unique = dedupe_queries(raw_variants, max_items=max(len(raw_variants), max_items))
-    unique.sort(key=_rank)
-    return unique[:max_items]
+    return [text][:max_items]
 
 
-def inject_domain_query_expansions(entry: dict[str, Any], domain: str) -> dict[str, Any]:
-    """Prepend domain + synonym expansions so they survive query-budget truncation."""
+def inject_domain_query_expansions(
+    entry: dict[str, Any],
+    domain: str,
+    *,
+    queries: list[str] | None = None,
+) -> dict[str, Any]:
+    """Pin AI (or fallback) domain queries so they survive query-budget truncation.
+
+    ``queries`` should be the flattened EN+HE list from
+    ``expand_selected_domains_with_ai``. When omitted, only the exact domain
+    label is pinned (no synonym dictionary).
+    """
     enriched = dict(entry)
-    expansions = expand_domain_search_queries(domain)
+    expansions = dedupe_queries(
+        [str(q).strip() for q in (queries or []) if str(q).strip()]
+        or [str(domain or "").strip()],
+        max_items=MAX_QUERIES_TOTAL,
+    )
     if not expansions:
         return enriched
 

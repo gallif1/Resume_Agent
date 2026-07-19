@@ -135,18 +135,15 @@ def test_queries_for_board_recovers_english_from_flat_legacy_list():
     assert "מפתח פייתון" not in linkedin
 
 
-def test_expand_domain_search_queries_includes_support_engineer_variants():
-    """Selecting Technical Support must expand to titles boards actually use."""
-    queries = expand_domain_search_queries("Technical Support")
-    joined = " | ".join(q.casefold() for q in queries)
-    assert "technical support" in joined
-    assert "technical support engineer" in joined
-    assert "help desk" in joined or "helpdesk" in joined
-    assert "it support" in joined
+def test_expand_domain_search_queries_is_exact_fallback_only():
+    """Offline helper must not invent dictionary/morphology synonyms."""
+    assert expand_domain_search_queries("Technical Support") == ["Technical Support"]
+    assert expand_domain_search_queries("Marketing") == ["Marketing"]
+    assert expand_domain_search_queries("Registered Nurse") == ["Registered Nurse"]
 
 
 def test_pinned_domain_expansions_survive_small_query_budget():
-    """Even with max_queries=2, pinned expansions must not be dropped."""
+    """Even with max_queries=2, AI-provided pinned expansions must not be dropped."""
     entry = inject_domain_query_expansions(
         {
             "primary_role": "IT Support Specialist",
@@ -163,10 +160,15 @@ def test_pinned_domain_expansions_survive_small_query_budget():
             "queries": [],
         },
         "Technical Support",
+        queries=[
+            "Technical Support",
+            "Technical Support Engineer",
+            "Help Desk",
+            "IT Support",
+        ],
     )
     linkedin = queries_for_board(entry, "linkedin", max_items=2)
     assert len(linkedin) == 2
-    # Exact selected domain and/or engineer variant must lead the LinkedIn search.
     assert any(
         "technical support" in q.casefold() for q in linkedin
     ), linkedin
@@ -180,3 +182,19 @@ def test_select_diverse_queries_keeps_pinned_first():
     )
     assert selected[0] == "Technical Support Engineer"
     assert "Help Desk" in selected
+
+
+def test_inject_uses_provided_ai_queries_for_any_profession():
+    """AI query list is pinned for non-IT domains too (no dictionary)."""
+    entry = inject_domain_query_expansions(
+        {"primary_role": "x", "queries_en": [], "search_queries": [], "queries": []},
+        "Marketing",
+        queries=["Marketing", "Marketing Specialist", "Marketing Coordinator"],
+    )
+    assert entry["priority_queries"][:3] == [
+        "Marketing",
+        "Marketing Specialist",
+        "Marketing Coordinator",
+    ]
+    linkedin = queries_for_board(entry, "linkedin", max_items=3)
+    assert "Marketing Specialist" in linkedin

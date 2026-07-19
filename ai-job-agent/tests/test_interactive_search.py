@@ -232,9 +232,27 @@ def test_filter_plan_by_domains_keeps_matches_and_adds_custom():
     assert any("devops" in str(e.get("primary_role", "")).lower() for e in filtered)
 
 
-def test_filter_plan_by_domains_expands_technical_support_for_linkedin():
-    """User-selected Technical Support must search Technical Support Engineer etc."""
+def test_filter_plan_by_domains_expands_technical_support_for_linkedin(monkeypatch):
+    """User-selected Technical Support uses AI-invented titles for LinkedIn search."""
     from query_builder import queries_for_board
+
+    def fake_ai_expand(domains, **_kwargs):
+        return {
+            "Technical Support": {
+                "search_queries_en": [
+                    "Technical Support",
+                    "Technical Support Engineer",
+                    "Help Desk",
+                    "IT Support",
+                ],
+                "search_queries_he": ["תמיכה טכנית"],
+            }
+        }
+
+    monkeypatch.setattr(
+        "domain_query_expander.expand_selected_domains_with_ai",
+        fake_ai_expand,
+    )
 
     plan = [
         {
@@ -254,6 +272,34 @@ def test_filter_plan_by_domains_expands_technical_support_for_linkedin():
     joined = " | ".join(q.casefold() for q in linkedin)
     assert "technical support" in joined
     assert "technical support engineer" in joined
+
+
+def test_filter_plan_by_domains_ai_expands_any_profession(monkeypatch):
+    """Marketing (non-IT) also gets AI categories/synonyms, not a word dictionary."""
+    from query_builder import queries_for_board
+
+    def fake_ai_expand(domains, **_kwargs):
+        return {
+            "Marketing": {
+                "search_queries_en": [
+                    "Marketing",
+                    "Marketing Specialist",
+                    "Digital Marketing Manager",
+                ],
+                "search_queries_he": ["שיווק"],
+            }
+        }
+
+    monkeypatch.setattr(
+        "domain_query_expander.expand_selected_domains_with_ai",
+        fake_ai_expand,
+    )
+    filtered = filter_plan_by_domains([], ["Marketing"])
+    assert len(filtered) == 1
+    linkedin = queries_for_board(filtered[0], "linkedin", max_items=4)
+    joined = " | ".join(q.casefold() for q in linkedin)
+    assert "marketing specialist" in joined
+    assert "digital marketing manager" in joined
 
 
 def test_analyze_endpoint_returns_domains(interactive_env):
