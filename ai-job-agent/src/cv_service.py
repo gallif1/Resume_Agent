@@ -329,7 +329,12 @@ def analyze_cv(
         if key == "parse_cv":
             sync_parsed_profile(cv_id, db_path=db_path)
 
-    strategy = load_matching_strategy() or {}
+    # Subprocesses wrote under data/cvs/<cv_id>/ with AGENT_CV_ID set.
+    # The API process itself has no AGENT_CV_ID, so the module-level default
+    # AI_MATCHING_STRATEGY_PATH still points at the legacy global file — load
+    # the per-CV strategy explicitly (same pattern as run_search).
+    strategy_path = cv_data_dir(cv_id) / "ai_matching_strategy.json"
+    strategy = load_matching_strategy(strategy_path) or {}
     domains = extract_recommended_domains(strategy)
     if not domains:
         # Fall back to any roles already stored on the parsed profile.

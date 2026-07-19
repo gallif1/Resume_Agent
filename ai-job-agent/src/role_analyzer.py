@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from ai_client import (
@@ -687,10 +688,11 @@ def _strategy_from_roles(roles_data: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def load_matching_strategy(path=AI_MATCHING_STRATEGY_PATH) -> dict[str, Any] | None:
-    if path.exists():
+def load_matching_strategy(path: Path | None = None) -> dict[str, Any] | None:
+    strategy_path = path if path is not None else AI_MATCHING_STRATEGY_PATH
+    if strategy_path.exists():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(strategy_path.read_text(encoding="utf-8"))
             if isinstance(data, dict) and data.get("best_fit_roles"):
                 normalized = normalize_matching_strategy(
                     data, str(data.get("candidate_summary", "") or "")
@@ -701,7 +703,10 @@ def load_matching_strategy(path=AI_MATCHING_STRATEGY_PATH) -> dict[str, Any] | N
         except (json.JSONDecodeError, OSError):
             pass
 
-    roles = load_ai_roles()
+    # Fall back to ai_roles.json next to the strategy file (per-CV / per-user /
+    # legacy), never a different scope's roles just because AGENT_CV_ID is unset
+    # in the parent API process.
+    roles = load_ai_roles(strategy_path.parent / "ai_roles.json")
     if roles:
         return _strategy_from_roles(roles)
 

@@ -365,3 +365,128 @@ def test_search_requires_domains(interactive_env):
             api_server._scan_state["running"] = False
         res = client.post(f"/cvs/{cv_id}/search", json={"domains": []})
         assert res.status_code == 400
+
+
+def test_analyze_cv_reads_per_cv_strategy_not_legacy_global(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression: analyze_cv must not return the committed legacy Gal strategy.
+
+    Subprocesses write under data/cvs/<cv_id>/ with AGENT_CV_ID set, but the API
+    process has no AGENT_CV_ID so the module-level default strategy path still
+    points at the global file. Loading without an explicit per-CV path used to
+    always surface Junior Backend / SOC Analyst / Server Monitor System.
+    """
+    db_path = tmp_path / "registry.db"
+    cvs_dir = tmp_path / "cvs"
+    data_dir = tmp_path / "data"
+    cvs_dir.mkdir()
+    data_dir.mkdir()
+    db.init_registry_db(db_path)
+
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    monkeypatch.setattr(config, "DATA_DIR", data_dir)
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+
+    legacy_strategy = {
+        "analyzed_at": "2026-07-02T17:18:35.398009+00:00",
+        "source": "openai",
+        "candidate_summary": (
+            "Name: Gal Lifshitz\nProjects: Server Monitor System with ThreadPoolExecutor"
+        ),
+        "career_notes": "legacy",
+        "best_fit_roles": [
+            {
+                "role": "Junior Backend Developer",
+                "score": 90,
+                "reason": "legacy",
+                "missing_skills": [],
+                "realistic_for_application": True,
+            },
+            {
+                "role": "SOC Analyst",
+                "score": 80,
+                "reason": "legacy",
+                "missing_skills": [],
+                "realistic_for_application": True,
+            },
+            {
+                "role": "IT Support Specialist",
+                "score": 85,
+                "reason": "legacy",
+                "missing_skills": [],
+                "realistic_for_application": True,
+            },
+        ],
+        "job_categories": [],
+        "collection_queries": [
+            {"primary_role": "Junior Backend Developer"},
+            {"primary_role": "SOC Analyst"},
+            {"primary_role": "IT Support Specialist"},
+        ],
+    }
+    legacy_path = data_dir / "ai_matching_strategy.json"
+    legacy_path.write_text(json.dumps(legacy_strategy), encoding="utf-8")
+
+    # Simulate the API process: no AGENT_CV_ID → default load path is legacy.
+    import role_analyzer
+
+    monkeypatch.setattr(role_analyzer, "AI_MATCHING_STRATEGY_PATH", legacy_path)
+    monkeypatch.setattr(role_analyzer, "AI_ROLES_PATH", data_dir / "ai_roles.json")
+
+    cv = cv_service.upload_cv(
+        "fresh_resume.txt",
+        SAMPLE_CV_TEXT.encode("utf-8"),
+        db_path=db_path,
+    )
+    cv_id = cv["id"]
+
+    per_cv_strategy = _sample_strategy()
+
+    def fake_subprocess(cmd, *, env=None, log=None):
+        assert env and env.get("AGENT_CV_ID") == cv_id
+        cv_dir = config.cv_data_dir(cv_id)
+        cv_dir.mkdir(parents=True, exist_ok=True)
+        script = Path(cmd[1]).name if len(cmd) > 1 else ""
+        if script == "parse_cv.py":
+            (cv_dir / "cv_profile.json").write_text(
+                json.dumps(
+                    {
+                        "raw_text": SAMPLE_CV_TEXT,
+                        "best_fit_roles": ["Fullstack Developer", "Backend Developer"],
+                        "contact": {"name": "Jane Doe"},
+                        "skills": {},
+                        "experience": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+        elif script == "analyze_roles.py":
+            (cv_dir / "ai_matching_strategy.json").write_text(
+                json.dumps(per_cv_strategy), encoding="utf-8"
+            )
+            (cv_dir / "ai_roles.json").write_text(
+                json.dumps(
+                    {
+                        "candidate_summary": per_cv_strategy["candidate_summary"],
+                        "best_fit_roles": per_cv_strategy["best_fit_roles"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return 0
+
+    monkeypatch.setattr(cv_service, "_run_logged_subprocess", fake_subprocess)
+    monkeypatch.setattr(cv_service, "sync_parsed_profile", lambda *a, **k: None)
+
+    result = cv_service.analyze_cv(cv_id, db_path=db_path)
+
+    assert result["cv_id"] == cv_id
+    assert "Fullstack Developer" in result["domains"]
+    assert "Backend Developer" in result["domains"]
+    assert "Junior Backend Developer" not in result["domains"]
+    assert "SOC Analyst" not in result["domains"]
+    assert "IT Support Specialist" not in result["domains"]
+    assert "Server Monitor System" not in result["candidate_summary"]
+    assert "ThreadPoolExecutor" not in result["candidate_summary"]
+    assert "Fullstack engineer" in result["candidate_summary"]
