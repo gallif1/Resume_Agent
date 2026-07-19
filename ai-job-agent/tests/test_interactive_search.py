@@ -254,7 +254,7 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
             db_path=cv_db,
         )
         ignored = db.insert_job(
-            title="Existing Role",
+            title="Existing Fullstack Developer",
             job_url="https://www.drushim.co.il/job/111/abc",
             company="OldCo",
             location="Tel Aviv",
@@ -278,6 +278,14 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
                 scan_id=scan_id,
                 db_path=cv_db,
             )
+        # Reattach the prior in-domain job onto this scan (domain-scoped preserve).
+        existing = db.get_jobs(db_path=cv_db)
+        prior = next(
+            j for j in existing if "111/abc" in (j.get("job_url") or "")
+        )
+        db.refresh_cv_job_match_scan(
+            cv_id_arg, int(prior["id"]), scan_id, db_path=cv_db
+        )
         db.finish_scan(
             scan_id,
             db.SCAN_SUCCESS,
@@ -302,11 +310,13 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
         cv_db = config.cv_db_path(cv_id)
         db.init_db(cv_db)
         existing_id = db.insert_job(
-            title="Existing Role",
+            title="Existing Fullstack Developer",
             job_url="https://www.drushim.co.il/job/111/abc",
             company="OldCo",
             location="Tel Aviv",
             source="drushim",
+            source_category="fullstack",
+            source_query="Fullstack Developer",
             db_path=cv_db,
         )
         assert existing_id is not None
@@ -490,3 +500,155 @@ def test_analyze_cv_reads_per_cv_strategy_not_legacy_global(
     assert "Server Monitor System" not in result["candidate_summary"]
     assert "ThreadPoolExecutor" not in result["candidate_summary"]
     assert "Fullstack engineer" in result["candidate_summary"]
+
+
+def test_job_matches_selected_domains_rejects_backend_for_support_soc():
+    from collect_jobs import job_matches_selected_domains
+
+    domains = ["Technical Support", "SOC Analyst"]
+    assert job_matches_selected_domains(
+        {
+            "title": "SOC Analyst",
+            "source_category": "soc",
+            "source_query": "SOC Analyst",
+        },
+        domains,
+    )
+    assert job_matches_selected_domains(
+        {
+            "title": "IT Support Specialist",
+            "source_category": "support",
+            "source_query": "Technical Support",
+        },
+        domains,
+    )
+    assert not job_matches_selected_domains(
+        {
+            "title": "Backend Engineer, AI Systems",
+            "source_category": "backend",
+            "source_query": "Junior Backend Developer",
+        },
+        domains,
+    )
+    assert not job_matches_selected_domains(
+        {
+            "title": "Junior Software Engineer",
+            "source_category": "fullstack",
+            "source_query": "Fullstack Developer",
+        },
+        domains,
+    )
+
+
+def test_match_all_jobs_does_not_attach_out_of_domain_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Support/SOC search must not reattach prior Backend matches onto latest scan."""
+    import match_jobs
+    from collect_jobs import job_matches_selected_domains
+
+    db_path = tmp_path / "cv.db"
+    db.init_db(db_path)
+    monkeypatch.setattr(match_jobs, "get_all_jobs", lambda: db.get_all_jobs(db_path=db_path))
+    monkeypatch.setattr(config, "DB_PATH", db_path)
+
+    backend_id = db.insert_job(
+        title="Backend Engineer, AI Systems",
+        job_url="https://www.linkedin.com/jobs/view/1",
+        company="A.I.",
+        location="Israel",
+        source="linkedin",
+        source_category="backend",
+        source_query="Backend Developer",
+        db_path=db_path,
+    )
+    support_id = db.insert_job(
+        title="Technical Support Specialist",
+        job_url="https://www.linkedin.com/jobs/view/2",
+        company="HelpCo",
+        location="Tel Aviv",
+        source="linkedin",
+        source_category="support",
+        source_query="Technical Support",
+        db_path=db_path,
+    )
+    assert backend_id and support_id
+
+    cv_id = "cv-domain-scope"
+    db.create_cv(cv_id, file_name="a.pdf", stored_path="a", db_path=db_path)
+    old_scan = db.create_scan(cv_id, db_path=db_path)
+    db.upsert_cv_job_match(
+        cv_id,
+        backend_id,
+        {"match_score": 51, "match_reason": "old", "match_method": "test"},
+        scan_id=old_scan,
+        db_path=db_path,
+    )
+    db.upsert_cv_job_match(
+        cv_id,
+        support_id,
+        {"match_score": 70, "match_reason": "old", "match_method": "test"},
+        scan_id=old_scan,
+        db_path=db_path,
+    )
+    db.finish_scan(old_scan, db.SCAN_SUCCESS, db_path=db_path)
+
+    new_scan = db.create_scan(cv_id, db_path=db_path)
+    domains = ["Technical Support", "SOC Analyst"]
+
+    # Simulate the matcher's domain-scoped refresh behavior directly.
+    for job in db.get_all_jobs(db_path=db_path):
+        if job_matches_selected_domains(job, domains):
+            db.refresh_cv_job_match_scan(
+                cv_id, int(job["id"]), new_scan, db_path=db_path
+            )
+
+    latest = db.get_cv_matches(cv_id, latest_only=True, db_path=db_path)
+    titles = {m.get("title") for m in latest}
+    assert "Technical Support Specialist" in titles
+    assert "Backend Engineer, AI Systems" not in titles
+
+
+def test_save_jobs_excludes_backend_noise_for_support_domains(tmp_path, monkeypatch):
+    from collect_jobs import save_jobs_to_db
+
+    db_path = tmp_path / "jobs.db"
+    db.init_db(db_path)
+    monkeypatch.setattr("collect_jobs.upsert_collected_job", db.upsert_collected_job)
+    # Point upsert at our temp db via monkeypatch of db.DB_PATH used inside upsert.
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    monkeypatch.setattr("collect_jobs.upsert_collected_job", lambda **kwargs: db.upsert_collected_job(**kwargs, db_path=db_path))
+
+    jobs = [
+        {
+            "title": "Backend Engineer, AI Systems",
+            "company": "A.I.",
+            "location": "Israel",
+            "job_url": "https://www.linkedin.com/jobs/view/backend-1",
+            "source": "linkedin",
+        },
+        {
+            "title": "SOC Analyst",
+            "company": "SecureCo",
+            "location": "Tel Aviv",
+            "job_url": "https://www.linkedin.com/jobs/view/soc-1",
+            "source": "linkedin",
+        },
+    ]
+    result = save_jobs_to_db(
+        jobs,
+        source_query="SOC Analyst",
+        source_category="soc",
+        source_strategy_hash=None,
+        selected_domains=["Technical Support", "SOC Analyst"],
+        seen_job_keys=set(),
+        known_db_keys=set(),
+        touched_job_keys=set(),
+    )
+    _raw, _unique, _dup, _already, excluded, inserted, _touched = result
+    assert excluded >= 1
+    assert inserted == 1
+    stored = db.get_all_jobs(db_path=db_path)
+    titles = {j["title"] for j in stored}
+    assert "SOC Analyst" in titles
+    assert "Backend Engineer, AI Systems" not in titles

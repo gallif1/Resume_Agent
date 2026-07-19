@@ -1043,6 +1043,7 @@ def save_jobs_to_db(
     source_category: str,
     source_strategy_hash: str | None,
     exclude_keywords: list[str] | None = None,
+    selected_domains: list[str] | None = None,
     seen_job_keys: set[str],
     known_db_keys: set[str],
     touched_job_keys: set[str],
@@ -1056,7 +1057,6 @@ def save_jobs_to_db(
         (raw_found, unique_processed, duplicates_skipped, already_in_db,
          excluded, inserted, touched_once)
     """
-    del exclude_keywords  # retained in signature for call-site compatibility
     raw_found = len(jobs)
     unique_processed = 0
     duplicates_skipped = 0
@@ -1064,6 +1064,8 @@ def save_jobs_to_db(
     excluded = 0
     inserted = 0
     touched_once = 0
+    exclude_l = [str(k).casefold().strip() for k in (exclude_keywords or []) if str(k).strip()]
+    domains = [str(d).strip() for d in (selected_domains or []) if str(d).strip()]
 
     for job in jobs:
         title = job.get("title", "")
@@ -1072,6 +1074,26 @@ def save_jobs_to_db(
         url = normalize_job_url(job.get("job_url", ""))
         if not url:
             continue
+
+        title_l = str(title).casefold()
+        if exclude_l and any(kw in title_l for kw in exclude_l):
+            excluded += 1
+            continue
+
+        # When the user picked specific domains, drop board noise whose title is
+        # unrelated to those domains and to the query that returned it (e.g.
+        # "Backend Engineer" from an IT Support / SOC search).
+        if domains:
+            title_probe = {
+                "title": title,
+                "source_category": "",
+                "source_query": "",
+            }
+            title_tokens = _domain_tokens(title)
+            query_overlap = bool(title_tokens & _domain_tokens(source_query))
+            if not job_matches_selected_domains(title_probe, domains) and not query_overlap:
+                excluded += 1
+                continue
 
         job_key = compute_job_identity_key(url, title, company, location)
         if job_key in seen_job_keys:
@@ -1161,6 +1183,51 @@ def _parse_domains_arg(raw: str | None) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+_DOMAIN_STOPWORDS = {
+    "the",
+    "and",
+    "or",
+    "for",
+    "a",
+    "an",
+    "of",
+    "to",
+    "in",
+    "on",
+    "junior",
+    "senior",
+    "lead",
+    "principal",
+}
+
+# Role nouns that are too broad to count as domain relevance by themselves.
+_GENERIC_ROLE_TOKENS = {
+    "analyst",
+    "engineer",
+    "developer",
+    "specialist",
+    "manager",
+    "officer",
+    "associate",
+    "assistant",
+}
+
+
+def _domain_tokens(text: str) -> set[str]:
+    """Meaningful tokens for domain/title relevance checks."""
+    import re
+
+    parts = re.findall(r"[a-zא-ת0-9]+", (text or "").casefold())
+    short_ok = {"soc", "it", "qa", "hr", "ai", "sre", "noc"}
+    out: set[str] = set()
+    for part in parts:
+        if part in _DOMAIN_STOPWORDS:
+            continue
+        if len(part) >= 3 or part in short_ok:
+            out.add(part)
+    return out
+
+
 def _entry_matches_domain(entry: dict, domain: str) -> bool:
     needle = domain.casefold().strip()
     if not needle:
@@ -1176,11 +1243,63 @@ def _entry_matches_domain(entry: dict, domain: str) -> bool:
         *[str(q) for q in (entry.get("hebrew_search_queries") or [])],
         *[str(q) for q in (entry.get("alternative_titles") or [])],
     ]
+    needle_tokens = _domain_tokens(needle)
     for hay in haystacks:
         text = hay.casefold().strip()
         if not text:
             continue
-        if needle in text or text in needle:
+        # Substring match — require the shorter side to be long enough so
+        # tiny fragments like "it" / "qa" don't pull in unrelated plan entries.
+        if needle in text:
+            return True
+        if len(text) >= 4 and text in needle:
+            return True
+        overlap = needle_tokens & _domain_tokens(text)
+        if overlap - _GENERIC_ROLE_TOKENS:
+            return True
+        if len(overlap) >= 2:
+            return True
+    return False
+
+
+def job_matches_selected_domains(job: dict, domains: list[str]) -> bool:
+    """True when a stored job is relevant to the user-selected search domains.
+
+    Used so latest-scan views do not reattach historical Backend/software matches
+    when the user searched only for Support / SOC (etc.).
+    """
+    cleaned = [str(d).strip() for d in domains if str(d).strip()]
+    if not cleaned:
+        return True
+
+    haystacks = [
+        str(job.get("source_category") or ""),
+        str(job.get("source_query") or ""),
+        str(job.get("title") or ""),
+    ]
+    combined = " ".join(h for h in haystacks if h).casefold()
+    if not combined.strip():
+        return False
+    job_tokens = _domain_tokens(combined)
+
+    for domain in cleaned:
+        needle = domain.casefold().strip()
+        if not needle:
+            continue
+        if needle in combined:
+            return True
+        domain_tokens = _domain_tokens(needle)
+        overlap = domain_tokens & job_tokens
+        if overlap - _GENERIC_ROLE_TOKENS:
+            return True
+        if len(overlap) >= 2:
+            return True
+        fake_entry = {
+            "category": haystacks[0],
+            "primary_role": haystacks[2],
+            "queries": [haystacks[1], haystacks[2]],
+        }
+        if _entry_matches_domain(fake_entry, domain):
             return True
     return False
 
@@ -1208,6 +1327,8 @@ def filter_plan_by_domains(
         selected.extend(collection_plan_from_roles(missing))
 
     return selected or collection_plan_from_roles(cleaned)
+
+
 
 
 def _unwrap_collection_result(result: Any) -> tuple[list[dict], CollectionOutcome | None]:
@@ -1435,6 +1556,7 @@ def main() -> None:
                         source_category=category,
                         source_strategy_hash=strategy_hash,
                         exclude_keywords=exclude_keywords,
+                        selected_domains=selected_domains,
                         seen_job_keys=seen_job_keys,
                         known_db_keys=known_db_keys,
                         touched_job_keys=touched_job_keys,

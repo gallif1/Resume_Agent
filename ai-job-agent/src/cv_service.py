@@ -430,6 +430,9 @@ def run_search(
             extra_args = [*extra_args, "--domains", domains_arg]
             if selected_sites:
                 extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
+        elif key == "match":
+            # Scope latest-scan attachment to the domains the user selected.
+            extra_args = [*extra_args, "--domains", domains_arg]
 
         collect_warnings: list[str] = []
         collect_summary_holder: dict[str, Any] = {}

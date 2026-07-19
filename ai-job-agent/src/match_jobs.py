@@ -162,6 +162,7 @@ def match_all_jobs(
     ai_rerank: bool = False,
     cv_id: str | None = None,
     scan_id: int | None = None,
+    selected_domains: list[str] | None = None,
 ) -> dict[str, int]:
     """Score jobs using deterministic profile matcher + ATS engine (no per-job AI)."""
     configure_console()
@@ -172,6 +173,9 @@ def match_all_jobs(
             cv_id = AGENT_CV_ID or None
     if scan_id is None:
         scan_id = _resolved_scan_id()
+
+    domains = [str(d).strip() for d in (selected_domains or []) if str(d).strip()]
+    from collect_jobs import job_matches_selected_domains
 
     profile = load_profile()
     cv_profile = load_cv_profile()
@@ -205,9 +209,27 @@ def match_all_jobs(
         "ats_scored": 0,
         "analyzed": 0,
         "ai_reranked": 0,
+        "domain_filtered": 0,
     }
 
+    if domains:
+        safe_print(
+            "Domain-scoped latest scan: only attaching jobs relevant to: "
+            + ", ".join(domains)
+        )
+
     for job in jobs:
+        in_scope = job_matches_selected_domains(job, domains) if domains else True
+        if domains and not in_scope:
+            # Do not promote historical Backend/software matches onto a Support/SOC
+            # (etc.) search — leave them on prior scans so latest_only stays focused.
+            stats["domain_filtered"] += 1
+            safe_print(
+                f"Skipping job outside selected domains: "
+                f"{job.get('title', '')} @ {job.get('company', '')}"
+            )
+            continue
+
         if cv_id:
             needs = cv_job_needs_matching(
                 cv_id, job["id"], current_strategy_hash=strategy_hash, rematch=rematch
@@ -217,7 +239,7 @@ def match_all_jobs(
                 job, current_strategy_hash=strategy_hash, rematch=rematch
             )
         if not needs:
-            # Keep already-scored jobs visible on the current scan in the UI.
+            # Keep already-scored in-scope jobs visible on the current scan.
             if cv_id and scan_id is not None:
                 refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
             stats["skipped"] += 1
@@ -313,6 +335,14 @@ def main() -> None:
         action="store_true",
         help="(Deprecated) AI rerank is disabled; matching is deterministic",
     )
+    parser.add_argument(
+        "--domains",
+        default="",
+        help=(
+            "Comma-separated domains selected for this search. When set, only "
+            "jobs relevant to these domains are attached to the current scan."
+        ),
+    )
     args = parser.parse_args()
     configure_console()
 
@@ -335,8 +365,16 @@ def main() -> None:
         roles = [r["role"] for r in ai_roles.get("best_fit_roles", [])[:4]]
         safe_print(f"Best-fit roles: {', '.join(roles) or 'none'}")
 
+    selected_domains = [
+        part.strip() for part in str(args.domains or "").split(",") if part.strip()
+    ]
+
     try:
-        stats = match_all_jobs(rematch=args.rematch, ai_rerank=args.ai_rerank)
+        stats = match_all_jobs(
+            rematch=args.rematch,
+            ai_rerank=args.ai_rerank,
+            selected_domains=selected_domains or None,
+        )
     except Exception as exc:
         safe_print(f"\nError during job matching: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -345,6 +383,7 @@ def main() -> None:
     safe_print(f"\nJobs in database: {stats['total']}")
     safe_print(f"  Processed this run: {processed}")
     safe_print(f"  Skipped (already matched): {stats['skipped']}")
+    safe_print(f"  Outside selected domains: {stats.get('domain_filtered', 0)}")
     safe_print(f"  Jobs analyzed: {stats['analyzed']}")
     safe_print(f"  Scored: {stats['ats_scored']}")
     safe_print(f"  Meets min_match_score ({min_score}): {stats['matched']}")
