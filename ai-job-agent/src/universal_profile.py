@@ -28,6 +28,7 @@ Analyze the candidate and return ONE JSON object with exactly these keys:
   "canonical_skills": ["English skill/concept names"],
   "technologies_tools": ["tools/technologies ONLY if relevant to this CV; else []"],
   "domain_keywords": ["industry/domain terms in English"],
+  "core_professional_domain": "short free-form Core Professional Domain label deduced from THIS CV (e.g. Software Development, Marketing, Design, Product Management, Clinical Nursing) — NOT a fixed taxonomy",
   "seniority_level": "intern|student|junior|mid|senior|lead|manager|unknown",
   "years_of_experience": 0,
   "education": ["degree/field strings"],
@@ -61,6 +62,9 @@ Rules:
 - Work for ANY profession equally — healthcare, education, finance, law, marketing,
   logistics, hospitality, trades, engineering, IT, creative, public sector, etc.
   Do not assume or favor software/IT unless the CV supports it.
+- core_professional_domain: dynamically extract the candidate's PRIMARY professional
+  track from evidence on the CV. Use a short free-form label; do not force a fixed
+  industry list. If the CV clearly spans tracks, pick the dominant paid-work track.
 - All canonical_roles, canonical_skills, preferred_role_titles must be in English.
 - search_keywords_he must include Hebrew equivalents for role/domain words when relevant.
 - technologies_tools: include only when the CV mentions specific tools; otherwise return [].
@@ -93,6 +97,7 @@ def _empty_universal_profile() -> dict[str, Any]:
         "canonical_skills": [],
         "technologies_tools": [],
         "domain_keywords": [],
+        "core_professional_domain": "",
         "seniority_level": "unknown",
         "years_of_experience": None,
         "education": [],
@@ -141,6 +146,17 @@ def normalize_universal_profile(data: dict[str, Any], *, source: str = "openai")
     profile["canonical_skills"] = normalize_string_list(data.get("canonical_skills"), max_items=40)
     profile["technologies_tools"] = normalize_string_list(data.get("technologies_tools"), max_items=30)
     profile["domain_keywords"] = normalize_string_list(data.get("domain_keywords"), max_items=20)
+    core_domain = str(
+        data.get("core_professional_domain") or data.get("professional_domain") or ""
+    ).strip()
+    if not core_domain:
+        # Fallback: first preferred/canonical role as a free-form domain signal.
+        roles = normalize_string_list(
+            data.get("preferred_role_titles") or data.get("canonical_roles"),
+            max_items=1,
+        )
+        core_domain = roles[0] if roles else ""
+    profile["core_professional_domain"] = core_domain
     profile["seniority_level"] = _normalize_seniority(data.get("seniority_level"))
     profile["years_of_experience"] = _normalize_years(data.get("years_of_experience"))
     profile["education"] = normalize_string_list(data.get("education"), max_items=10)
@@ -326,6 +342,10 @@ def build_universal_profile_fallback(rule_based: dict[str, Any]) -> dict[str, An
         "canonical_skills": skills[:30],
         "technologies_tools": [],
         "domain_keywords": [],
+        "core_professional_domain": (
+            str(rule_based.get("core_professional_domain") or "").strip()
+            or (canonical_roles[0] if canonical_roles else "")
+        ),
         "seniority_level": seniority,
         "years_of_experience": experience.get("years_of_experience_estimate"),
         "education": education_items,

@@ -128,14 +128,61 @@ def _skill_score(
     return min(1.0, ratio), matched, missing
 
 
-def _domain_score(universal: dict[str, Any], job_text: str) -> tuple[float, list[str]]:
+def _domain_score(
+    universal: dict[str, Any],
+    job_text: str,
+    job: dict[str, Any] | None = None,
+    job_profile: JobProfile | None = None,
+) -> tuple[float, list[str]]:
+    """Score domain alignment using free-form CV/JD domain signals (no taxonomy)."""
     domains = list(universal.get("domain_keywords") or [])
-    if not domains:
-        return 0.5, []
-    matched, _ = terms_overlap(domains, job_text)
-    ratio = len(matched) / max(len(domains), 1)
-    reasons = [f"Domain match: {', '.join(matched[:3])}"] if matched else []
-    return ratio, reasons
+    core = str(universal.get("core_professional_domain") or "").strip()
+    if core and core not in domains:
+        domains = [core, *domains]
+    roles = list(universal.get("preferred_role_titles") or []) + list(
+        universal.get("canonical_roles") or []
+    )
+
+    target_signals: list[str] = []
+    if job_profile and job_profile.professional_domain:
+        target_signals.append(job_profile.professional_domain)
+    if job_profile and job_profile.title:
+        target_signals.append(job_profile.title)
+    if job and job.get("title"):
+        target_signals.append(str(job.get("title")))
+
+    reasons: list[str] = []
+    keyword_ratio = 0.5
+    if domains:
+        matched, _ = terms_overlap(domains, job_text)
+        keyword_ratio = len(matched) / max(len(domains), 1)
+        if matched:
+            reasons.append(f"Domain match: {', '.join(matched[:3])}")
+
+    title_ratio = 0.5
+    if roles and target_signals:
+        title_ratio = max(
+            (best_title_similarity(signal, roles) for signal in target_signals),
+            default=0.0,
+        )
+        if title_ratio < 0.22:
+            reasons.append(
+                "Domain misalignment: candidate core track vs target role "
+                f"(similarity={title_ratio:.0%})"
+            )
+        elif title_ratio >= 0.5:
+            reasons.append(f"Domain/title alignment {title_ratio:.0%}")
+
+    # Blend keyword overlap with role/domain title similarity.
+    if domains and roles and target_signals:
+        score = 0.45 * keyword_ratio + 0.55 * title_ratio
+    elif roles and target_signals:
+        score = title_ratio
+    elif domains:
+        score = keyword_ratio
+    else:
+        score = 0.5
+    return min(1.0, max(0.0, score)), reasons
 
 
 def _seniority_score(universal: dict[str, Any], job_profile: JobProfile | None, job_text: str) -> tuple[float, list[str]]:
@@ -237,7 +284,7 @@ def score(
 
     title_s, title_reasons = _title_score(universal, job)
     skill_s, matched_skills, missing_skills = _skill_score(universal, job_text, job_profile)
-    domain_s, domain_reasons = _domain_score(universal, job_text)
+    domain_s, domain_reasons = _domain_score(universal, job_text, job, job_profile)
     seniority_s, seniority_reasons = _seniority_score(universal, job_profile, job_text)
     keyword_s, matched_keywords = _keyword_score(universal, job_text)
     location_s, location_reasons = _location_score(universal, job, job_text)

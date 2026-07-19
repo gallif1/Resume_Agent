@@ -23,6 +23,9 @@ def test_fallback_extracts_skills_and_years():
     assert profile.seniority == "junior"
     assert "English" in profile.languages
     assert profile.location_type == "remote"
+    assert profile.professional_domain
+    assert "Python" in profile.professional_domain or "Developer" in profile.professional_domain
+    assert profile.hard_constraints  # must-have lines / years become hard constraints
 
 
 def test_job_profile_hash_changes_with_content():
@@ -46,10 +49,12 @@ def test_analyze_job_openai_cache_uses_job_profile_hash(monkeypatch):
         seen.append(kwargs.get("cache_payload", ""))
         return {
             "title": "Dev",
+            "professional_domain": "Software Development",
             "seniority": "junior",
             "required_skills": ["Python"],
             "preferred_skills": [],
             "mandatory_requirements": [],
+            "hard_constraints": ["2+ years Python experience"],
             "years_experience_min": 2,
             "education": [],
             "languages": [],

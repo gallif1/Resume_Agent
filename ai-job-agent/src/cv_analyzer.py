@@ -63,7 +63,12 @@ Return ONE JSON object with exactly these top-level keys:
 
 9. "strengths" — up to 8 short strength phrases
 
-10. "ai_insights" — object with thoughtful analysis:
+10. "core_professional_domain" — short free-form Core Professional Domain label
+    deduced dynamically from THIS resume (e.g. Software Development, Marketing,
+    Design, Product Management, Clinical Nursing). Do NOT force a fixed industry
+    taxonomy; pick the dominant paid-work track evidenced on the CV.
+
+11. "ai_insights" — object with thoughtful analysis:
     - professional_summary: 2-4 sentences in the resume's primary language
     - key_achievements: array of notable accomplishments (metrics if present)
     - career_trajectory: 1-2 sentences on career direction
@@ -76,6 +81,7 @@ Rules:
 - Base everything ONLY on the resume text provided. Do not invent employers or degrees.
 - If information is missing, use empty strings, empty arrays, null, or false.
 - Handle Hebrew and English resumes naturally.
+- Work for ANY profession — do not assume software/IT unless the resume supports it.
 - Return valid JSON only, no markdown."""
 
 
@@ -222,6 +228,14 @@ def _normalize_ai_insights(value: Any) -> dict[str, Any]:
 
 def normalize_ai_profile(data: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize the model response to the expected schema."""
+    core_domain = str(
+        data.get("core_professional_domain") or data.get("professional_domain") or ""
+    ).strip()
+    if not core_domain:
+        roles = _normalize_string_list(data.get("best_fit_roles", []), max_items=1)
+        titles = _normalize_experience(data.get("experience")).get("job_titles") or []
+        core_domain = roles[0] if roles else (str(titles[0]) if titles else "")
+
     return {
         "sections": _normalize_sections(data.get("sections")),
         "contact": _normalize_contact(data.get("contact")),
@@ -232,6 +246,7 @@ def normalize_ai_profile(data: dict[str, Any]) -> dict[str, Any]:
         "certifications": _normalize_string_list(data.get("certifications", [])),
         "best_fit_roles": _normalize_string_list(data.get("best_fit_roles", []), max_items=10),
         "strengths": _normalize_string_list(data.get("strengths", []), max_items=8),
+        "core_professional_domain": core_domain,
         "ai_insights": _normalize_ai_insights(data.get("ai_insights")),
     }
 
@@ -409,5 +424,17 @@ def merge_profiles(rule_based: dict[str, Any], ai_based: dict[str, Any]) -> dict
     if exp.get("years_of_experience_estimate") is None:
         exp["years_of_experience_estimate"] = rb_exp.get("years_of_experience_estimate")
     merged["experience"] = exp
+
+    merged["core_professional_domain"] = str(
+        ai_based.get("core_professional_domain")
+        or rule_based.get("core_professional_domain")
+        or ""
+    ).strip()
+    if not merged["core_professional_domain"]:
+        roles = merged.get("best_fit_roles") or []
+        titles = (merged.get("experience") or {}).get("job_titles") or []
+        merged["core_professional_domain"] = (
+            str(roles[0]).strip() if roles else (str(titles[0]).strip() if titles else "")
+        )
 
     return merged
