@@ -33,8 +33,8 @@ Analyze the candidate and return ONE JSON object with exactly these keys:
   "education": ["degree/field strings"],
   "certifications": ["certification names"],
   "languages": ["Hebrew", "English", ...],
-  "preferred_role_titles": ["English job titles to search for"],
-  "alternative_role_titles": ["related/adjacent English titles"],
+  "preferred_role_titles": ["5-8 English job titles covering EVERY career track in the CV"],
+  "alternative_role_titles": ["4-8 related/adjacent English titles"],
   "search_keywords_en": ["English search terms for job boards"],
   "search_keywords_he": ["Hebrew search terms for Israeli job boards"],
   "exclusion_keywords": ["terms that disqualify irrelevant jobs, EN and HE"],
@@ -63,6 +63,17 @@ Rules:
 - search_keywords_he must include Hebrew equivalents for role/domain words when relevant.
 - technologies_tools: include only when the CV mentions specific tools; otherwise return [].
 - collection_queries: 1-4 categories covering realistic job search; concrete searchable titles.
+- CRITICAL — cover ALL evidenced career tracks, not only the strongest one:
+  preferred_role_titles MUST include 5-8 DISTINCT titles that together cover every track
+  supported by past job titles, projects, skills, or stated interests.
+  Example: a CV with backend (Python/FastAPI) + technical support + cybersecurity interest
+  should yield titles across those tracks, e.g.
+  ["Junior Backend Developer", "Python Developer", "Technical Support Specialist",
+   "IT Support", "SOC Analyst", "Cybersecurity Analyst"] — do NOT drop support/cyber
+  just because backend is primary.
+- alternative_role_titles: 4-8 adjacent titles (tech-specific or Hebrew-market variants
+  in English form), e.g. "FastAPI Developer", "Help Desk Technician", "Full Stack Developer".
+- Include past job titles from the CV when they are still realistic search targets.
 - search_queries: return a JSON array of exactly 3-4 DISTINCT, highly relevant English
   search queries derived from the CV (not near-duplicates). These drive board scraping,
   so expand beyond a single role name. Example for a Backend-focused CV:
@@ -142,10 +153,10 @@ def normalize_universal_profile(data: dict[str, Any], *, source: str = "openai")
     profile["certifications"] = normalize_string_list(data.get("certifications"), max_items=15)
     profile["languages"] = normalize_string_list(data.get("languages"), max_items=10)
     profile["preferred_role_titles"] = normalize_string_list(
-        data.get("preferred_role_titles"), max_items=10
+        data.get("preferred_role_titles"), max_items=12
     )
     profile["alternative_role_titles"] = normalize_string_list(
-        data.get("alternative_role_titles"), max_items=10
+        data.get("alternative_role_titles"), max_items=12
     )
     profile["search_keywords_en"] = normalize_string_list(data.get("search_keywords_en"), max_items=20)
     profile["search_keywords_he"] = normalize_string_list(data.get("search_keywords_he"), max_items=15)
@@ -326,8 +337,8 @@ def build_universal_profile_fallback(rule_based: dict[str, Any]) -> dict[str, An
         "education": education_items,
         "certifications": list(rule_based.get("certifications") or [])[:10],
         "languages": list((rule_based.get("skills") or {}).get("languages") or [])[:5],
-        "preferred_role_titles": canonical_roles[:6],
-        "alternative_role_titles": canonical_roles[6:10],
+        "preferred_role_titles": canonical_roles[:8],
+        "alternative_role_titles": canonical_roles[8:12],
         "search_keywords_en": keywords_en[:15],
         "search_keywords_he": keywords_he[:10],
         "exclusion_keywords": exclusion,
@@ -357,24 +368,59 @@ def extract_universal_profile(
         return build_universal_profile_fallback(rule_based)
 
 
+def _dedupe_role_titles(*groups: list[Any], max_items: int = 14) -> list[str]:
+    """Merge role-title lists in priority order with case-insensitive dedupe."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for raw in group or []:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(text)
+            if len(merged) >= max_items:
+                return merged
+    return merged
+
+
 def apply_universal_profile_to_cv(cv_profile: dict[str, Any], universal: dict[str, Any]) -> dict[str, Any]:
-    """Merge universal profile into cv_profile for backward compatibility."""
+    """Merge universal profile into cv_profile for backward compatibility.
+
+    Preserves rule-based ``best_fit_roles`` and experience job titles alongside
+    AI preferred/alternative titles so secondary career tracks (support, cyber,
+    etc.) are not dropped when the model focuses on the strongest track.
+    """
     cv_profile = dict(cv_profile)
     cv_profile["universal_profile"] = universal
 
     preferred = universal.get("preferred_role_titles") or []
     alternative = universal.get("alternative_role_titles") or []
-    combined_roles: list[str] = []
-    seen: set[str] = set()
-    for role in preferred + alternative:
-        key = str(role).lower()
-        if role and key not in seen:
-            seen.add(key)
-            combined_roles.append(str(role))
-    if combined_roles:
-        cv_profile["best_fit_roles"] = combined_roles[:10]
-
+    rule_roles = list(cv_profile.get("best_fit_roles") or [])
     experience = dict(cv_profile.get("experience") or {})
+    job_titles = list(experience.get("job_titles") or [])
+
+    combined_roles = _dedupe_role_titles(
+        preferred, alternative, rule_roles, job_titles, max_items=14
+    )
+    if combined_roles:
+        cv_profile["best_fit_roles"] = combined_roles
+        # Keep universal preferred list complete for downstream strategy building.
+        universal = dict(universal)
+        universal["preferred_role_titles"] = _dedupe_role_titles(
+            preferred, rule_roles[:6], job_titles[:4], max_items=12
+        )
+        preferred_keys = {p.casefold() for p in universal["preferred_role_titles"]}
+        universal["alternative_role_titles"] = _dedupe_role_titles(
+            alternative,
+            [r for r in combined_roles if r.casefold() not in preferred_keys],
+            max_items=12,
+        )
+        cv_profile["universal_profile"] = universal
+
     if universal.get("seniority_level"):
         experience["seniority_level"] = universal["seniority_level"]
     if universal.get("years_of_experience") is not None:
@@ -386,7 +432,9 @@ def apply_universal_profile_to_cv(cv_profile: dict[str, Any], universal: dict[st
         insights["professional_summary"] = universal["candidate_summary"]
     if universal.get("career_notes"):
         insights["career_trajectory"] = universal["career_notes"]
-    if universal.get("preferred_role_titles"):
+    if combined_roles:
+        insights["recommended_job_types"] = list(combined_roles)[:10]
+    elif universal.get("preferred_role_titles"):
         insights["recommended_job_types"] = list(universal["preferred_role_titles"])[:8]
     if universal.get("canonical_skills"):
         insights["skills_to_highlight"] = list(universal["canonical_skills"])[:10]
@@ -411,23 +459,43 @@ def build_matching_strategy_from_profile(
     from role_analyzer import normalize_matching_strategy
 
     profile = profile or {}
-    preferred = universal.get("preferred_role_titles") or universal.get("canonical_roles") or []
-    alternative = universal.get("alternative_role_titles") or []
+    cv_profile = cv_profile or {}
+    preferred = list(
+        universal.get("preferred_role_titles") or universal.get("canonical_roles") or []
+    )
+    alternative = list(universal.get("alternative_role_titles") or [])
+    rule_roles = [
+        str(r).strip()
+        for r in (cv_profile.get("best_fit_roles") or [])
+        if str(r or "").strip()
+    ]
+    job_titles = [
+        str(t).strip()
+        for t in ((cv_profile.get("experience") or {}).get("job_titles") or [])
+        if str(t or "").strip()
+    ]
+    preferred = _dedupe_role_titles(preferred, rule_roles, job_titles, max_items=10)
+    preferred_keys = {p.casefold() for p in preferred}
+    alternative = _dedupe_role_titles(
+        alternative,
+        [r for r in rule_roles + job_titles if r.casefold() not in preferred_keys],
+        max_items=8,
+    )
 
     best_fit_roles: list[dict[str, Any]] = []
-    for index, role in enumerate(preferred[:8]):
+    for index, role in enumerate(preferred[:10]):
         best_fit_roles.append({
             "role": str(role),
-            "score": clamp_score(90 - index * 5),
+            "score": clamp_score(90 - index * 4),
             "reason": universal.get("candidate_summary") or "From universal candidate profile",
             "missing_skills": [],
             "realistic_for_application": True,
         })
-    for index, role in enumerate(alternative[:4]):
+    for index, role in enumerate(alternative[:6]):
         best_fit_roles.append({
             "role": str(role),
-            "score": clamp_score(70 - index * 5),
-            "reason": "Alternative role from universal profile",
+            "score": clamp_score(72 - index * 4),
+            "reason": "Alternative / secondary career track from CV profile",
             "missing_skills": [],
             "realistic_for_application": True,
         })
@@ -439,13 +507,20 @@ def build_matching_strategy_from_profile(
     search_en = [k.lower() for k in (universal.get("search_keywords_en") or [])]
     search_he = list(universal.get("search_keywords_he") or [])
 
-    for index, role in enumerate(preferred[:6]):
+    # One category per primary track; include adjacent titles for domain chips.
+    category_roles = preferred[:8] or alternative[:4]
+    for index, role in enumerate(category_roles):
         role_l = str(role).lower()
         must_have = list({role_l, *search_en[:6], *search_he[:4], *[s.lower() for s in skills[:5]]})
         nice_to_have = [s.lower() for s in (tech_kw + domain_kw)[:8]]
+        # Pull a few sibling titles so extract_recommended_domains sees more chips.
+        sibling = [
+            t for t in (preferred + alternative + search_he)
+            if str(t).strip() and str(t).casefold() != role.casefold()
+        ][:4]
         job_categories.append({
             "category": role_l.replace(" ", "_")[:40] or f"category_{index}",
-            "titles": [role_l, str(role)] + search_he[:3],
+            "titles": _dedupe_role_titles([role], sibling, search_he[:3], max_items=6),
             "must_have_keywords": must_have[:12],
             "nice_to_have_keywords": nice_to_have,
             "negative_keywords": list(universal.get("exclusion_keywords") or SENIOR_KEYWORDS[:6]),
@@ -463,7 +538,11 @@ def build_matching_strategy_from_profile(
             "score_weight": 1.0,
         })
 
-    collection_queries = build_collection_queries(universal)
+    # Ensure collection_queries see the enriched preferred list.
+    enriched_universal = dict(universal)
+    enriched_universal["preferred_role_titles"] = preferred
+    enriched_universal["alternative_role_titles"] = alternative
+    collection_queries = build_collection_queries(enriched_universal)
     location_prefs = universal.get("location_preferences") or {}
     seniority = universal.get("seniority_level") or "unknown"
 

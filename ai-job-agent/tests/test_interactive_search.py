@@ -202,6 +202,26 @@ def test_extract_recommended_domains_dedupes():
     assert len(domains) == len({d.casefold() for d in domains})
 
 
+def test_extract_recommended_domains_includes_search_and_hebrew_titles():
+    strategy = _sample_strategy()
+    strategy["collection_queries"][0]["search_queries"] = [
+        "React Developer",
+        "FastAPI Developer",
+    ]
+    strategy["collection_queries"][0]["hebrew_search_queries"] = ["מפתח פייתון"]
+    strategy["best_fit_roles"].append({
+        "role": "IT Support",
+        "score": 70,
+        "reason": "support track",
+        "missing_skills": [],
+        "realistic_for_application": True,
+    })
+    domains = cv_service.extract_recommended_domains(strategy)
+    assert "React Developer" in domains or "FastAPI Developer" in domains
+    assert "מפתח פייתון" in domains
+    assert "IT Support" in domains
+
+
 def test_filter_plan_by_domains_keeps_matches_and_adds_custom():
     plan = _sample_strategy()["collection_queries"]
     filtered = filter_plan_by_domains(plan, ["Fullstack Developer", "DevOps"])
