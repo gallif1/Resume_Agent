@@ -1,16 +1,24 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 # After connecting this repo in Render, every push to master auto-deploys.
+#
+# Persistence: SQLite + uploaded CVs live under /app/ai-job-agent/data.
+# Without a persistent disk, every deploy wipes all user data. Disks require
+# a paid plan (starter or higher) — free instances have an ephemeral filesystem.
 
 services:
   - type: web
     name: resume-agent
     runtime: docker
-    plan: free
+    plan: starter
     repo: https://github.com/gallif1/Resume_Agent
     branch: master
     autoDeploy: true
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
+    disk:
+      name: resume-agent-data
+      mountPath: /app/ai-job-agent/data
+      sizeGB: 1
     buildFilter:
       paths:
         - Dockerfile

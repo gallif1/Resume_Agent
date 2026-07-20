@@ -74,7 +74,7 @@ import db
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
 from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
-from config import API_HOST, API_PORT, CV_PROFILE_PATH, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
+from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from scan_control import (
@@ -1841,15 +1841,34 @@ def _playwright_browser_ready() -> tuple[bool, str | None]:
     return False, "PLAYWRIGHT_BROWSERS_PATH not set or missing"
 
 
+def _data_dir_looks_persistent() -> bool:
+    """Heuristic: a dedicated mount (Render disk / Docker volume) has a different device id."""
+    forced = os.getenv("DATA_PERSISTENT", "").strip().lower()
+    if forced in {"1", "true", "yes"}:
+        return True
+    if forced in {"0", "false", "no"}:
+        return False
+    try:
+        data = DATA_DIR.resolve()
+        data.mkdir(parents=True, exist_ok=True)
+        return data.stat().st_dev != data.parent.stat().st_dev
+    except OSError:
+        return False
+
+
 @app.get("/api/health")
 async def health():
     browser_ok, browser_error = _playwright_browser_ready()
+    data_persistent = _data_dir_looks_persistent()
     return {
         "ok": True,
         "pipeline_running": _pipeline_state["running"],
         "scan_running": _scan_state["running"],
         "playwright_ready": browser_ok,
         "playwright_error": browser_error,
+        "data_dir": str(DATA_DIR),
+        "data_persistent": data_persistent,
+        "registry_db_exists": db.REGISTRY_DB_PATH.is_file(),
     }
 
 

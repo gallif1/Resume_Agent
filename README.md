@@ -16,7 +16,8 @@ Resume_Agent/
 > **[פריסה בלחיצה אחת → קישור קבוע](DEPLOY.md)**
 
 המערכת תומכת ברישום/התחברות (JWT). כל משתמש רואה רק את קורות החיים והמשרות שלו.
-ב-Docker יש לעשות mount ל־`ai-job-agent/data` כדי שהנתונים ישארו אחרי restart — ראו [DEPLOY.md](DEPLOY.md).
+בפריסה לענן (Render/Zeabur) **חובה** לחבר Persistent Disk / Volume ל־`/app/ai-job-agent/data` — אחרת כל Deploy מוחק את כל הנתונים. ראו [DEPLOY.md](DEPLOY.md).
+ב-Docker מקומי יש לעשות mount ל־`ai-job-agent/data` כדי שהנתונים ישארו אחרי restart.
 
 ### Backend (API)
 
