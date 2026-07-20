@@ -29,6 +29,16 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY ai-job-agent/ ./
 COPY --from=frontend /web/dist /app/resume-agent-web/dist
 
+# Seed files to copy onto an empty persistent volume on first boot.
+# (Mounting a volume hides image contents under data/.)
+RUN mkdir -p /app/ai-job-agent/seed-data \
+    && for f in synonym_dictionary.json; do \
+         if [ -f "data/$f" ]; then cp "data/$f" "/app/ai-job-agent/seed-data/$f"; fi; \
+       done
+
+COPY scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
 # Declare the data directory as a volume mount point (SQLite + uploads).
 VOLUME ["/app/ai-job-agent/data"]
 
@@ -46,4 +56,5 @@ ENV GOTFRIENDS_ENABLED=false
 # ENV JWT_SECRET=
 
 EXPOSE 8000
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["python", "src/api_server.py", "--host", "0.0.0.0"]
