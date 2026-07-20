@@ -552,14 +552,14 @@ export default function App() {
 
           <div className="header-actions">
             {authUser?.email && (
-              <span className="user-chip" title={authUser.email}>
+              <span className="user-chip" title={authUser.email} dir="ltr">
                 {authUser.email}
               </span>
             )}
             {authUser && (
               <button
                 type="button"
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-sm header-logout"
                 onClick={handleLogout}
                 disabled={scanActive}
               >
