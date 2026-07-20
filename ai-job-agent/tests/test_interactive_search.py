@@ -328,11 +328,13 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
         domains: list[str],
         skip_enrich: bool = False,
         job_sites: list[str] | None = None,
+        delta: bool = False,
         log=None,
         set_step_status=None,
         db_path_arg=db.REGISTRY_DB_PATH,
     ):
         assert domains == ["Fullstack Developer", "DevOps"]
+        del delta  # unused in this stub — signature must accept the new flag
         cv_db = config.cv_db_path(cv_id_arg)
         db.init_db(cv_db)
         new_id = db.insert_job(

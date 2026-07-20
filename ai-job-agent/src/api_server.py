@@ -17,6 +17,7 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     POST   /cvs/reset                       delete all CVs + clear workspace
     POST   /cvs/{cv_id}/analyze             parse CV + suggest job domains/roles
     POST   /cvs/{cv_id}/search              scrape jobs for selected domains (incremental)
+    POST   /cvs/{cv_id}/refresh             delta refresh using last scan criteria
     POST   /cvs/{cv_id}/run-agent           run full per-CV pipeline (incremental)
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
     GET    /cvs/{cv_id}/matches             CV's job matches (all scans by default)
@@ -297,6 +298,7 @@ class SearchJobsRequest(BaseModel):
 
     # Accept either {"domains": [...]} or {"selected_domains": [...]}
     selected_domains: list[str] | None = None
+    delta: bool = False
 
     def resolved_domains(self) -> list[str]:
         raw = self.domains or self.selected_domains or []
@@ -571,6 +573,7 @@ def _run_search_thread(
     domains: list[str],
     skip_enrich: bool,
     job_sites: list[str] | None,
+    delta: bool = False,
 ) -> None:
     error: str | None = None
     try:
@@ -579,6 +582,7 @@ def _run_search_thread(
             domains=domains,
             skip_enrich=skip_enrich,
             job_sites=job_sites,
+            delta=delta,
             log=_scan_log,
             set_step_status=_scan_set_step,
         )
@@ -1198,7 +1202,7 @@ def search_jobs_for_cv(
         _scan_state.update(
             {
                 "running": True,
-                "mode": "cv_search",
+                "mode": "cv_delta" if req.delta else "cv_search",
                 "cv_id": cv_id,
                 "user_id": user["id"],
                 "scan_id": None,
@@ -1208,7 +1212,9 @@ def search_jobs_for_cv(
                 "warnings": [],
                 "collection": None,
                 "log": [],
-                "current_detail": "מתחיל חיפוש משרות…",
+                "current_detail": (
+                    "בודק משרות חדשות…" if req.delta else "מתחיל חיפוש משרות…"
+                ),
                 "steps": [
                     {"key": key, "name": name, "status": "pending"}
                     for key, name, _, _ in cv_service.SEARCH_STEPS
@@ -1219,7 +1225,7 @@ def search_jobs_for_cv(
 
     thread = threading.Thread(
         target=_run_search_thread,
-        args=(cv_id, domains, req.skip_enrich, req.job_sites),
+        args=(cv_id, domains, req.skip_enrich, req.job_sites, req.delta),
         daemon=True,
     )
     thread.start()
@@ -1227,6 +1233,75 @@ def search_jobs_for_cv(
         "started": True,
         "cv_id": cv_id,
         "domains": domains,
+        "delta": bool(req.delta),
+    }
+
+
+@app.post("/cvs/{cv_id}/refresh")
+def refresh_jobs_for_cv(
+    cv_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Delta refresh: reuse last scan domains/boards and early-break at watermark."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+
+    try:
+        criteria = cv_service.get_last_scan_criteria(cv_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if criteria is None:
+        raise HTTPException(
+            status_code=400,
+            detail="אין היסטוריית סריקה לקורות חיים אלה — יש להריץ סריקה חדשה תחילה",
+        )
+
+    domains = criteria["domains"]
+    job_sites = criteria.get("job_sites")
+    try:
+        normalize_job_board_ids(job_sites)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            raise HTTPException(status_code=409, detail="סריקה אחרת כבר רצה")
+        begin_scan()
+        _scan_state.update(
+            {
+                "running": True,
+                "mode": "cv_delta",
+                "cv_id": cv_id,
+                "user_id": user["id"],
+                "scan_id": None,
+                "started_at": _utc_now(),
+                "finished_at": None,
+                "error": None,
+                "warnings": [],
+                "collection": None,
+                "log": [],
+                "current_detail": "בודק משרות חדשות…",
+                "steps": [
+                    {"key": key, "name": name, "status": "pending"}
+                    for key, name, _, _ in cv_service.SEARCH_STEPS
+                ],
+            }
+        )
+    _persist_scan_state()
+
+    thread = threading.Thread(
+        target=_run_search_thread,
+        args=(cv_id, domains, False, job_sites, True),
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "started": True,
+        "cv_id": cv_id,
+        "domains": domains,
+        "job_sites": job_sites,
+        "delta": True,
     }
 
 

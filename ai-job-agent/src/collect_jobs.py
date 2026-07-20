@@ -61,7 +61,13 @@ from date_utils import (
     normalize_posted_date,
     pick_raw_posted_date,
 )
-from db import get_known_job_identity_keys, get_known_job_urls, init_db, upsert_collected_job
+from db import (
+    get_known_job_identity_keys,
+    get_known_job_urls,
+    get_latest_known_job_identity,
+    init_db,
+    upsert_collected_job,
+)
 from job_boards import collection_searches, job_boards_label, normalize_job_board_ids
 from scrapers.alljobs_scraper import collect_alljobs_jobs
 from scrapers.geektime_scraper import collect_geektime_jobs
@@ -73,6 +79,7 @@ from job_identity import (
     compute_job_identity_key,
     extract_linkedin_job_id,
     normalize_job_url,
+    trim_jobs_before_delta_stop,
 )
 from profile_utils import load_profile
 from query_builder import queries_for_board
@@ -443,31 +450,38 @@ def _apply_collect_filters(
     known_job_urls: set[str] | None = None,
     max_age_days: int = JOB_MAX_AGE_DAYS,
     apply_age_filter: bool = True,
-) -> tuple[list[dict], int, int, bool]:
-    """Filter one page of scraped jobs for freshness and known URLs.
+    delta_stop_identity: dict | None = None,
+) -> tuple[list[dict], int, int, bool, bool]:
+    """Filter one page of scraped jobs for freshness, known URLs, and delta stop.
 
-    Returns ``(kept, age_skipped, known_skipped, all_dated_were_old)``.
+    Returns ``(kept, age_skipped, known_skipped, all_dated_were_old, hit_delta_stop)``.
     Known URLs are dropped before age accounting so early-exit only reflects
-    publication dates.
+    publication dates. When ``delta_stop_identity`` matches a listing (newest →
+    oldest), older cards on the page are discarded and ``hit_delta_stop`` is True
+    so callers can break pagination.
     """
     if not page_jobs:
-        return [], 0, 0, False
+        return [], 0, 0, False, False
+
+    trimmed, hit_delta_stop = trim_jobs_before_delta_stop(
+        page_jobs, delta_stop_identity
+    )
 
     known_skipped = 0
     candidates: list[dict] = []
-    for job in page_jobs:
+    for job in trimmed:
         if _is_known_job_url(job.get("job_url", ""), known_job_urls):
             known_skipped += 1
             continue
         candidates.append(job)
 
     if not apply_age_filter:
-        return candidates, 0, known_skipped, False
+        return candidates, 0, known_skipped, False, hit_delta_stop
 
     kept, age_skipped, all_old = filter_jobs_by_max_age(
         candidates, max_age_days=max_age_days
     )
-    return kept, age_skipped, known_skipped, all_old
+    return kept, age_skipped, known_skipped, all_old, hit_delta_stop
 
 
 def collect_drushim_jobs_api(
@@ -475,6 +489,7 @@ def collect_drushim_jobs_api(
     *,
     max_pages: int = DRUSHIM_MAX_PAGES,
     known_job_urls: set[str] | None = None,
+    delta_stop_identity: dict | None = None,
 ) -> CollectionOutcome:
     """Fetch Drushim search results via the paginated JSON API."""
     print(f"Searching Drushim (API) for: {query} (max {max_pages} page(s))")
@@ -541,8 +556,10 @@ def collect_drushim_jobs_api(
         if not page_jobs:
             break
 
-        kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
-            page_jobs, known_job_urls=known_job_urls
+        kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
+            page_jobs,
+            known_job_urls=known_job_urls,
+            delta_stop_identity=delta_stop_identity,
         )
         total_age_skipped += age_skipped
         total_known_skipped += known_skipped
@@ -563,6 +580,12 @@ def collect_drushim_jobs_api(
             added += 1
 
         pages_fetched += 1
+        if hit_delta:
+            print(
+                "  Drushim API: reached previous scan watermark — "
+                "delta early break"
+            )
+            break
         next_page = payload.get("NextPageNumber") if isinstance(payload, dict) else None
         # API uses NextPageNumber=-1 when there are no further pages.
         if next_page in (-1, "-1"):
@@ -595,10 +618,14 @@ def collect_drushim_jobs_http(
     query: str,
     *,
     known_job_urls: set[str] | None = None,
+    delta_stop_identity: dict | None = None,
 ) -> CollectionOutcome:
     """Fetch Drushim search results with plain HTTP (API first, HTML fallback)."""
     api_outcome = collect_drushim_jobs_api(
-        query, max_pages=DRUSHIM_MAX_PAGES, known_job_urls=known_job_urls
+        query,
+        max_pages=DRUSHIM_MAX_PAGES,
+        known_job_urls=known_job_urls,
+        delta_stop_identity=delta_stop_identity,
     )
     if api_outcome.status == "ok" and api_outcome.jobs:
         return api_outcome
@@ -647,8 +674,8 @@ def collect_drushim_jobs_http(
 
     jobs = parse_drushim_search_html(response.text)
     if jobs:
-        kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
-            jobs, known_job_urls=known_job_urls
+        kept, age_skipped, known_skipped, all_old, _hit_delta = _apply_collect_filters(
+            jobs, known_job_urls=known_job_urls, delta_stop_identity=delta_stop_identity
         )
         if age_skipped or known_skipped:
             print(
@@ -721,6 +748,7 @@ def _collect_drushim_with_page(
     headless: bool,
     allow_visible_retry: bool = True,
     known_job_urls: set[str] | None = None,
+    delta_stop_identity: dict | None = None,
 ) -> CollectionOutcome:
     """Extract Drushim jobs using an existing Playwright page."""
     search_url = build_drushim_search_url(query)
@@ -740,7 +768,8 @@ def _collect_drushim_with_page(
         if headless and allow_visible_retry and _interactive_retry_enabled():
             print(f"{reason}. Retrying with a visible browser...")
             return collect_drushim_jobs(
-                query, headless=False, known_job_urls=known_job_urls
+                query, headless=False, known_job_urls=known_job_urls,
+                delta_stop_identity=delta_stop_identity,
             )
         return CollectionOutcome(
             status="http_error",
@@ -767,7 +796,8 @@ def _collect_drushim_with_page(
         if headless and allow_visible_retry and _interactive_retry_enabled():
             print("Headless extraction failed. Retrying with a visible browser...")
             return collect_drushim_jobs(
-                query, headless=False, known_job_urls=known_job_urls
+                query, headless=False, known_job_urls=known_job_urls,
+                delta_stop_identity=delta_stop_identity,
             )
 
         if _interactive_retry_enabled():
@@ -775,8 +805,8 @@ def _collect_drushim_with_page(
             input()
             jobs = extract_jobs_from_page(page)
             if jobs:
-                kept, _, _, _ = _apply_collect_filters(
-                    jobs, known_job_urls=known_job_urls
+                kept, _, _, _, _ = _apply_collect_filters(
+                    jobs, known_job_urls=known_job_urls, delta_stop_identity=delta_stop_identity
                 )
                 if kept:
                     return CollectionOutcome(jobs=kept, status="ok")
@@ -791,8 +821,8 @@ def _collect_drushim_with_page(
 
     jobs = extract_jobs_from_page(page)
     if jobs:
-        kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
-            jobs, known_job_urls=known_job_urls
+        kept, age_skipped, known_skipped, all_old, _hit_delta = _apply_collect_filters(
+            jobs, known_job_urls=known_job_urls, delta_stop_identity=delta_stop_identity
         )
         if age_skipped or known_skipped:
             print(
@@ -816,7 +846,8 @@ def _collect_drushim_with_page(
     if headless and allow_visible_retry and _interactive_retry_enabled():
         print("Could not parse jobs in headless mode. Retrying visibly...")
         return collect_drushim_jobs(
-            query, headless=False, known_job_urls=known_job_urls
+            query, headless=False, known_job_urls=known_job_urls,
+            delta_stop_identity=delta_stop_identity,
         )
 
     if _interactive_retry_enabled():
@@ -824,7 +855,9 @@ def _collect_drushim_with_page(
         input()
         jobs = extract_jobs_from_page(page)
         if jobs:
-            kept, _, _, _ = _apply_collect_filters(jobs, known_job_urls=known_job_urls)
+            kept, _, _, _, _ = _apply_collect_filters(
+                jobs, known_job_urls=known_job_urls, delta_stop_identity=delta_stop_identity
+            )
             if kept:
                 return CollectionOutcome(jobs=kept, status="ok")
         save_debug_artifacts(page, "Extraction still failed after manual inspection")
@@ -865,12 +898,16 @@ class DrushimBrowserSession:
         query: str,
         *,
         known_job_urls: set[str] | None = None,
+        delta_stop_identity: dict | None = None,
     ) -> CollectionOutcome:
         if self.page is None:
             raise RuntimeError("Drushim browser session is not open")
         # Prefer paginated API even when a browser session is open for fallback.
         api_outcome = collect_drushim_jobs_api(
-            query, max_pages=DRUSHIM_MAX_PAGES, known_job_urls=known_job_urls
+            query,
+            max_pages=DRUSHIM_MAX_PAGES,
+            known_job_urls=known_job_urls,
+            delta_stop_identity=delta_stop_identity,
         )
         if api_outcome.status == "ok" and api_outcome.jobs:
             return api_outcome
@@ -880,6 +917,7 @@ class DrushimBrowserSession:
             headless=self.headless,
             allow_visible_retry=False,
             known_job_urls=known_job_urls,
+            delta_stop_identity=delta_stop_identity,
         )
 
 
@@ -889,16 +927,25 @@ def collect_drushim_jobs(
     *,
     page: Page | None = None,
     known_job_urls: set[str] | None = None,
+    delta_stop_identity: dict | None = None,
 ) -> CollectionOutcome:
     """Collect Drushim jobs — paginated JSON API first, then HTML/browser fallback."""
     if page is not None:
         return _collect_drushim_with_page(
-            page, query, headless=headless, known_job_urls=known_job_urls
+            page,
+            query,
+            headless=headless,
+            known_job_urls=known_job_urls,
+            delta_stop_identity=delta_stop_identity,
         )
 
     # Always try the paginated JSON API (and HTML SSR fallback) before Chromium.
     # The HTML search page alone capped results at ~20–24 jobs per query.
-    http_outcome = collect_drushim_jobs_http(query, known_job_urls=known_job_urls)
+    http_outcome = collect_drushim_jobs_http(
+        query,
+        known_job_urls=known_job_urls,
+        delta_stop_identity=delta_stop_identity,
+    )
     if http_outcome.status == "ok" and http_outcome.jobs:
         return http_outcome
     if not DRUSHIM_BROWSER_FALLBACK:
@@ -915,6 +962,7 @@ def collect_drushim_jobs(
             headless=headless,
             allow_visible_retry=_interactive_retry_enabled(),
             known_job_urls=known_job_urls,
+            delta_stop_identity=delta_stop_identity,
         )
 
 
@@ -1091,6 +1139,7 @@ def collect_linkedin_jobs(
     max_pages: int = LINKEDIN_MAX_PAGES,
     *,
     known_job_urls: set[str] | None = None,
+    delta_stop_identity: dict | None = None,
 ) -> CollectionOutcome:
     """Fetch job cards from LinkedIn's public guest search API with pagination."""
     location_label = LINKEDIN_LOCATION
@@ -1151,10 +1200,11 @@ def collect_linkedin_jobs(
             page_size = max(len(page_jobs), 1)
 
         # Guest API already filters via f_TPR; still skip known URLs early.
-        kept, _age_skipped, known_skipped, _all_old = _apply_collect_filters(
+        kept, _age_skipped, known_skipped, _all_old, hit_delta = _apply_collect_filters(
             page_jobs,
             known_job_urls=known_job_urls,
             apply_age_filter=False,
+            delta_stop_identity=delta_stop_identity,
         )
         total_known_skipped += known_skipped
 
@@ -1169,6 +1219,11 @@ def collect_linkedin_jobs(
             added += 1
 
         print(f"  LinkedIn page {page_index + 1}: +{added} new ({len(page_jobs)} on page)")
+        if hit_delta:
+            print(
+                "  LinkedIn: reached previous scan watermark — delta early break"
+            )
+            break
         if len(page_jobs) < page_size:
             break
         if page_index < max_pages - 1:
@@ -1198,16 +1253,20 @@ def save_jobs_to_db(
     known_db_keys: set[str],
     touched_job_keys: set[str],
     known_job_urls: set[str] | None = None,
-) -> tuple[int, int, int, int, int, int, int]:
+    delta_stop_identity: dict | None = None,
+) -> tuple[int, int, int, int, int, int, int, bool]:
     """Upsert jobs into SQLite with strict run-level deduplication.
 
     Already-known jobs (by identity key / UNIQUE job_url) are skipped immediately
     before any description persistence — Enrich and Match must not re-process
     them on subsequent agent runs.
 
+    In delta mode, when ``delta_stop_identity`` is encountered (newest → oldest),
+    remaining older listings are ignored and ``hit_delta_stop`` is True.
+
     Returns:
         (raw_found, unique_processed, duplicates_skipped, already_in_db,
-         excluded, inserted, touched_once)
+         excluded, inserted, touched_once, hit_delta_stop)
     """
     del exclude_keywords  # retained in signature for call-site compatibility
     raw_found = len(jobs)
@@ -1217,9 +1276,12 @@ def save_jobs_to_db(
     excluded = 0
     inserted = 0
     touched_once = 0
+    hit_delta_stop = False
     url_index = known_job_urls if known_job_urls is not None else set()
 
-    for job in jobs:
+    work_jobs, hit_delta_stop = trim_jobs_before_delta_stop(jobs, delta_stop_identity)
+
+    for job in work_jobs:
         title = job.get("title", "")
         company = job.get("company", "")
         location = job.get("location", "")
@@ -1294,6 +1356,7 @@ def save_jobs_to_db(
         excluded,
         inserted,
         touched_once,
+        hit_delta_stop,
     )
 
 
@@ -1482,9 +1545,20 @@ def main() -> None:
             "(matching strategy entries plus any custom titles)."
         ),
     )
+    parser.add_argument(
+        "--delta",
+        action="store_true",
+        help=(
+            "Delta refresh: stop each board listing once the previous newest "
+            "job identity is reached (early break, newest → oldest)."
+        ),
+    )
     args = parser.parse_args()
 
     print("AI Job Agent — job collection")
+    delta_mode = bool(args.delta)
+    if delta_mode:
+        print("Mode: delta refresh (early break at latest known job identity)")
 
     init_db()
     profile = load_profile()
@@ -1617,6 +1691,26 @@ def main() -> None:
                     _note_site_issue(site_totals, site_name, message)
                     continue
 
+                delta_stop_identity = None
+                if delta_mode:
+                    delta_stop_identity = get_latest_known_job_identity(
+                        source_category=str(category or ""),
+                        source=site_name,
+                    )
+                    if delta_stop_identity is None and category:
+                        delta_stop_identity = get_latest_known_job_identity(
+                            source_category=str(category or ""),
+                        )
+                    if delta_stop_identity is not None:
+                        watermark = (
+                            delta_stop_identity.get("job_url")
+                            or delta_stop_identity.get("identity_key")
+                            or "?"
+                        )
+                        print(
+                            f"  [{site_name}] Delta watermark: {watermark}"
+                        )
+
                 site = site_totals.setdefault(site_name, _SiteTotals())
                 for query in queries:
                     query_key = (site_name, query.strip().lower())
@@ -1626,15 +1720,23 @@ def main() -> None:
                     total_queries += 1
                     site.queries += 1
 
+                    collect_kwargs: dict[str, Any] = {}
+                    if site_name in ("drushim", "linkedin", "gotfriends"):
+                        collect_kwargs["known_job_urls"] = known_job_urls
+                    if delta_stop_identity is not None and site_name in (
+                        "drushim",
+                        "linkedin",
+                        "gotfriends",
+                    ):
+                        collect_kwargs["delta_stop_identity"] = delta_stop_identity
+
                     try:
                         if site_name == "drushim" and drushim_session is not None:
                             raw_result = drushim_session.collect(
-                                query, known_job_urls=known_job_urls
+                                query, **collect_kwargs
                             )
-                        elif site_name in ("drushim", "linkedin", "gotfriends"):
-                            raw_result = collect_fn(
-                                query, known_job_urls=known_job_urls
-                            )
+                        elif collect_kwargs:
+                            raw_result = collect_fn(query, **collect_kwargs)
                         else:
                             raw_result = collect_fn(query)
                         jobs, outcome = _unwrap_collection_result(raw_result)
@@ -1671,7 +1773,16 @@ def main() -> None:
                             }
                         )
 
-                    raw, unique, duplicates, already_in_db, excluded, inserted, touched = save_jobs_to_db(
+                    (
+                        raw,
+                        unique,
+                        duplicates,
+                        already_in_db,
+                        excluded,
+                        inserted,
+                        touched,
+                        hit_delta,
+                    ) = save_jobs_to_db(
                         jobs,
                         source_query=query,
                         source_category=category,
@@ -1681,6 +1792,7 @@ def main() -> None:
                         known_db_keys=known_db_keys,
                         touched_job_keys=touched_job_keys,
                         known_job_urls=known_job_urls,
+                        delta_stop_identity=delta_stop_identity,
                     )
                     total_raw_found += raw
                     total_unique += unique
@@ -1700,6 +1812,7 @@ def main() -> None:
                         f"  [{site_name}] '{query}': raw {raw}, unique {unique}, duplicates {duplicates}, "
                         f"already in db {already_in_db}, new {inserted}, touched {touched}, "
                         f"excluded {excluded}"
+                        + (", delta early break" if hit_delta else "")
                     )
                     if raw == 0:
                         print(f"  [{site_name}] WARNING: no jobs found for query '{query}'")
@@ -1707,6 +1820,12 @@ def main() -> None:
                         print(
                             f"  [{site_name}] NOTE: {raw} jobs found but all already exist in database"
                         )
+                    if hit_delta:
+                        print(
+                            f"  [{site_name}] Caught up to previous scan for "
+                            f"category '{category}' — skipping remaining queries"
+                        )
+                        break
     finally:
         if drushim_session is not None:
             drushim_session.__exit__(None, None, None)

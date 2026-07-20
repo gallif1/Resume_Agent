@@ -512,8 +512,9 @@ export function searchJobsForCv(
     domains: string[];
     skip_enrich?: boolean;
     job_sites?: string[];
+    delta?: boolean;
   }
-): Promise<{ started: boolean; cv_id: string; domains: string[] }> {
+): Promise<{ started: boolean; cv_id: string; domains: string[]; delta?: boolean }> {
   return request(`/cvs/${cvId}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -521,8 +522,22 @@ export function searchJobsForCv(
       domains: options.domains,
       skip_enrich: options.skip_enrich,
       job_sites: options.job_sites,
+      delta: options.delta,
     }),
   });
+}
+
+/** Delta refresh using the last successful scan's domains and boards. */
+export function refreshCvJobs(
+  cvId: string
+): Promise<{
+  started: boolean;
+  cv_id: string;
+  domains: string[];
+  job_sites?: string[] | null;
+  delta: boolean;
+}> {
+  return request(`/cvs/${cvId}/refresh`, { method: "POST" });
 }
 
 /** Run the job-matching agent across all uploaded CV files. */

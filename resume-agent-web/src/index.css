@@ -1397,6 +1397,28 @@ code {
   width: 100%;
 }
 
+.details-topbar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.details-topbar-actions .btn {
+  width: 100%;
+}
+
+.btn-icon-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-icon-refresh .spin {
+  animation: spin 0.9s linear infinite;
+}
+
 .details-topbar-spacer {
   display: none;
 }
@@ -1805,6 +1827,17 @@ code {
   .details-topbar .btn-primary {
     width: auto;
     flex-shrink: 0;
+  }
+
+  .details-topbar-actions {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .details-topbar-actions .btn {
+    width: auto;
   }
 
   .cv-manager-item {

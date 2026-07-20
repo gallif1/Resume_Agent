@@ -296,6 +296,60 @@ def compute_candidate_input_hash(
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def job_matches_delta_identity(
+    job: dict[str, Any] | None,
+    identity: dict[str, Any] | None,
+    *,
+    job_url: str | None = None,
+    title: str = "",
+    company: str = "",
+    location: str = "",
+) -> bool:
+    """True when a scraped listing matches the delta-refresh watermark identity."""
+    if not identity:
+        return False
+
+    url = normalize_job_url(
+        job_url if job_url is not None else (job or {}).get("job_url", "")
+    )
+    watermark_url = normalize_job_url(str(identity.get("job_url") or ""))
+    if url and watermark_url and url == watermark_url:
+        return True
+
+    title_val = title or str((job or {}).get("title") or "")
+    company_val = company or str((job or {}).get("company") or "")
+    location_val = location or str((job or {}).get("location") or "")
+    job_key = compute_job_identity_key(url, title_val, company_val, location_val)
+    for candidate in (
+        identity.get("identity_key"),
+        identity.get("job_hash"),
+    ):
+        if candidate and job_key == candidate:
+            return True
+    return False
+
+
+def trim_jobs_before_delta_stop(
+    jobs: list[dict[str, Any]],
+    identity: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Keep only listings newer than the watermark (assumes newest → oldest order).
+
+    Returns ``(jobs_before_watermark, hit_watermark)``. When the watermark is
+    found, callers should early-break pagination — older pages cannot contain
+    unseen jobs for this search.
+    """
+    if not identity or not jobs:
+        return list(jobs), False
+
+    kept: list[dict[str, Any]] = []
+    for job in jobs:
+        if job_matches_delta_identity(job, identity):
+            return kept, True
+        kept.append(job)
+    return kept, False
+
+
 def compute_candidate_strategy_hash(
     profile: dict[str, Any],
     strategy: dict[str, Any],

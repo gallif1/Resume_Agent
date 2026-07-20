@@ -136,7 +136,7 @@ def test_save_jobs_to_db_skips_known_urls_without_upsert():
         },
     ]
     with patch("collect_jobs.upsert_collected_job", side_effect=fake_upsert):
-        raw, unique, _dup, already, _ex, inserted, _touched = save_jobs_to_db(
+        raw, unique, _dup, already, _ex, inserted, _touched, _hit = save_jobs_to_db(
             jobs,
             source_query="Software Engineer",
             source_category="backend",
@@ -176,21 +176,23 @@ def test_apply_collect_filters_skips_old_and_known():
             "posted_date": "היום",
         },
     ]
-    kept, age_skipped, known_skipped, all_old = _apply_collect_filters(
+    kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
         jobs, known_job_urls=known
     )
     assert [j["title"] for j in kept] == ["Fresh"]
     assert age_skipped == 1
     assert known_skipped == 1
     assert all_old is False
+    assert hit_delta is False
 
     only_old = [
         {"title": "a", "job_url": "https://www.drushim.co.il/job/9/", "posted_date": "לפני שנה"},
         {"title": "b", "job_url": "https://www.drushim.co.il/job/8/", "posted_date": "לפני חודשיים"},
     ]
-    kept2, age2, known2, all_old2 = _apply_collect_filters(only_old)
+    kept2, age2, known2, all_old2, hit_delta2 = _apply_collect_filters(only_old)
     assert kept2 == []
     assert age2 == 2
     assert known2 == 0
     assert all_old2 is True
+    assert hit_delta2 is False
 

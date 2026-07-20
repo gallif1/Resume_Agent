@@ -17,6 +17,7 @@ import {
   listServerCvs,
   resetAllCvs,
   resetJobMatches,
+  refreshCvJobs,
   searchJobsForCv,
   setUnauthorizedHandler,
   stopJobMatcher,
@@ -42,6 +43,7 @@ export default function App() {
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
   const [stopping, setStopping] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [suggestedDomains, setSuggestedDomains] = useState<string[]>([]);
   const [candidateSummary, setCandidateSummary] = useState("");
   const [activeCvId, setActiveCvId] = useState<string | null>(null);
@@ -484,6 +486,36 @@ export default function App() {
     }
   };
 
+  const handleDeltaRefresh = async (cvId: string) => {
+    if (scanRunningRef.current || refreshing) return;
+    setRefreshing(true);
+    try {
+      await refreshCvJobs(cvId);
+      setActiveCvId(cvId);
+      setScanStatus({
+        running: true,
+        started_at: new Date().toISOString(),
+        finished_at: null,
+        error: null,
+        warnings: [],
+        collection: null,
+        current_step: null,
+        detail: "בודק משרות חדשות…",
+        steps: [],
+        log: [],
+        latest_scan: null,
+      });
+      setDetailsRefreshKey((value) => value + 1);
+      startPolling(cvId);
+    } catch (e) {
+      showToast(
+        `רענון המשרות נכשל: ${e instanceof Error ? e.message : ""}`
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleStop = async () => {
     const stopCvId = activeCvId;
     setStopping(true);
@@ -672,19 +704,56 @@ export default function App() {
               workspaceMode={false}
               onBack={undefined}
               headerActions={
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={scanActive || analyzing}
-                  onClick={() => {
-                    setActiveCvId(selectedCv.id);
-                    setSuggestedDomains([]);
-                    setCandidateSummary("");
-                    setScanModalOpen(true);
-                  }}
-                >
-                  סריקה חדשה
-                </button>
+                <div className="details-topbar-actions">
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-icon-refresh"
+                    disabled={
+                      scanActive ||
+                      analyzing ||
+                      refreshing ||
+                      !selectedCv.last_scan_at
+                    }
+                    title={
+                      refreshing || scanActive
+                        ? "בודק משרות חדשות..."
+                        : selectedCv.last_scan_at
+                          ? "בדיקת משרות חדשות לפי הסריקה האחרונה"
+                          : "יש להריץ סריקה חדשה לפחות פעם אחת"
+                    }
+                    aria-label="רענון משרות חדשות"
+                    onClick={() => handleDeltaRefresh(selectedCv.id)}
+                  >
+                    <RefreshCw
+                      size={18}
+                      className={
+                        refreshing ||
+                        (scanActive &&
+                          selectedCv.id === activeCvId &&
+                          Boolean(
+                            scanStatus?.detail?.includes("משרות חדשות")
+                          ))
+                          ? "spin"
+                          : undefined
+                      }
+                      aria-hidden
+                    />
+                    <span>רענון</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={scanActive || analyzing || refreshing}
+                    onClick={() => {
+                      setActiveCvId(selectedCv.id);
+                      setSuggestedDomains([]);
+                      setCandidateSummary("");
+                      setScanModalOpen(true);
+                    }}
+                  >
+                    סריקה חדשה
+                  </button>
+                </div>
               }
               emptyHint='לחצו על "סריקה חדשה" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'
             />
