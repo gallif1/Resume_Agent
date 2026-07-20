@@ -22,6 +22,9 @@ class AtsCandidateProfile:
     certifications: list[str] = field(default_factory=list)
     seniority: str = "unknown"
     domain: str | None = None
+    # Free-form Core Professional Domain (dynamically extracted — no taxonomy).
+    core_professional_domain: str | None = None
+    domain_keywords: list[str] = field(default_factory=list)
 
     @property
     def all_skills_set(self) -> set[str]:
@@ -58,6 +61,28 @@ def build_ats_candidate(cv_profile: dict[str, Any]) -> AtsCandidateProfile:
     education = cv_profile.get("education") or {}
 
     domain = cv_profile.get("primary_domain")
+    core_professional_domain = (
+        str(
+            cv_profile.get("core_professional_domain")
+            or universal.get("core_professional_domain")
+            or ""
+        ).strip()
+        or None
+    )
+    domain_keywords = [
+        str(k).strip()
+        for k in (universal.get("domain_keywords") or [])
+        if str(k).strip()
+    ]
+    # Derive a free-form core domain from roles when the LLM/parser did not set one.
+    if not core_professional_domain:
+        role_hints = list(universal.get("preferred_role_titles") or []) or [
+            str(r) for r in (experience.get("job_titles") or []) if r
+        ]
+        if role_hints:
+            core_professional_domain = str(role_hints[0]).strip() or None
+        elif domain_keywords:
+            core_professional_domain = domain_keywords[0]
 
     if universal.get("canonical_skills") or universal.get("technologies_tools"):
         all_raw = list(universal.get("canonical_skills") or []) + list(
@@ -115,4 +140,6 @@ def build_ats_candidate(cv_profile: dict[str, Any]) -> AtsCandidateProfile:
         certifications=certifications,
         seniority=seniority,
         domain=domain,
+        core_professional_domain=core_professional_domain,
+        domain_keywords=domain_keywords,
     )

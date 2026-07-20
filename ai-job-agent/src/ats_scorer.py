@@ -1,7 +1,8 @@
 """Deterministic ATS scoring engine — no AI in score calculation.
 
-Applies a strict recruiter-style rubric: heavy keyword penalties, domain
-misalignment deductions, and early-career caps against experienced roles.
+Applies a strict recruiter-style rubric: heavy keyword penalties, dynamic
+domain-misalignment deductions (no hardcoded industries), and hard-constraint
+caps when must-have JD thresholds are unmet.
 """
 
 from __future__ import annotations
@@ -15,10 +16,11 @@ from ai_client import clamp_score
 from ats_candidate import AtsCandidateProfile
 from job_analyzer import JobProfile
 from job_classifier import score_to_action, score_to_decision
+from multilingual_normalizer import best_title_similarity, title_similarity
 from skill_normalizer import find_matching_skills, normalize_skill, skills_match
 
 # Bump when scoring algorithm changes — used for match invalidation.
-ATS_SCORER_VERSION = "v3"
+ATS_SCORER_VERSION = "v4"
 
 # Section weights (must sum to 1.0).
 WEIGHT_MANDATORY = 0.35
@@ -29,6 +31,9 @@ WEIGHT_PREFERRED = 0.10
 
 # Any failed mandatory requirement caps the total score at this value.
 MANDATORY_FAIL_CAP = 49
+# Failed critical hard constraint (must-have) — hard ceiling regardless of
+# soft-skill / generic keyword overlap.
+HARD_CONSTRAINT_FAIL_CAP = 30
 # Soft ceiling when a junior candidate is a "potential" match (no hard Weak cap).
 POTENTIAL_MATCH_SOFT_CAP = 69
 # Early-career (0–1y) vs roles demanding 3+ years — hard ceiling.
@@ -37,65 +42,36 @@ EARLY_CAREER_MAX_YEARS = 1.0
 EXPERIENCED_ROLE_MIN_YEARS = 3.0
 # Nonlinear exponent: missing required keywords hurt more than linear ratio.
 REQUIRED_SKILLS_PENALTY_EXPONENT = 1.65
-# Domain mismatch (e.g. Web/eCommerce job vs Mobile-heavy CV).
-DOMAIN_MISALIGNMENT_PENALTY = 20
-# Extra per-keyword hit when critical JD terms are absent from the CV.
-CRITICAL_KEYWORD_PENALTY = 8
+# Fundamental professional-domain mismatch (dynamically compared — no taxonomy).
+DOMAIN_MISALIGNMENT_PENALTY = 35
+DOMAIN_PARTIAL_MISALIGNMENT_PENALTY = 18
+# Similarity below this ⇒ fundamental domain mismatch.
+DOMAIN_FUNDAMENTAL_MISMATCH_THRESHOLD = 0.22
+# Similarity below this ⇒ partial domain misalignment.
+DOMAIN_PARTIAL_MISMATCH_THRESHOLD = 0.40
+# Extra ceiling when domains are fundamentally misaligned.
+DOMAIN_MISMATCH_SCORE_CAP = 40
+# Extra per-constraint hit when a hard must-have is unmet (before the hard cap).
+HARD_CONSTRAINT_PENALTY = 12
 
-# Junior profiles + entry-level-friendly jobs skip the hard mandatory fail cap.
+# Junior profiles + entry-level-friendly jobs skip the hard mandatory fail cap
+# (but NEVER skip the hard-constraint fail cap).
 JUNIOR_SENIORITIES = frozenset({"student", "intern", "junior"})
 POTENTIAL_MAX_YEARS = 3.0
 FOUNDATIONAL_SKILL_RATIO = 0.25
 # Lead/manager roles are never treated as potential junior matches.
 EXCLUDED_POTENTIAL_SENIORITIES = frozenset({"lead", "manager"})
 
-# Business-domain signals for Web/eCommerce vs Mobile misalignment checks.
-WEB_ECOMMERCE_MARKERS = (
-    "ecommerce",
-    "e-commerce",
-    "e commerce",
-    "web ",
-    " website",
-    "frontend",
-    "front-end",
-    "front end",
-    "fullstack",
-    "full-stack",
-    "full stack",
-    "responsive design",
-    "responsive",
-    "shopify",
-    "woocommerce",
-    "magento",
-    "next.js",
-    "nextjs",
-)
-MOBILE_MARKERS = (
-    "mobile",
-    "ios",
-    "android",
-    "react native",
-    "react-native",
-    "flutter",
-    "swift",
-    "kotlin",
-    "xamarin",
-    "expo",
-    "iphone",
-    "ipad",
-)
-CRITICAL_JD_KEYWORDS = (
-    "responsive design",
-    "ecommerce",
-    "e-commerce",
-    "e commerce",
-    "accessibility",
-    "seo",
-    "graphql",
-    "typescript",
-    "ci/cd",
-    "microservices",
-)
+# Soft / generic filler terms that must NOT alone prove domain or hard-constraint
+# fit. Domain-agnostic — no industry taxonomy. (Basic technical skills are still
+# scored normally; domain mismatch + hard-constraint caps block false positives.)
+GENERIC_OVERLAP_STOPWORDS = frozenset({
+    "communication", "teamwork", "leadership", "english", "hebrew",
+    "microsoft office", "excel", "powerpoint", "word", "outlook",
+    "problem solving", "organization", "organisational", "collaborative",
+    "motivation", "passionate", "detail", "self-starter",
+    "תקשורת", "עברית", "אנגלית", "עבודת צוות",
+})
 
 SENIORITY_ORDER = {
     "student": 0,
@@ -124,11 +100,16 @@ class AtsMatchResult:
     matched_required_skills: list[str] = field(default_factory=list)
     missing_required_skills: list[str] = field(default_factory=list)
     missing_mandatory_requirements: list[str] = field(default_factory=list)
+    missing_hard_constraints: list[str] = field(default_factory=list)
     relevant_experience: list[str] = field(default_factory=list)
     score_reasons: list[str] = field(default_factory=list)
     cv_improvements: list[str] = field(default_factory=list)
     component_scores: dict[str, float] = field(default_factory=dict)
     mandatory_failed: bool = False
+    hard_constraint_failed: bool = False
+    domain_mismatch: bool = False
+    candidate_domain: str = ""
+    target_domain: str = ""
     is_potential_junior_match: bool = False
 
     def to_db_fields(self, *, strategy_hash: str = "", fallback_score: int | None = None) -> dict[str, Any]:
@@ -141,12 +122,27 @@ class AtsMatchResult:
         ]
         if self.is_potential_junior_match:
             reason_parts.append("potential junior match")
+        if self.domain_mismatch:
+            reason_parts.append(
+                f"domain mismatch: {self.candidate_domain or '?'} vs "
+                f"{self.target_domain or '?'}"
+            )
+        if self.missing_hard_constraints:
+            reason_parts.append(
+                f"hard constraints unmet: {', '.join(self.missing_hard_constraints[:4])}"
+            )
         if self.missing_mandatory_requirements:
             reason_parts.append(
                 f"mandatory gaps: {', '.join(self.missing_mandatory_requirements[:5])}"
             )
 
         explanation = "; ".join(self.score_reasons[:6]) if self.score_reasons else self.score_label
+
+        rejection = None
+        if self.hard_constraint_failed:
+            rejection = "; ".join(self.missing_hard_constraints)
+        elif self.mandatory_failed and not self.is_potential_junior_match:
+            rejection = "; ".join(self.missing_mandatory_requirements)
 
         return {
             "match_score": self.ats_score,
@@ -161,11 +157,7 @@ class AtsMatchResult:
             "ai_recommended_action": action,
             "ai_explanation": explanation,
             "fallback_score": fallback_score,
-            "rejection_reason": (
-                "; ".join(self.missing_mandatory_requirements)
-                if self.mandatory_failed and not self.is_potential_junior_match
-                else None
-            ),
+            "rejection_reason": rejection,
             "candidate_strategy_hash": strategy_hash,
             "ats_score_label": self.score_label,
             "ats_missing_mandatory": json.dumps(
@@ -218,16 +210,35 @@ def _has_foundational_skill_overlap(
         return False
     if not required:
         return True
-    ratio = len(matched) / len(required)
-    return ratio >= FOUNDATIONAL_SKILL_RATIO or len(matched) >= 2
+    # Ignore ubiquitous soft/basic terms when judging foundational overlap.
+    meaningful_matched = [
+        m for m in matched if m.strip().lower() not in GENERIC_OVERLAP_STOPWORDS
+    ]
+    meaningful_required = [
+        r for r in required if r.strip().lower() not in GENERIC_OVERLAP_STOPWORDS
+    ]
+    if not meaningful_required:
+        ratio = len(matched) / len(required)
+        return ratio >= FOUNDATIONAL_SKILL_RATIO or len(matched) >= 2
+    ratio = len(meaningful_matched) / len(meaningful_required)
+    return ratio >= FOUNDATIONAL_SKILL_RATIO or len(meaningful_matched) >= 2
 
 
 def evaluate_potential_junior_match(
     candidate: AtsCandidateProfile,
     job: JobProfile,
     matched_required_skills: list[str],
+    *,
+    domain_mismatch: bool = False,
+    hard_constraint_failed: bool = False,
 ) -> bool:
-    """Whether a junior candidate should skip the hard mandatory fail cap."""
+    """Whether a junior candidate should skip the hard mandatory fail cap.
+
+    Never relax caps when the professional domain is fundamentally mismatched
+    or a critical hard constraint is unmet.
+    """
+    if domain_mismatch or hard_constraint_failed:
+        return False
     if not is_junior_profile(candidate):
         return False
     required = job.required_skills or job.technologies
@@ -240,17 +251,15 @@ def _blob(*parts: Any) -> str:
     return " ".join(str(p or "") for p in parts).lower()
 
 
-def _count_markers(text: str, markers: tuple[str, ...]) -> int:
-    return sum(1 for marker in markers if marker in text)
-
-
 def _job_text_blob(job_profile: JobProfile, job: dict[str, Any] | None) -> str:
     parts: list[Any] = [
         job_profile.title,
+        job_profile.professional_domain,
         " ".join(job_profile.required_skills or []),
         " ".join(job_profile.preferred_skills or []),
         " ".join(job_profile.technologies or []),
         " ".join(job_profile.mandatory_requirements or []),
+        " ".join(job_profile.hard_constraints or []),
     ]
     if job:
         parts.extend(
@@ -270,42 +279,138 @@ def _candidate_text_blob(candidate: AtsCandidateProfile) -> str:
         " ".join(candidate.technologies),
         " ".join(candidate.previous_roles),
         " ".join(candidate.projects),
-        candidate.domain,
+        " ".join(candidate.domain_keywords),
+        candidate.core_professional_domain or candidate.domain,
     )
+
+
+def _candidate_domain_signals(candidate: AtsCandidateProfile) -> list[str]:
+    """Free-form Core Professional Domain signals from the CV (no taxonomy)."""
+    signals: list[str] = []
+    for value in (
+        candidate.core_professional_domain,
+        candidate.domain,
+        *candidate.domain_keywords,
+        *candidate.previous_roles,
+    ):
+        text = str(value or "").strip()
+        if text and text not in signals:
+            signals.append(text)
+    return signals
+
+
+def _job_domain_signals(
+    job_profile: JobProfile,
+    job: dict[str, Any] | None = None,
+) -> list[str]:
+    """Free-form Target Professional Domain signals from the JD (no taxonomy)."""
+    signals: list[str] = []
+    for value in (
+        job_profile.professional_domain,
+        job_profile.title,
+        (job or {}).get("title") if job else None,
+    ):
+        text = str(value or "").strip()
+        if text and text not in signals:
+            signals.append(text)
+    return signals
+
+
+def _domain_similarity(candidate_signals: list[str], job_signals: list[str]) -> float:
+    if not candidate_signals or not job_signals:
+        return 0.5  # unknown — do not invent a mismatch
+    best = 0.0
+    for cs in candidate_signals:
+        for js in job_signals:
+            best = max(best, title_similarity(cs, js))
+        best = max(best, best_title_similarity(cs, job_signals))
+    # Also compare the concatenated signal blobs for broader token overlap.
+    cand_blob = " ".join(candidate_signals)
+    job_blob = " ".join(job_signals)
+    best = max(best, title_similarity(cand_blob, job_blob))
+    return best
+
+
+def _skill_bridge_ratio(
+    candidate: AtsCandidateProfile,
+    job_profile: JobProfile,
+) -> float:
+    """Fraction of non-generic JD skills evidenced on the CV (career-pivot bridge)."""
+    required = list(job_profile.required_skills or []) + list(job_profile.technologies or [])
+    meaningful = [
+        s for s in required
+        if s and s.strip().lower() not in GENERIC_OVERLAP_STOPWORDS
+    ]
+    if not meaningful:
+        return 0.0
+    hits = sum(1 for skill in meaningful if _candidate_has_skill(candidate, skill))
+    return hits / len(meaningful)
 
 
 def evaluate_domain_misalignment(
     candidate: AtsCandidateProfile,
     job_profile: JobProfile,
     job: dict[str, Any] | None = None,
-) -> tuple[int, str | None]:
-    """Penalize Web/eCommerce jobs when the CV leans heavily Mobile (and vice versa)."""
-    job_text = _job_text_blob(job_profile, job)
-    cv_text = _candidate_text_blob(candidate)
+) -> tuple[int, bool, str | None, str, str]:
+    """Dynamically compare Core vs Target Professional Domain.
 
-    job_web = _count_markers(job_text, WEB_ECOMMERCE_MARKERS)
-    job_mobile = _count_markers(job_text, MOBILE_MARKERS)
-    cv_web = _count_markers(cv_text, WEB_ECOMMERCE_MARKERS)
-    cv_mobile = _count_markers(cv_text, MOBILE_MARKERS)
+    No hardcoded industry lists. Uses free-form domain labels + role titles
+    already extracted from the CV/JD. Returns
+    (penalty, fundamental_mismatch, reason, candidate_domain, target_domain).
 
-    job_is_web = job_web >= 2 and job_web > job_mobile
-    job_is_mobile = job_mobile >= 2 and job_mobile > job_web
-    cv_is_web = cv_web >= 2 and cv_web > cv_mobile
-    cv_is_mobile = cv_mobile >= 2 and cv_mobile > cv_web
+    Adjacent career pivots with strong evidenced skill bridges (e.g. support →
+    backend with overlapping stack) are treated as partial misalignment at most —
+    not a fundamental domain failure.
+    """
+    candidate_signals = _candidate_domain_signals(candidate)
+    job_signals = _job_domain_signals(job_profile, job)
+    candidate_domain = (
+        candidate.core_professional_domain
+        or (candidate_signals[0] if candidate_signals else "")
+    )
+    target_domain = (
+        job_profile.professional_domain
+        or (job_signals[0] if job_signals else "")
+    )
 
-    if job_is_web and cv_is_mobile:
+    if not candidate_signals or not job_signals:
+        return 0, False, None, candidate_domain, target_domain
+
+    similarity = _domain_similarity(candidate_signals, job_signals)
+    bridge = _skill_bridge_ratio(candidate, job_profile)
+
+    if similarity < DOMAIN_FUNDAMENTAL_MISMATCH_THRESHOLD and bridge < 0.35:
         return (
             DOMAIN_MISALIGNMENT_PENALTY,
-            "Domain misalignment: Web/eCommerce role vs Mobile-heavy CV "
-            f"(-{DOMAIN_MISALIGNMENT_PENALTY})",
+            True,
+            (
+                f"Fundamental domain mismatch: candidate '{candidate_domain}' "
+                f"vs target '{target_domain}' "
+                f"(similarity={similarity:.0%}, skill_bridge={bridge:.0%}, "
+                f"-{DOMAIN_MISALIGNMENT_PENALTY})"
+            ),
+            candidate_domain,
+            target_domain,
         )
-    if job_is_mobile and cv_is_web:
+    if similarity < DOMAIN_PARTIAL_MISMATCH_THRESHOLD:
+        # Title/domain wording diverges, but a skill bridge may still exist.
+        penalty = (
+            DOMAIN_PARTIAL_MISALIGNMENT_PENALTY
+            if bridge < 0.5
+            else max(8, DOMAIN_PARTIAL_MISALIGNMENT_PENALTY // 2)
+        )
         return (
-            DOMAIN_MISALIGNMENT_PENALTY,
-            "Domain misalignment: Mobile role vs Web-heavy CV "
-            f"(-{DOMAIN_MISALIGNMENT_PENALTY})",
+            penalty,
+            False,
+            (
+                f"Partial domain misalignment: candidate '{candidate_domain}' "
+                f"vs target '{target_domain}' "
+                f"(similarity={similarity:.0%}, skill_bridge={bridge:.0%}, -{penalty})"
+            ),
+            candidate_domain,
+            target_domain,
         )
-    return 0, None
+    return 0, False, None, candidate_domain, target_domain
 
 
 def evaluate_junior_underqualified_cap(
@@ -318,27 +423,6 @@ def evaluate_junior_underqualified_cap(
     if years is None or required is None:
         return False
     return years <= EARLY_CAREER_MAX_YEARS and required >= EXPERIENCED_ROLE_MIN_YEARS
-
-
-def _critical_keyword_penalty(
-    candidate: AtsCandidateProfile,
-    job_profile: JobProfile,
-    job: dict[str, Any] | None = None,
-) -> tuple[int, list[str]]:
-    """Heavy hits for critical JD keywords that are missing or weak in the CV."""
-    job_text = _job_text_blob(job_profile, job)
-    cv_text = _candidate_text_blob(candidate)
-    missing: list[str] = []
-    for keyword in CRITICAL_JD_KEYWORDS:
-        if keyword in job_text and keyword not in cv_text:
-            # Also try loose skill match for single-token keywords.
-            if " " not in keyword and _candidate_has_skill(candidate, keyword):
-                continue
-            missing.append(keyword)
-    if not missing:
-        return 0, []
-    penalty = min(len(missing) * CRITICAL_KEYWORD_PENALTY, 32)
-    return penalty, missing
 
 
 def _seniority_distance(cv_seniority: str, job_seniority: str | None) -> float:
@@ -405,11 +489,105 @@ def _check_mandatory_requirement(
             + candidate.technologies
             + candidate.previous_roles
             + candidate.certifications
+            + candidate.projects
+            + list(candidate.domain_keywords)
         ).lower()
         if any(token in cv_text for token in tokens):
             return True
 
     return False
+
+
+def _check_hard_constraint(
+    constraint: str,
+    candidate: AtsCandidateProfile,
+    job: JobProfile,
+) -> bool:
+    """Strict evaluation for hard must-haves — no loose soft-skill rescue.
+
+    Unlike general mandatory checks, hard constraints require explicit evidence
+    (years threshold, certification, or meaningful skill/role/domain phrase
+    overlap). Generic token hits on stopwords alone do not count.
+    """
+    req = (constraint or "").strip()
+    if not req:
+        return True
+    req_l = req.lower()
+
+    years_match = re.search(r"(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?|שנ)", req_l)
+    if years_match and ("experience" in req_l or "ניסיון" in req_l or "years" in req_l or "שנ" in req_l):
+        required_years = float(years_match.group(1))
+        cv_years = candidate.experience_years
+        if cv_years is None or cv_years < required_years:
+            return False
+        # If the constraint names a niche role/domain, also require role evidence.
+        niche_tokens = [
+            t for t in re.split(r"[^\w\u0590-\u05FF]+", req_l)
+            if len(t) > 3
+            and t not in GENERIC_OVERLAP_STOPWORDS
+            and t not in {"years", "year", "experience", "minimum", "required", "must", "have", "with"}
+        ]
+        if niche_tokens:
+            cv_blob = _candidate_text_blob(candidate)
+            if not any(tok in cv_blob for tok in niche_tokens):
+                return False
+        return True
+
+    for cert in list(job.certifications) + [req]:
+        cert_l = cert.lower().strip()
+        if len(cert_l) < 3:
+            continue
+        if "cert" in req_l or cert_l in req_l or req_l in cert_l:
+            if any(cert_l in c.lower() or c.lower() in cert_l for c in candidate.certifications):
+                return True
+            if "cert" in req_l and cert_l == req_l:
+                # Explicit cert constraint with no matching candidate cert.
+                if not any(req_l in c.lower() for c in candidate.certifications):
+                    continue
+
+    if _candidate_has_skill(candidate, req):
+        return True
+
+    req_canon = normalize_skill(req, domain=candidate.domain)
+    if req_canon and _candidate_has_skill(candidate, req_canon):
+        return True
+
+    # Phrase / meaningful-token evidence in CV blob (roles, projects, domain).
+    cv_blob = _candidate_text_blob(candidate)
+    if req_l in cv_blob:
+        return True
+    meaningful = [
+        t for t in re.split(r"[^\w\u0590-\u05FF]+", req_l)
+        if len(t) > 3 and t not in GENERIC_OVERLAP_STOPWORDS
+    ]
+    if meaningful and all(tok in cv_blob for tok in meaningful[:3]):
+        return True
+    if meaningful and sum(1 for tok in meaningful if tok in cv_blob) >= max(2, len(meaningful) // 2):
+        return True
+
+    return False
+
+
+def evaluate_hard_constraints(
+    candidate: AtsCandidateProfile,
+    job: JobProfile,
+) -> list[str]:
+    """Return unmet hard constraints (critical must-haves) from the JD."""
+    constraints = list(job.hard_constraints or [])
+    # Deduplicate while preserving order; fall back to certifications as hard gates.
+    if not constraints:
+        for cert in job.certifications or []:
+            constraints.append(f"Certification: {cert}")
+    missing: list[str] = []
+    seen: set[str] = set()
+    for constraint in constraints:
+        key = constraint.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if not _check_hard_constraint(constraint, candidate, job):
+            missing.append(constraint)
+    return missing
 
 
 def _score_mandatory(
@@ -488,6 +666,8 @@ def _score_experience(
             relevant.append(role)
         elif job.title and job.title.lower() in role_l:
             relevant.append(role)
+        elif job.professional_domain and title_similarity(role, job.professional_domain) >= 0.4:
+            relevant.append(role)
 
     for project in candidate.projects:
         proj_l = project.lower()
@@ -556,8 +736,22 @@ def _score_preferred(
 def _build_improvements(
     missing_skills: list[str],
     missing_mandatory: list[str],
+    *,
+    missing_hard: list[str] | None = None,
+    domain_mismatch: bool = False,
+    candidate_domain: str = "",
+    target_domain: str = "",
 ) -> list[str]:
     improvements: list[str] = []
+    if domain_mismatch:
+        improvements.append(
+            "Professional domain mismatch — emphasize transferable skills and an "
+            f"honest career-pivot summary toward '{target_domain or 'the target role'}' "
+            f"(current core: '{candidate_domain or 'unspecified'}'). "
+            "Do not invent domain experience."
+        )
+    for constraint in (missing_hard or [])[:3]:
+        improvements.append(f"Address critical hard constraint: {constraint}")
     for skill in missing_skills[:5]:
         improvements.append(f"Add or highlight skill: {skill}")
     for req in missing_mandatory[:3]:
@@ -606,28 +800,41 @@ def score(
         + WEIGHT_PREFERRED * pref_score
     )
 
-    domain_penalty, domain_reason = evaluate_domain_misalignment(
-        candidate, job_profile, job
+    domain_penalty, domain_mismatch, domain_reason, cand_domain, target_domain = (
+        evaluate_domain_misalignment(candidate, job_profile, job)
     )
-    keyword_penalty, critical_missing = _critical_keyword_penalty(
-        candidate, job_profile, job
-    )
+    missing_hard = evaluate_hard_constraints(candidate, job_profile)
+    hard_constraint_failed = bool(missing_hard)
+    hard_penalty = min(len(missing_hard) * HARD_CONSTRAINT_PENALTY, 36) if missing_hard else 0
+
     if domain_penalty:
         weighted -= domain_penalty
-    if keyword_penalty:
-        weighted -= keyword_penalty
+    if hard_penalty:
+        weighted -= hard_penalty
 
     mandatory_failed = bool(missing_mandatory)
     is_potential = False
     if mandatory_failed:
         is_potential = evaluate_potential_junior_match(
-            candidate, job_profile, matched
+            candidate,
+            job_profile,
+            matched,
+            domain_mismatch=domain_mismatch,
+            hard_constraint_failed=hard_constraint_failed,
         )
         if is_potential:
             # Soft ceiling only — do not force the Weak Match hard-cap for juniors.
             weighted = min(weighted, POTENTIAL_MATCH_SOFT_CAP)
         else:
             weighted = min(weighted, MANDATORY_FAIL_CAP)
+
+    # Hard constraints always cap — never overridden by junior "potential".
+    if hard_constraint_failed:
+        weighted = min(weighted, HARD_CONSTRAINT_FAIL_CAP)
+        is_potential = False
+
+    if domain_mismatch:
+        weighted = min(weighted, DOMAIN_MISMATCH_SCORE_CAP)
 
     underqualified = evaluate_junior_underqualified_cap(candidate, job_profile)
     if underqualified:
@@ -642,11 +849,12 @@ def score(
     all_reasons = mand_reasons + req_reasons + exp_reasons + sen_reasons + pref_reasons
     if domain_reason:
         all_reasons.insert(0, domain_reason)
-    if critical_missing:
+    if missing_hard:
         all_reasons.insert(
             0,
-            "Critical JD keywords missing/weak — no credit for potential: "
-            f"{', '.join(critical_missing[:5])} (-{keyword_penalty})",
+            "Hard constraints unmet — score capped at "
+            f"{HARD_CONSTRAINT_FAIL_CAP}%: {', '.join(missing_hard[:5])} "
+            f"(-{hard_penalty})",
         )
     if underqualified:
         all_reasons.insert(
@@ -660,18 +868,17 @@ def score(
             0,
             "Potential junior match — mandatory hard-cap relaxed for entry-level reach",
         )
-    elif mandatory_failed:
+    elif mandatory_failed and not hard_constraint_failed:
         all_reasons.insert(0, "Hard requirements not met — score capped")
 
-    improvements = _build_improvements(missing, missing_mandatory)
-    if critical_missing:
-        for kw in critical_missing[:3]:
-            improvements.insert(0, f"Add explicit evidence for critical keyword: {kw}")
-    if domain_penalty:
-        improvements.insert(
-            0,
-            "Align CV domain with the job (Web/eCommerce vs Mobile) — highlight matching product experience",
-        )
+    improvements = _build_improvements(
+        missing,
+        missing_mandatory,
+        missing_hard=missing_hard,
+        domain_mismatch=domain_mismatch,
+        candidate_domain=cand_domain,
+        target_domain=target_domain,
+    )
 
     return AtsMatchResult(
         ats_score=ats_score,
@@ -679,10 +886,15 @@ def score(
         matched_required_skills=matched,
         missing_required_skills=missing,
         missing_mandatory_requirements=missing_mandatory,
+        missing_hard_constraints=missing_hard,
         relevant_experience=relevant,
         score_reasons=all_reasons,
         cv_improvements=improvements,
         component_scores=component_scores,
         mandatory_failed=mandatory_failed,
+        hard_constraint_failed=hard_constraint_failed,
+        domain_mismatch=domain_mismatch,
+        candidate_domain=cand_domain,
+        target_domain=target_domain,
         is_potential_junior_match=is_potential,
     )

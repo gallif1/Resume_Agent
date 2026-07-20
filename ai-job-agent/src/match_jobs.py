@@ -14,7 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ai_client import clamp_score
 from ats_candidate import build_ats_candidate
-from ats_scorer import score as ats_score
+from ats_scorer import (
+    DOMAIN_MISMATCH_SCORE_CAP,
+    HARD_CONSTRAINT_FAIL_CAP,
+    score as ats_score,
+)
 from console_utils import configure_console, safe_print
 from config import AGENT_CV_ID, AGENT_SCAN_ID, AGENT_USER_ID, AI_RERANK_ENABLED
 from db import (
@@ -248,8 +252,13 @@ def match_all_jobs(
         final_score = _blend_scores(pm_result.score, ats_result.ats_score)
         if pm_result.exclusion_hit:
             final_score = min(final_score, pm_result.score)
-        if ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
+        if ats_result.hard_constraint_failed:
+            # Critical must-haves unmet — hard ceiling regardless of soft overlap.
+            final_score = min(final_score, HARD_CONSTRAINT_FAIL_CAP, ats_result.ats_score)
+        elif ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
             final_score = min(final_score, ats_result.ats_score)
+        if ats_result.domain_mismatch:
+            final_score = min(final_score, DOMAIN_MISMATCH_SCORE_CAP, ats_result.ats_score)
 
         score_label = pm_result.score_label if final_score == pm_result.score else ats_result.score_label
         if final_score >= 85:

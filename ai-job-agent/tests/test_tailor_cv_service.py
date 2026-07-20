@@ -215,7 +215,7 @@ def test_tailor_cv_for_job_calls_openai(
     assert svc.tailored_cv_path(cv_id, 9).exists()
     assert "Did not invent" in result["caveats"][0]
     # Cache namespace should include prompt version.
-    assert "v4" in svc.TAILOR_PROMPT_VERSION
+    assert "v5" in svc.TAILOR_PROMPT_VERSION
     assert "ONE-PAGE" in svc.TAILOR_SYSTEM_PROMPT or "ONE PAGE" in svc.TAILOR_SYSTEM_PROMPT.upper()
     assert "NEVER OMIT REAL EMPLOYMENT" in svc.TAILOR_SYSTEM_PROMPT
     assert "SQLAlchemy" in svc.TAILOR_SYSTEM_PROMPT
@@ -232,6 +232,9 @@ def test_tailor_system_prompt_is_role_agnostic():
     assert "NEVER OMIT REAL EMPLOYMENT" in prompt
     assert "HIDE GHOST SECTIONS" in prompt
     assert "ONE-PAGE DENSITY" in prompt
+    assert "CAREER-PIVOT SAFETY RAILS" in prompt
+    assert "Core Professional Domain" in prompt
+    assert "NEVER hallucinate fake job titles" in prompt
     # Examples of specific career paths must not be baked in as the default narrative.
     for banned in (
         "Technical Support",
@@ -438,7 +441,11 @@ def test_regenerate_sends_matcher_feedback(
                     "technologies_tools": ["Docker"],
                     "seniority_level": "junior",
                     "years_of_experience": 2,
+                    "core_professional_domain": "Software Development",
+                    "preferred_role_titles": ["Backend Engineer", "Technical Support"],
+                    "domain_keywords": ["backend", "python", "sql"],
                 },
+                "core_professional_domain": "Software Development",
             }
         ),
         encoding="utf-8",
@@ -494,10 +501,12 @@ Python | SQL
         "job_profile": json.dumps(
             {
                 "title": "Backend Engineer",
+                "professional_domain": "Software Development",
                 "required_skills": ["Python", "Docker", "SQL"],
                 "technologies": ["Python", "Docker", "SQL"],
                 "seniority": "junior",
                 "years_experience_min": 1,
+                "hard_constraints": [],
             }
         ),
     }

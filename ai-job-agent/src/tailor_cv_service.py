@@ -32,8 +32,8 @@ from profile_matcher import score as profile_match_score
 from skill_normalizer import normalize_skill
 
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
-TAILOR_PROMPT_VERSION = "v4"
-REGENERATE_PROMPT_VERSION = "v3"
+TAILOR_PROMPT_VERSION = "v5"
+REGENERATE_PROMPT_VERSION = "v4"
 NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
 TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
@@ -47,6 +47,28 @@ Inputs (provided in the user message):
 Your output must optimize for ATS parsers while remaining 100% truthful to base_cv_data.
 These rules are UNIVERSAL — they apply to every candidate and every target role. Never hardcode
 assumptions about a specific past role, company, industry, or transition path.
+
+================================================================================
+DYNAMIC DOMAIN ALIGNMENT & CAREER-PIVOT SAFETY RAILS (MANDATORY)
+================================================================================
+Before rewriting, dynamically extract:
+1) Core Professional Domain of the candidate from base_cv_data (free-form label;
+   e.g. Software Development, Marketing, Design, Product Management — deduced from
+   THIS CV only; never use a fixed industry taxonomy).
+2) Target Professional Domain from job_description.
+
+If the target role is OUTSIDE the candidate's core professional domain (career pivot
+or fundamental mismatch):
+- NEVER hallucinate fake job titles, fake employers, or fake domain experience.
+- NEVER rename past roles to look like the target profession.
+- Honestly emphasize transferable skills, methods, and tools evidenced on base_cv_data.
+- Adapt the professional Summary to reflect a career pivot / bridge narrative
+  (honest intent + transferable strengths) without inventing history.
+- Keep estimated_ats_score REALISTIC and typically low/moderate — do not inflate
+  scores based on soft-skill or generic keyword overlap alone.
+- Note residual domain gaps clearly in caveats / פירוט שינויים.
+
+If domains align, tailor normally while still obeying zero-hallucination rules.
 
 ================================================================================
 RETURN FORMAT
@@ -165,11 +187,12 @@ ZERO HALLUCINATION / HARD CONSTRAINTS
 ================================================================================
 1. NEVER invent employers, job titles, degrees, certifications, tools, projects,
    metrics, or years of experience absent from base_cv_data.
-2. NEVER rename real past job titles to match the target role.
+2. NEVER rename real past job titles to match the target role — especially across
+   professional domains.
 3. You MAY reframe existing bullets and weave in JD keywords ONLY when they honestly
    map to skills/experience already on base_cv_data.
-4. If the candidate lacks a required skill, do NOT claim it. Omit it or note an
-   adjacent evidenced skill in caveats — never fabricate.
+4. If the candidate lacks a required skill or domain credential, do NOT claim it.
+   Omit it or note an adjacent evidenced skill in caveats — never fabricate.
 5. Preserve contact details, education facts, dates, and employers from base_cv_data.
 6. Write the CV primarily in the same language as base_cv_data; English tech terms
    from the JD may be used for keyword alignment when natural.
@@ -179,6 +202,8 @@ ZERO HALLUCINATION / HARD CONSTRAINTS
    (without that heading). Keep `estimated_ats_score` consistent with section 2.
 9. Use Markdown ## headings for sections and ### for role/project titles so the
    PDF renderer can parse the document cleanly.
+10. When hard must-have JD constraints are unmet with zero evidence on the CV,
+    keep estimated_ats_score ≤ 30 and say so honestly in section 2 / caveats.
 """
 
 REGENERATE_SYSTEM_PROMPT = (
@@ -414,11 +439,15 @@ def build_tailor_user_prompt(
         "in the system prompt.\n"
         "Analyze ONLY the provided base_cv_data and job_description — do not assume "
         "any specific prior role, company, or career path beyond what appears here.\n"
+        "FIRST: dynamically extract Core Professional Domain (CV) and Target "
+        "Professional Domain (JD). If they fundamentally mismatch, do NOT invent "
+        "domain experience or rename titles — write an honest pivot/bridge Summary, "
+        "emphasize transferable skills only, and keep estimated_ats_score realistic.\n"
         "CRITICAL: keep EVERY real employer/job from base_cv_data in Experience; "
         "never replace real employment with academic projects; omit empty sections; "
         "Summary ≤3 sentences; ≤4 bullets per role/project; one-page density only.\n"
         "Remember: inject `Target Role: [exact JD title]`; reframe bullets "
-        "tech-first without renaming past titles/companies/dates; put projects only "
+        "without renaming past titles/companies/dates; put projects only "
         "under Projects; rebuild an accurately categorized inline skills matrix.\n"
         "Return markdown with sections: פירוט שינויים, ציון התאמה למשרה, then ---, "
         "then קורות החיים המעודכנים.\n\n"
@@ -510,6 +539,8 @@ def build_draft_ats_candidate(
         certifications=list(base.certifications),
         seniority=base.seniority,
         domain=base.domain,
+        core_professional_domain=base.core_professional_domain,
+        domain_keywords=list(base.domain_keywords),
     )
 
 
@@ -552,6 +583,7 @@ def evaluate_tailored_draft(
         "missing_mandatory_requirements": list(
             ats_result.missing_mandatory_requirements
         ),
+        "missing_hard_constraints": list(ats_result.missing_hard_constraints),
         "missing_keywords": missing_keywords,
         "cv_improvements": list(ats_result.cv_improvements),
         "score_reasons": list(ats_result.score_reasons),
@@ -559,6 +591,10 @@ def evaluate_tailored_draft(
         "profile_match_score": profile_result.score,
         "profile_missing_skills": list(profile_result.missing_skills),
         "mandatory_failed": bool(ats_result.mandatory_failed),
+        "hard_constraint_failed": bool(ats_result.hard_constraint_failed),
+        "domain_mismatch": bool(ats_result.domain_mismatch),
+        "candidate_domain": ats_result.candidate_domain,
+        "target_domain": ats_result.target_domain,
     }
 
 
@@ -570,6 +606,7 @@ def format_matcher_feedback(feedback: dict[str, Any]) -> str:
         "missing_required_skills"
     ) or []
     missing_mand = feedback.get("missing_mandatory_requirements") or []
+    missing_hard = feedback.get("missing_hard_constraints") or []
     improvements = feedback.get("cv_improvements") or []
     reasons = feedback.get("score_reasons") or []
     components = feedback.get("component_scores") or {}
@@ -580,6 +617,13 @@ def format_matcher_feedback(feedback: dict[str, Any]) -> str:
     ]
     if profile_score is not None:
         lines.append(f"Profile matcher score: {profile_score}/100.")
+    if feedback.get("domain_mismatch"):
+        lines.append(
+            "Domain mismatch detected: "
+            f"candidate '{feedback.get('candidate_domain') or '?'}' vs "
+            f"target '{feedback.get('target_domain') or '?'}'. "
+            "Do not invent domain experience — emphasize transferable skills only."
+        )
     if missing_kw:
         lines.append(
             "It is still penalizing the CV for missing these specific keywords/skills: "
@@ -588,6 +632,12 @@ def format_matcher_feedback(feedback: dict[str, Any]) -> str:
         )
     else:
         lines.append("No missing required skill keywords were detected.")
+    if missing_hard:
+        lines.append(
+            "Failed hard constraints (score must stay ≤30 if still unmet): "
+            + ", ".join(str(x) for x in missing_hard[:12])
+            + "."
+        )
     if missing_mand:
         lines.append(
             "Failed / missing mandatory requirements: "

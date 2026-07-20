@@ -18,6 +18,8 @@ def _candidate(**kwargs) -> AtsCandidateProfile:
         languages=["English", "Hebrew"],
         certifications=[],
         seniority="junior",
+        core_professional_domain="Software Development",
+        domain_keywords=["backend", "APIs"],
     )
     defaults.update(kwargs)
     return AtsCandidateProfile(**defaults)
@@ -26,10 +28,12 @@ def _candidate(**kwargs) -> AtsCandidateProfile:
 def _job_profile(**kwargs) -> JobProfile:
     defaults = dict(
         title="Backend Developer",
+        professional_domain="Software Development",
         seniority="junior",
         required_skills=["Python", "AWS"],
         preferred_skills=["Docker"],
         mandatory_requirements=[],
+        hard_constraints=[],
         years_experience_min=2.0,
         languages=["English"],
         certifications=[],
@@ -197,83 +201,99 @@ def test_junior_underqualified_capped_at_70():
     assert any("Early-career" in r for r in result.score_reasons)
 
 
-def test_web_vs_mobile_domain_penalty():
-    """Web/eCommerce JD vs Mobile-heavy CV drops score by at least 20 vs aligned CV."""
+def test_dynamic_domain_mismatch_penalized():
+    """Marketing JD vs Software-core CV is heavily penalized (no hardcoded industries)."""
     job = _job_profile(
-        title="Frontend Web Developer",
-        required_skills=["React", "TypeScript", "CSS"],
-        preferred_skills=["Responsive Design", "eCommerce"],
-        technologies=["React", "TypeScript", "CSS"],
+        title="Digital Marketing Manager",
+        professional_domain="Digital Marketing",
+        required_skills=["SEO", "Google Ads", "Content Strategy", "English"],
+        preferred_skills=["Analytics"],
+        technologies=[],
+        years_experience_min=3.0,
+        hard_constraints=[],
+        mandatory_requirements=[],
+        languages=["English"],
+    )
+    job_dict = {
+        "title": "Digital Marketing Manager",
+        "description": "Own SEO, paid media, and content for B2B growth",
+    }
+    mismatched = _candidate(
+        skills=["Python", "AWS", "Docker", "English", "Communication"],
+        technologies=["Python", "AWS", "Docker"],
+        previous_roles=["Backend Developer", "Software Engineer"],
+        projects=["API platform"],
+        experience_years=4.0,
+        seniority="mid",
+        core_professional_domain="Software Development",
+        domain_keywords=["backend", "APIs", "cloud"],
+    )
+    aligned = _candidate(
+        skills=["SEO", "Google Ads", "Content Strategy", "English", "Analytics"],
+        technologies=[],
+        previous_roles=["Digital Marketing Specialist", "Content Marketer"],
+        projects=["B2B SEO campaign"],
+        experience_years=4.0,
+        seniority="mid",
+        core_professional_domain="Digital Marketing",
+        domain_keywords=["SEO", "paid media", "content"],
+    )
+    mismatch_result = score(mismatched, job, job_dict)
+    aligned_result = score(aligned, job, job_dict)
+    assert mismatch_result.domain_mismatch
+    assert mismatch_result.ats_score <= 40
+    assert aligned_result.ats_score - mismatch_result.ats_score >= 20
+    assert any("domain mismatch" in r.lower() for r in mismatch_result.score_reasons)
+
+
+def test_hard_constraint_failure_caps_at_30():
+    """Unmet critical must-have caps score at 30 despite soft-skill overlap."""
+    job = _job_profile(
+        title="SOC Analyst",
+        professional_domain="Cybersecurity Operations",
+        required_skills=["SIEM", "English", "Communication"],
+        preferred_skills=["Python"],
+        technologies=["SIEM"],
         years_experience_min=2.0,
+        certifications=["CompTIA Security+"],
+        hard_constraints=[
+            "Must have CompTIA Security+ certification",
+            "SOC shift work experience required",
+        ],
+        mandatory_requirements=["2+ years experience"],
+        languages=["English"],
+        seniority="junior",
     )
-    job_dict = {
-        "title": "Frontend Web Developer",
-        "description": "Build responsive eCommerce storefronts and web apps",
-        "full_description": "Shopify / WooCommerce experience preferred. Frontend web team.",
-    }
-    mobile_cv = _candidate(
-        skills=["React Native", "Flutter", "Swift", "Kotlin", "Expo", "English"],
-        technologies=["React Native", "Flutter", "Swift", "Kotlin", "Expo"],
-        previous_roles=["Mobile Developer", "iOS Engineer"],
-        projects=["Android shopping app", "React Native mobile client"],
-        experience_years=3.0,
-        seniority="mid",
+    candidate = _candidate(
+        skills=["Python", "English", "Communication", "Teamwork"],
+        technologies=["Python"],
+        previous_roles=["IT Helpdesk"],
+        projects=["Home lab monitoring"],
+        experience_years=2.5,
+        seniority="junior",
+        core_professional_domain="IT Support",
+        domain_keywords=["helpdesk", "support"],
+        certifications=[],
     )
-    web_cv = _candidate(
-        skills=["React", "TypeScript", "CSS", "HTML", "Next.js", "English"],
-        technologies=["React", "TypeScript", "CSS", "HTML", "Next.js"],
-        previous_roles=["Frontend Web Developer"],
-        projects=["Responsive eCommerce website"],
-        experience_years=3.0,
-        seniority="mid",
-    )
-    mobile_score = score(mobile_cv, job, job_dict).ats_score
-    web_score = score(web_cv, job, job_dict).ats_score
-    assert web_score - mobile_score >= 20
-    mobile_result = score(mobile_cv, job, job_dict)
-    assert any("Domain misalignment" in r for r in mobile_result.score_reasons)
-
-
-def test_missing_critical_keywords_penalized():
-    job = _job_profile(
-        title="Frontend Engineer",
-        required_skills=["React", "TypeScript"],
-        preferred_skills=["Responsive Design"],
-        technologies=["React", "TypeScript"],
-    )
-    job_dict = {
-        "title": "Frontend Engineer",
-        "description": "Must have Responsive Design and eCommerce experience",
-    }
-    weak = _candidate(
-        skills=["React", "TypeScript", "English"],
-        technologies=["React", "TypeScript"],
-        previous_roles=["Developer"],
-        projects=["Internal tools"],
-        experience_years=3.0,
-    )
-    strong = _candidate(
-        skills=["React", "TypeScript", "English"],
-        technologies=["React", "TypeScript"],
-        previous_roles=["Frontend Developer"],
-        projects=["Responsive Design eCommerce storefront"],
-        experience_years=3.0,
-    )
-    weak_result = score(weak, job, job_dict)
-    strong_result = score(strong, job, job_dict)
-    assert weak_result.ats_score < strong_result.ats_score
-    assert any("Critical JD keywords" in r for r in weak_result.score_reasons)
+    result = score(candidate, job)
+    assert result.hard_constraint_failed
+    assert result.ats_score <= 30
+    assert not result.is_potential_junior_match
+    assert any("Hard constraints unmet" in r for r in result.score_reasons)
 
 
 def test_job_match_system_uses_strict_rubric():
     from job_matcher import JOB_MATCH_SYSTEM
 
-    # Verify the prompt is industry-agnostic and focuses on Target Role
     assert "industry-agnostic AI Career Agent" in JOB_MATCH_SYSTEM
-    assert "Target Role" in JOB_MATCH_SYSTEM
+    assert "DYNAMIC DOMAIN ALIGNMENT" in JOB_MATCH_SYSTEM
+    assert "HARD CONSTRAINTS" in JOB_MATCH_SYSTEM
+    assert "capped at 30" in JOB_MATCH_SYSTEM
     assert "POTENTIAL AND CAPABILITY" in JOB_MATCH_SYSTEM
     assert "Employment History Bias" in JOB_MATCH_SYSTEM
     assert "PROJECT-TO-EXPERIENCE TRANSLATION" in JOB_MATCH_SYSTEM
-    # Ensure it's not hardcoded to tech
     assert "Technical Recruiter" not in JOB_MATCH_SYSTEM
     assert "tech company" not in JOB_MATCH_SYSTEM.lower()
+    # No hardcoded industry taxonomy in the matching prompt.
+    assert "WEB_ECOMMERCE" not in JOB_MATCH_SYSTEM
+    assert "Shopify" not in JOB_MATCH_SYSTEM

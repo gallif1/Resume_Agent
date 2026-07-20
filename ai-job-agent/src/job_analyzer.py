@@ -55,17 +55,31 @@ MANDATORY_MARKERS = (
 )
 
 
-JOB_SYSTEM_PROMPT = """You are an expert job posting analyst for the Israeli job market.
+JOB_SYSTEM_PROMPT = """You are an expert job posting analyst for ANY profession
+(healthcare, education, finance, law, marketing, logistics, hospitality, engineering,
+IT, creative, public sector, trades, etc.). Do NOT assume or favor software/IT.
+
 You receive a job posting (Hebrew and/or English).
 
 Return ONE JSON object with exactly these keys:
 
 - title: string (job title)
+- professional_domain: string — the Target Professional Domain of THIS role, deduced
+  dynamically from the posting (e.g. "Software Development", "Digital Marketing",
+  "Graphic Design", "Product Management", "Clinical Nursing", "Accounting").
+  Use a short free-form label; never force a fixed industry taxonomy.
 - seniority: one of intern, student, junior, mid, senior, lead, manager, unknown
 - required_skills: array of required skill strings (canonical names)
 - preferred_skills: array of nice-to-have skill strings
 - mandatory_requirements: array of hard requirements that are non-negotiable
-  (e.g. "5+ years experience", "CISSP certification", "fluent English", "must know Python")
+  (e.g. years of experience, certifications, fluent languages, must-know tools)
+- hard_constraints: array of STRICT Must-Have threshold requirements that are
+  deal-breakers if unmet — dynamically extracted from THIS JD only. Examples of
+  the *kinds* of constraints (do not invent if absent): minimum years in a
+  specific niche role, mandatory certifications/licenses, specific operational
+  environments or work modes explicitly required, regulated clinical/legal settings,
+  on-call/shift requirements. Prefer short, concrete phrases copied/paraphrased
+  from the JD. Soft skills and generic buzzwords are NEVER hard constraints.
 - years_experience_min: number or null (minimum years required)
 - education: array of education requirements
 - languages: array of required languages
@@ -76,9 +90,11 @@ Return ONE JSON object with exactly these keys:
 - responsibilities: array of key responsibility phrases
 
 Rules:
-- Base everything ONLY on the job text provided.
+- Base everything ONLY on the job text provided. Do not invent requirements.
 - Distinguish required vs preferred skills clearly.
-- Put hard gates (years, mandatory certs, mandatory languages) in mandatory_requirements.
+- Put general hard gates in mandatory_requirements; put the STRICTEST deal-breaker
+  thresholds also (or only) in hard_constraints.
+- professional_domain must reflect the job's core track, not generic soft skills.
 - Handle Hebrew and English postings naturally.
 - Return valid JSON only, no markdown."""
 
@@ -86,10 +102,12 @@ Rules:
 @dataclass
 class JobProfile:
     title: str = ""
+    professional_domain: str = ""
     seniority: str | None = None
     required_skills: list[str] = field(default_factory=list)
     preferred_skills: list[str] = field(default_factory=list)
     mandatory_requirements: list[str] = field(default_factory=list)
+    hard_constraints: list[str] = field(default_factory=list)
     years_experience_min: float | None = None
     education: list[str] = field(default_factory=list)
     languages: list[str] = field(default_factory=list)
@@ -119,14 +137,25 @@ class JobProfile:
         if location_type not in LOCATION_TYPES:
             location_type = "unknown"
 
+        professional_domain = str(
+            data.get("professional_domain") or data.get("target_professional_domain") or ""
+        ).strip()
+
+        hard_constraints = normalize_string_list(
+            data.get("hard_constraints") or data.get("must_have_constraints"),
+            max_items=15,
+        )
+
         return cls(
             title=str(data.get("title") or ""),
+            professional_domain=professional_domain,
             seniority=seniority,
             required_skills=normalize_string_list(data.get("required_skills"), max_items=30),
             preferred_skills=normalize_string_list(data.get("preferred_skills"), max_items=20),
             mandatory_requirements=normalize_string_list(
                 data.get("mandatory_requirements"), max_items=20
             ),
+            hard_constraints=hard_constraints,
             years_experience_min=years_val,
             education=normalize_string_list(data.get("education"), max_items=10),
             languages=normalize_string_list(data.get("languages"), max_items=10),
@@ -205,6 +234,84 @@ def _extract_mandatory_lines(text: str) -> list[str]:
     return mandatory[:10]
 
 
+# Generic stop-words stripped when deriving a free-form domain label from a title.
+# Intentionally language-/seniority-oriented only — NOT an industry taxonomy.
+_TITLE_DOMAIN_STOPWORDS = frozenset({
+    "junior", "senior", "mid", "lead", "principal", "staff", "intern", "student",
+    "manager", "head", "chief", "assistant", "associate", "entry", "level",
+    "remote", "hybrid", "full", "part", "time", "contract", "temporary",
+    "the", "and", "or", "of", "for", "a", "an", "in", "at", "to",
+    "ג'וניור", "ג׳וניור", "סניור", "בכיר", "זוטר", "סטודנט", "מנהל",
+})
+
+
+def _derive_professional_domain(title: str, text: str = "") -> str:
+    """Derive a free-form Target Professional Domain from the job title/text.
+
+    Domain-agnostic: uses the posting's own wording rather than a fixed
+    industry list. Prefer the cleaned title; fall back to a short phrase from
+    the first line of the description.
+    """
+    cleaned_title = re.sub(r"\s+", " ", (title or "").strip())
+    if cleaned_title:
+        tokens = [
+            t for t in re.split(r"[^\w\u0590-\u05FF/+.-]+", cleaned_title, flags=re.UNICODE)
+            if t and t.lower() not in _TITLE_DOMAIN_STOPWORDS and len(t) >= 2
+        ]
+        if tokens:
+            return " ".join(tokens[:6])
+        return cleaned_title
+
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if len(line) >= 8:
+            return line[:80]
+    return ""
+
+
+def _extract_hard_constraints(
+    mandatory: list[str],
+    *,
+    years: float | None,
+    certifications: list[str],
+    text: str,
+) -> list[str]:
+    """Pick the strictest deal-breaker constraints from mandatory lines (rules).
+
+    Soft-skill / vague phrases are skipped. No industry-specific hardcoding —
+    selection is based on generic threshold markers (years, certs, must-have).
+    """
+    soft_markers = (
+        "communication", "team player", "motivated", "passionate",
+        "self-starter", "detail-oriented", "תקשורת", "יחסי אנוש", "מוטיבציה",
+    )
+    constraints: list[str] = []
+    for line in mandatory:
+        line_l = line.lower()
+        if any(soft in line_l for soft in soft_markers):
+            continue
+        if any(marker in line_l for marker in MANDATORY_MARKERS) or YEARS_RE.search(line):
+            constraints.append(line[:200])
+    for cert in certifications:
+        cert_req = f"Certification: {cert}"
+        if cert_req not in constraints:
+            constraints.append(cert_req)
+    # Niche operational phrases often appear as short must-have lines.
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or len(line) > 160:
+            continue
+        line_l = line.lower()
+        if any(marker in line_l for marker in MANDATORY_MARKERS) and line not in constraints:
+            if not any(soft in line_l for soft in soft_markers):
+                constraints.append(line[:200])
+    if years is not None:
+        years_req = f"{years}+ years experience"
+        if years_req not in constraints and not any("years" in c.lower() or "שנ" in c for c in constraints):
+            constraints.append(years_req)
+    return constraints[:10]
+
+
 def analyze_job_fallback(job: dict[str, Any]) -> JobProfile:
     """Rule-based structured extraction (no AI)."""
     text = _job_text(job)
@@ -225,13 +332,19 @@ def analyze_job_fallback(job: dict[str, Any]) -> JobProfile:
         if len(t) >= 2
     ]
     domain_hints = [t for t in title_tokens if t and t not in normalized_skills][:5]
+    professional_domain = _derive_professional_domain(title, text)
+    hard_constraints = _extract_hard_constraints(
+        mandatory, years=years, certifications=[], text=text
+    )
 
     return JobProfile(
         title=title,
+        professional_domain=professional_domain,
         seniority=_detect_seniority(text, title),
         required_skills=normalized_skills[:15],
         preferred_skills=domain_hints,
         mandatory_requirements=mandatory,
+        hard_constraints=hard_constraints,
         years_experience_min=years,
         education=[],
         languages=_detect_languages(text),
@@ -263,7 +376,7 @@ def analyze_job_with_openai(job: dict[str, Any]) -> JobProfile:
         f"Location: {job.get('location') or 'N/A'}\n\n"
         f"Job posting:\n{text}"
     )
-    cache_payload = f"job_profile_v1\n{job.get('job_url') or ''}\n{job_profile_hash(job)}"
+    cache_payload = f"job_profile_v2\n{job.get('job_url') or ''}\n{job_profile_hash(job)}"
 
     raw = call_openai_json(
         JOB_SYSTEM_PROMPT,
