@@ -3,6 +3,7 @@ import { FileText, PlugZap, RefreshCw } from "lucide-react";
 import AuthView from "./components/AuthView";
 import CvManager from "./components/CvManager";
 import CvDetails from "./components/CvDetails";
+import RunAgentModal from "./components/RunAgentModal";
 import {
   analyzeCv,
   checkHealth,
@@ -37,8 +38,6 @@ export default function App() {
   const [cvsLoading, setCvsLoading] = useState(false);
   const [cvsError, setCvsError] = useState<string | null>(null);
   const [workspaceMatchCount, setWorkspaceMatchCount] = useState(0);
-  const [showMatches, setShowMatches] = useState(false);
-  const [matchesCvId, setMatchesCvId] = useState<string | null>(null);
 
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -46,6 +45,8 @@ export default function App() {
   const [suggestedDomains, setSuggestedDomains] = useState<string[]>([]);
   const [candidateSummary, setCandidateSummary] = useState("");
   const [activeCvId, setActiveCvId] = useState<string | null>(null);
+  const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [detailsRefreshKey, setDetailsRefreshKey] = useState(0);
   const [jobSites, setJobSites] = useState<JobSite[]>([
     {
       id: "drushim",
@@ -86,12 +87,11 @@ export default function App() {
     setAuthUser(null);
     setCvs([]);
     setWorkspaceMatchCount(0);
-    setShowMatches(false);
-    setMatchesCvId(null);
     setScanStatus(null);
     setSuggestedDomains([]);
     setCandidateSummary("");
     setActiveCvId(null);
+    setScanModalOpen(false);
   }, []);
 
   useEffect(() => {
@@ -143,6 +143,9 @@ export default function App() {
       const focused = focusedId
         ? data.cvs.find((c) => c.id === focusedId)
         : undefined;
+      if (!focused && data.cvs[0]?.id && !scanRunningRef.current) {
+        setActiveCvId(data.cvs[0].id);
+      }
       if (focused?.match_count != null) {
         setWorkspaceMatchCount(focused.match_count);
       } else {
@@ -386,9 +389,9 @@ export default function App() {
       await resetJobMatches();
       setScanStatus(null);
       setWorkspaceMatchCount(0);
-      setShowMatches(false);
       setSuggestedDomains([]);
       setCandidateSummary("");
+      setDetailsRefreshKey((value) => value + 1);
       await refreshCvs();
       showToast("התוצאות אופסו — אפשר לסרוק מחדש");
     } catch (e) {
@@ -405,11 +408,12 @@ export default function App() {
       await resetAllCvs();
       setScanStatus(null);
       setWorkspaceMatchCount(0);
-      setShowMatches(false);
       setCvs([]);
       setSuggestedDomains([]);
       setCandidateSummary("");
       setActiveCvId(null);
+      setScanModalOpen(false);
+      setDetailsRefreshKey((value) => value + 1);
       await refreshCvs();
       showToast("כל הקבצים והתוצאות נמחקו");
     } catch (e) {
@@ -457,7 +461,7 @@ export default function App() {
     try {
       await searchJobsForCv(cvId, { domains, job_sites: siteIds });
       setActiveCvId(cvId);
-      setShowMatches(false);
+      setScanModalOpen(false);
       setScanStatus({
         running: true,
         started_at: new Date().toISOString(),
@@ -471,6 +475,7 @@ export default function App() {
         log: [],
         latest_scan: null,
       });
+      setDetailsRefreshKey((value) => value + 1);
       startPolling(cvId);
     } catch (e) {
       showToast(
@@ -480,11 +485,28 @@ export default function App() {
   };
 
   const handleStop = async () => {
+    const stopCvId = activeCvId;
     setStopping(true);
     try {
       await stopJobMatcher();
-      showToast("עוצר את הסריקה…");
-      if (activeCvId) startPolling(activeCvId);
+      stopPolling();
+      setScanStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              running: false,
+              finished_at: new Date().toISOString(),
+              current_step: null,
+              detail: "הסריקה נעצרה",
+            }
+          : prev
+      );
+      setStopping(false);
+      if (stopCvId) {
+        setDetailsRefreshKey((value) => value + 1);
+      }
+      await refreshCvs();
+      showToast("הסריקה נעצרה");
     } catch (e) {
       setStopping(false);
       showToast(
@@ -492,12 +514,14 @@ export default function App() {
       );
     }
   };
-
-  const matchesCv =
-    (matchesCvId && cvs.find((c) => c.id === matchesCvId)) ||
-    (activeCvId && cvs.find((c) => c.id === activeCvId)) ||
-    cvs[0];
   const scanActive = scanStatus?.running ?? false;
+  const selectedCv = (activeCvId && cvs.find((c) => c.id === activeCvId)) || cvs[0] || null;
+
+  useEffect(() => {
+    if (!activeCvId && cvs[0]?.id) {
+      setActiveCvId(cvs[0].id);
+    }
+  }, [activeCvId, cvs]);
 
   return (
     <div className={`app ${scanActive ? "app-scan-locked" : ""}`}>
@@ -609,42 +633,79 @@ export default function App() {
               {healthChecking ? "בודק..." : "נסה שוב"}
             </button>
           </div>
-        ) : showMatches && matchesCv && !scanActive ? (
-          <CvDetails
-            cvId={matchesCv.id}
-            cv={matchesCv}
-            scanStatus={scanStatus}
-            workspaceMode={false}
-            onBack={() => setShowMatches(false)}
-          />
         ) : (
+          <>
           <CvManager
             cvs={cvs}
             loading={cvsLoading}
             error={cvsError}
             scanStatus={scanStatus}
             workspaceMatchCount={workspaceMatchCount}
-            jobSites={jobSites}
             jobSitesLoading={jobSitesLoading}
             stopping={stopping}
             analyzing={analyzing}
-            suggestedDomains={suggestedDomains}
-            candidateSummary={candidateSummary}
             onUpload={handleUpload}
             onDelete={handleDelete}
             onAnalyze={handleAnalyze}
             onStartSearch={handleStartSearch}
             onStopAgent={handleStop}
-            onOpenMatches={(cvId) => {
-              if (!scanActive) {
-                setMatchesCvId(cvId);
-                setActiveCvId(cvId);
-                setShowMatches(true);
-              }
+            selectedCvId={selectedCv?.id ?? null}
+            onSelectCv={(cvId) => {
+              setActiveCvId(cvId);
+              setDetailsRefreshKey((value) => value + 1);
+            }}
+            onNewScan={(cvId) => {
+              setActiveCvId(cvId);
+              setSuggestedDomains([]);
+              setCandidateSummary("");
+              setScanModalOpen(true);
             }}
             onResetResults={handleResetResults}
             onResetFiles={handleResetFiles}
           />
+          {selectedCv && (
+            <CvDetails
+              key={`${selectedCv.id}:${detailsRefreshKey}`}
+              cvId={selectedCv.id}
+              cv={selectedCv}
+              scanStatus={selectedCv.id === activeCvId ? scanStatus : null}
+              workspaceMode={false}
+              onBack={undefined}
+              headerActions={
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={scanActive || analyzing}
+                  onClick={() => {
+                    setActiveCvId(selectedCv.id);
+                    setSuggestedDomains([]);
+                    setCandidateSummary("");
+                    setScanModalOpen(true);
+                  }}
+                >
+                  סריקה חדשה
+                </button>
+              }
+              emptyHint='לחצו על "סריקה חדשה" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'
+            />
+          )}
+          {scanModalOpen && selectedCv && (
+            <RunAgentModal
+              cvId={selectedCv.id}
+              cvName={selectedCv.display_name || selectedCv.file_name || "קורות החיים"}
+              sites={jobSites}
+              loading={jobSitesLoading}
+              analyzing={analyzing}
+              suggestedDomains={suggestedDomains}
+              candidateSummary={candidateSummary}
+              onAnalyze={handleAnalyze}
+              onConfirm={(siteIds, domains) =>
+                handleStartSearch(selectedCv.id, domains, siteIds)
+              }
+              onCancel={() => setScanModalOpen(false)}
+            />
+          )}
+          </>
         )}
       </main>
 

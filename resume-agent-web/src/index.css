@@ -757,6 +757,37 @@ body {
   transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
 }
 
+.cv-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+
+.cv-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.cv-card-selected {
+  border-color: rgba(37, 99, 235, 0.45);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+  background: linear-gradient(160deg, rgba(37, 99, 235, 0.06), var(--surface));
+}
+
+.cv-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
 .cv-item:hover {
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
@@ -895,6 +926,18 @@ body {
   opacity: 0.55;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+.btn-secondary {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .btn-sm {
@@ -1417,6 +1460,19 @@ code {
   animation: fade-in 0.2s ease-out;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+  padding-bottom: calc(16px + var(--safe-bottom));
+}
+
 .modal {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -1454,6 +1510,21 @@ code {
 
 .run-agent-modal {
   max-width: 480px;
+}
+
+.scan-modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.scan-modal-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .site-options {
@@ -1527,6 +1598,32 @@ code {
 
 .site-error {
   margin-bottom: 16px;
+}
+
+.scan-modal-analyzing {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.domain-select-all-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.domain-select-all-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
 }
 
 @keyframes fade-in {
