@@ -1803,6 +1803,7 @@ def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
 SCAN_RUNNING = "running"
 SCAN_SUCCESS = "success"
 SCAN_FAILED = "failed"
+SCAN_STOPPED = "stopped"
 
 
 def reset_cv_job_pool(cv_id: str, db_path: Path | None = None) -> None:

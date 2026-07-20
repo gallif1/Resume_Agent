@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import { ArrowRight, Search } from "lucide-react";
 import {
@@ -33,7 +33,9 @@ interface Props {
   cv: Cv | undefined;
   scanStatus?: CvScanStatus | null;
   workspaceMode?: boolean;
-  onBack: () => void;
+  onBack?: () => void;
+  headerActions?: ReactNode;
+  emptyHint?: string;
 }
 
 const STATUS_OPTIONS: { value: ApplicationStatus; label: string }[] = [
@@ -183,6 +185,8 @@ export default function CvDetails({
   scanStatus = null,
   workspaceMode = false,
   onBack,
+  headerActions,
+  emptyHint,
 }: Props) {
   const [matches, setMatches] = useState<CvMatch[]>([]);
   const [loading, setLoading] = useState(false);
@@ -842,10 +846,12 @@ export default function CvDetails({
   return (
     <section>
       <div className="details-topbar">
-        <button className="btn btn-ghost" onClick={onBack}>
-          <ArrowRight size={16} aria-hidden />
-          חזרה
-        </button>
+        {onBack ? (
+          <button className="btn btn-ghost" onClick={onBack}>
+            <ArrowRight size={16} aria-hidden />
+            חזרה
+          </button>
+        ) : null}
         <div className="details-title">
           <h2>{title}</h2>
           {workspaceMode ? (
@@ -856,7 +862,7 @@ export default function CvDetails({
             )
           )}
         </div>
-        <div className="details-topbar-spacer" />
+        {headerActions ?? <div className="details-topbar-spacer" />}
       </div>
 
       <div className="details-tabs" role="tablist" aria-label="תצוגת קורות חיים">
@@ -1233,7 +1239,8 @@ export default function CvDetails({
             </p>
           ) : (
             <p className="empty-hint">
-              לחץ על &quot;הרץ סוכן&quot; כדי לאסוף ולדרג משרות עבור קורות החיים האלה.
+              {emptyHint ??
+                'לחץ על "הרץ סוכן" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'}
             </p>
           )}
         </div>

@@ -1,13 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { Briefcase, Check, Globe, Play } from "lucide-react";
+import { Briefcase, Check, Globe, Loader2, Play, Plus } from "lucide-react";
 import { type JobSite } from "../lib/api";
 
 interface Props {
+  cvId: string;
   cvName: string;
   sites: JobSite[];
   loading: boolean;
-  onConfirm: (siteIds: string[]) => void;
+  analyzing: boolean;
+  suggestedDomains: string[];
+  candidateSummary?: string;
+  onAnalyze: (cvId: string) => Promise<void>;
+  onConfirm: (siteIds: string[], domains: string[]) => void;
   onCancel: () => void;
 }
 
@@ -36,9 +41,14 @@ const DEFAULT_SITES: JobSite[] = [
 ];
 
 export default function RunAgentModal({
+  cvId,
   cvName,
   sites,
   loading,
+  analyzing,
+  suggestedDomains,
+  candidateSummary = "",
+  onAnalyze,
   onConfirm,
   onCancel,
 }: Props) {
@@ -46,6 +56,10 @@ export default function RunAgentModal({
   const displaySites = sites.length > 0 ? sites : DEFAULT_SITES;
   const enabledIds = displaySites.filter((s) => s.enabled).map((s) => s.id);
   const [selected, setSelected] = useState<string[]>(enabledIds);
+  const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
+  const [customDomain, setCustomDomain] = useState("");
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const requestedAnalysisRef = useRef<string | null>(null);
 
   useEffect(() => {
     openedAtRef.current = Date.now();
@@ -59,6 +73,21 @@ export default function RunAgentModal({
     setSelected(displaySites.filter((s) => s.enabled).map((s) => s.id));
   }, [displaySites]);
 
+  useEffect(() => {
+    setSelectedDomains(suggestedDomains);
+  }, [suggestedDomains]);
+
+  useEffect(() => {
+    if (requestedAnalysisRef.current === cvId) return;
+    requestedAnalysisRef.current = cvId;
+    setAnalysisError(null);
+    void onAnalyze(cvId).catch((error) => {
+      setAnalysisError(
+        error instanceof Error ? error.message : "ניתוח קורות החיים נכשל"
+      );
+    });
+  }, [cvId, onAnalyze]);
+
   const toggle = (id: string) => {
     setSelected((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]
@@ -67,6 +96,46 @@ export default function RunAgentModal({
 
   const selectAll = () => setSelected(enabledIds);
   const clearAll = () => setSelected([]);
+
+  const suggestedSelectedCount = useMemo(
+    () => suggestedDomains.filter((domain) => selectedDomains.includes(domain)).length,
+    [selectedDomains, suggestedDomains]
+  );
+  const allSuggestedSelected =
+    suggestedDomains.length > 0 && suggestedSelectedCount === suggestedDomains.length;
+
+  const toggleDomain = (domain: string) => {
+    setSelectedDomains((prev) =>
+      prev.includes(domain)
+        ? prev.filter((item) => item !== domain)
+        : [...prev, domain]
+    );
+  };
+
+  const toggleAllSuggestedDomains = () => {
+    if (allSuggestedSelected) {
+      setSelectedDomains((prev) =>
+        prev.filter((domain) => !suggestedDomains.includes(domain))
+      );
+      return;
+    }
+    setSelectedDomains((prev) => {
+      const extras = prev.filter((domain) => !suggestedDomains.includes(domain));
+      return [...suggestedDomains, ...extras];
+    });
+  };
+
+  const addCustomDomain = (event?: FormEvent) => {
+    event?.preventDefault();
+    const value = customDomain.trim();
+    if (!value) return;
+    setSelectedDomains((prev) =>
+      prev.some((domain) => domain.toLowerCase() === value.toLowerCase())
+        ? prev
+        : [...prev, value]
+    );
+    setCustomDomain("");
+  };
 
   const handleOverlayClick = () => {
     // Ignore the click that opened the modal (common on touch devices).
@@ -77,12 +146,16 @@ export default function RunAgentModal({
   return createPortal(
     <div className="modal-overlay" onClick={handleOverlayClick}>
       <div className="modal run-agent-modal" onClick={(e) => e.stopPropagation()}>
-        <h3>מאיזה אתרים לחפש משרות?</h3>
+        <h3>סריקה חדשה</h3>
         <p>
-          בחר אתר אחד או יותר לסריקה של <b>{cvName}</b>. הסוכן יאחד את כל הקבצים
-          לפרופיל מועמד אחד ויחפש משרות מתאימות.
+          בחרו אתרי דרושים ותחומי חיפוש עבור <b>{cvName}</b>. התוצאות החדשות
+          יתווספו למשרות שכבר נשמרו.
         </p>
 
+        <div className="scan-modal-section">
+          <div className="scan-modal-section-head">
+            <span className="scan-config-label">לוחות דרושים</span>
+          </div>
         {loading && sites.length === 0 ? (
           <p className="site-loading">טוען אתרים זמינים…</p>
         ) : (
@@ -126,6 +199,7 @@ export default function RunAgentModal({
             })}
           </div>
         )}
+        </div>
 
         <div className="site-quick-actions">
           <button
@@ -150,6 +224,91 @@ export default function RunAgentModal({
           <div className="error-box site-error">יש לבחור לפחות אתר אחד.</div>
         )}
 
+        <div className="scan-modal-section">
+          <div className="scan-modal-section-head">
+            <span className="scan-config-label">תחומים מומלצים</span>
+            {suggestedDomains.length > 0 && (
+              <label className="domain-select-all-toggle">
+                <input
+                  type="checkbox"
+                  checked={allSuggestedSelected}
+                  onChange={toggleAllSuggestedDomains}
+                />
+                <span>
+                  {allSuggestedSelected ? "בטל בחירת הכל" : "בחר הכל"}
+                </span>
+              </label>
+            )}
+          </div>
+
+          {candidateSummary && <p className="domain-summary">{candidateSummary}</p>}
+
+          {analyzing ? (
+            <div className="scan-modal-analyzing" role="status">
+              <Loader2 className="domain-analyzing-spinner" size={22} aria-hidden />
+              <span>מנתח את קורות החיים ומציע תחומי חיפוש…</span>
+            </div>
+          ) : suggestedDomains.length > 0 || selectedDomains.length > 0 ? (
+            <div className="domain-chip-grid" role="group" aria-label="בחירת תחומים">
+              {suggestedDomains.map((domain) => {
+                const isSelected = selectedDomains.includes(domain);
+                return (
+                  <button
+                    key={domain}
+                    type="button"
+                    className={`domain-chip ${isSelected ? "selected" : ""}`}
+                    onClick={() => toggleDomain(domain)}
+                    aria-pressed={isSelected}
+                  >
+                    {isSelected && <Check size={14} strokeWidth={3} aria-hidden />}
+                    {domain}
+                  </button>
+                );
+              })}
+              {selectedDomains
+                .filter((domain) => !suggestedDomains.includes(domain))
+                .map((domain) => (
+                  <button
+                    key={`custom-${domain}`}
+                    type="button"
+                    className="domain-chip selected"
+                    onClick={() => toggleDomain(domain)}
+                    aria-pressed
+                  >
+                    <Check size={14} strokeWidth={3} aria-hidden />
+                    {domain}
+                  </button>
+                ))}
+            </div>
+          ) : (
+            <p className="site-loading">לא נמצאו תחומים מוצעים עדיין — אפשר להוסיף ידנית.</p>
+          )}
+
+          <form className="domain-custom-row" onSubmit={addCustomDomain}>
+            <input
+              type="text"
+              className="domain-custom-input"
+              placeholder="הוסיפו תחום מותאם אישית"
+              value={customDomain}
+              onChange={(e) => setCustomDomain(e.target.value)}
+              dir="auto"
+            />
+            <button
+              type="submit"
+              className="btn btn-secondary"
+              disabled={!customDomain.trim()}
+            >
+              <Plus size={16} aria-hidden />
+              הוסף
+            </button>
+          </form>
+
+          {analysisError && <div className="error-box">{analysisError}</div>}
+          {selectedDomains.length === 0 && !analyzing && (
+            <div className="error-box site-error">יש לבחור לפחות תחום אחד.</div>
+          )}
+        </div>
+
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost" onClick={onCancel}>
             ביטול
@@ -157,11 +316,11 @@ export default function RunAgentModal({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={loading || selected.length === 0}
-            onClick={() => onConfirm(selected)}
+            disabled={loading || analyzing || selected.length === 0 || selectedDomains.length === 0}
+            onClick={() => onConfirm(selected, selectedDomains)}
           >
             <Play size={16} aria-hidden />
-            התחל סריקה חכמה
+            הפעל סריקה
           </button>
         </div>
       </div>

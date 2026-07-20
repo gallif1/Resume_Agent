@@ -518,9 +518,10 @@ def run_search(
         summary_payload["warnings"] = warnings
     summary = json.dumps(summary_payload, ensure_ascii=False)
 
+    status = db.SCAN_STOPPED if error == "הסריקה בוטלה על ידי המשתמש" else db.SCAN_FAILED
     if error:
         db.finish_scan(
-            scan_id, db.SCAN_FAILED, summary=summary, error_message=error, db_path=cv_db
+            scan_id, status, summary=summary, error_message=error, db_path=cv_db
         )
     else:
         db.finish_scan(scan_id, db.SCAN_SUCCESS, summary=summary, db_path=cv_db)
@@ -659,9 +660,10 @@ def run_scan(
         summary_payload["warnings"] = warnings
     summary = json.dumps(summary_payload, ensure_ascii=False)
 
+    status = db.SCAN_STOPPED if error == "הסריקה בוטלה על ידי המשתמש" else db.SCAN_FAILED
     if error:
         db.finish_scan(
-            scan_id, db.SCAN_FAILED, summary=summary, error_message=error, db_path=cv_db
+            scan_id, status, summary=summary, error_message=error, db_path=cv_db
         )
     else:
         db.finish_scan(scan_id, db.SCAN_SUCCESS, summary=summary, db_path=cv_db)
@@ -998,9 +1000,10 @@ def run_user_scan(
     summary = json.dumps(summary_payload, ensure_ascii=False)
 
     now = _utc_now()
+    status = db.SCAN_STOPPED if error == "הסריקה בוטלה על ידי המשתמש" else db.SCAN_FAILED
     if error:
         db.finish_scan(
-            scan_id, db.SCAN_FAILED, summary=summary, error_message=error, db_path=user_db
+            scan_id, status, summary=summary, error_message=error, db_path=user_db
         )
     else:
         db.finish_scan(scan_id, db.SCAN_SUCCESS, summary=summary, db_path=user_db)

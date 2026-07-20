@@ -544,6 +544,8 @@ def _run_scan_thread(
         )
         if scan.get("status") == db.SCAN_FAILED:
             error = scan.get("error_message") or "הסריקה נכשלה"
+        elif scan.get("status") == db.SCAN_STOPPED:
+            error = None
         with _scan_lock:
             scan_warnings = scan.get("warnings") or []
             for message in scan_warnings:
@@ -558,6 +560,8 @@ def _run_scan_thread(
         with _scan_lock:
             _scan_state["running"] = False
             _scan_state["finished_at"] = _utc_now()
+            if error is None and is_cancelled():
+                _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
 
@@ -580,6 +584,8 @@ def _run_search_thread(
         )
         if scan.get("status") == db.SCAN_FAILED:
             error = scan.get("error_message") or "הסריקה נכשלה"
+        elif scan.get("status") == db.SCAN_STOPPED:
+            error = None
         with _scan_lock:
             scan_warnings = scan.get("warnings") or []
             for message in scan_warnings:
@@ -595,7 +601,7 @@ def _run_search_thread(
             _scan_state["running"] = False
             _scan_state["finished_at"] = _utc_now()
             if error is None and is_cancelled():
-                error = "הסריקה בוטלה על ידי המשתמש"
+                _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
 
@@ -629,6 +635,8 @@ def _run_user_scan_thread(
         )
         if scan.get("status") == db.SCAN_FAILED:
             error = scan.get("error_message") or "הסריקה נכשלה"
+        elif scan.get("status") == db.SCAN_STOPPED:
+            error = None
         with _scan_lock:
             scan_warnings = scan.get("warnings") or []
             for message in scan_warnings:
@@ -644,7 +652,7 @@ def _run_user_scan_thread(
             _scan_state["running"] = False
             _scan_state["finished_at"] = _utc_now()
             if error is None and is_cancelled():
-                error = "הסריקה בוטלה על ידי המשתמש"
+                _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
 
