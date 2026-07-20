@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
-import { ArrowRight, Search } from "lucide-react";
+import { ArrowRight, Loader2, Search } from "lucide-react";
 import {
   applyToJob,
   downloadTailoredCvPdf,
@@ -890,7 +890,16 @@ export default function CvDetails({
         <ProfileSettings cvId={cvId} />
       ) : (
         <>
-      <PipelineProgress scanStatus={showScanPanel} />
+      <PipelineProgress
+        scanStatus={showScanPanel}
+        matchCount={
+          typeof scanStatus?.match_count === "number"
+            ? scanStatus.match_count
+            : matches.length > 0
+              ? matches.length
+              : cv?.match_count ?? 0
+        }
+      />
 
       {error && (
         <div
@@ -1225,24 +1234,42 @@ export default function CvDetails({
         </div>
       </div>
 
-      {matches.length === 0 && !loading ? (
+      {loading && matches.length === 0 ? (
+        <div className="empty-state" role="status">
+          <div className="empty-icon" aria-hidden>
+            <span className="icon-bubble icon-bubble-blue">
+              <Loader2 size={22} className="domain-analyzing-spinner" />
+            </span>
+          </div>
+          <p>טוען משרות…</p>
+        </div>
+      ) : matches.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon" aria-hidden>
             <span className="icon-bubble icon-bubble-blue">
-              <Search size={22} />
+              {scanStatus?.running ? (
+                <Loader2 size={22} className="domain-analyzing-spinner" />
+              ) : (
+                <Search size={22} />
+              )}
             </span>
           </div>
-          <p>אין עדיין התאמות לקובץ הזה.</p>
-          {displayWarnings.length > 0 ? (
-            <p className="empty-hint">
-              הסריקה הסתיימה, אך לא נמצאו משרות חדשות. ראו את ההודעות למעלה לפרטים.
-            </p>
-          ) : (
-            <p className="empty-hint">
-              {emptyHint ??
-                'לחץ על "הרץ סוכן" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'}
-            </p>
-          )}
+          <p>
+            {scanStatus?.running
+              ? "הסריקה רצה — משרות מתאימות יופיעו כאן בהמשך"
+              : "לא נמצאו משרות עדיין"}
+          </p>
+          {!scanStatus?.running &&
+            (displayWarnings.length > 0 ? (
+              <p className="empty-hint">
+                הסריקה הסתיימה, אך לא נמצאו משרות חדשות. ראו את ההודעות למעלה לפרטים.
+              </p>
+            ) : (
+              <p className="empty-hint">
+                {emptyHint ??
+                  'לחצו על "סריקה חדשה" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'}
+              </p>
+            ))}
         </div>
       ) : (
         <>

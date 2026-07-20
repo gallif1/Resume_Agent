@@ -1,10 +1,7 @@
 import { useRef, useState, type DragEvent } from "react";
-import { FileText, Square, Trash2, Upload } from "lucide-react";
+import { FileText, Trash2, Upload } from "lucide-react";
 import { type Cv, type CvScanStatus } from "../lib/api";
-import PipelineProgress, {
-  computeScanMetrics,
-  ScanSummaryCards,
-} from "./PipelineProgress";
+import { computeScanMetrics, ScanSummaryCards } from "./PipelineProgress";
 
 const ACCEPTED = [".pdf", ".doc", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"];
 const MAX_SIZE_MB = 15;
@@ -54,13 +51,13 @@ export default function CvManager({
   scanStatus,
   workspaceMatchCount,
   jobSitesLoading = false,
-  stopping = false,
+  stopping: _stopping = false,
   analyzing = false,
   onUpload,
   onDelete,
   onAnalyze: _onAnalyze,
   onStartSearch: _onStartSearch,
-  onStopAgent,
+  onStopAgent: _onStopAgent,
   selectedCvId,
   onSelectCv,
   onNewScan,
@@ -195,33 +192,6 @@ export default function CvManager({
         )}
       </div>
 
-      {anyScanning && (
-        <div className="run-agent-section" style={{ marginBottom: "1rem" }}>
-          <button
-            type="button"
-            className="btn btn-danger btn-run-agent"
-            disabled={stopping}
-            onClick={onStopAgent}
-          >
-            <Square size={16} fill="currentColor" aria-hidden />
-            {stopping ? "עוצר…" : "עצור סריקה"}
-          </button>
-          <p className="run-agent-hint">
-            הסוכן רץ ברקע — אפשר לרענן את הדף, הסריקה תמשיך. אפשר לעצור בכל רגע.
-          </p>
-        </div>
-      )}
-
-      {(anyScanning || scanStatus?.error || (scanStatus?.steps?.length ?? 0) > 0) &&
-        scanStatus && (
-          <PipelineProgress
-            scanStatus={scanStatus}
-            matchCount={workspaceMatchCount}
-            compact
-            showSkeletons={anyScanning}
-          />
-        )}
-
       {scanFinished && !scanStatus?.error && workspaceMatchCount >= 0 && hasResults && (
         <div className="fade-in-list">
           <ScanSummaryCards
@@ -262,9 +232,19 @@ export default function CvManager({
         </div>
       )}
 
-      {cvs.length === 0 && !loading ? (
+      {loading && cvs.length === 0 ? (
+        <div className="empty-state compact" role="status">
+          <p>טוען קבצים…</p>
+        </div>
+      ) : cvs.length === 0 ? (
         <div className="empty-state compact">
+          <div className="empty-icon" aria-hidden>
+            <span className="icon-bubble icon-bubble-blue">
+              <Upload size={22} />
+            </span>
+          </div>
           <p>עדיין לא הועלו קבצים.</p>
+          <p className="empty-hint">העלו קורות חיים כדי להתחיל סריקת משרות.</p>
         </div>
       ) : (
         <ul className="cv-list">
