@@ -283,7 +283,7 @@ export default function CvManager({
                     disabled={uiLocked || jobSitesLoading}
                     onClick={() => onNewScan(cv.id)}
                   >
-                    סריקה חדשה
+                    סריקה מחדש
                   </button>
                   <button
                     type="button"

@@ -688,6 +688,83 @@ body {
   white-space: nowrap;
 }
 
+.history-count-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.btn-count-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background 0.2s ease,
+    transform 0.15s ease;
+}
+
+.btn-count-refresh:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--surface-2);
+}
+
+.btn-count-refresh:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.btn-count-refresh:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-count-refresh .spin {
+  animation: spin 0.9s linear infinite;
+}
+
+.header-rescan {
+  white-space: nowrap;
+}
+
+.scan-panel-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  margin-bottom: 0;
+  pointer-events: none;
+  transition:
+    grid-template-rows 0.4s ease,
+    opacity 0.3s ease,
+    margin-bottom 0.35s ease;
+}
+
+.scan-panel-wrapper--visible {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  margin-bottom: 0.5rem;
+  pointer-events: auto;
+}
+
+.scan-panel-wrapper-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.scan-panel-wrapper--visible .scan-progress-panel {
+  margin-bottom: 1.5rem;
+}
+
 .reset-actions {
   display: flex;
   flex-wrap: wrap;
