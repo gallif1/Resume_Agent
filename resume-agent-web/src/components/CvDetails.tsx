@@ -1077,10 +1077,12 @@ export default function CvDetails({
               (tailoredCv.changes_breakdown?.length ?? 0) > 0) && (
               <p className="tailored-cv-meta">
                 {(() => {
-                  const optimized =
+                  const optimized: number | null =
                     getTailoredScore(tailoredCv) ??
                     tailoredCv.score_after ??
-                    tailoredCv.estimated_ats_score;
+                    tailoredCv.estimated_ats_score ??
+                    null;
+                  if (optimized == null) return null;
                   const previous = getPreviousTailoredScore(
                     tailoredCv,
                     activeMatchBaseline
@@ -1096,7 +1098,7 @@ export default function CvDetails({
                         optimized,
                         { original: true }
                       );
-                  if (!progression || optimized == null) return null;
+                  if (!progression) return null;
                   return (
                     <>
                       <b>התאמה:</b> {progression}
