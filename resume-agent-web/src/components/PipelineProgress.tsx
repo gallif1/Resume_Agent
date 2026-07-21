@@ -3,11 +3,14 @@ import {
   Briefcase,
   Check,
   Circle,
+  FileSearch,
   Lightbulb,
   Loader2,
   Radar,
+  Search,
   Sparkles,
-  Terminal,
+  Target,
+  BarChart3,
   X,
 } from "lucide-react";
 import type { CollectionSummary, CvScanStatus, SiteCollectionSummary } from "../lib/api";
@@ -18,27 +21,55 @@ interface Props {
   compact?: boolean;
 }
 
-/** Map backend pipeline keys into 3 friendly visual stages. */
+/**
+ * Five user-facing stages mapped from backend pipeline keys.
+ * Interactive search runs may omit parse/analyze (done in the modal) —
+ * those stages are then treated as already completed.
+ */
 const VISUAL_STAGES = [
   {
-    id: "analyze",
-    label: "ניתוח קורות חיים ואסטרטגיה",
-    keys: ["parse_cv", "parse_cvs", "aggregate", "analyze_roles"],
-    liveHint: "שלב 1: מנתח את קורות החיים ובונה אסטרטגיית חיפוש…",
+    id: "parse",
+    emoji: "📄",
+    title: "שלב 1 (קריאת קורות חיים)",
+    label: "קריאת קורות חיים",
+    keys: ["parse_cv", "parse_cvs", "aggregate"],
+    message: "מנתח את קורות החיים והניסיון שלך...",
   },
   {
-    id: "scrape",
-    label: "סריקת לוחות דרושים",
-    keys: ["collect", "enrich"],
-    liveHint: "שלב 2: מתחבר ללוחות דרושים ואוסף משרות…",
+    id: "strategy",
+    emoji: "🎯",
+    title: "שלב 2 (גיבוש אסטרטגיה)",
+    label: "גיבוש אסטרטגיה",
+    keys: ["analyze_roles"],
+    message: "מגדיר תחומי חיפוש ומילות מפתח מתאימות...",
+  },
+  {
+    id: "collect",
+    emoji: "🔎",
+    title: "שלב 3 (איסוף משרות)",
+    label: "איסוף משרות",
+    keys: ["collect"],
+    message: "מחפש משרות בלוחות הדרושים (דרושים, LinkedIn, GotFriends)...",
+  },
+  {
+    id: "enrich",
+    emoji: "💼",
+    title: "שלב 4 (העשרת מידע)",
+    label: "העשרת מידע",
+    keys: ["enrich"],
+    message: "מעשיר את התיאור המלא של כל משרה...",
   },
   {
     id: "match",
-    label: "הרצת מודל AI לחישוב התאמה",
+    emoji: "📊",
+    title: "שלב 5 (חישוב התאמה)",
+    label: "חישוב התאמה",
     keys: ["match"],
-    liveHint: "שלב 3: מחשב התאמה בין הכישורים למשרות…",
+    message: "מחשב אחוזי התאמה וציון ATS עבור כל משרה...",
   },
 ] as const;
+
+const EARLY_STAGE_IDS = new Set(["parse", "strategy"]);
 
 const CAREER_TIPS = [
   "טיפ: התאמת תקציר קורות החיים למשרה יכולה להעלות את שיעור התגובות בכ־40%.",
@@ -59,8 +90,7 @@ function stageStatus(
 ): StageStatus {
   const relevant = steps.filter((s) => keys.includes(s.key));
   if (relevant.length === 0) {
-    // Search-only runs omit analyze steps — treat missing stages as skipped.
-    return steps.length > 0 ? "skipped" : "pending";
+    return "pending";
   }
   if (relevant.some((s) => s.status === "failed")) return "failed";
   if (relevant.some((s) => s.status === "running")) return "running";
@@ -84,17 +114,14 @@ function totalScraped(collection: CollectionSummary | null | undefined): number 
   return total;
 }
 
-function formatLogLine(line: string): string {
-  const trimmed = line.trim();
-  if (!trimmed) return "";
-  if (/^\[\d{1,2}:\d{2}/.test(trimmed)) return trimmed;
-  const now = new Date();
-  const ts = now.toLocaleTimeString("he-IL", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-  return `[${ts}] ${trimmed}`;
+function totalNew(collection: CollectionSummary | null | undefined): number {
+  if (!collection) return 0;
+  let total = 0;
+  for (const site of ["drushim", "linkedin", "gotfriends"] as const) {
+    const data = collection[site];
+    if (data) total += data.new ?? 0;
+  }
+  return total;
 }
 
 function progressFromStages(stages: Array<{ status: StageStatus }>): number {
@@ -111,6 +138,57 @@ function progressFromStages(stages: Array<{ status: StageStatus }>): number {
     }
   }
   return Math.max(6, Math.min(98, Math.round(value)));
+}
+
+function isSearchOnlyRun(steps: CvScanStatus["steps"]): boolean {
+  if (steps.length === 0) return false;
+  const hasEarly = steps.some((s) =>
+    ["parse_cv", "parse_cvs", "aggregate", "analyze_roles"].includes(s.key)
+  );
+  const hasSearch = steps.some((s) =>
+    ["collect", "enrich", "match"].includes(s.key)
+  );
+  return !hasEarly && hasSearch;
+}
+
+function friendlyLiveMessage(opts: {
+  running: boolean;
+  error: string | null;
+  activeStage: (typeof VISUAL_STAGES)[number] | undefined;
+  scraped: number;
+  newJobs: number;
+  matchCount: number;
+}): string {
+  const { running, error, activeStage, scraped, newJobs, matchCount } = opts;
+  if (error) return error;
+  if (!running) return "הסריקה הושלמה בהצלחה!";
+
+  const jobsCount = scraped > 0 ? scraped : newJobs;
+
+  if (!activeStage) {
+    return "מתחיל סריקה...";
+  }
+
+  if (activeStage.id === "collect" && jobsCount > 0) {
+    return `נמצאו ${jobsCount} משרות חדשות, עכשיו בודק מה מתוכן הכי מתאים לך...`;
+  }
+
+  if (activeStage.id === "enrich") {
+    return jobsCount > 0
+      ? `נמצאו ${jobsCount} משרות! כעת מעשיר את התיאור המלא של כל משרה...`
+      : activeStage.message;
+  }
+
+  if (activeStage.id === "match") {
+    if (matchCount > 0) {
+      return `מחשב אחוזי התאמה וציון ATS — זוהו כבר ${matchCount} התאמות רלוונטיות...`;
+    }
+    return jobsCount > 0
+      ? `מחשב אחוזי התאמה וציון ATS עבור ${jobsCount} משרות...`
+      : activeStage.message;
+  }
+
+  return activeStage.message;
 }
 
 export default function PipelineProgress({
@@ -136,8 +214,6 @@ export default function PipelineProgress({
   }
 
   const steps = scanStatus.steps ?? [];
-  const detail = scanStatus.detail?.trim();
-  const logLines = scanStatus.log ?? [];
   const warnings = scanStatus.warnings ?? [];
   const hasWarnings = warnings.length > 0;
   const hasCollectionDetails = Boolean(scanStatus.collection);
@@ -148,58 +224,70 @@ export default function PipelineProgress({
     return null;
   }
 
-  const stages = VISUAL_STAGES.map((stage) => ({
-    ...stage,
-    status: stageStatus(stage.keys, steps),
-  }));
+  const searchOnly = isSearchOnlyRun(steps);
 
-  // If backend steps haven't arrived yet while running, mark first stage active.
+  const stages = VISUAL_STAGES.map((stage) => {
+    let status = stageStatus(stage.keys, steps);
+    // Search-only runs already finished CV analysis in the modal.
+    if (searchOnly && EARLY_STAGE_IDS.has(stage.id) && status === "pending") {
+      status = "success";
+    }
+    return { ...stage, status };
+  });
+
+  // If backend steps haven't arrived yet while running, mark first relevant stage active.
   if (running && steps.length === 0) {
-    stages[0].status = "running";
-  } else if (running && stages.every((s) => s.status === "pending")) {
-    stages[0].status = "running";
+    const startIdx = 0;
+    stages[startIdx].status = "running";
+  } else if (running && stages.every((s) => s.status === "pending" || s.status === "success")) {
+    const next = stages.find((s) => s.status === "pending");
+    if (next) next.status = "running";
   }
 
   const scraped = totalScraped(scanStatus.collection);
+  const newJobs = totalNew(scanStatus.collection);
   const liveFound = Math.max(matchCount, 0);
   const activeStage = stages.find((s) => s.status === "running");
+  const activeDef = activeStage
+    ? VISUAL_STAGES.find((s) => s.id === activeStage.id)
+    : undefined;
   const progress = running
     ? progressFromStages(stages)
     : scanStatus.error
       ? Math.max(12, progressFromStages(stages))
       : 100;
 
-  const fallbackLines: string[] = [];
-  if (detail) fallbackLines.push(detail);
-  if (activeStage) fallbackLines.push(activeStage.liveHint);
-  if (scraped > 0) {
-    fallbackLines.push(`נאספו ${scraped} משרות מלוחות הדרושים עד כה`);
-  }
-  if (liveFound > 0) {
-    fallbackLines.push(`זוהו ${liveFound} התאמות רלוונטיות עד כה`);
-  }
-  if (scanStatus.current_step) {
-    fallbackLines.push(`שלב נוכחי: ${scanStatus.current_step}`);
-  }
-
-  const consoleLines =
-    logLines.length > 0
-      ? logLines.map(formatLogLine).filter(Boolean)
-      : fallbackLines.map(formatLogLine).filter(Boolean);
+  const liveMessage = friendlyLiveMessage({
+    running,
+    error: scanStatus.error,
+    activeStage: activeDef,
+    scraped,
+    newJobs,
+    matchCount: liveFound,
+  });
 
   return (
     <div
       className={`scan-progress-panel ${compact ? "pipeline-panel-compact" : ""}`}
+      dir="rtl"
     >
       <div className="scan-progress-top">
         <h3 className="scan-progress-title">
-          {running ? "הסוכן בסריקה חכמה…" : "הסריקה הושלמה"}
+          {running
+            ? "הסוכן בסריקה חכמה…"
+            : scanStatus.error
+              ? "הסריקה נעצרה"
+              : "הסריקה הושלמה בהצלחה!"}
         </h3>
         {(running || liveFound > 0) && (
           <span className="live-counter-badge" role="status">
             <Briefcase size={15} strokeWidth={2.25} aria-hidden />
             {running
-              ? `נמצאו ${liveFound} משרות מתאימות עד כה…`
+              ? scraped > 0
+                ? `נמצאו ${scraped} משרות עד כה…`
+                : liveFound > 0
+                  ? `זוהו ${liveFound} התאמות עד כה…`
+                  : "מחפש משרות…"
               : `${liveFound} משרות מתאימות`}
           </span>
         )}
@@ -215,7 +303,7 @@ export default function PipelineProgress({
           aria-label="התקדמות הסריקה"
         >
           <div className="scan-progress-bar-meta">
-            <span>{activeStage?.label ?? "מתחיל סריקה…"}</span>
+            <span>{activeStage?.title ?? "מתחיל סריקה…"}</span>
             <span>{progress}%</span>
           </div>
           <div className="scan-progress-bar-track">
@@ -227,14 +315,20 @@ export default function PipelineProgress({
         </div>
       )}
 
-      {running && detail && (
-        <div className="pipeline-live">
-          <span className="pipeline-live-label">מתבצע עכשיו</span>
-          <p className="pipeline-live-detail">{detail}</p>
-        </div>
-      )}
+      <div className="scan-friendly-status" role="status" aria-live="polite">
+        <span className="scan-friendly-status-emoji" aria-hidden>
+          {running
+            ? activeStage?.emoji ?? "✅"
+            : scanStatus.error
+              ? "⚠️"
+              : "✅"}
+        </span>
+        <p className="scan-friendly-status-text" key={liveMessage}>
+          {liveMessage}
+        </p>
+      </div>
 
-      <div className="visual-stepper" role="list" aria-label="שלבי הסריקה">
+      <div className="visual-stepper visual-stepper-five" role="list" aria-label="שלבי הסריקה">
         {stages.map((stage) => (
           <div
             key={stage.id}
@@ -242,33 +336,17 @@ export default function PipelineProgress({
             role="listitem"
           >
             <span className="visual-step-icon" aria-hidden="true">
-              <StageIcon status={stage.status} />
+              <StageIcon status={stage.status} stageId={stage.id} />
             </span>
-            <span className="visual-step-label">{stage.label}</span>
+            <span className="visual-step-label">
+              <span className="visual-step-emoji" aria-hidden>
+                {stage.emoji}
+              </span>
+              {stage.label}
+            </span>
           </div>
         ))}
       </div>
-
-      {running && (
-        <div className="agent-console" aria-live="polite">
-          <div className="agent-console-header">
-            <span className="agent-console-title">
-              <Terminal size={14} aria-hidden />
-              יומן התקדמות חי
-            </span>
-            <span className="agent-console-dot" aria-hidden />
-          </div>
-          <pre className="agent-console-body">
-            {consoleLines.length > 0 ? (
-              consoleLines.join("\n")
-            ) : (
-              <span className="agent-console-empty">
-                שלב 1: מתחבר ללוחות דרושים…
-              </span>
-            )}
-          </pre>
-        </div>
-      )}
 
       {running && (
         <div className="career-tip-card" key={tipIndex} role="status">
@@ -298,20 +376,17 @@ export default function PipelineProgress({
       {!running && scanStatus.collection && (
         <CollectionDetails summary={scanStatus.collection} />
       )}
-
-      {!running && logLines.length > 0 && (
-        <div className="pipeline-log-wrap">
-          <div className="pipeline-log-label">יומן פעילות</div>
-          <pre className="pipeline-log pipeline-log-visible" dir="ltr">
-            {logLines.join("\n")}
-          </pre>
-        </div>
-      )}
     </div>
   );
 }
 
-function StageIcon({ status }: { status: StageStatus }) {
+function StageIcon({
+  status,
+  stageId,
+}: {
+  status: StageStatus;
+  stageId: string;
+}) {
   if (status === "success" || status === "skipped") {
     return <Check size={20} strokeWidth={2.5} />;
   }
@@ -328,7 +403,20 @@ function StageIcon({ status }: { status: StageStatus }) {
     );
   }
   if (status === "pending") {
-    return <Circle size={18} strokeWidth={2} />;
+    switch (stageId) {
+      case "parse":
+        return <FileSearch size={18} strokeWidth={2} />;
+      case "strategy":
+        return <Target size={18} strokeWidth={2} />;
+      case "collect":
+        return <Search size={18} strokeWidth={2} />;
+      case "enrich":
+        return <Briefcase size={18} strokeWidth={2} />;
+      case "match":
+        return <BarChart3 size={18} strokeWidth={2} />;
+      default:
+        return <Circle size={18} strokeWidth={2} />;
+    }
   }
   return <Sparkles size={18} />;
 }
