@@ -211,11 +211,13 @@ def test_tailor_cv_for_job_calls_openai(
     )
     assert "Technical Support Engineer" in result["cv_markdown"]
     assert result["from_cache"] is False
-    assert result["estimated_ats_score"] == 68
+    # Score is computed deterministically — not the LLM's estimated_ats_score (68).
+    assert isinstance(result["estimated_ats_score"], int)
+    assert result["estimated_ats_score"] == result.get("score_after")
     assert svc.tailored_cv_path(cv_id, 9).exists()
     assert "Did not invent" in result["caveats"][0]
     # Cache namespace should include prompt version.
-    assert "v5" in svc.TAILOR_PROMPT_VERSION
+    assert "v6" in svc.TAILOR_PROMPT_VERSION
     assert "ONE-PAGE" in svc.TAILOR_SYSTEM_PROMPT or "ONE PAGE" in svc.TAILOR_SYSTEM_PROMPT.upper()
     assert "NEVER OMIT REAL EMPLOYMENT" in svc.TAILOR_SYSTEM_PROMPT
     assert "SQLAlchemy" in svc.TAILOR_SYSTEM_PROMPT
@@ -521,13 +523,16 @@ Python | SQL
     assert "===== latest_tailored_draft =====" in captured["user"]
     assert "Docker" in captured["user"]
     assert "Technical Support" in captured["user"] or "Python SQL Docker" in captured["user"]
-    assert result["matcher_feedback"]["previous"]["ats_score"] is not None
-    assert result["matcher_feedback"]["current"]["ats_score"] is not None
-    assert result["matcher_feedback"]["current"]["ats_score"] > result["matcher_feedback"]["previous"]["ats_score"]
+    assert result["matcher_feedback"]["previous"]["match_score"] is not None
+    assert result["matcher_feedback"]["current"]["match_score"] is not None
+    assert (
+        result["matcher_feedback"]["current"]["match_score"]
+        > result["matcher_feedback"]["previous"]["match_score"]
+    )
     assert "Docker" in result["cv_markdown"]
     assert svc.tailored_cv_path(cv_id, 5).exists()
     # Deterministic score should be embedded in the returned markdown.
-    assert result["estimated_ats_score"] == result["matcher_feedback"]["current"]["ats_score"]
+    assert result["estimated_ats_score"] == result["matcher_feedback"]["current"]["match_score"]
 
 
 def test_regenerate_discards_when_score_not_improved(
@@ -625,6 +630,6 @@ Python | SQL | Docker
     assert "Docker" in result["cv_markdown"]
     assert "Helped users politely" not in result["cv_markdown"]
     assert path.read_text(encoding="utf-8") == original_text
-    assert result["matcher_feedback"]["discarded"]["ats_score"] <= result[
+    assert result["matcher_feedback"]["discarded"]["match_score"] <= result[
         "matcher_feedback"
-    ]["previous"]["ats_score"]
+    ]["previous"]["match_score"]

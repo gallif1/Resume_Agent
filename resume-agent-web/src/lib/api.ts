@@ -290,6 +290,7 @@ export interface CvMatch {
 }
 
 export interface MatcherFeedbackSnapshot {
+  match_score?: number | null;
   ats_score?: number | null;
   score_label?: string | null;
   matched_required_skills?: string[];
@@ -314,6 +315,13 @@ export interface TailoredCvResponse {
   cv_markdown?: string;
   changes_breakdown?: string[];
   estimated_ats_score?: number | null;
+  /** Frozen scan baseline from cv_job_matches.initial_score */
+  initial_match_score?: number | null;
+  /** Score of the previous tailored version (or baseline on first generate) */
+  score_before?: number | null;
+  /** Deterministic score after tailoring/optimization */
+  score_after?: number | null;
+  version_id?: number | null;
   highlights: string[];
   caveats: string[];
   from_cache: boolean;

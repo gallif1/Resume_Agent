@@ -365,12 +365,48 @@ def _apply_cv_match_migrations(conn: sqlite3.Connection) -> None:
         ("is_potential_junior_match", "INTEGER DEFAULT 0"),
         ("tailored_cv_path", "TEXT"),
         ("tailored_cv_updated_at", "TEXT"),
+        ("initial_score", "INTEGER"),
     ]:
         try:
             conn.execute(f"ALTER TABLE cv_job_matches ADD COLUMN {column} {col_type}")
             conn.commit()
         except sqlite3.OperationalError:
             pass
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cv_tailor_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cv_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            score_before INTEGER NOT NULL,
+            score_after INTEGER NOT NULL,
+            tailored_cv_path TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_cv_tailor_versions_cv_job
+        ON cv_tailor_versions (cv_id, job_id, id DESC)
+        """
+    )
+    conn.commit()
+
+    # Backfill initial_score for legacy rows (frozen baseline from first scan score).
+    try:
+        conn.execute(
+            """
+            UPDATE cv_job_matches
+            SET initial_score = match_score
+            WHERE initial_score IS NULL AND match_score IS NOT NULL
+            """
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
@@ -2066,13 +2102,27 @@ def upsert_cv_job_match(
         values = {key: fields.get(key) for key in _CV_MATCH_FIELDS}
 
         if existing is None:
-            columns = ["cv_id", "job_id", "scan_id", *_CV_MATCH_FIELDS,
-                       "application_status", "created_at", "updated_at"]
+            columns = [
+                "cv_id",
+                "job_id",
+                "scan_id",
+                *_CV_MATCH_FIELDS,
+                "initial_score",
+                "application_status",
+                "created_at",
+                "updated_at",
+            ]
             placeholders = ", ".join("?" for _ in columns)
+            initial_score = values.get("match_score")
             params = [
-                cv_id, job_id, scan_id,
+                cv_id,
+                job_id,
+                scan_id,
                 *[values[key] for key in _CV_MATCH_FIELDS],
-                CV_APP_NOT_SENT, now, now,
+                initial_score,
+                CV_APP_NOT_SENT,
+                now,
+                now,
             ]
             cursor = conn.execute(
                 f"INSERT INTO cv_job_matches ({', '.join(columns)}) "
@@ -2322,6 +2372,103 @@ def mark_cv_match_tailored(
             (cv_id, job_id),
         ).fetchone()
         return dict(row) if row is not None else None
+
+
+def get_match_baseline_score(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> int | None:
+    """Return the frozen scan baseline (initial_score) for a CV/job match."""
+    match = get_cv_job_match(cv_id, job_id, db_path=db_path)
+    if match is None:
+        return None
+    baseline = match.get("initial_score")
+    if baseline is None:
+        baseline = match.get("match_score")
+    if baseline is None:
+        return None
+    try:
+        return int(baseline)
+    except (TypeError, ValueError):
+        return None
+
+
+def record_cv_tailor_version(
+    cv_id: str,
+    job_id: int,
+    *,
+    score_before: int,
+    score_after: int,
+    tailored_cv_path: str | None = None,
+    db_path: Path = DB_PATH,
+) -> int:
+    """Persist one tailored-CV version with explicit score progression."""
+    now = _utc_now()
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO cv_tailor_versions (
+                cv_id, job_id, score_before, score_after, tailored_cv_path, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (cv_id, job_id, score_before, score_after, tailored_cv_path, now),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def get_latest_cv_tailor_version(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    """Return the newest tailored-CV version row for (cv_id, job_id)."""
+    if not Path(db_path).exists():
+        return None
+    with get_connection(db_path) as conn:
+        tables = _table_names(conn)
+        if "cv_tailor_versions" not in tables:
+            return None
+        row = conn.execute(
+            """
+            SELECT *
+            FROM cv_tailor_versions
+            WHERE cv_id = ? AND job_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (cv_id, job_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def list_cv_tailor_versions(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, Any]]:
+    """Return tailored-CV version history for (cv_id, job_id), newest first."""
+    if not Path(db_path).exists():
+        return []
+    with get_connection(db_path) as conn:
+        tables = _table_names(conn)
+        if "cv_tailor_versions" not in tables:
+            return []
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM cv_tailor_versions
+            WHERE cv_id = ? AND job_id = ?
+            ORDER BY id DESC
+            """,
+            (cv_id, job_id),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
 
 def update_cv_match_status_by_job(
