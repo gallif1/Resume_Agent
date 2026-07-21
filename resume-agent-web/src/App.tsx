@@ -17,7 +17,6 @@ import {
   listServerCvs,
   resetAllCvs,
   resetJobMatches,
-  refreshCvJobs,
   searchJobsForCv,
   setUnauthorizedHandler,
   stopJobMatcher,
@@ -43,11 +42,11 @@ export default function App() {
   const [scanStatus, setScanStatus] = useState<CvScanStatus | null>(null);
   const [stopping, setStopping] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
   const [suggestedDomains, setSuggestedDomains] = useState<string[]>([]);
   const [candidateSummary, setCandidateSummary] = useState("");
   const [activeCvId, setActiveCvId] = useState<string | null>(null);
   const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [showScanPanel, setShowScanPanel] = useState(false);
   const [detailsRefreshKey, setDetailsRefreshKey] = useState(0);
   const [jobSites, setJobSites] = useState<JobSite[]>([
     {
@@ -94,6 +93,7 @@ export default function App() {
     setCandidateSummary("");
     setActiveCvId(null);
     setScanModalOpen(false);
+    setShowScanPanel(false);
   }, []);
 
   useEffect(() => {
@@ -284,6 +284,7 @@ export default function App() {
           }
           if (!s.running) {
             stopPolling();
+            setShowScanPanel(false);
             refreshCvs();
             if (s.error) {
               showToast(s.error);
@@ -319,6 +320,7 @@ export default function App() {
           setWorkspaceMatchCount(s.match_count);
         }
         if (s.running) {
+          setShowScanPanel(true);
           startPolling(candidate.id);
         }
       } catch {
@@ -390,6 +392,7 @@ export default function App() {
     try {
       await resetJobMatches();
       setScanStatus(null);
+      setShowScanPanel(false);
       setWorkspaceMatchCount(0);
       setSuggestedDomains([]);
       setCandidateSummary("");
@@ -409,6 +412,7 @@ export default function App() {
     try {
       await resetAllCvs();
       setScanStatus(null);
+      setShowScanPanel(false);
       setWorkspaceMatchCount(0);
       setCvs([]);
       setSuggestedDomains([]);
@@ -464,6 +468,7 @@ export default function App() {
       await searchJobsForCv(cvId, { domains, job_sites: siteIds });
       setActiveCvId(cvId);
       setScanModalOpen(false);
+      setShowScanPanel(true);
       setScanStatus({
         running: true,
         started_at: new Date().toISOString(),
@@ -486,42 +491,13 @@ export default function App() {
     }
   };
 
-  const handleDeltaRefresh = async (cvId: string) => {
-    if (scanRunningRef.current || refreshing) return;
-    setRefreshing(true);
-    try {
-      await refreshCvJobs(cvId);
-      setActiveCvId(cvId);
-      setScanStatus({
-        running: true,
-        started_at: new Date().toISOString(),
-        finished_at: null,
-        error: null,
-        warnings: [],
-        collection: null,
-        current_step: null,
-        detail: "בודק משרות חדשות…",
-        steps: [],
-        log: [],
-        latest_scan: null,
-      });
-      setDetailsRefreshKey((value) => value + 1);
-      startPolling(cvId);
-    } catch (e) {
-      showToast(
-        `רענון המשרות נכשל: ${e instanceof Error ? e.message : ""}`
-      );
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   const handleStop = async () => {
     const stopCvId = activeCvId;
     setStopping(true);
     try {
       await stopJobMatcher();
       stopPolling();
+      setShowScanPanel(false);
       setScanStatus((prev) =>
         prev
           ? {
@@ -548,6 +524,14 @@ export default function App() {
   };
   const scanActive = scanStatus?.running ?? false;
   const selectedCv = (activeCvId && cvs.find((c) => c.id === activeCvId)) || cvs[0] || null;
+
+  const handleOpenRescan = useCallback(() => {
+    if (!selectedCv || scanActive || analyzing) return;
+    setActiveCvId(selectedCv.id);
+    setSuggestedDomains([]);
+    setCandidateSummary("");
+    setScanModalOpen(true);
+  }, [selectedCv, scanActive, analyzing]);
 
   useEffect(() => {
     if (!activeCvId && cvs[0]?.id) {
@@ -587,6 +571,17 @@ export default function App() {
               <span className="user-chip" title={authUser.email} dir="ltr">
                 {authUser.email}
               </span>
+            )}
+            {authUser && selectedCv && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm header-rescan"
+                disabled={scanActive || analyzing || cvsLoading}
+                onClick={handleOpenRescan}
+                title="סריקה מחדש של משרות לפי קורות החיים הנבחרים"
+              >
+                סריקה מחדש
+              </button>
             )}
             {authUser && (
               <button
@@ -701,61 +696,10 @@ export default function App() {
               cvId={selectedCv.id}
               cv={selectedCv}
               scanStatus={selectedCv.id === activeCvId ? scanStatus : null}
+              showScanPanel={showScanPanel}
               workspaceMode={false}
               onBack={undefined}
-              headerActions={
-                <div className="details-topbar-actions">
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-icon-refresh"
-                    disabled={
-                      scanActive ||
-                      analyzing ||
-                      refreshing ||
-                      !selectedCv.last_scan_at
-                    }
-                    title={
-                      refreshing || scanActive
-                        ? "בודק משרות חדשות..."
-                        : selectedCv.last_scan_at
-                          ? "בדיקת משרות חדשות לפי הסריקה האחרונה"
-                          : "יש להריץ סריקה חדשה לפחות פעם אחת"
-                    }
-                    aria-label="רענון משרות חדשות"
-                    onClick={() => handleDeltaRefresh(selectedCv.id)}
-                  >
-                    <RefreshCw
-                      size={18}
-                      className={
-                        refreshing ||
-                        (scanActive &&
-                          selectedCv.id === activeCvId &&
-                          Boolean(
-                            scanStatus?.detail?.includes("משרות חדשות")
-                          ))
-                          ? "spin"
-                          : undefined
-                      }
-                      aria-hidden
-                    />
-                    <span>רענון</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={scanActive || analyzing || refreshing}
-                    onClick={() => {
-                      setActiveCvId(selectedCv.id);
-                      setSuggestedDomains([]);
-                      setCandidateSummary("");
-                      setScanModalOpen(true);
-                    }}
-                  >
-                    סריקה חדשה
-                  </button>
-                </div>
-              }
-              emptyHint='לחצו על "סריקה חדשה" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'
+              emptyHint='לחצו על "סריקה מחדש" בסרגל העליון כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'
             />
           )}
           {scanModalOpen && selectedCv && (

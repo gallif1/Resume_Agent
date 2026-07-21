@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import { ArrowRight, Loader2, Search } from "lucide-react";
+import { ArrowRight, Loader2, RefreshCw, Search } from "lucide-react";
 import {
   applyToJob,
   downloadTailoredCvPdf,
@@ -32,9 +32,9 @@ interface Props {
   cvId: string;
   cv: Cv | undefined;
   scanStatus?: CvScanStatus | null;
+  showScanPanel?: boolean;
   workspaceMode?: boolean;
   onBack?: () => void;
-  headerActions?: ReactNode;
   emptyHint?: string;
 }
 
@@ -183,13 +183,14 @@ export default function CvDetails({
   cvId,
   cv,
   scanStatus = null,
+  showScanPanel = false,
   workspaceMode = false,
   onBack,
-  headerActions,
   emptyHint,
 }: Props) {
   const [matches, setMatches] = useState<CvMatch[]>([]);
   const [loading, setLoading] = useState(false);
+  const [listRefreshing, setListRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<MatchSortBy>("score");
   const [sortOrder, setSortOrder] = useState<MatchSortOrder>("desc");
@@ -257,6 +258,23 @@ export default function CvDetails({
       setLoading(false);
     }
   }, [cvId, workspaceMode, sortBy, sortOrder]);
+
+  const refreshJobList = useCallback(async () => {
+    if (listRefreshing) return;
+    setListRefreshing(true);
+    setError(null);
+    try {
+      const sortOpts = { latest: true as const, sortBy, order: sortOrder };
+      const data = workspaceMode
+        ? await getJobMatches(sortOpts)
+        : await getCvMatches(cvId, sortOpts);
+      setMatches(data.matches);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
+    } finally {
+      setListRefreshing(false);
+    }
+  }, [cvId, workspaceMode, sortBy, sortOrder, listRefreshing]);
 
   const handleSortChange = (value: string) => {
     // Encoded as "field:order" so one dropdown covers the common sorts.
@@ -814,34 +832,10 @@ export default function CvDetails({
     ? "התאמות משרה (פרופיל מאוחד)"
     : cv?.display_name || cv?.file_name || "קורות חיים";
   const liveWarnings = scanStatus?.warnings ?? [];
-  const liveCollection = scanStatus?.collection ?? null;
-  const activeScan =
-    scanStatus?.running ||
-    scanStatus?.error ||
-    liveWarnings.length > 0 ||
-    Boolean(liveCollection)
-      ? scanStatus
-      : null;
   const displayWarnings =
     liveWarnings.length > 0 ? liveWarnings : lastScanInfo.warnings;
-  const displayCollection = liveCollection ?? lastScanInfo.collection;
-  const showScanPanel =
-    activeScan ??
-    (displayWarnings.length > 0 || displayCollection
-      ? ({
-          running: false,
-          started_at: null,
-          finished_at: null,
-          error: null,
-          warnings: displayWarnings,
-          collection: displayCollection,
-          current_step: null,
-          detail: null,
-          steps: [],
-          log: [],
-          latest_scan: null,
-        } satisfies CvScanStatus)
-      : null);
+  const panelVisible = showScanPanel && running;
+  const panelScanStatus = panelVisible ? scanStatus : null;
 
   return (
     <section>
@@ -862,7 +856,7 @@ export default function CvDetails({
             )
           )}
         </div>
-        {headerActions ?? <div className="details-topbar-spacer" />}
+        <div className="details-topbar-spacer" />
       </div>
 
       <div className="details-tabs" role="tablist" aria-label="תצוגת קורות חיים">
@@ -890,16 +884,23 @@ export default function CvDetails({
         <ProfileSettings cvId={cvId} />
       ) : (
         <>
-      <PipelineProgress
-        scanStatus={showScanPanel}
-        matchCount={
-          typeof scanStatus?.match_count === "number"
-            ? scanStatus.match_count
-            : matches.length > 0
-              ? matches.length
-              : cv?.match_count ?? 0
-        }
-      />
+      <div
+        className={`scan-panel-wrapper ${panelVisible ? "scan-panel-wrapper--visible" : "scan-panel-wrapper--hidden"}`}
+        aria-hidden={!panelVisible}
+      >
+        <div className="scan-panel-wrapper-inner">
+          <PipelineProgress
+            scanStatus={panelScanStatus}
+            matchCount={
+              typeof scanStatus?.match_count === "number"
+                ? scanStatus.match_count
+                : matches.length > 0
+                  ? matches.length
+                  : cv?.match_count ?? 0
+            }
+          />
+        </div>
+      </div>
 
       {error && (
         <div
@@ -1228,9 +1229,25 @@ export default function CvDetails({
               <option value="site:desc">אתר (ת–א)</option>
             </select>
           </label>
-          <span className="history-count">
-            {loading ? "טוען..." : `${matches.length} משרות`}
-          </span>
+          <div className="history-count-group">
+            <span className="history-count">
+              {loading && matches.length === 0 ? "טוען..." : `${matches.length} משרות`}
+            </span>
+            <button
+              type="button"
+              className="btn-count-refresh"
+              disabled={loading || listRefreshing || running}
+              onClick={() => void refreshJobList()}
+              title="רענון רשימת המשרות השמורות"
+              aria-label="רענון רשימת המשרות"
+            >
+              <RefreshCw
+                size={15}
+                className={loading || listRefreshing ? "spin" : undefined}
+                aria-hidden
+              />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1267,7 +1284,7 @@ export default function CvDetails({
             ) : (
               <p className="empty-hint">
                 {emptyHint ??
-                  'לחצו על "סריקה חדשה" כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'}
+                  'לחצו על "סריקה מחדש" בסרגל העליון כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'}
               </p>
             ))}
         </div>
