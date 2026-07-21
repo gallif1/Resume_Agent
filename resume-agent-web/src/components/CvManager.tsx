@@ -1,6 +1,7 @@
 import { useRef, useState, type DragEvent } from "react";
 import { FileText, Trash2, Upload } from "lucide-react";
 import { type Cv, type CvScanStatus } from "../lib/api";
+import { scanActionLabel } from "../lib/scanUi";
 import { computeScanMetrics, ScanSummaryCards } from "./PipelineProgress";
 
 const ACCEPTED = [".pdf", ".doc", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp"];
@@ -283,7 +284,7 @@ export default function CvManager({
                     disabled={uiLocked || jobSitesLoading}
                     onClick={() => onNewScan(cv.id)}
                   >
-                    סריקה מחדש
+                    {scanActionLabel(cv)}
                   </button>
                   <button
                     type="button"

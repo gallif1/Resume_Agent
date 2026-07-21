@@ -11,6 +11,8 @@ interface Props {
   analyzing: boolean;
   suggestedDomains: string[];
   candidateSummary?: string;
+  /** When true, modal copy reflects a rescan rather than a first scan. */
+  hasPriorResults?: boolean;
   onAnalyze: (cvId: string) => Promise<void>;
   onConfirm: (siteIds: string[], domains: string[]) => void;
   onCancel: () => void;
@@ -48,6 +50,7 @@ export default function RunAgentModal({
   analyzing,
   suggestedDomains,
   candidateSummary = "",
+  hasPriorResults = false,
   onAnalyze,
   onConfirm,
   onCancel,
@@ -171,10 +174,14 @@ export default function RunAgentModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="run-agent-modal-scroll">
-          <h3 id="run-agent-modal-title">סריקה חדשה</h3>
+          <h3 id="run-agent-modal-title">
+            {hasPriorResults ? "סריקה מחדש" : "סרוק עכשיו"}
+          </h3>
           <p>
-            בחרו אתרי דרושים ותחומי חיפוש עבור <b>{cvName}</b>. התוצאות החדשות
-            יתווספו למשרות שכבר נשמרו.
+            בחרו אתרי דרושים ותחומי חיפוש עבור <b>{cvName}</b>.
+            {hasPriorResults
+              ? " התוצאות החדשות יתווספו למשרות שכבר נשמרו."
+              : " נתחיל לאסוף ולדרג משרות לפי קורות החיים שלכם."}
           </p>
 
           <div className="scan-modal-section">
@@ -348,7 +355,7 @@ export default function RunAgentModal({
             onClick={() => onConfirm(selected, selectedDomains)}
           >
             <Play size={16} aria-hidden />
-            הפעל סריקה
+            {hasPriorResults ? "סריקה מחדש" : "סרוק עכשיו"}
           </button>
         </div>
       </div>

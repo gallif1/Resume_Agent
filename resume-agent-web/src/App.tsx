@@ -26,6 +26,12 @@ import {
   type CvScanStatus,
   type JobSite,
 } from "./lib/api";
+import {
+  cvHasPriorScanResults,
+  scanActionLabel,
+  scanActionTitle,
+  scanEmptyHint,
+} from "./lib/scanUi";
 
 export default function App() {
   const [serverUp, setServerUp] = useState(false);
@@ -476,9 +482,14 @@ export default function App() {
         error: null,
         warnings: [],
         collection: null,
-        current_step: null,
+        current_step: "collect",
         detail: "מתחיל חיפוש משרות…",
-        steps: [],
+        // Match SEARCH_STEPS so the friendly stepper skips modal-completed stages.
+        steps: [
+          { key: "collect", name: "איסוף משרות", status: "pending" },
+          { key: "enrich", name: "שליפת תיאורי משרה", status: "pending" },
+          { key: "match", name: "חישוב ציוני התאמה", status: "pending" },
+        ],
         log: [],
         latest_scan: null,
       });
@@ -578,9 +589,9 @@ export default function App() {
                 className="btn btn-primary btn-sm header-rescan"
                 disabled={scanActive || analyzing || cvsLoading}
                 onClick={handleOpenRescan}
-                title="סריקה מחדש של משרות לפי קורות החיים הנבחרים"
+                title={scanActionTitle(selectedCv)}
               >
-                סריקה מחדש
+                {scanActionLabel(selectedCv)}
               </button>
             )}
             {authUser && (
@@ -699,7 +710,7 @@ export default function App() {
               showScanPanel={showScanPanel}
               workspaceMode={false}
               onBack={undefined}
-              emptyHint='לחצו על "סריקה מחדש" בסרגל העליון כדי לאסוף ולדרג משרות עבור קורות החיים האלה.'
+              emptyHint={scanEmptyHint(selectedCv)}
             />
           )}
           {scanModalOpen && selectedCv && (
@@ -711,6 +722,7 @@ export default function App() {
               analyzing={analyzing}
               suggestedDomains={suggestedDomains}
               candidateSummary={candidateSummary}
+              hasPriorResults={cvHasPriorScanResults(selectedCv)}
               onAnalyze={handleAnalyze}
               onConfirm={(siteIds, domains) =>
                 handleStartSearch(selectedCv.id, domains, siteIds)
