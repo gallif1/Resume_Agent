@@ -395,6 +395,7 @@ def run_search(
     domains: list[str],
     skip_enrich: bool = False,
     job_sites: list[str] | None = None,
+    delta: bool = False,
     log: Callable[[str], None] | None = None,
     set_step_status: Callable[[str, str], None] | None = None,
     db_path: Path = db.REGISTRY_DB_PATH,
@@ -403,6 +404,9 @@ def run_search(
 
     New jobs are inserted incrementally (``INSERT OR IGNORE`` / identity dedupe).
     Already-known jobs are skipped by enrich/match and remain in the listing.
+
+    When ``delta=True``, collectors early-break once they reach the previous
+    newest job identity for each category/board (fast refresh).
     """
     import os
 
@@ -446,6 +450,9 @@ def run_search(
     collection_summary: dict[str, Any] | None = None
     domains_arg = ",".join(cleaned_domains)
 
+    if delta:
+        _log(">> רענון דלתא — בדיקת משרות חדשות בלבד")
+
     for key, name, script, extra in SEARCH_STEPS:
         skipped = key == "enrich" and skip_enrich
         if skipped:
@@ -461,6 +468,8 @@ def run_search(
             extra_args = [*extra_args, "--domains", domains_arg]
             if selected_sites:
                 extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
+            if delta:
+                extra_args = [*extra_args, "--delta"]
 
         collect_warnings: list[str] = []
         collect_summary_holder: dict[str, Any] = {}
@@ -511,6 +520,8 @@ def run_search(
     summary_payload: dict[str, Any] = {
         "matches": match_count,
         "domains": cleaned_domains,
+        "job_sites": selected_sites,
+        "delta": bool(delta),
     }
     if collection_summary:
         summary_payload["collection"] = collection_summary
@@ -533,8 +544,114 @@ def run_search(
     if collection_summary:
         scan_record["collection"] = collection_summary
     scan_record["domains"] = cleaned_domains
+    scan_record["job_sites"] = selected_sites
+    scan_record["delta"] = bool(delta)
     scan_record["match_count"] = match_count
     return scan_record
+
+
+_BOARD_SUMMARY_KEYS = frozenset(
+    {
+        "drushim",
+        "linkedin",
+        "gotfriends",
+        "alljobs",
+        "indeed",
+        "secret_tel_aviv",
+        "geektime",
+    }
+)
+
+
+def get_last_scan_criteria(
+    cv_id: str,
+    *,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any] | None:
+    """Return domains + job_sites from the last successful (or latest) scan.
+
+    Used by delta refresh to reuse the user's previous manual scan context.
+    """
+    cv = db.get_cv(cv_id, db_path=db_path)
+    if cv is None:
+        raise ValueError(f"unknown cv_id: {cv_id}")
+
+    cv_db = cv_db_path(cv_id)
+    if not cv_db.exists():
+        return None
+
+    scans = db.list_scans(cv_id, db_path=cv_db)
+    if not scans:
+        return None
+
+    preferred = next(
+        (s for s in scans if s.get("status") == db.SCAN_SUCCESS),
+        scans[0],
+    )
+    summary_raw = preferred.get("summary")
+    summary: dict[str, Any] = {}
+    if isinstance(summary_raw, str) and summary_raw.strip():
+        try:
+            parsed = json.loads(summary_raw)
+            if isinstance(parsed, dict):
+                summary = parsed
+        except json.JSONDecodeError:
+            summary = {}
+
+    domains = [
+        str(d).strip()
+        for d in (summary.get("domains") or [])
+        if str(d).strip()
+    ]
+    job_sites = [
+        str(s).strip()
+        for s in (summary.get("job_sites") or [])
+        if str(s).strip()
+    ]
+    if not job_sites:
+        collection = summary.get("collection")
+        if isinstance(collection, dict):
+            job_sites = [
+                key
+                for key in collection.keys()
+                if key in _BOARD_SUMMARY_KEYS
+            ]
+
+    if not domains:
+        return None
+
+    return {
+        "domains": domains,
+        "job_sites": job_sites or None,
+        "scan_id": preferred.get("id"),
+        "status": preferred.get("status"),
+    }
+
+
+def run_delta_refresh(
+    cv_id: str,
+    *,
+    skip_enrich: bool = False,
+    log: Callable[[str], None] | None = None,
+    set_step_status: Callable[[str, str], None] | None = None,
+    db_path: Path = db.REGISTRY_DB_PATH,
+) -> dict[str, Any]:
+    """Re-run collect/enrich/match using the last scan's domains and boards."""
+    criteria = get_last_scan_criteria(cv_id, db_path=db_path)
+    if criteria is None:
+        raise ValueError(
+            "אין היסטוריית סריקה לקורות חיים אלה — יש להריץ סריקה חדשה תחילה"
+        )
+    return run_search(
+        cv_id,
+        domains=criteria["domains"],
+        skip_enrich=skip_enrich,
+        job_sites=criteria.get("job_sites"),
+        delta=True,
+        log=log,
+        set_step_status=set_step_status,
+        db_path=db_path,
+    )
 
 
 def run_scan(
@@ -654,6 +771,8 @@ def run_scan(
     summary_payload: dict[str, Any] = {"matches": match_count}
     if cleaned_domains:
         summary_payload["domains"] = cleaned_domains
+    if selected_sites:
+        summary_payload["job_sites"] = selected_sites
     if collection_summary:
         summary_payload["collection"] = collection_summary
     if warnings:

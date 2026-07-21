@@ -715,6 +715,113 @@ def get_known_job_identity_keys(db_path: Path = DB_PATH) -> set[str]:
     return keys
 
 
+def get_latest_known_job_identity(
+    db_path: Path = DB_PATH,
+    *,
+    source_category: str | None = None,
+    source: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the most recently saved job identity for delta-refresh early-break.
+
+    Prefers ``(source_category, source)`` when provided, then category-only, then
+    the newest job overall. Identity is the stable ``job_hash`` / canonical URL
+    used by collectors before enrichment or scoring.
+    """
+    if not Path(db_path).exists():
+        return None
+
+    order_sql = (
+        "ORDER BY COALESCE(first_seen_at, collected_at, created_at) DESC, id DESC"
+    )
+
+    def _row_to_identity(row: Any) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        url = normalize_job_url(row["job_url"] or "")
+        job_hash = row["job_hash"] or compute_job_hash(
+            url,
+            row["title"] or "",
+            row["company"] or "",
+            row["location"] or "",
+        )
+        if not url and not job_hash:
+            return None
+        return {
+            "job_id": row["id"],
+            "job_url": url,
+            "job_hash": job_hash,
+            "identity_key": job_hash,
+            "title": row["title"] or "",
+            "company": row["company"] or "",
+            "location": row["location"] or "",
+            "source": row["source"] or "",
+            "source_category": row["source_category"] or "",
+            "first_seen_at": row["first_seen_at"],
+            "collected_at": row["collected_at"],
+        }
+
+    select_sql = (
+        "SELECT id, job_url, job_hash, title, company, location, source, "
+        "source_category, first_seen_at, collected_at FROM jobs"
+    )
+
+    with get_connection(db_path) as conn:
+        if "jobs" not in _table_names(conn):
+            return None
+
+        attempts: list[tuple[str, tuple[Any, ...]]] = []
+        category = (source_category or "").strip()
+        board = (source or "").strip()
+        if category and board:
+            attempts.append(
+                (
+                    f"{select_sql} WHERE source_category = ? AND source = ? {order_sql} LIMIT 1",
+                    (category, board),
+                )
+            )
+            # source_categories JSON may list the category without source_category set.
+            attempts.append(
+                (
+                    f"{select_sql} WHERE source = ? AND ("
+                    f"source_category = ? OR instr(COALESCE(source_categories, ''), ?) > 0"
+                    f") {order_sql} LIMIT 1",
+                    (board, category, category),
+                )
+            )
+        if category:
+            attempts.append(
+                (
+                    f"{select_sql} WHERE source_category = ? {order_sql} LIMIT 1",
+                    (category,),
+                )
+            )
+            attempts.append(
+                (
+                    f"{select_sql} WHERE instr(COALESCE(source_categories, ''), ?) > 0 "
+                    f"{order_sql} LIMIT 1",
+                    (category,),
+                )
+            )
+        if board:
+            attempts.append(
+                (
+                    f"{select_sql} WHERE source = ? {order_sql} LIMIT 1",
+                    (board,),
+                )
+            )
+        attempts.append((f"{select_sql} {order_sql} LIMIT 1", ()))
+
+        for sql, params in attempts:
+            try:
+                row = conn.execute(sql, params).fetchone()
+            except Exception:  # noqa: BLE001 — older DBs may lack optional columns
+                continue
+            identity = _row_to_identity(row)
+            if identity is not None:
+                return identity
+    return None
+
+
 def get_known_job_urls(db_path: Path = DB_PATH) -> set[str]:
     """Return canonical ``job_url`` values already stored in SQLite.
 
