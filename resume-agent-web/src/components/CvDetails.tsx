@@ -81,11 +81,61 @@ function scoreClass(score: number | null, isPotential = false): string {
 
 /** Best available ATS/match score from a tailored-CV payload. */
 function getTailoredScore(result: TailoredCvResponse): number | null {
+  if (typeof result.score_after === "number") {
+    return result.score_after;
+  }
   if (typeof result.estimated_ats_score === "number") {
     return result.estimated_ats_score;
   }
-  const fromFeedback = result.matcher_feedback?.current?.ats_score;
+  const fromFeedback = result.matcher_feedback?.current?.match_score
+    ?? result.matcher_feedback?.current?.ats_score;
   return typeof fromFeedback === "number" ? fromFeedback : null;
+}
+
+/** Previous score for progression display (never LLM-hallucinated). */
+function getPreviousTailoredScore(
+  result: TailoredCvResponse,
+  fallbackBaseline?: number | null
+): number | null {
+  if (typeof result.score_before === "number") {
+    return result.score_before;
+  }
+  const fromFeedback = result.matcher_feedback?.previous?.match_score
+    ?? result.matcher_feedback?.previous?.ats_score;
+  if (typeof fromFeedback === "number") {
+    return fromFeedback;
+  }
+  if (typeof result.initial_match_score === "number") {
+    return result.initial_match_score;
+  }
+  return fallbackBaseline ?? null;
+}
+
+/** Original scan baseline shown as "Original Score" on first generate. */
+function getOriginalMatchScore(
+  result: TailoredCvResponse,
+  fallbackBaseline?: number | null
+): number | null {
+  if (typeof result.initial_match_score === "number") {
+    return result.initial_match_score;
+  }
+  return fallbackBaseline ?? null;
+}
+
+function formatScoreProgression(
+  before: number | null,
+  after: number | null,
+  { original = false }: { original?: boolean } = {}
+): string | null {
+  if (after == null) return null;
+  if (before == null) {
+    return original ? `ציון בסיס: ${after}/100` : `ציון מותאם: ${after}/100`;
+  }
+  if (before === after) {
+    return `ציון התאמה: ${after}/100`;
+  }
+  const beforeLabel = original ? "ציון בסיס" : "ציון קודם";
+  return `${beforeLabel} (${before}%) → ציון מותאם (${after}%)`;
 }
 
 const IMPROVE_MATCH_HELPER =
@@ -202,6 +252,7 @@ export default function CvDetails({
   const [activeTab, setActiveTab] = useState<"jobs" | "profile">("jobs");
   const [tailoringId, setTailoringId] = useState<number | null>(null);
   const [tailoredCv, setTailoredCv] = useState<TailoredCvResponse | null>(null);
+  const [activeMatchBaseline, setActiveMatchBaseline] = useState<number | null>(null);
   const [copyDone, setCopyDone] = useState(false);
   const [pdfDownloading, setPdfDownloading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
@@ -440,6 +491,7 @@ export default function CvDetails({
 
   const handleTailorCv = async (match: CvMatch, force = false) => {
     setTailoringId(match.job_id);
+    setActiveMatchBaseline(match.match_score);
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
@@ -1011,6 +1063,7 @@ export default function CvDetails({
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setTailoredCv(null);
+                  setActiveMatchBaseline(null);
                   setInfoMessage(null);
                 }}
                 disabled={isGenerating}
@@ -1019,22 +1072,38 @@ export default function CvDetails({
               </button>
             </div>
             {(tailoredCv.estimated_ats_score != null ||
+              tailoredCv.score_after != null ||
+              tailoredCv.initial_match_score != null ||
               (tailoredCv.changes_breakdown?.length ?? 0) > 0) && (
               <p className="tailored-cv-meta">
-                {tailoredCv.estimated_ats_score != null && (
-                  <>
-                    <b>ציון משוער:</b> {tailoredCv.estimated_ats_score}/100
-                    {tailoredCv.matcher_feedback?.previous?.ats_score != null &&
-                    tailoredCv.regenerated ? (
-                      <span className="tailored-cv-score-delta">
-                        {" "}
-                        (קודם: {tailoredCv.matcher_feedback.previous.ats_score}
-                        /100)
-                      </span>
-                    ) : null}
-                    {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
-                  </>
-                )}
+                {(() => {
+                  const optimized =
+                    getTailoredScore(tailoredCv) ??
+                    tailoredCv.score_after ??
+                    tailoredCv.estimated_ats_score;
+                  const previous = getPreviousTailoredScore(
+                    tailoredCv,
+                    activeMatchBaseline
+                  );
+                  const original = getOriginalMatchScore(
+                    tailoredCv,
+                    activeMatchBaseline
+                  );
+                  const progression = tailoredCv.regenerated
+                    ? formatScoreProgression(previous, optimized)
+                    : formatScoreProgression(
+                        original ?? previous,
+                        optimized,
+                        { original: true }
+                      );
+                  if (!progression || optimized == null) return null;
+                  return (
+                    <>
+                      <b>התאמה:</b> {progression}
+                      {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
+                    </>
+                  );
+                })()}
                 {(tailoredCv.changes_breakdown?.length ?? 0) > 0 && (
                   <span className="cv-meta">פירוט השינויים בגוף המסמך למטה</span>
                 )}

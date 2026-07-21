@@ -51,8 +51,7 @@ from profile_utils import load_profile
 from role_analyzer import fallback_matching_strategy, load_ai_roles, load_matching_strategy
 from universal_profile import build_universal_profile_fallback, get_universal_profile
 
-PROFILE_MATCH_WEIGHT = 0.60
-ATS_MATCH_WEIGHT = 0.40
+from match_scoring import blend_match_scores
 
 
 def _resolved_scan_id() -> int | None:
@@ -109,8 +108,7 @@ def _ensure_job_profile(job: dict, *, use_ai: bool = False) -> JobProfile:
 
 
 def _blend_scores(profile_match_score: int, ats_match_score: int) -> int:
-    blended = profile_match_score * PROFILE_MATCH_WEIGHT + ats_match_score * ATS_MATCH_WEIGHT
-    return clamp_score(int(round(blended)))
+    return blend_match_scores(profile_match_score, ats_match_score)
 
 
 def _combined_db_fields(

@@ -25,15 +25,22 @@ from config import (
     user_cv_profile_path,
     user_data_dir,
 )
-from db import DEFAULT_USER_ID, WORKSPACE_CV_ID
+from db import (
+    DEFAULT_USER_ID,
+    WORKSPACE_CV_ID,
+    get_latest_cv_tailor_version,
+    get_match_baseline_score,
+    record_cv_tailor_version,
+)
 from job_analyzer import JobProfile, parse_stored_job_profile
+from match_scoring import compute_final_match_score, score_label_for
 from multilingual_normalizer import expand_synonyms, to_canonical
 from profile_matcher import score as profile_match_score
 from skill_normalizer import normalize_skill
 
 # Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
-TAILOR_PROMPT_VERSION = "v5"
-REGENERATE_PROMPT_VERSION = "v4"
+TAILOR_PROMPT_VERSION = "v6"
+REGENERATE_PROMPT_VERSION = "v5"
 NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
 TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
@@ -65,7 +72,8 @@ or fundamental mismatch):
 - Adapt the professional Summary to reflect a career pivot / bridge narrative
   (honest intent + transferable strengths) without inventing history.
 - Keep estimated_ats_score REALISTIC and typically low/moderate — do not inflate
-  scores based on soft-skill or generic keyword overlap alone.
+  scores based on soft-skill or generic keyword overlap alone. The server overrides
+  this with a deterministic score capped by missing requirements.
 - Note residual domain gaps clearly in caveats / פירוט שינויים.
 
 If domains align, tailor normally while still obeying zero-hallucination rules.
@@ -76,10 +84,19 @@ RETURN FORMAT
 Return ONE JSON object with exactly these keys:
 - markdown: string — full response document in Markdown (see REQUIRED MARKDOWN STRUCTURE)
 - changes_breakdown: array of short strings — the change bullets (same content as section 1)
-- estimated_ats_score: integer 0-100 — realistic expected ATS match for the *tailored* CV
+- estimated_ats_score: integer 0-100 — IGNORE for display; the server computes the official
+  match score deterministically. You may omit this key or set it equal to current_score.
 - cv_markdown: string — ONLY the resume body (section 3), without the section heading
 - highlights: array of short strings — 2-6 key ATS keyword alignments
 - caveats: array of short strings — honesty notes (skills not claimed, residual gaps)
+
+SCORE RULES (MANDATORY — server is source of truth):
+- The user message includes `current_score` (the official baseline from the database).
+- NEVER invent, guess, or hallucinate a different baseline/previous score.
+- Do NOT add keys like previous_score or score_before — only the server sets those.
+- In section "## ציון התאמה למשרה", reference current_score honestly and describe how
+  tailoring may improve alignment; the server will replace the numeric score with the
+  deterministic evaluation of the tailored draft.
 
 REQUIRED MARKDOWN STRUCTURE for `markdown` (use these Hebrew headings):
 
@@ -90,9 +107,10 @@ REQUIRED MARKDOWN STRUCTURE for `markdown` (use these Hebrew headings):
   Do not invent role- or company-specific history.
 
 ## ציון התאמה למשרה
-- One short line with the expected ATS match score out of 100 for the tailored CV.
-- Format example: "**ציון משוער: 68/100** — …"
-- Be realistic. Do NOT invent experience to inflate the score.
+- One short line referencing the provided current_score and how tailoring affects fit.
+- Format example: "**ציון בסיס: 76/100** → שיפור צפוי לאחר התאמה — …"
+- Be realistic. Do NOT invent experience to inflate the score. The server computes
+  the official tailored score; never contradict current_score with a made-up baseline.
 
 ---
 
@@ -199,11 +217,11 @@ ZERO HALLUCINATION / HARD CONSTRAINTS
 7. The horizontal rule (`---`) MUST appear once between the analysis sections and
    the resume body.
 8. Keep `cv_markdown` identical to the body under "## קורות החיים המעודכנים"
-   (without that heading). Keep `estimated_ats_score` consistent with section 2.
+   (without that heading). The server sets the official score in section 2.
 9. Use Markdown ## headings for sections and ### for role/project titles so the
    PDF renderer can parse the document cleanly.
 10. When hard must-have JD constraints are unmet with zero evidence on the CV,
-    keep estimated_ats_score ≤ 30 and say so honestly in section 2 / caveats.
+    describe the gap honestly in section 2 / caveats — the server will cap the score.
 """
 
 REGENERATE_SYSTEM_PROMPT = (
@@ -432,17 +450,25 @@ def build_tailor_user_prompt(
     *,
     base_cv_data: str,
     job_description: str,
+    current_score: int | None = None,
 ) -> str:
     """Assemble the user message that supplies base_cv_data + job_description."""
+    score_line = (
+        f"The official baseline match score from the database (current_score) is "
+        f"{current_score}/100. Use this exact number — do NOT invent a different baseline.\n"
+        if current_score is not None
+        else "No baseline current_score was supplied — describe fit qualitatively only.\n"
+    )
     return (
         "Tailor the candidate CV for the target job using the universal ATS rules "
         "in the system prompt.\n"
+        f"{score_line}"
         "Analyze ONLY the provided base_cv_data and job_description — do not assume "
         "any specific prior role, company, or career path beyond what appears here.\n"
         "FIRST: dynamically extract Core Professional Domain (CV) and Target "
         "Professional Domain (JD). If they fundamentally mismatch, do NOT invent "
         "domain experience or rename titles — write an honest pivot/bridge Summary, "
-        "emphasize transferable skills only, and keep estimated_ats_score realistic.\n"
+        "emphasize transferable skills only, and keep score expectations realistic.\n"
         "CRITICAL: keep EVERY real employer/job from base_cv_data in Experience; "
         "never replace real employment with academic projects; omit empty sections; "
         "Summary ≤3 sentences; ≤4 bullets per role/project; one-page density only.\n"
@@ -568,6 +594,16 @@ def evaluate_tailored_draft(
 
     profile_result = profile_match_score(universal, job, job_profile)
 
+    final_score = compute_final_match_score(
+        profile_result.score,
+        ats_result,
+        profile_exclusion_hit=bool(profile_result.exclusion_hit),
+    )
+    label = score_label_for(
+        final_score,
+        is_potential_junior=bool(ats_result.is_potential_junior_match),
+    )
+
     missing_keywords = list(
         dict.fromkeys(
             list(ats_result.missing_required_skills)
@@ -576,8 +612,9 @@ def evaluate_tailored_draft(
     )
 
     return {
+        "match_score": final_score,
         "ats_score": ats_result.ats_score,
-        "score_label": ats_result.score_label,
+        "score_label": label,
         "matched_required_skills": list(ats_result.matched_required_skills),
         "missing_required_skills": list(ats_result.missing_required_skills),
         "missing_mandatory_requirements": list(
@@ -600,7 +637,7 @@ def evaluate_tailored_draft(
 
 def format_matcher_feedback(feedback: dict[str, Any]) -> str:
     """Human-readable feedback block for the regenerate OpenAI prompt."""
-    score = feedback.get("ats_score")
+    score = feedback.get("match_score", feedback.get("ats_score"))
     label = feedback.get("score_label") or ""
     missing_kw = feedback.get("missing_keywords") or feedback.get(
         "missing_required_skills"
@@ -613,7 +650,7 @@ def format_matcher_feedback(feedback: dict[str, Any]) -> str:
     profile_score = feedback.get("profile_match_score")
 
     lines = [
-        f"The deterministic ATS matcher evaluated this draft at {score}/100 ({label}).",
+        f"The deterministic matcher evaluated this draft at {score}/100 ({label}).",
     ]
     if profile_score is not None:
         lines.append(f"Profile matcher score: {profile_score}/100.")
@@ -671,7 +708,7 @@ def format_ats_feedback_gaps(feedback: dict[str, Any]) -> str:
     missing_mand = feedback.get("missing_mandatory_requirements") or []
     improvements = feedback.get("cv_improvements") or []
     lines = [
-        f"Current best ATS score: {feedback.get('ats_score')}/100 "
+        f"Current best match score: {feedback.get('match_score', feedback.get('ats_score'))}/100 "
         f"({feedback.get('score_label') or 'n/a'}).",
         "Missing / weak keywords to recover if evidenced in original_source_cvs:",
     ]
@@ -793,6 +830,8 @@ def build_regenerate_user_prompt(
     latest_tailored_draft: str,
     ats_feedback_gaps: dict[str, Any] | str,
     job_description: str,
+    current_score: int | None = None,
+    score_before: int | None = None,
     # Backward-compatible aliases used by older call sites / tests.
     base_cv_data: str | None = None,
     previous_tailored_cv: str | None = None,
@@ -807,12 +846,26 @@ def build_regenerate_user_prompt(
     else:
         gaps_text = str(gaps_payload or "")
 
+    score_context = ""
+    if score_before is not None:
+        score_context += (
+            f"The previous tailored CV version scored {score_before}/100 (score_before). "
+            "Use this exact number — do NOT invent a different previous score.\n"
+        )
+    if current_score is not None:
+        score_context += (
+            f"The original scan baseline (current_score) was {current_score}/100. "
+            "Do NOT contradict this baseline.\n"
+        )
+
     return (
         "REGENERATE & OPTIMIZE the existing tailored CV using the dual-lookup flow.\n"
+        f"{score_context}"
         "Primary target: close ats_feedback_gaps by deep-scanning original_source_cvs.\n"
         "If a gap is evidenced in the originals, extract and weave it into the draft.\n"
         "If not evidenced, reframe latest_tailored_draft honestly — never hallucinate.\n"
         "Never delete real companies, degrees, or positions from the original sources.\n"
+        "Do NOT return previous_score or score_before in JSON — the server sets those.\n"
         "Return the same JSON/markdown structure as a normal tailor response.\n\n"
         "===== ats_feedback_gaps =====\n"
         f"{gaps_text}\n\n"
@@ -947,20 +1000,101 @@ def _load_cv_profile_or_raise(cv_id: str, *, user_id: str | None = None) -> dict
     return cv_profile
 
 
+def _feedback_match_score(feedback: dict[str, Any] | None) -> int | None:
+    if not feedback:
+        return None
+    return _clamp_score(feedback.get("match_score", feedback.get("ats_score")))
+
+
+def _score_line_for_display(
+    *,
+    score: int,
+    label: str | None,
+    score_before: int | None = None,
+    initial_match_score: int | None = None,
+) -> str:
+    if score_before is not None and score_before != score:
+        return (
+            f"**ציון בסיס: {score_before}/100 → ציון מותאם: {score}/100**"
+            + (f" — {label}" if label else "")
+        )
+    if initial_match_score is not None and initial_match_score != score:
+        return (
+            f"**ציון בסיס: {initial_match_score}/100 → ציון מותאם: {score}/100**"
+            + (f" — {label}" if label else "")
+        )
+    line = f"**ציון משוער: {score}/100**"
+    if label:
+        line += f" — {label} (מדד התאמה דטרמיניסטי)"
+    return line
+
+
+def _attach_score_metadata(
+    result: dict[str, Any],
+    *,
+    initial_match_score: int | None,
+    score_before: int | None,
+    score_after: int | None,
+    version_id: int | None = None,
+    matcher_feedback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    enriched = {
+        **result,
+        "initial_match_score": initial_match_score,
+        "score_before": score_before,
+        "score_after": score_after,
+        "version_id": version_id,
+    }
+    if matcher_feedback is not None:
+        enriched["matcher_feedback"] = matcher_feedback
+    if score_after is not None:
+        enriched["estimated_ats_score"] = score_after
+    return enriched
+
+
+def _enrich_cached_result_with_db_scores(
+    result: dict[str, Any],
+    *,
+    cv_id: str,
+    job_id: int,
+    db_path: Path | None,
+) -> dict[str, Any]:
+    if db_path is None:
+        return result
+    initial = get_match_baseline_score(cv_id, job_id, db_path=db_path)
+    latest = get_latest_cv_tailor_version(cv_id, job_id, db_path=db_path)
+    score_before = latest.get("score_before") if latest else initial
+    score_after = latest.get("score_after") if latest else result.get("estimated_ats_score")
+    if score_after is None:
+        score_after = _parse_score_from_markdown(result.get("markdown") or "")
+    return _attach_score_metadata(
+        result,
+        initial_match_score=initial,
+        score_before=score_before,
+        score_after=score_after,
+        version_id=latest.get("id") if latest else None,
+    )
+
+
 def _apply_matcher_score_to_result(
     result: dict[str, Any],
     *,
     feedback: dict[str, Any],
+    score_before: int | None = None,
+    initial_match_score: int | None = None,
 ) -> dict[str, Any]:
     """Prefer the deterministic matcher score in the saved/displayed document."""
-    score = _clamp_score(feedback.get("ats_score"))
+    score = _feedback_match_score(feedback)
     if score is None:
         return result
 
     label = feedback.get("score_label") or ""
-    score_line = f"**ציון משוער: {score}/100**"
-    if label:
-        score_line += f" — {label} (מדד ATS דטרמיניסטי)"
+    score_line = _score_line_for_display(
+        score=score,
+        label=label,
+        score_before=score_before,
+        initial_match_score=initial_match_score,
+    )
 
     changes = list(result.get("changes_breakdown") or [])
     cv_markdown = result.get("cv_markdown") or ""
@@ -983,6 +1117,7 @@ def _regenerate_tailored_cv(
     *,
     use_cache: bool = False,
     user_id: str | None = None,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Improve the best tailored draft via deep-scan of original source CVs.
 
@@ -991,7 +1126,7 @@ def _regenerate_tailored_cv(
     - latest_tailored_draft (current highest-scoring saved draft)
     - ats_feedback_gaps (deterministic matcher missing keywords / weak sections)
 
-    Score guard: only overwrite the saved draft when the new ATS score is
+    Score guard: only overwrite the saved draft when the new match score is
     strictly higher; otherwise roll back with ``no_improvement``.
     """
     job_id = int(job["id"])
@@ -1008,6 +1143,17 @@ def _regenerate_tailored_cv(
             status_code=503,
         )
 
+    initial_match_score = (
+        get_match_baseline_score(cv_id, job_id, db_path=db_path)
+        if db_path is not None
+        else None
+    )
+    latest_version = (
+        get_latest_cv_tailor_version(cv_id, job_id, db_path=db_path)
+        if db_path is not None
+        else None
+    )
+
     cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)
     job_profile = parse_stored_job_profile(job.get("job_profile"))
 
@@ -1016,6 +1162,11 @@ def _regenerate_tailored_cv(
         draft_markdown=previous,
         job=job,
         job_profile=job_profile,
+    )
+    score_before = (
+        int(latest_version["score_after"])
+        if latest_version and latest_version.get("score_after") is not None
+        else _feedback_match_score(previous_feedback)
     )
 
     original_source_cvs = gather_original_source_cvs(
@@ -1027,6 +1178,8 @@ def _regenerate_tailored_cv(
         latest_tailored_draft=previous,
         ats_feedback_gaps=previous_feedback,
         job_description=job_description,
+        current_score=initial_match_score,
+        score_before=score_before,
     )
 
     try:
@@ -1041,7 +1194,7 @@ def _regenerate_tailored_cv(
             ),
             cache_payload=(
                 f"regen|{REGENERATE_PROMPT_VERSION}|{TAILOR_PROMPT_VERSION}|"
-                f"{cv_id}|{job_id}|{previous_feedback.get('ats_score')}|"
+                f"{cv_id}|{job_id}|{previous_feedback.get('match_score')}|"
                 f"{','.join((previous_feedback.get('missing_keywords') or [])[:12])}|"
                 f"{job_description[:1500]}|{previous[:3000]}|"
                 f"{original_source_cvs[:2000]}"
@@ -1059,18 +1212,27 @@ def _regenerate_tailored_cv(
         job_profile=job_profile,
     )
 
-    previous_score = int(previous_feedback.get("ats_score") or 0)
-    new_score = int(new_feedback.get("ats_score") or 0)
+    previous_score = int(_feedback_match_score(previous_feedback) or 0)
+    new_score = int(_feedback_match_score(new_feedback) or 0)
     saved_path = str(tailored_cv_path(cv_id, job_id))
 
     # Score guard: never overwrite the saved draft with an equal/worse version.
     if new_score <= previous_score:
         preserved = _result_from_saved_markdown(previous, saved_path=saved_path)
+        enriched = _attach_score_metadata(
+            preserved,
+            initial_match_score=initial_match_score,
+            score_before=score_before,
+            score_after=previous_score or preserved.get("estimated_ats_score"),
+            version_id=latest_version.get("id") if latest_version else None,
+            matcher_feedback={
+                "previous": previous_feedback,
+                "current": previous_feedback,
+                "discarded": new_feedback,
+            },
+        )
         return {
-            **preserved,
-            "estimated_ats_score": previous_score or preserved.get(
-                "estimated_ats_score"
-            ),
+            **enriched,
             "from_cache": True,
             "saved_path": saved_path,
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1078,29 +1240,45 @@ def _regenerate_tailored_cv(
             "improved": False,
             "no_improvement": True,
             "message": NO_IMPROVEMENT_MESSAGE,
-            "matcher_feedback": {
-                "previous": previous_feedback,
-                "current": previous_feedback,
-                "discarded": new_feedback,
-            },
         }
 
-    result = _apply_matcher_score_to_result(result, feedback=new_feedback)
+    result = _apply_matcher_score_to_result(
+        result,
+        feedback=new_feedback,
+        score_before=score_before,
+        initial_match_score=initial_match_score,
+    )
     path = save_tailored_cv(cv_id, job_id, result["markdown"])
-    return {
-        **result,
-        "from_cache": bool(raw.get("_from_cache")),
-        "saved_path": str(path),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "regenerated": True,
-        "improved": True,
-        "no_improvement": False,
-        "message": None,
-        "matcher_feedback": {
-            "previous": previous_feedback,
-            "current": new_feedback,
+    version_id = None
+    if db_path is not None and score_before is not None:
+        version_id = record_cv_tailor_version(
+            cv_id,
+            job_id,
+            score_before=int(score_before),
+            score_after=new_score,
+            tailored_cv_path=str(path),
+            db_path=db_path,
+        )
+    return _attach_score_metadata(
+        {
+            **result,
+            "from_cache": bool(raw.get("_from_cache")),
+            "saved_path": str(path),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "regenerated": True,
+            "improved": True,
+            "no_improvement": False,
+            "message": None,
+            "matcher_feedback": {
+                "previous": previous_feedback,
+                "current": new_feedback,
+            },
         },
-    }
+        initial_match_score=initial_match_score,
+        score_before=score_before,
+        score_after=new_score,
+        version_id=version_id,
+    )
 
 
 def tailor_cv_for_job(
@@ -1111,6 +1289,7 @@ def tailor_cv_for_job(
     use_cache: bool = True,
     regenerate: bool = False,
     user_id: str | None = None,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Generate (or load) an ATS-tailored Markdown CV for one job.
 
@@ -1118,14 +1297,25 @@ def tailor_cv_for_job(
     on the current best tailored draft and only keep a strictly higher score.
     """
     if regenerate:
-        return _regenerate_tailored_cv(cv_id, job, use_cache=False, user_id=user_id)
+        return _regenerate_tailored_cv(
+            cv_id, job, use_cache=False, user_id=user_id, db_path=db_path
+        )
 
     job_id = int(job["id"])
+    initial_match_score = (
+        get_match_baseline_score(cv_id, job_id, db_path=db_path)
+        if db_path is not None
+        else None
+    )
+
     if not force:
         cached = load_saved_tailored_cv(cv_id, job_id)
         if cached:
-            return _result_from_saved_markdown(
+            result = _result_from_saved_markdown(
                 cached, saved_path=str(tailored_cv_path(cv_id, job_id))
+            )
+            return _enrich_cached_result_with_db_scores(
+                result, cv_id=cv_id, job_id=job_id, db_path=db_path
             )
 
     if not is_ai_available():
@@ -1142,6 +1332,7 @@ def tailor_cv_for_job(
     user_prompt = build_tailor_user_prompt(
         base_cv_data=base_cv_data,
         job_description=job_description,
+        current_score=initial_match_score,
     )
 
     try:
@@ -1153,18 +1344,56 @@ def tailor_cv_for_job(
             cache_namespace=f"tailor_cv_{TAILOR_PROMPT_VERSION}_{cv_id}",
             cache_payload=(
                 f"{TAILOR_PROMPT_VERSION}|{cv_id}|{job_id}|"
-                f"{job_description[:2000]}|{base_cv_data[:4000]}"
+                f"{initial_match_score}|{job_description[:2000]}|{base_cv_data[:4000]}"
             ),
         )
     except OpenAIAPIError as exc:
         raise TailorCvError(str(exc), status_code=502) from exc
 
     result = _normalize_tailor_result(raw)
+    feedback = evaluate_tailored_draft(
+        cv_profile=cv_profile,
+        draft_markdown=result.get("cv_markdown") or result["markdown"],
+        job=job,
+        job_profile=job_profile,
+    )
+    score_after = _feedback_match_score(feedback)
+    score_before = initial_match_score
+    result = _apply_matcher_score_to_result(
+        result,
+        feedback=feedback,
+        score_before=score_before,
+        initial_match_score=initial_match_score,
+    )
     path = save_tailored_cv(cv_id, job_id, result["markdown"])
-    return {
-        **result,
-        "from_cache": bool(raw.get("_from_cache")),
-        "saved_path": str(path),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "regenerated": False,
-    }
+    version_id = None
+    if db_path is not None and score_before is not None and score_after is not None:
+        version_id = record_cv_tailor_version(
+            cv_id,
+            job_id,
+            score_before=int(score_before),
+            score_after=int(score_after),
+            tailored_cv_path=str(path),
+            db_path=db_path,
+        )
+    return _attach_score_metadata(
+        {
+            **result,
+            "from_cache": bool(raw.get("_from_cache")),
+            "saved_path": str(path),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "regenerated": False,
+            "matcher_feedback": {
+                "previous": {
+                    "match_score": score_before,
+                    "ats_score": score_before,
+                    "score_label": "Baseline",
+                },
+                "current": feedback,
+            },
+        },
+        initial_match_score=initial_match_score,
+        score_before=score_before,
+        score_after=score_after,
+        version_id=version_id,
+    )

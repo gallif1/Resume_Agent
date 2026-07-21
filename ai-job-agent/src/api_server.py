@@ -1470,7 +1470,7 @@ def tailor_cv_endpoint(
     force = (req.force if req else False) or regenerate
     try:
         result = tailor_cv_for_job(
-            cv_id, job, force=force, regenerate=regenerate
+            cv_id, job, force=force, regenerate=regenerate, db_path=cv_db
         )
     except TailorCvError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
@@ -1494,6 +1494,10 @@ def tailor_cv_endpoint(
         "cv_markdown": result.get("cv_markdown") or result["markdown"],
         "changes_breakdown": result.get("changes_breakdown") or [],
         "estimated_ats_score": result.get("estimated_ats_score"),
+        "initial_match_score": result.get("initial_match_score"),
+        "score_before": result.get("score_before"),
+        "score_after": result.get("score_after"),
+        "version_id": result.get("version_id"),
         "highlights": result.get("highlights") or [],
         "caveats": result.get("caveats") or [],
         "from_cache": bool(result.get("from_cache")),
@@ -1613,6 +1617,7 @@ def tailor_workspace_job(
             force=force,
             regenerate=regenerate,
             user_id=user["id"],
+            db_path=workspace_db,
         )
     except TailorCvError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
@@ -1644,6 +1649,10 @@ def tailor_workspace_job(
         "cv_markdown": cv_body,
         "changes_breakdown": result.get("changes_breakdown") or [],
         "estimated_ats_score": result.get("estimated_ats_score"),
+        "initial_match_score": result.get("initial_match_score"),
+        "score_before": result.get("score_before"),
+        "score_after": result.get("score_after"),
+        "version_id": result.get("version_id"),
         "highlights": result.get("highlights") or [],
         "caveats": result.get("caveats") or [],
         "from_cache": bool(result.get("from_cache")),
