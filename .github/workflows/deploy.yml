@@ -1,0 +1,23 @@
+name: Deploy Resume Agent to EC2
+
+on:
+  push:
+    branches:
+      - master     # אם הענף הראשי שלך נקרא main, שנה כאן ל-main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/resume-backend/Resume_Agent
+            git pull
+            sudo DOCKER_BUILDKIT=0 docker-compose up -d --build
+            sudo docker system prune -f
