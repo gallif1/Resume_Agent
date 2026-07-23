@@ -146,6 +146,12 @@ GOTFRIENDS_BROWSER_PROFILE_DIR = BROWSER_PROFILE_DIR / "gotfriends"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 HEADLESS = os.getenv("HEADLESS", "true").lower() in ("1", "true", "yes")
 
+# PostgreSQL connection string. When set, all DB access goes through this URL
+# (single shared schema with owner_cv_id isolation). When unset, local SQLite
+# files under data/ are used (tests and offline/local default).
+# Example: postgresql://user:password@host:5432/dbname
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
 # Auto-apply (sending your CV through Drushim)
 # Apply runs in a visible browser by default so you can watch / log in if needed.
 APPLY_HEADLESS = os.getenv("APPLY_HEADLESS", "false").lower() in ("1", "true", "yes")

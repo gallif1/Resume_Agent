@@ -1,10 +1,23 @@
+"""Database helpers — PostgreSQL via DATABASE_URL, or local SQLite fallback."""
+
+from __future__ import annotations
+
 import json
+import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Sequence
 
-from config import DB_PATH, LEGACY_DB_PATH, REGISTRY_DB_PATH, cv_db_path
+from config import (
+    CVS_DIR,
+    DATABASE_URL,
+    DB_PATH,
+    LEGACY_DB_PATH,
+    REGISTRY_DB_PATH,
+    cv_db_path,
+)
 from date_utils import normalize_posted_date, today_iso
 from job_identity import (
     compute_job_content_hash,
@@ -15,18 +28,239 @@ from job_identity import (
     normalize_job_url,
 )
 
+# Sentinel owner_cv_id for the legacy / global jobs scope (Postgres shared schema).
+LEGACY_OWNER_CV_ID = "legacy"
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+_pg_engine = None
 
 
-def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
-    """Open a connection to the SQLite database."""
+def uses_postgres() -> bool:
+    """True when DATABASE_URL is configured (single shared Postgres schema)."""
+    return bool(DATABASE_URL)
+
+
+def _normalize_database_url(url: str) -> str:
+    """Ensure SQLAlchemy uses the psycopg3 driver."""
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql://") and "+psycopg" not in url.split("://", 1)[0]:
+        url = "postgresql+psycopg://" + url[len("postgresql://") :]
+    return url
+
+
+def get_engine():
+    """Lazy SQLAlchemy engine for PostgreSQL (pooled)."""
+    global _pg_engine
+    if _pg_engine is None:
+        from sqlalchemy import create_engine
+
+        _pg_engine = create_engine(
+            _normalize_database_url(DATABASE_URL),
+            pool_pre_ping=True,
+            pool_size=5,
+        )
+    return _pg_engine
+
+
+def owner_cv_id_for_path(db_path: Path) -> str:
+    """Map a logical db_path to jobs.owner_cv_id (Postgres multi-CV isolation)."""
+    try:
+        resolved = db_path.resolve()
+    except OSError:
+        resolved = db_path
+
+    try:
+        cvs_root = CVS_DIR.resolve()
+        rel = resolved.relative_to(cvs_root)
+        if rel.parts:
+            return rel.parts[0]
+    except ValueError:
+        pass
+
+    # Fallback: .../cvs/<cv_id>/jobs.db even if CVS_DIR differs (tests).
+    if resolved.name == "jobs.db" and resolved.parent.parent.name == "cvs":
+        return resolved.parent.name
+
+    return LEGACY_OWNER_CV_ID
+
+
+def _jobs_scope_sql(
+    db_path: Path, *, alias: str = "", column: str = "owner_cv_id"
+) -> tuple[str, list[Any]]:
+    """Return (sql_fragment, params) to filter jobs by owner in Postgres mode."""
+    if not uses_postgres():
+        return "", []
+    col = f"{alias}.{column}" if alias else column
+    return f" AND {col} = ?", [owner_cv_id_for_path(db_path)]
+
+
+def _is_integrity_error(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    try:
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
+        if isinstance(exc, SAIntegrityError):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+def _is_operational_error(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.OperationalError):
+        return True
+    try:
+        from sqlalchemy.exc import ProgrammingError, OperationalError
+
+        if isinstance(exc, (ProgrammingError, OperationalError)):
+            return True
+    except ImportError:
+        pass
+    return False
+
+
+class _ResultCursor:
+    """Minimal cursor API shared by SQLite and Postgres adapters."""
+
+    def __init__(
+        self,
+        rows: list[Any] | None = None,
+        *,
+        lastrowid: int | None = None,
+        rowcount: int = -1,
+    ) -> None:
+        self._rows = rows or []
+        self._index = 0
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+
+    def fetchone(self) -> Any | None:
+        if self._index >= len(self._rows):
+            return None
+        row = self._rows[self._index]
+        self._index += 1
+        return row
+
+    def fetchall(self) -> list[Any]:
+        remaining = self._rows[self._index :]
+        self._index = len(self._rows)
+        return remaining
+
+
+class _PgConnection:
+    """SQLAlchemy connection wrapper with sqlite3-like execute(?, ...) API."""
+
+    def __init__(self, sa_conn: Any) -> None:
+        self._conn = sa_conn
+
+    @staticmethod
+    def _bind_sql(sql: str, params: Sequence[Any] | None) -> tuple[str, dict[str, Any]]:
+        params = list(params or ())
+        bind: dict[str, Any] = {}
+        parts = sql.split("?")
+        if len(parts) == 1:
+            return sql, bind
+        if len(parts) - 1 != len(params):
+            raise ValueError(
+                f"SQL placeholder count ({len(parts) - 1}) != params ({len(params)})"
+            )
+        out = parts[0]
+        for i, part in enumerate(parts[1:]):
+            key = f"p{i}"
+            bind[key] = params[i]
+            out += f":{key}" + part
+        return out, bind
+
+    def execute(self, sql: str, params: Sequence[Any] | None = None) -> _ResultCursor:
+        from sqlalchemy import text
+
+        converted, bind = self._bind_sql(sql, params)
+        sql_upper = sql.strip().upper()
+        returning = False
+        if (
+            sql_upper.startswith("INSERT")
+            and "RETURNING" not in sql_upper
+            and re.search(r"INSERT\s+INTO\s+(jobs|applications|cv_scans|cv_job_matches)\b", sql, re.I)
+        ):
+            converted = converted.rstrip().rstrip(";") + " RETURNING id"
+            returning = True
+
+        result = self._conn.execute(text(converted), bind)
+        lastrowid: int | None = None
+        rows: list[Any] = []
+        if result.returns_rows:
+            mappings = list(result.mappings())
+            if returning:
+                if mappings:
+                    lastrowid = mappings[0].get("id")
+                rows = []
+            else:
+                rows = [dict(m) for m in mappings]
+        return _ResultCursor(rows, lastrowid=lastrowid, rowcount=result.rowcount or 0)
+
+    def executescript(self, script: str) -> None:
+        from sqlalchemy import text
+
+        # Strip line comments; split on semicolons.
+        cleaned_lines: list[str] = []
+        for line in script.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("--"):
+                continue
+            cleaned_lines.append(line)
+        cleaned = "\n".join(cleaned_lines)
+        for stmt in cleaned.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                self._conn.execute(text(stmt))
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+@contextmanager
+def get_connection(db_path: Path = DB_PATH) -> Iterator[Any]:
+    """Open a DB connection (Postgres pool or SQLite file).
+
+    ``db_path`` remains the public scope key: in Postgres mode it selects
+    ``owner_cv_id`` for jobs; in SQLite mode it is the on-disk database file.
+    """
+    if uses_postgres():
+        sa_conn = get_engine().connect()
+        adapter = _PgConnection(sa_conn)
+        try:
+            yield adapter
+            sa_conn.commit()
+        except Exception:
+            sa_conn.rollback()
+            raise
+        finally:
+            sa_conn.close()
+        return
+
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 DEFAULT_USER_ID = "default"
@@ -60,7 +294,7 @@ CREATE TABLE IF NOT EXISTS cvs (
 );
 """
 
-_JOBS_SCHEMA = """
+_JOBS_SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
@@ -161,7 +395,8 @@ CREATE INDEX IF NOT EXISTS idx_job_applications_cv_job ON job_applications (cv_i
 CREATE INDEX IF NOT EXISTS idx_job_application_steps_app ON job_application_steps (application_id);
 """
 
-_LEGACY_CV_SCHEMA = """
+# Full Postgres schema (all columns; shared tables + owner_cv_id isolation).
+_PG_FULL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS cvs (
     id TEXT PRIMARY KEY,
     file_name TEXT NOT NULL,
@@ -175,11 +410,176 @@ CREATE TABLE IF NOT EXISTS cvs (
     updated_at TEXT,
     last_scan_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    owner_cv_id TEXT NOT NULL DEFAULT 'legacy',
+    title TEXT NOT NULL,
+    company TEXT,
+    location TEXT,
+    job_url TEXT NOT NULL,
+    source TEXT,
+    description TEXT,
+    full_description TEXT,
+    match_score INTEGER,
+    match_reason TEXT,
+    match_method TEXT,
+    ai_decision TEXT,
+    ai_strengths TEXT,
+    ai_missing_skills TEXT,
+    ai_recommended_action TEXT,
+    ai_explanation TEXT,
+    fallback_score INTEGER,
+    job_hash TEXT,
+    collected_at TEXT,
+    enriched_at TEXT,
+    matched_at TEXT,
+    last_seen_at TEXT,
+    job_content_hash TEXT,
+    is_enriched INTEGER DEFAULT 0,
+    is_matched INTEGER DEFAULT 0,
+    match_category TEXT,
+    matched_keywords TEXT,
+    missing_keywords TEXT,
+    rejection_reason TEXT,
+    candidate_strategy_hash TEXT,
+    source_query TEXT,
+    source_category TEXT,
+    source_strategy_hash TEXT,
+    enrich_attempted_at TEXT,
+    enrich_status TEXT,
+    enrich_error TEXT,
+    enrich_attempts INTEGER DEFAULT 0,
+    last_enrich_hash TEXT,
+    source_queries TEXT,
+    source_categories TEXT,
+    first_seen_at TEXT,
+    seen_count INTEGER DEFAULT 1,
+    job_profile TEXT,
+    job_profile_hash TEXT,
+    is_analyzed INTEGER DEFAULT 0,
+    posted_date TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (owner_cv_id, job_url)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_owner_job_hash
+    ON jobs (owner_cv_id, job_hash)
+    WHERE job_hash IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs (owner_cv_id);
+
+CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'pending',
+    applied_at TIMESTAMP,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cv_scans (
+    id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    cv_id TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    status TEXT DEFAULT 'running',
+    summary TEXT,
+    error_message TEXT
+);
+
+CREATE TABLE IF NOT EXISTS cv_job_matches (
+    id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    cv_id TEXT NOT NULL,
+    job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+    scan_id INTEGER,
+    match_score INTEGER,
+    match_reason TEXT,
+    match_method TEXT,
+    match_category TEXT,
+    matched_skills TEXT,
+    missing_skills TEXT,
+    ai_decision TEXT,
+    ai_strengths TEXT,
+    ai_missing_skills TEXT,
+    ai_explanation TEXT,
+    ai_recommended_action TEXT,
+    fallback_score INTEGER,
+    candidate_strategy_hash TEXT,
+    application_status TEXT DEFAULT 'not_sent',
+    application_notes TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    ats_score_label TEXT,
+    ats_missing_mandatory TEXT,
+    ats_relevant_experience TEXT,
+    ats_reasons TEXT,
+    ats_improvements TEXT,
+    ats_component_scores TEXT,
+    UNIQUE (cv_id, job_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cv_job_matches_cv ON cv_job_matches (cv_id);
+CREATE INDEX IF NOT EXISTS idx_cv_job_matches_job ON cv_job_matches (job_id);
+CREATE INDEX IF NOT EXISTS idx_cv_job_matches_scan ON cv_job_matches (scan_id);
+CREATE INDEX IF NOT EXISTS idx_cv_scans_cv ON cv_scans (cv_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE,
+    hashed_password TEXT,
+    display_name TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS job_applications (
+    id TEXT PRIMARY KEY,
+    cv_id TEXT NOT NULL,
+    job_id INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',
+    application_url TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    submitted_at TEXT,
+    failure_reason TEXT,
+    failure_category TEXT,
+    requires_user_action_reason TEXT,
+    external_confirmation_text TEXT,
+    external_confirmation_url TEXT,
+    attempt_number INTEGER DEFAULT 1,
+    provider_name TEXT,
+    current_step_url TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS job_application_steps (
+    id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    application_id TEXT NOT NULL,
+    step_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT,
+    created_at TEXT,
+    FOREIGN KEY (application_id) REFERENCES job_applications (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_applications_cv_job ON job_applications (cv_id, job_id);
+CREATE INDEX IF NOT EXISTS idx_job_application_steps_app ON job_application_steps (application_id);
 """
+
+_LEGACY_CV_SCHEMA = _REGISTRY_SCHEMA
+
+# Back-compat alias used by older call sites / docs.
+_JOBS_SCHEMA = _JOBS_SCHEMA_SQLITE
 
 
 def init_registry_db(db_path: Path = REGISTRY_DB_PATH) -> None:
     """Create the global CV registry (metadata only)."""
+    if uses_postgres():
+        with get_connection(db_path) as conn:
+            conn.executescript(_PG_FULL_SCHEMA)
+            conn.commit()
+        return
     with get_connection(db_path) as conn:
         conn.executescript(_REGISTRY_SCHEMA)
         _apply_registry_migrations(conn)
@@ -227,13 +627,15 @@ def _apply_registry_migrations(conn: sqlite3.Connection) -> None:
 
 
 def init_cv_data_db(cv_id: str) -> Path:
-    """Create an isolated jobs/scans/matches database for one CV."""
+    """Ensure jobs/scans/matches storage for one CV (file or Postgres scope)."""
     path = cv_db_path(cv_id)
+    if not uses_postgres():
+        path.parent.mkdir(parents=True, exist_ok=True)
     init_db(path)
     return path
 
 
-def _apply_jobs_migrations(conn: sqlite3.Connection) -> None:
+def _apply_jobs_migrations(conn: Any) -> None:
     for column, col_type in [
             ("source", "TEXT"),
             ("full_description", "TEXT"),
@@ -274,20 +676,40 @@ def _apply_jobs_migrations(conn: sqlite3.Connection) -> None:
             ("job_profile_hash", "TEXT"),
             ("is_analyzed", "INTEGER DEFAULT 0"),
             ("posted_date", "TEXT"),
+            ("owner_cv_id", "TEXT"),
         ]:
         try:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        except Exception as exc:
+            if not _is_operational_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     try:
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_hash ON jobs(job_hash)"
-        )
+        if uses_postgres():
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_owner_job_hash
+                ON jobs (owner_cv_id, job_hash)
+                WHERE job_hash IS NOT NULL
+                """
+            )
+        else:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_hash ON jobs(job_hash)"
+            )
         conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    except Exception as exc:
+        if not _is_operational_error(exc):
+            raise
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     # job_url is UNIQUE in the base schema; reinforce for older DBs that lost it.
     try:
@@ -322,8 +744,13 @@ def _apply_jobs_migrations(conn: sqlite3.Connection) -> None:
             """
         )
         conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    except Exception as exc:
+        if not _is_operational_error(exc):
+            raise
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     try:
         rows = conn.execute(
@@ -349,11 +776,16 @@ def _apply_jobs_migrations(conn: sqlite3.Connection) -> None:
             )
         if rows:
             conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    except Exception as exc:
+        if not _is_operational_error(exc):
+            raise
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
-def _apply_cv_match_migrations(conn: sqlite3.Connection) -> None:
+def _apply_cv_match_migrations(conn: Any) -> None:
     """Add ATS explainability columns to cv_job_matches."""
     for column, col_type in [
         ("ats_score_label", "TEXT"),
@@ -370,8 +802,13 @@ def _apply_cv_match_migrations(conn: sqlite3.Connection) -> None:
         try:
             conn.execute(f"ALTER TABLE cv_job_matches ADD COLUMN {column} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        except Exception as exc:
+            if not _is_operational_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     conn.execute(
         """
@@ -411,8 +848,16 @@ def _apply_cv_match_migrations(conn: sqlite3.Connection) -> None:
 
 def init_db(db_path: Path = DB_PATH) -> None:
     """Create job tables (and legacy cvs table when using the global jobs.db)."""
+    if uses_postgres():
+        with get_connection(db_path) as conn:
+            conn.executescript(_PG_FULL_SCHEMA)
+            conn.commit()
+            _apply_jobs_migrations(conn)
+            _apply_cv_match_migrations(conn)
+        return
+
     with get_connection(db_path) as conn:
-        conn.executescript(_JOBS_SCHEMA)
+        conn.executescript(_JOBS_SCHEMA_SQLITE)
         if db_path.resolve() == LEGACY_DB_PATH.resolve():
             conn.executescript(_LEGACY_CV_SCHEMA)
         conn.commit()
@@ -421,6 +866,16 @@ def init_db(db_path: Path = DB_PATH) -> None:
 
 
 def _cv_data_counts(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> tuple[int, int]:
+    if uses_postgres():
+        with get_connection(registry_db) as conn:
+            scan_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
+            ).fetchone()["n"]
+            match_count = conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
+            ).fetchone()["n"]
+        return int(match_count), int(scan_count)
+
     data_db = _resolve_cv_data_db(cv_id, registry_db)
     if not data_db.exists():
         return 0, 0
@@ -468,7 +923,13 @@ def _resolve_cv_data_db(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> Pat
 
 
 def migrate_legacy_shared_database() -> bool:
-    """Move multi-CV data from the old shared jobs.db into per-CV databases."""
+    """Move multi-CV data from the old shared jobs.db into per-CV databases.
+
+    No-op when using PostgreSQL (single shared schema already).
+    """
+    if uses_postgres():
+        return False
+
     legacy = LEGACY_DB_PATH
     if not legacy.exists():
         return False
@@ -599,7 +1060,8 @@ def migrate_legacy_shared_database() -> bool:
 def ensure_multi_cv_storage() -> None:
     """Initialize registry and migrate old shared-DB layout if needed."""
     init_registry_db()
-    migrate_legacy_shared_database()
+    if not uses_postgres():
+        migrate_legacy_shared_database()
     _backfill_cv_profiles()
 
 
@@ -661,7 +1123,7 @@ def listing_content_hash(
     return compute_job_content_hash(title, company, location, description, "")
 
 
-def _stored_listing_hash(row: sqlite3.Row) -> str:
+def _stored_listing_hash(row: Any) -> str:
     """Listing hash for an existing row, compatible with legacy job_content_hash values."""
     if row["last_enrich_hash"]:
         return row["last_enrich_hash"]
@@ -674,23 +1136,35 @@ def _stored_listing_hash(row: sqlite3.Row) -> str:
 
 
 def find_existing_job(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     job_url: str,
     title: str = "",
     company: str = "",
     location: str = "",
-) -> sqlite3.Row | None:
+    owner_cv_id: str | None = None,
+) -> Any | None:
     """Find an existing job row by identity hash, canonical URL, or Drushim job id."""
     canonical_url = normalize_job_url(job_url)
     identity = compute_job_hash(canonical_url or job_url, title, company, location)
+    scope_sql = ""
+    scope_params: list[Any] = []
+    if owner_cv_id is not None and uses_postgres():
+        scope_sql = " AND owner_cv_id = ?"
+        scope_params = [owner_cv_id]
 
-    row = conn.execute("SELECT * FROM jobs WHERE job_hash = ?", (identity,)).fetchone()
+    row = conn.execute(
+        f"SELECT * FROM jobs WHERE job_hash = ?{scope_sql}",
+        (identity, *scope_params),
+    ).fetchone()
     if row is not None:
         return row
 
     if canonical_url:
-        row = conn.execute("SELECT * FROM jobs WHERE job_url = ?", (canonical_url,)).fetchone()
+        row = conn.execute(
+            f"SELECT * FROM jobs WHERE job_url = ?{scope_sql}",
+            (canonical_url, *scope_params),
+        ).fetchone()
         if row is not None:
             return row
 
@@ -702,8 +1176,8 @@ def find_existing_job(
         gotfriends_id = extract_gotfriends_job_id(reference_url)
         if gotfriends_id:
             row = conn.execute(
-                "SELECT * FROM jobs WHERE job_hash = ? LIMIT 1",
-                (f"gotfriends:job:{gotfriends_id}",),
+                f"SELECT * FROM jobs WHERE job_hash = ?{scope_sql} LIMIT 1",
+                (f"gotfriends:job:{gotfriends_id}", *scope_params),
             ).fetchone()
             if row is not None:
                 return row
@@ -711,8 +1185,8 @@ def find_existing_job(
         drushim_id = extract_drushim_job_id(reference_url)
         if drushim_id:
             row = conn.execute(
-                "SELECT * FROM jobs WHERE job_url LIKE ? LIMIT 1",
-                (f"%/job/{drushim_id}/%",),
+                f"SELECT * FROM jobs WHERE job_url LIKE ?{scope_sql} LIMIT 1",
+                (f"%/job/{drushim_id}/%", *scope_params),
             ).fetchone()
             if row is not None:
                 return row
@@ -720,8 +1194,8 @@ def find_existing_job(
         linkedin_id = extract_linkedin_job_id(reference_url)
         if linkedin_id:
             row = conn.execute(
-                "SELECT * FROM jobs WHERE job_hash = ? LIMIT 1",
-                (f"linkedin:job:{linkedin_id}",),
+                f"SELECT * FROM jobs WHERE job_hash = ?{scope_sql} LIMIT 1",
+                (f"linkedin:job:{linkedin_id}", *scope_params),
             ).fetchone()
             if row is not None:
                 return row
@@ -732,9 +1206,11 @@ def find_existing_job(
 def get_known_job_identity_keys(db_path: Path = DB_PATH) -> set[str]:
     """Return identity keys for every job already stored in the database."""
     keys: set[str] = set()
+    scope_sql, scope_params = _jobs_scope_sql(db_path)
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT job_hash, job_url, title, company, location FROM jobs"
+            f"SELECT job_hash, job_url, title, company, location FROM jobs WHERE 1=1{scope_sql}",
+            scope_params,
         ).fetchall()
         for row in rows:
             if row["job_hash"]:
@@ -917,6 +1393,7 @@ def insert_job(
     source_categories_json = json.dumps(
         [source_category] if source_category else [], ensure_ascii=False
     )
+    owner = owner_cv_id_for_path(db_path) if uses_postgres() else None
 
     with get_connection(db_path) as conn:
         existing = find_existing_job(
@@ -925,49 +1402,87 @@ def insert_job(
             title=title,
             company=company or "",
             location=location or "",
+            owner_cv_id=owner,
         )
         if existing is not None:
             return None
 
         try:
-            cursor = conn.execute(
-                """
-                INSERT OR IGNORE INTO jobs (
-                    title, company, location, job_url, source, description, match_score,
-                    job_hash, collected_at, first_seen_at, last_seen_at, job_content_hash,
-                    source_query, source_category, source_strategy_hash,
-                    source_queries, source_categories, seen_count,
-                    is_enriched, is_matched, enrich_attempts, posted_date
+            if uses_postgres():
+                cursor = conn.execute(
+                    """
+                    INSERT INTO jobs (
+                        owner_cv_id, title, company, location, job_url, source, description,
+                        match_score, job_hash, collected_at, first_seen_at, last_seen_at,
+                        job_content_hash, source_query, source_category, source_strategy_hash,
+                        source_queries, source_categories, seen_count,
+                        is_enriched, is_matched, enrich_attempts, posted_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, ?)
+                    """,
+                    (
+                        owner,
+                        title,
+                        company,
+                        location,
+                        canonical_url,
+                        source,
+                        description,
+                        match_score,
+                        job_hash,
+                        now,
+                        now,
+                        now,
+                        content_hash,
+                        source_query,
+                        source_category,
+                        source_strategy_hash,
+                        source_queries_json,
+                        source_categories_json,
+                        posted,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, ?)
-                """,
-                (
-                    title,
-                    company,
-                    location,
-                    canonical_url,
-                    source,
-                    description,
-                    match_score,
-                    job_hash,
-                    now,
-                    now,
-                    now,
-                    content_hash,
-                    source_query,
-                    source_category,
-                    source_strategy_hash,
-                    source_queries_json,
-                    source_categories_json,
-                    posted,
-                ),
-            )
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO jobs (
+                        title, company, location, job_url, source, description, match_score,
+                        job_hash, collected_at, first_seen_at, last_seen_at, job_content_hash,
+                        source_query, source_category, source_strategy_hash,
+                        source_queries, source_categories, seen_count,
+                        is_enriched, is_matched, enrich_attempts, posted_date
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, ?)
+                    """,
+                    (
+                        title,
+                        company,
+                        location,
+                        canonical_url,
+                        source,
+                        description,
+                        match_score,
+                        job_hash,
+                        now,
+                        now,
+                        now,
+                        content_hash,
+                        source_query,
+                        source_category,
+                        source_strategy_hash,
+                        source_queries_json,
+                        source_categories_json,
+                        posted,
+                    ),
+                )
             conn.commit()
             if cursor.rowcount == 0 or not cursor.lastrowid:
                 return None
             return cursor.lastrowid
-        except sqlite3.IntegrityError:
-            return None
+        except Exception as exc:
+            if _is_integrity_error(exc):
+                return None
+            raise
 
 
 def touch_existing_job(
@@ -990,6 +1505,7 @@ def touch_existing_job(
     """
     canonical_url = normalize_job_url(job_url) or job_url.strip()
     incoming_posted = normalize_posted_date(posted_date, default_to_today=False)
+    owner = owner_cv_id_for_path(db_path) if uses_postgres() else None
 
     with get_connection(db_path) as conn:
         row = find_existing_job(
@@ -998,6 +1514,7 @@ def touch_existing_job(
             title=title,
             company=company,
             location=location,
+            owner_cv_id=owner,
         )
         if row is None:
             return None, False
@@ -1143,9 +1660,11 @@ def upsert_collected_job(
 
 def get_all_jobs(db_path: Path = DB_PATH) -> list[dict[str, Any]]:
     """Return all jobs as a list of dictionaries."""
+    scope_sql, scope_params = _jobs_scope_sql(db_path)
     with get_connection(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC"
+            f"SELECT * FROM jobs WHERE 1=1{scope_sql} ORDER BY created_at DESC",
+            scope_params,
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -1177,8 +1696,13 @@ def get_jobs(
     When ``exclude_handled`` is True, omit jobs already sent/declined/skipped so
     each pipeline run only surfaces new actionable opportunities.
     """
-    conditions: list[str] = []
+    conditions: list[str] = ["1=1"]
     params: list[Any] = []
+
+    scope_sql, scope_params = _jobs_scope_sql(db_path, alias="j")
+    if scope_sql:
+        conditions[0] = "1=1" + scope_sql
+        params.extend(scope_params)
 
     if min_score is not None:
         conditions.append("j.match_score IS NOT NULL AND j.match_score >= ?")
@@ -1191,7 +1715,7 @@ def get_jobs(
         )
         params.extend(APPLICATION_HANDLED_STATUSES)
 
-    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    where = f"WHERE {' AND '.join(conditions)}"
     query = f"""
         SELECT
             j.*,
@@ -1422,8 +1946,12 @@ def mark_enrichment_attempted(
 
 def mark_all_jobs_for_rematch(db_path: Path = DB_PATH) -> int:
     """Clear match flags so jobs are re-scored on the next match run."""
+    scope_sql, scope_params = _jobs_scope_sql(db_path)
     with get_connection(db_path) as conn:
-        cursor = conn.execute("UPDATE jobs SET is_matched = 0")
+        cursor = conn.execute(
+            f"UPDATE jobs SET is_matched = 0 WHERE 1=1{scope_sql}",
+            scope_params,
+        )
         conn.commit()
         return cursor.rowcount
 
@@ -1621,11 +2149,23 @@ def get_applied_job_ids(
 ) -> set[int]:
     """Return the set of job ids that already have an application in one of the statuses."""
     placeholders = ",".join("?" for _ in statuses)
+    scope_sql, scope_params = _jobs_scope_sql(db_path, alias="j")
     with get_connection(db_path) as conn:
-        rows = conn.execute(
-            f"SELECT job_id FROM applications WHERE status IN ({placeholders})",
-            statuses,
-        ).fetchall()
+        if scope_sql:
+            rows = conn.execute(
+                f"""
+                SELECT a.job_id
+                FROM applications a
+                JOIN jobs j ON j.id = a.job_id
+                WHERE a.status IN ({placeholders}){scope_sql}
+                """,
+                (*statuses, *scope_params),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT job_id FROM applications WHERE status IN ({placeholders})",
+                statuses,
+            ).fetchall()
         return {row["job_id"] for row in rows}
 
 
@@ -1855,18 +2395,70 @@ def set_cv_last_scan(cv_id: str, when: str | None = None, db_path: Path = REGIST
 
 
 def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
-    """Delete a CV registry row and clean up its matches, scans, and orphan jobs.
+    """Delete a CV registry row, its scans/matches, and orphaned jobs.
 
     Safe when the per-CV / workspace jobs DB is missing or has no jobs tables yet
     (e.g. uploaded but never scanned) — the registry row is still removed so the
-    same file can be uploaded again.
+    same file can be uploaded again. In Postgres mode, jobs with ``owner_cv_id``
+    equal to this CV are removed entirely.
     """
-    data_db = _resolve_cv_data_db(cv_id, db_path)
     deleted_matches = 0
     deleted_scans = 0
     deleted_jobs = 0
     orphaned_job_ids: list[int] = []
 
+    if uses_postgres():
+        with get_connection(db_path) as conn:
+            match_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
+            ).fetchone()
+            scan_row = conn.execute(
+                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
+            ).fetchone()
+            deleted_matches = int(match_row["n"])
+            deleted_scans = int(scan_row["n"])
+
+            conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
+            conn.execute("DELETE FROM cv_scans WHERE cv_id = ?", (cv_id,))
+
+            job_rows = conn.execute(
+                "SELECT id FROM jobs WHERE owner_cv_id = ?", (cv_id,)
+            ).fetchall()
+            job_ids = [r["id"] for r in job_rows]
+            deleted_jobs = len(job_ids)
+            orphaned_job_ids = list(job_ids)
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                try:
+                    conn.execute(
+                        f"DELETE FROM job_application_steps WHERE application_id IN "
+                        f"(SELECT id FROM job_applications WHERE job_id IN ({placeholders}))",
+                        job_ids,
+                    )
+                    conn.execute(
+                        f"DELETE FROM job_applications WHERE job_id IN ({placeholders})",
+                        job_ids,
+                    )
+                except Exception:
+                    pass
+                conn.execute(
+                    f"DELETE FROM applications WHERE job_id IN ({placeholders})",
+                    job_ids,
+                )
+                conn.execute("DELETE FROM jobs WHERE owner_cv_id = ?", (cv_id,))
+
+            conn.execute("DELETE FROM cvs WHERE id = ?", (cv_id,))
+            conn.commit()
+
+        return {
+            "cv_id": cv_id,
+            "deleted_matches": deleted_matches,
+            "deleted_scans": deleted_scans,
+            "deleted_jobs": deleted_jobs,
+            "orphaned_job_ids": orphaned_job_ids,
+        }
+
+    data_db = _resolve_cv_data_db(cv_id, db_path)
     if data_db.exists():
         with get_connection(data_db) as conn:
             tables = _table_names(conn)
@@ -1952,14 +2544,44 @@ SCAN_STOPPED = "stopped"
 def reset_cv_job_pool(cv_id: str, db_path: Path | None = None) -> None:
     """Clear collected jobs and match rows before a fresh agent scan."""
     path = db_path or cv_db_path(cv_id)
-    if not path.exists():
+    if not uses_postgres() and not path.exists():
         return
     with get_connection(path) as conn:
-        conn.execute("DELETE FROM job_application_steps")
-        conn.execute("DELETE FROM job_applications")
-        conn.execute("DELETE FROM applications")
-        conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
-        conn.execute("DELETE FROM jobs")
+        if uses_postgres():
+            job_rows = conn.execute(
+                "SELECT id FROM jobs WHERE owner_cv_id = ?", (cv_id,)
+            ).fetchall()
+            job_ids = [r["id"] for r in job_rows]
+            conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
+            if job_ids:
+                placeholders = ",".join("?" for _ in job_ids)
+                try:
+                    conn.execute(
+                        f"DELETE FROM job_application_steps WHERE application_id IN "
+                        f"(SELECT id FROM job_applications WHERE job_id IN ({placeholders}))",
+                        job_ids,
+                    )
+                    conn.execute(
+                        f"DELETE FROM job_applications WHERE job_id IN ({placeholders})",
+                        job_ids,
+                    )
+                except Exception:
+                    pass
+                conn.execute(
+                    f"DELETE FROM applications WHERE job_id IN ({placeholders})",
+                    job_ids,
+                )
+            conn.execute("DELETE FROM jobs WHERE owner_cv_id = ?", (cv_id,))
+        else:
+            tables = _table_names(conn)
+            if "job_application_steps" in tables:
+                conn.execute("DELETE FROM job_application_steps")
+            if "job_applications" in tables:
+                conn.execute("DELETE FROM job_applications")
+            if "applications" in tables:
+                conn.execute("DELETE FROM applications")
+            conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
+            conn.execute("DELETE FROM jobs")
         conn.commit()
 
 
@@ -2000,7 +2622,12 @@ def get_scan(scan_id: int, db_path: Path = DB_PATH) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
 
-def _table_names(conn: sqlite3.Connection) -> set[str]:
+def _table_names(conn: Any) -> set[str]:
+    if uses_postgres():
+        rows = conn.execute(
+            "SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public'"
+        ).fetchall()
+        return {row["name"] for row in rows}
     return {
         row["name"]
         for row in conn.execute(
@@ -2018,7 +2645,7 @@ def ensure_jobs_schema(db_path: Path) -> None:
 
 
 def get_latest_scan(cv_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | None:
-    if not Path(db_path).exists():
+    if not uses_postgres() and not Path(db_path).exists():
         return None
     with get_connection(db_path) as conn:
         if "cv_scans" not in _table_names(conn):
@@ -2031,7 +2658,7 @@ def get_latest_scan(cv_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | Non
 
 
 def list_scans(cv_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
-    if not Path(db_path).exists():
+    if not uses_postgres() and not Path(db_path).exists():
         return []
     with get_connection(db_path) as conn:
         if "cv_scans" not in _table_names(conn):
@@ -2743,5 +3370,9 @@ def get_latest_job_applications_for_cv(
 
 
 if __name__ == "__main__":
+    init_registry_db()
     init_db()
-    print(f"Database initialized at {DB_PATH}")
+    if uses_postgres():
+        print("PostgreSQL schema initialized via DATABASE_URL")
+    else:
+        print(f"Database initialized at {DB_PATH}")

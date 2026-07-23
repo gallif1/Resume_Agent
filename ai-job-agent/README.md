@@ -17,7 +17,7 @@ ai-job-agent/
     match_jobs.py    # score jobs vs profile + CV
     list_jobs.py     # view results
     apply_jobs.py    # send your CV to matched jobs (Drushim)
-    db.py            # SQLite helpers
+    db.py            # PostgreSQL (DATABASE_URL) or SQLite helpers
     skills.py        # known skill keywords
     config.py        # paths and settings
 ```
@@ -30,15 +30,23 @@ ai-job-agent/
 pip install -r requirements.txt
 ```
 
-2. Install Playwright browsers:
+2. (Optional) Set `DATABASE_URL` in `.env` for PostgreSQL / AWS RDS:
+
+```bash
+DATABASE_URL=postgresql://user:password@host:5432/dbname
+```
+
+When unset, the agent uses local SQLite files under `data/` (default for tests and offline use).
+
+3. Install Playwright browsers:
 
 ```bash
 python -m playwright install chromium
 ```
 
-3. Edit `data/profile.json` with your details and place your resume at `resumes/cv.pdf`.
+4. Edit `data/profile.json` with your details and place your resume at `resumes/cv.pdf`.
 
-4. **(Optional)** Add your OpenAI API key to `.env` for smart CV analysis:
+5. **(Optional)** Add your OpenAI API key to `.env` for smart CV analysis:
 
 ```
 OPENAI_API_KEY=sk-...
@@ -94,7 +102,7 @@ python src/run_all.py --dry-run-apply     # fill the form but don't send
 python src/collect_jobs.py
 ```
 
-Searches Drushim for every role in `profile.json` `target_roles`, saves jobs to SQLite, and prints how many were found and inserted. If extraction fails, screenshots and logs are saved to `logs/`.
+Searches Drushim for every role in `profile.json` `target_roles`, saves jobs to the database, and prints how many were found and inserted. If extraction fails, screenshots and logs are saved to `logs/`.
 
 ## 2. Parse your CV
 
@@ -206,4 +214,5 @@ it needs a visible browser and possible manual login, so keep using
 python src/db.py
 ```
 
-This creates `data/jobs.db` with the `jobs` and `applications` tables.
+Creates the required tables. With `DATABASE_URL` set this initializes PostgreSQL;
+otherwise it creates `data/jobs.db` (SQLite) with the `jobs` and `applications` tables.
