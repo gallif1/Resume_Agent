@@ -18,6 +18,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             cd ~/resume-backend/Resume_Agent
-            git pull
-            sudo DOCKER_BUILDKIT=0 docker-compose up -d --build
+            git pull origin master
+            sudo DOCKER_BUILDKIT=0 docker build --no-cache -t resume_agent-resume-backend .
+            sudo DOCKER_BUILDKIT=0 docker-compose up -d
             sudo docker system prune -f
