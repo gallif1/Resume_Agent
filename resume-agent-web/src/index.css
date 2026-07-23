@@ -1348,20 +1348,68 @@ body {
 
 .job-description-text {
   margin: 0;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
   font-family: inherit;
   font-size: 0.9rem;
-  line-height: 1.65;
+  line-height: 1.7;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  padding: 14px;
+  padding: 14px 16px;
   max-height: min(55vh, 480px);
   overflow: auto;
   text-align: start;
+}
+
+.job-description-text > :first-child {
+  margin-top: 0;
+}
+
+.job-description-text > :last-child {
+  margin-bottom: 0;
+}
+
+.job-description-text p {
+  margin: 0 0 0.85em;
+  color: var(--text);
+}
+
+.job-description-text h3 {
+  margin: 1.1em 0 0.45em;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.job-description-text h3:first-child {
+  margin-top: 0;
+}
+
+.job-description-text ul,
+.job-description-text ol {
+  margin: 0.35em 0 0.9em;
+  padding-inline-start: 1.35em;
+}
+
+.job-description-text li {
+  margin: 0.28em 0;
+  color: var(--text);
+}
+
+.job-description-text li::marker {
+  color: var(--text-muted);
+}
+
+.job-description-text em,
+.job-description-text i {
+  display: block;
+  margin-bottom: 0.75em;
+  font-style: normal;
+  font-size: 0.82rem;
+  color: var(--text-muted);
 }
 
 .matches-toolbar {

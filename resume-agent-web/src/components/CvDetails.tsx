@@ -25,6 +25,7 @@ import {
   type MatchSortOrder,
   type TailoredCvResponse,
 } from "../lib/api";
+import { formatJobDescription } from "../lib/formatJobDescription";
 import PipelineProgress from "./PipelineProgress";
 import ProfileSettings from "./ProfileSettings";
 
@@ -851,9 +852,9 @@ export default function CvDetails({
             <div className="job-description-block">
               <h4 className="job-description-title">תיאור המשרה</h4>
               {m.description?.trim() ? (
-                <pre className="job-description-text" dir="rtl" lang="he">
-                  {m.description.trim()}
-                </pre>
+                <div className="job-description-text" dir="auto">
+                  <Markdown>{formatJobDescription(m.description)}</Markdown>
+                </div>
               ) : (
                 <p className="cv-meta">אין תיאור מלא למשרה זו</p>
               )}
