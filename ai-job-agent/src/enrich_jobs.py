@@ -68,6 +68,80 @@ GOTO_TIMEOUT_MS = 45000
 WAIT_AFTER_LOAD_MS = 2500
 DEFAULT_TIMEOUT_MS = 20000
 
+_BLOCK_TAGS = frozenset(
+    {
+        "p",
+        "div",
+        "section",
+        "article",
+        "header",
+        "footer",
+        "tr",
+        "ul",
+        "ol",
+        "table",
+    }
+)
+_HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+
+def html_to_structured_text(element) -> str:
+    """Convert a BeautifulSoup element to plain text while keeping structure.
+
+    Scraped job boards often flatten rich HTML into one dense paragraph.
+    This preserves paragraph breaks, headings, and bullet lists so the UI
+    can render a readable description.
+    """
+    from bs4 import NavigableString, Tag
+
+    parts: list[str] = []
+
+    def walk(node) -> None:
+        if isinstance(node, NavigableString):
+            text = str(node)
+            if not text:
+                return
+            if text.strip():
+                parts.append(text)
+            else:
+                parts.append(" ")
+            return
+        if not isinstance(node, Tag):
+            return
+
+        name = (node.name or "").lower()
+        if name in {"script", "style", "noscript"}:
+            return
+        if name == "br":
+            parts.append("\n")
+            return
+        if name in _HEADING_TAGS:
+            parts.append("\n\n")
+            for child in node.children:
+                walk(child)
+            parts.append("\n\n")
+            return
+        if name == "li":
+            parts.append("\n• ")
+            for child in node.children:
+                walk(child)
+            return
+        if name in _BLOCK_TAGS:
+            parts.append("\n\n")
+            for child in node.children:
+                walk(child)
+            parts.append("\n\n")
+            return
+        for child in node.children:
+            walk(child)
+
+    walk(element)
+    text = "".join(parts)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r" ?\n ?", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
 
 def _visible_text(page: Page, limit: int = 3000) -> str:
     try:
@@ -191,7 +265,7 @@ def fetch_description_http(url: str) -> str:
         soup = BeautifulSoup(response.text, "html.parser")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
-        text = soup.get_text("\n", strip=True)
+        text = html_to_structured_text(soup.body or soup)
         extracted = extract_from_visible_text(text)
         if extracted:
             return extracted
@@ -242,13 +316,13 @@ def enrich_linkedin_one(job: dict) -> tuple[str, str | None, str | None]:
             "[class*='description'] .core-section-container__content"
         )
         if section is not None:
-            text = section.get_text("\n", strip=True)
+            text = html_to_structured_text(section)
             if len(text) > 80:
                 return ENRICH_SUCCESS, text[:12000], None
 
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
-        text = soup.get_text("\n", strip=True)
+        text = html_to_structured_text(soup.body or soup)
         if len(text) > 300:
             return ENRICH_SUCCESS, text[:8000], None
 
