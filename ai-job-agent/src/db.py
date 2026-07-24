@@ -784,6 +784,28 @@ def init_cv_data_db(cv_id: str) -> Path:
     return path
 
 
+def _timestamp_as_text(column: str) -> str:
+    """Cast a possibly-TIMESTAMP column to text for COALESCE with TEXT cols.
+
+    Postgres ``jobs.created_at`` is TIMESTAMP while ``first_seen_at`` /
+    ``collected_at`` are TEXT — bare COALESCE mixes types and raises
+    DatatypeMismatch. SQLite accepts CAST(... AS TEXT) as a no-op on text.
+    """
+    return f"CAST({column} AS TEXT)"
+
+
+def _coalesce_seen_at_expr(*columns: str) -> str:
+    """COALESCE seen-at columns, casting TIMESTAMP created_at to text."""
+    parts: list[str] = []
+    for col in columns:
+        bare = col.split(".")[-1]
+        if bare == "created_at":
+            parts.append(_timestamp_as_text(col))
+        else:
+            parts.append(col)
+    return f"COALESCE({', '.join(parts)})"
+
+
 def _apply_jobs_migrations(conn: Any) -> None:
     for column, col_type in [
             ("source", "TEXT"),
@@ -860,35 +882,51 @@ def _apply_jobs_migrations(conn: Any) -> None:
         except Exception:
             pass
 
-    # job_url is UNIQUE in the base schema; reinforce for older DBs that lost it.
-    try:
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_url ON jobs(job_url)"
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
-
-    try:
-        conn.execute(
-            """
-            UPDATE jobs
-            SET posted_date = substr(
-                COALESCE(first_seen_at, collected_at, created_at), 1, 10
+    # job_url uniqueness: SQLite base schema is global UNIQUE(job_url).
+    # Postgres already has UNIQUE(owner_cv_id, job_url) — do not add a
+    # global unique index (would break multi-CV isolation).
+    if not uses_postgres():
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_job_url ON jobs(job_url)"
             )
+            conn.commit()
+        except Exception as exc:
+            if not _is_operational_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    seen_coalesce = _coalesce_seen_at_expr(
+        "first_seen_at", "collected_at", "created_at"
+    )
+    try:
+        conn.execute(
+            f"""
+            UPDATE jobs
+            SET posted_date = substr({seen_coalesce}, 1, 10)
             WHERE posted_date IS NULL
-              AND COALESCE(first_seen_at, collected_at, created_at) IS NOT NULL
+              AND {seen_coalesce} IS NOT NULL
             """
         )
         conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    except Exception as exc:
+        if not _is_operational_error(exc):
+            raise
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     try:
         conn.execute(
-            """
+            f"""
             UPDATE jobs
-            SET first_seen_at = COALESCE(first_seen_at, collected_at, created_at, last_seen_at)
+            SET first_seen_at = {_coalesce_seen_at_expr(
+                "first_seen_at", "collected_at", "created_at", "last_seen_at"
+            )}
             WHERE first_seen_at IS NULL
             """
         )
@@ -1416,7 +1454,8 @@ def get_latest_known_job_identity(
         return None
 
     order_sql = (
-        "ORDER BY COALESCE(first_seen_at, collected_at, created_at) DESC, id DESC"
+        f"ORDER BY {_coalesce_seen_at_expr('first_seen_at', 'collected_at', 'created_at')} "
+        "DESC, id DESC"
     )
 
     def _row_to_identity(row: Any) -> dict[str, Any] | None:
@@ -2998,12 +3037,13 @@ def refresh_cv_job_match_scan(
 
 # Date sort uses YYYY-MM-DD posted_date first so ORDER BY is chronological,
 # not lexicographic across mixed timestamp string formats.
+# created_at is CAST to text so Postgres COALESCE with TEXT columns succeeds.
 _MATCH_SORT_COLUMNS = {
     "score": "m.match_score",
     "date": (
         "COALESCE("
         "j.posted_date, "
-        "substr(COALESCE(j.first_seen_at, j.collected_at, j.created_at), 1, 10)"
+        f"substr({_coalesce_seen_at_expr('j.first_seen_at', 'j.collected_at', 'j.created_at')}, 1, 10)"
         ")"
     ),
     "site": "LOWER(COALESCE(j.source, ''))",
