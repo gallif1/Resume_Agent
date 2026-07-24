@@ -42,6 +42,16 @@ def uses_postgres() -> bool:
     return bool(DATABASE_URL)
 
 
+def _sqlite_path_missing(db_path: Path) -> bool:
+    """True when a per-CV SQLite file is required but absent.
+
+    On Postgres, ``db_path`` is only a logical scope key (no file is created),
+    so missing paths must not short-circuit reads — that made match counts
+    (Postgres COUNT) disagree with empty match lists (early ``[]`` return).
+    """
+    return (not uses_postgres()) and (not Path(db_path).exists())
+
+
 def _normalize_database_url(url: str) -> str:
     """Ensure SQLAlchemy uses the psycopg3 driver."""
     if url.startswith("postgres://"):
@@ -1484,7 +1494,7 @@ def get_latest_known_job_identity(
     the newest job overall. Identity is the stable ``job_hash`` / canonical URL
     used by collectors before enrichment or scoring.
     """
-    if not Path(db_path).exists():
+    if _sqlite_path_missing(db_path):
         return None
 
     order_sql = (
@@ -2891,7 +2901,7 @@ def ensure_jobs_schema(db_path: Path) -> None:
 
 
 def get_latest_scan(cv_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | None:
-    if not uses_postgres() and not Path(db_path).exists():
+    if _sqlite_path_missing(db_path):
         return None
     with get_connection(db_path) as conn:
         if "cv_scans" not in _table_names(conn):
@@ -2904,7 +2914,7 @@ def get_latest_scan(cv_id: str, db_path: Path = DB_PATH) -> dict[str, Any] | Non
 
 
 def list_scans(cv_id: str, db_path: Path = DB_PATH) -> list[dict[str, Any]]:
-    if not uses_postgres() and not Path(db_path).exists():
+    if _sqlite_path_missing(db_path):
         return []
     with get_connection(db_path) as conn:
         if "cv_scans" not in _table_names(conn):
@@ -3101,7 +3111,7 @@ def get_cv_matches(
     When ``latest_only`` is True, only the matches produced by the CV's most
     recent scan are returned.
     """
-    if not Path(db_path).exists():
+    if _sqlite_path_missing(db_path):
         return []
     with get_connection(db_path) as conn:
         tables = _table_names(conn)
@@ -3301,7 +3311,7 @@ def get_latest_cv_tailor_version(
     db_path: Path = DB_PATH,
 ) -> dict[str, Any] | None:
     """Return the newest tailored-CV version row for (cv_id, job_id)."""
-    if not Path(db_path).exists():
+    if _sqlite_path_missing(db_path):
         return None
     with get_connection(db_path) as conn:
         tables = _table_names(conn)
@@ -3327,7 +3337,7 @@ def list_cv_tailor_versions(
     db_path: Path = DB_PATH,
 ) -> list[dict[str, Any]]:
     """Return tailored-CV version history for (cv_id, job_id), newest first."""
-    if not Path(db_path).exists():
+    if _sqlite_path_missing(db_path):
         return []
     with get_connection(db_path) as conn:
         tables = _table_names(conn)
