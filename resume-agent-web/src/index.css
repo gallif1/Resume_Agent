@@ -2301,14 +2301,7 @@ code {
   font-size: 0.92rem;
 }
 
-.tailored-cv-preamble {
-  margin-bottom: 14px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
 .tailored-cv-preamble-section {
-  unicode-bidi: isolate;
   margin-bottom: 0.85em;
 }
 
@@ -2316,10 +2309,6 @@ code {
   margin-bottom: 14px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
-}
-
-.tailored-cv-resume {
-  unicode-bidi: isolate;
 }
 
 .job-description-text,
