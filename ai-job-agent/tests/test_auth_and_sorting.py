@@ -52,6 +52,70 @@ def test_register_login_and_me(db_path, monkeypatch):
     assert bad.status_code == 401
 
 
+def test_login_survives_corrupt_per_cv_jobs_db(tmp_path, monkeypatch):
+    """Regression: ensure_multi_cv_storage used to open every CV jobs.db and 500 login."""
+    registry = tmp_path / "registry.db"
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", registry)
+    monkeypatch.setattr(api_server.db, "REGISTRY_DB_PATH", registry)
+    monkeypatch.setattr(db, "LEGACY_DB_PATH", tmp_path / "jobs.db")
+
+    cvs_root = tmp_path / "cvs"
+    monkeypatch.setattr(db, "cv_db_path", lambda cv_id: cvs_root / cv_id / "jobs.db")
+    # config.cv_db_path is what _backfill uses via cv_db_path import inside db
+    import config as cfg
+
+    monkeypatch.setattr(cfg, "CVS_DIR", cvs_root)
+
+    db.init_registry_db(registry)
+    user = auth.register_user("gal@example.com", "secret12", db_path=registry)
+    assert user["email"] == "gal@example.com"
+
+    with db.get_connection(registry) as conn:
+        conn.execute(
+            """
+            INSERT INTO cvs (
+                id, user_id, file_name, display_name, stored_path, file_ext,
+                file_size, file_hash, parsed_profile, is_active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+            """,
+            (
+                "cv-corrupt",
+                user["id"],
+                "resume.pdf",
+                "resume.pdf",
+                "data/cvs/cv-corrupt/resume.pdf",
+                ".pdf",
+                12,
+                "hash-corrupt",
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+
+    bad_dir = cvs_root / "cv-corrupt"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "jobs.db").write_text("NOT A SQLITE DATABASE", encoding="utf-8")
+
+    # Heavy path must not raise.
+    db.ensure_multi_cv_storage()
+    assert db._cv_data_counts("cv-corrupt", registry_db=registry) == (0, 0)
+
+    client = TestClient(api_server.app, raise_server_exceptions=False)
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "gal@example.com", "password": "secret12"},
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["access_token"]
+
+    bad = client.post(
+        "/api/auth/login",
+        json={"email": "gal@example.com", "password": "nope"},
+    )
+    assert bad.status_code == 401
+
+
 def test_cvs_require_auth(db_path, monkeypatch):
     monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
     monkeypatch.setattr(api_server.db, "REGISTRY_DB_PATH", db_path)
