@@ -627,7 +627,8 @@ def _run_search_thread(
 
 def _cv_match_count(cv_id: str) -> int:
     cv_db = cv_db_path(cv_id)
-    if not cv_db.exists():
+    # On Postgres the logical jobs.db path may not exist as a file.
+    if not db.uses_postgres() and not cv_db.exists():
         return 0
     try:
         db.ensure_jobs_schema(cv_db)
@@ -678,7 +679,7 @@ def _run_user_scan_thread(
 
 def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
     workspace_db = user_db_path(user_id)
-    if not workspace_db.exists():
+    if not db.uses_postgres() and not workspace_db.exists():
         return 0
     try:
         # Repair empty/partial DBs created by an earlier get_connection without init_db.

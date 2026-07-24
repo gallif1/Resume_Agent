@@ -303,13 +303,29 @@ export default function CvDetails({
       const data = workspaceMode
         ? await getJobMatches(sortOpts)
         : await getCvMatches(cvId, sortOpts);
-      setMatches(data.matches);
+      // Badge counts all matches; list defaults to latest scan. If the latest
+      // scan filter yields nothing but the CV still has matches, fall back so
+      // the Jobs tab is not empty while the card shows hundreds of matches.
+      if (
+        !workspaceMode &&
+        data.matches.length === 0 &&
+        (cv?.match_count ?? 0) > 0
+      ) {
+        const all = await getCvMatches(cvId, {
+          latest: false,
+          sortBy,
+          order: sortOrder,
+        });
+        setMatches(all.matches);
+      } else {
+        setMatches(data.matches);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
     } finally {
       setLoading(false);
     }
-  }, [cvId, workspaceMode, sortBy, sortOrder]);
+  }, [cvId, workspaceMode, sortBy, sortOrder, cv?.match_count]);
 
   const refreshJobList = useCallback(async () => {
     if (listRefreshing) return;
@@ -320,13 +336,26 @@ export default function CvDetails({
       const data = workspaceMode
         ? await getJobMatches(sortOpts)
         : await getCvMatches(cvId, sortOpts);
-      setMatches(data.matches);
+      if (
+        !workspaceMode &&
+        data.matches.length === 0 &&
+        (cv?.match_count ?? 0) > 0
+      ) {
+        const all = await getCvMatches(cvId, {
+          latest: false,
+          sortBy,
+          order: sortOrder,
+        });
+        setMatches(all.matches);
+      } else {
+        setMatches(data.matches);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
     } finally {
       setListRefreshing(false);
     }
-  }, [cvId, workspaceMode, sortBy, sortOrder, listRefreshing]);
+  }, [cvId, workspaceMode, sortBy, sortOrder, listRefreshing, cv?.match_count]);
 
   const handleSortChange = (value: string) => {
     // Encoded as "field:order" so one dropdown covers the common sorts.
