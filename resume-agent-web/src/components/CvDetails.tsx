@@ -130,13 +130,53 @@ function formatScoreProgression(
 ): string | null {
   if (after == null) return null;
   if (before == null) {
-    return original ? `ציון בסיס: ${after}/100` : `ציון מותאם: ${after}/100`;
+    return original
+      ? `ציון ההתאמה למשרה: ${after}`
+      : `ציון ההתאמה אחרי התאמה: ${after}`;
   }
   if (before === after) {
-    return `ציון התאמה: ${after}/100`;
+    return `ציון ההתאמה למשרה: ${after}`;
   }
-  const beforeLabel = original ? "ציון בסיס" : "ציון קודם";
-  return `${beforeLabel} (${before}%) → ציון מותאם (${after}%)`;
+  if (before < after) {
+    return original
+      ? `שיפרנו את ההתאמה למשרה מ־${before} ל־${after}`
+      : `שיפרנו עוד את ההתאמה מ־${before} ל־${after}`;
+  }
+  return `ציון ההתאמה אחרי התאמה: ${after}`;
+}
+
+/** Prefer LTR for Latin-heavy resume bodies so English CVs stay readable in RTL UI. */
+function textDirection(text: string): "ltr" | "rtl" {
+  const sample = (text || "").slice(0, 600);
+  let hebrew = 0;
+  let latin = 0;
+  for (const ch of sample) {
+    if (ch >= "\u0590" && ch <= "\u05FF") hebrew += 1;
+    else if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z")) latin += 1;
+  }
+  return hebrew > latin ? "rtl" : "ltr";
+}
+
+/** Split tailor markdown into Hebrew meta preamble vs resume body. */
+function splitTailoredPreview(markdown: string, cvMarkdown?: string | null): {
+  preamble: string | null;
+  body: string;
+} {
+  const body = extractTailoredCvBody(markdown, cvMarkdown);
+  const text = (markdown || "").trim();
+  if (!text || !body || body === text) {
+    return { preamble: null, body: body || text };
+  }
+  const idx = text.indexOf(body);
+  if (idx <= 0) {
+    return { preamble: null, body };
+  }
+  let preamble = text.slice(0, idx).trim();
+  preamble = preamble.replace(/\n---\s*$/u, "").trim();
+  preamble = preamble
+    .replace(/^##\s*קורות החיים המעודכנים\s*$/imu, "")
+    .trim();
+  return { preamble: preamble || null, body };
 }
 
 const IMPROVE_MATCH_HELPER =
@@ -1129,9 +1169,13 @@ export default function CvDetails({
                         { original: true }
                       );
                   if (!progression) return null;
+                  const labelHe = formatScoreLabel(
+                    tailoredCv.matcher_feedback?.current?.score_label ?? null
+                  );
                   return (
                     <>
-                      <b>התאמה:</b> {progression}
+                      {progression}
+                      {labelHe ? ` · ${labelHe}` : ""}
                       {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
                     </>
                   );
@@ -1181,9 +1225,30 @@ export default function CvDetails({
             <div
               key={previewAnimKey}
               className={`tailored-cv-body ${isGenerating ? "tailored-cv-body-dimmed" : "tailored-cv-body-fade-in"}`}
-              dir="auto"
             >
-              <Markdown>{tailoredCv.markdown}</Markdown>
+              {(() => {
+                const { preamble, body } = splitTailoredPreview(
+                  tailoredCv.markdown,
+                  tailoredCv.cv_markdown
+                );
+                const bodyDir = textDirection(body);
+                return (
+                  <>
+                    {preamble ? (
+                      <div className="tailored-cv-preamble" dir="rtl">
+                        <Markdown>{preamble}</Markdown>
+                      </div>
+                    ) : null}
+                    <div
+                      className="tailored-cv-resume"
+                      dir={bodyDir}
+                      lang={bodyDir === "ltr" ? "en" : "he"}
+                    >
+                      <Markdown>{body}</Markdown>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
             <div className="improve-match-block">
               <div className="modal-actions modal-actions-improve">

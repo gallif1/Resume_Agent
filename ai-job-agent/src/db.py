@@ -190,11 +190,25 @@ class _PgConnection:
 
         converted, bind = self._bind_sql(sql, params)
         sql_upper = sql.strip().upper()
-        returning = False
+        # Tables whose callers expect sqlite-style cursor.lastrowid after INSERT.
+        _RETURNING_ID_TABLES = (
+            "jobs",
+            "applications",
+            "cv_scans",
+            "cv_job_matches",
+            "cv_tailor_versions",
+            "job_applications",
+            "job_application_steps",
+        )
+        returning = "RETURNING" in sql_upper
         if (
             sql_upper.startswith("INSERT")
-            and "RETURNING" not in sql_upper
-            and re.search(r"INSERT\s+INTO\s+(jobs|applications|cv_scans|cv_job_matches)\b", sql, re.I)
+            and not returning
+            and re.search(
+                rf"INSERT\s+INTO\s+({'|'.join(_RETURNING_ID_TABLES)})\b",
+                sql,
+                re.I,
+            )
         ):
             converted = converted.rstrip().rstrip(";") + " RETURNING id"
             returning = True
@@ -3291,6 +3305,9 @@ def record_cv_tailor_version(
     """Persist one tailored-CV version with explicit score progression."""
     now = _utc_now()
     with get_connection(db_path) as conn:
+        # Ensure legacy DBs created before this table still work on first tailor.
+        if "cv_tailor_versions" not in _table_names(conn):
+            _apply_cv_match_migrations(conn)
         cursor = conn.execute(
             """
             INSERT INTO cv_tailor_versions (
@@ -3301,7 +3318,21 @@ def record_cv_tailor_version(
             (cv_id, job_id, score_before, score_after, tailored_cv_path, now),
         )
         conn.commit()
-        return int(cursor.lastrowid)
+        row_id = cursor.lastrowid
+        if row_id is None:
+            # Postgres path without RETURNING would leave lastrowid unset; recover.
+            row = conn.execute(
+                """
+                SELECT id FROM cv_tailor_versions
+                WHERE cv_id = ? AND job_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (cv_id, job_id),
+            ).fetchone()
+            if row is None or row.get("id") is None:
+                raise RuntimeError("cv_tailor_versions insert did not return an id")
+            return int(row["id"])
+        return int(row_id)
 
 
 def get_latest_cv_tailor_version(
