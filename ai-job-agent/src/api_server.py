@@ -52,6 +52,7 @@ Legacy (single global CV) endpoints, kept for backward compatibility:
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -59,6 +60,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("api_server")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -164,19 +167,34 @@ class AuthLoginRequest(BaseModel):
 
 @app.post("/api/auth/register")
 def auth_register(req: AuthRegisterRequest):
-    db.ensure_multi_cv_storage()
+    # Auth must not depend on CV migration / per-CV job DBs — a corrupt jobs.db
+    # used to make every register/login return opaque HTTP 500.
     try:
+        db.init_registry_db()
         user = auth.register_user(req.email, req.password)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface DB/connectivity failures
+        logger.exception("auth register failed")
+        raise HTTPException(
+            status_code=500,
+            detail="שגיאת שרת בהרשמה — בעיית מסד נתונים. נסה שוב מאוחר יותר",
+        ) from exc
     token = auth.create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "user": auth.public_user(user)}
 
 
 @app.post("/api/auth/login")
 def auth_login(req: AuthLoginRequest):
-    db.ensure_multi_cv_storage()
-    user = auth.authenticate_user(req.email, req.password)
+    try:
+        db.init_registry_db()
+        user = auth.authenticate_user(req.email, req.password)
+    except Exception as exc:  # noqa: BLE001 — surface DB/connectivity failures
+        logger.exception("auth login failed")
+        raise HTTPException(
+            status_code=500,
+            detail="שגיאת שרת בהתחברות — בעיית מסד נתונים. נסה שוב מאוחר יותר",
+        ) from exc
     if user is None:
         raise HTTPException(status_code=401, detail="אימייל או סיסמה שגויים")
     token = auth.create_access_token(user["id"], user["email"] or "")
@@ -1952,6 +1970,15 @@ def _data_dir_looks_persistent() -> bool:
 async def health():
     browser_ok, browser_error = _playwright_browser_ready()
     data_persistent = _data_dir_looks_persistent()
+    database_ok = True
+    database_error = None
+    try:
+        db.init_registry_db()
+        with db.get_connection(db.REGISTRY_DB_PATH) as conn:
+            conn.execute("SELECT 1 AS ok").fetchone()
+    except Exception as exc:  # noqa: BLE001
+        database_ok = False
+        database_error = str(exc)[:200]
     return {
         "ok": True,
         "pipeline_running": _pipeline_state["running"],
@@ -1961,6 +1988,9 @@ async def health():
         "data_dir": str(DATA_DIR),
         "data_persistent": data_persistent,
         "registry_db_exists": db.REGISTRY_DB_PATH.is_file(),
+        "uses_postgres": db.uses_postgres(),
+        "database_ok": database_ok,
+        "database_error": database_error,
     }
 
 

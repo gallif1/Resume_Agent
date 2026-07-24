@@ -21,4 +21,8 @@ jobs:
             git pull origin master
             sudo DOCKER_BUILDKIT=0 docker build --no-cache -t resume_agent-resume-backend .
             sudo DOCKER_BUILDKIT=0 docker-compose up -d
+            sleep 3
+            sudo docker-compose ps
+            sudo docker-compose logs --tail=80
+            curl -sf http://127.0.0.1:8001/api/health || curl -sf http://127.0.0.1:8000/api/health || true
             sudo docker system prune -f

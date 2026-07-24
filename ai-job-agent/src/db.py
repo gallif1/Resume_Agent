@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
+
+logger = logging.getLogger("db")
 
 from config import (
     CVS_DIR,
@@ -694,12 +697,32 @@ def _apply_registry_migrations(conn: Any) -> None:
                 except Exception:
                     pass
 
-    conn.execute(
-        "UPDATE cvs SET user_id = ? WHERE user_id IS NULL OR user_id = ''",
-        (DEFAULT_USER_ID,),
-    )
-    conn.execute("UPDATE cvs SET is_active = 1 WHERE is_active IS NULL")
-    conn.commit()
+    columns = _table_columns(conn, "cvs")
+    if "user_id" in columns:
+        try:
+            conn.execute(
+                "UPDATE cvs SET user_id = ? WHERE user_id IS NULL OR user_id = ''",
+                (DEFAULT_USER_ID,),
+            )
+            conn.commit()
+        except Exception as exc:
+            if not _is_operational_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    if "is_active" in columns:
+        try:
+            conn.execute("UPDATE cvs SET is_active = 1 WHERE is_active IS NULL")
+            conn.commit()
+        except Exception as exc:
+            if not _is_operational_error(exc):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
     try:
         conn.execute(
@@ -955,37 +978,42 @@ def init_db(db_path: Path = DB_PATH) -> None:
 
 
 def _cv_data_counts(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> tuple[int, int]:
-    if uses_postgres():
-        with get_connection(registry_db) as conn:
-            scan_count = conn.execute(
-                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
-            ).fetchone()["n"]
-            match_count = conn.execute(
-                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
-            ).fetchone()["n"]
-        return int(match_count), int(scan_count)
+    """Return (match_count, scan_count). Corrupt/missing per-CV DBs yield (0, 0)."""
+    try:
+        if uses_postgres():
+            with get_connection(registry_db) as conn:
+                scan_count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
+                ).fetchone()["n"]
+                match_count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
+                ).fetchone()["n"]
+            return int(match_count), int(scan_count)
 
-    data_db = _resolve_cv_data_db(cv_id, registry_db)
-    if not data_db.exists():
+        data_db = _resolve_cv_data_db(cv_id, registry_db)
+        if not data_db.exists():
+            return 0, 0
+        with get_connection(data_db) as conn:
+            tables = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            scan_count = 0
+            match_count = 0
+            if "cv_scans" in tables:
+                scan_count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
+                ).fetchone()["n"]
+            if "cv_job_matches" in tables:
+                match_count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
+                ).fetchone()["n"]
+        return int(match_count), int(scan_count)
+    except Exception as exc:  # noqa: BLE001 — corrupt SQLite / transient DB errors
+        logger.warning("cv data counts failed for %s: %s", cv_id, exc)
         return 0, 0
-    with get_connection(data_db) as conn:
-        tables = {
-            row["name"]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
-        scan_count = 0
-        match_count = 0
-        if "cv_scans" in tables:
-            scan_count = conn.execute(
-                "SELECT COUNT(*) AS n FROM cv_scans WHERE cv_id = ?", (cv_id,)
-            ).fetchone()["n"]
-        if "cv_job_matches" in tables:
-            match_count = conn.execute(
-                "SELECT COUNT(*) AS n FROM cv_job_matches WHERE cv_id = ?", (cv_id,)
-            ).fetchone()["n"]
-    return int(match_count), int(scan_count)
 
 
 def _resolve_cv_data_db(cv_id: str, registry_db: Path = REGISTRY_DB_PATH) -> Path:
@@ -1147,11 +1175,21 @@ def migrate_legacy_shared_database() -> bool:
 
 
 def ensure_multi_cv_storage() -> None:
-    """Initialize registry and migrate old shared-DB layout if needed."""
+    """Initialize registry and migrate old shared-DB layout if needed.
+
+    Migration/backfill failures are logged and swallowed so auth and CV listing
+    stay available even when a legacy per-CV SQLite file is corrupt.
+    """
     init_registry_db()
     if not uses_postgres():
-        migrate_legacy_shared_database()
-    _backfill_cv_profiles()
+        try:
+            migrate_legacy_shared_database()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("legacy shared-DB migration failed: %s", exc)
+    try:
+        _backfill_cv_profiles()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("CV profile backfill failed: %s", exc)
 
 
 def _backfill_cv_profiles() -> None:
@@ -1159,9 +1197,18 @@ def _backfill_cv_profiles() -> None:
     from cv_domain import refine_profile
     from profile_utils import save_profile_for_cv
 
-    for cv in list_cvs():
+    try:
+        cvs = list_cvs()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("list_cvs during backfill failed: %s", exc)
+        return
+
+    for cv in cvs:
         cv_id = cv["id"]
-        cv_profile_path = cv_db_path(cv_id).parent / "cv_profile.json"
+        try:
+            cv_profile_path = cv_db_path(cv_id).parent / "cv_profile.json"
+        except Exception:  # noqa: BLE001
+            continue
         if not cv_profile_path.exists():
             continue
         try:
@@ -1171,7 +1218,7 @@ def _backfill_cv_profiles() -> None:
                 json.dumps(cv_profile, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             save_profile_for_cv(cv_id, cv_profile)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
             pass
 
 
