@@ -1,0 +1,30 @@
+
+Running 12 tests using 1 worker
+
+(node:15236) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:15236) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 [chromium-desktop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (1.7s)
+  ✓   2 [chromium-desktop] › tests/accessibility.spec.ts:144:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe (23.7s)
+  ✓   3 [chromium-desktop] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (24.6s)
+  ✓   4 [chromium-desktop] › tests/responsive-rtl.spec.ts:116:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth (21.8s)
+(node:15471) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:15471) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   5 [chromium-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (1.7s)
+  -   6 [chromium-mobile] › tests/accessibility.spec.ts:144:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  ✓   7 [chromium-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (23.1s)
+  -   8 [chromium-mobile] › tests/responsive-rtl.spec.ts:116:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+(node:15648) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:15648) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -   9 [chromium-small-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe
+  -  10 [chromium-small-mobile] › tests/accessibility.spec.ts:144:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  ✓  11 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (23.4s)
+  -  12 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:116:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+
+  5 skipped
+  7 passed (2.0m)
