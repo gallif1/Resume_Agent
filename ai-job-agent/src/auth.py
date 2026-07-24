@@ -73,6 +73,7 @@ def register_user(email: str, password: str, *, db_path=None) -> dict[str, Any]:
         raise ValueError("הסיסמה חייבת להכיל לפחות 6 תווים")
 
     path = db_path or db.REGISTRY_DB_PATH
+    db.ensure_auth_schema(path)
     existing = db.get_user_by_email(email, db_path=path)
     if existing is not None:
         raise ValueError("משתמש עם אימייל זה כבר קיים")
