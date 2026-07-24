@@ -167,10 +167,8 @@ class AuthLoginRequest(BaseModel):
 
 @app.post("/api/auth/register")
 def auth_register(req: AuthRegisterRequest):
-    # Auth must not depend on CV migration / per-CV job DBs — a corrupt jobs.db
-    # used to make every register/login return opaque HTTP 500.
+    # Auth uses ensure_auth_schema (users only) — not full CV/Postgres migration.
     try:
-        db.init_registry_db()
         user = auth.register_user(req.email, req.password)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -187,7 +185,6 @@ def auth_register(req: AuthRegisterRequest):
 @app.post("/api/auth/login")
 def auth_login(req: AuthLoginRequest):
     try:
-        db.init_registry_db()
         user = auth.authenticate_user(req.email, req.password)
     except Exception as exc:  # noqa: BLE001 — surface DB/connectivity failures
         logger.exception("auth login failed")
