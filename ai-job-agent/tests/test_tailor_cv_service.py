@@ -217,7 +217,7 @@ def test_tailor_cv_for_job_calls_openai(
     assert svc.tailored_cv_path(cv_id, 9).exists()
     assert "Did not invent" in result["caveats"][0]
     # Cache namespace should include prompt version.
-    assert "v6" in svc.TAILOR_PROMPT_VERSION
+    assert "v7" in svc.TAILOR_PROMPT_VERSION
     assert "ONE-PAGE" in svc.TAILOR_SYSTEM_PROMPT or "ONE PAGE" in svc.TAILOR_SYSTEM_PROMPT.upper()
     assert "NEVER OMIT REAL EMPLOYMENT" in svc.TAILOR_SYSTEM_PROMPT
     assert "SQLAlchemy" in svc.TAILOR_SYSTEM_PROMPT
@@ -237,6 +237,18 @@ def test_tailor_system_prompt_is_role_agnostic():
     assert "CAREER-PIVOT SAFETY RAILS" in prompt
     assert "Core Professional Domain" in prompt
     assert "NEVER hallucinate fake job titles" in prompt
+    # GPT-4o human-grade writing contract.
+    assert "Senior Technical Recruiter" in prompt
+    assert "Principal Backend Engineer" in prompt
+    assert "XYZ" in prompt
+    assert "15–30" in prompt or "15-30" in prompt
+    assert "**bold**" in prompt or "Markdown **bold**" in prompt
+    assert "hardworking" in prompt  # listed as a banned cliché
+    assert "[rest of bullets here]" in prompt
+    assert "Backend & Frameworks" in prompt
+    assert "Concepts & Architecture" in prompt
+    assert 0.3 <= svc.TAILOR_TEMPERATURE <= 0.5
+    assert 0.3 <= svc.REGENERATE_TEMPERATURE <= 0.5
     # Examples of specific career paths must not be baked in as the default narrative.
     for banned in (
         "Technical Support",
@@ -256,6 +268,9 @@ def test_build_tailor_user_prompt_labels_inputs():
     assert "RAW CV TEXT HERE" in user
     assert "React Frontend Developer" in user
     assert "Target Role:" in user
+    assert "XYZ" in user
+    assert "FORBIDDEN" in user
+    assert "Backend & Frameworks" in user
 
 
 def test_tailor_requires_api_key(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):

@@ -108,11 +108,13 @@ def call_openai_json(
     use_cache: bool = True,
     cache_namespace: str = "openai",
     cache_payload: str | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Call OpenAI with JSON response format. Optional file cache on cache_payload."""
     require_openai_api()
 
-    payload = cache_payload or f"{system_prompt}\n---\n{user_prompt}"
+    selected_model = (model or OPENAI_MODEL).strip() or OPENAI_MODEL
+    payload = cache_payload or f"{selected_model}\n---\n{system_prompt}\n---\n{user_prompt}"
     if use_cache:
         cached = read_cache(cache_namespace, payload)
         if cached is not None:
@@ -124,7 +126,7 @@ def call_openai_json(
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=selected_model,
             response_format={"type": "json_object"},
             temperature=temperature,
             messages=[

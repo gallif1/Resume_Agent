@@ -51,6 +51,7 @@ python -m playwright install chromium
 ```
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
+OPENAI_TAILOR_MODEL=gpt-4o
 ```
 
 Without a key, resume parsing still works using local rule-based extraction.
