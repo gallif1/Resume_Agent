@@ -22,115 +22,158 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Hard backstop — job cannot sit on "Running..." forever.
+    timeout-minutes: 12
 
     steps:
-      # Separate tiny SSH probe so we can see connectivity vs script hang in the UI.
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          echo "Step 1: write SSH key"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          # Fail fast if secret is empty/malformed.
+          test -s ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+          echo "Step 1 done: key ok"
+
       - name: SSH connectivity probe
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          command_timeout: 30s
-          timeout: 20s
-          request_pty: false
-          script_stop: true
-          script: |
-            echo "Step 0: SSH probe ok"
-            hostname
-            date -u
-            whoami
-            exit 0
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          echo "Step 2: SSH probe to ${EC2_USERNAME}@${EC2_HOST}"
+          # Runner-level timeout ALWAYS kills hung ssh (appleboy timeouts were ignored).
+          timeout 25s ssh \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=2 \
+            -o IdentitiesOnly=yes \
+            "${EC2_USERNAME}@${EC2_HOST}" \
+            'echo PROBE_OK; hostname; date -u; whoami; exit 0'
+          echo "Step 2 done: probe ok"
 
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          command_timeout: 8m
-          timeout: 20s
-          request_pty: false
-          script_stop: true
-          debug: true
-          envs: REBUILD
-          script: |
-            set -eu
-            echo "Step 1: enter project directory"
-            cd "$HOME/resume-backend/Resume_Agent"
-            pwd
-
-            echo "Step 2: pull latest master"
-            git pull origin master
-
-            echo "Step 3: choose compose command"
-            if docker compose version >/dev/null 2>&1; then
-              echo "Using docker compose v2"
-              UP_CMD='docker compose up -d --force-recreate --remove-orphans'
-              PS_CMD='docker compose ps'
-              LOGS_CMD='docker compose logs --tail=80'
-            else
-              echo "Using docker-compose v1"
-              UP_CMD='docker-compose up -d --force-recreate --remove-orphans'
-              PS_CMD='docker-compose ps'
-              LOGS_CMD='docker-compose logs --tail=80'
-            fi
-
-            echo "Step 4: recreate containers (detached, all FDs closed)"
-            # appleboy/ssh-action waits on open stdout/stderr from docker children.
-            # Closing all three FDs is required or the Action hangs forever even with -d.
-            # See: https://github.com/appleboy/ssh-action/issues/40
-            #      https://github.com/appleboy/ssh-action/issues/122
-            sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
-            echo "compose up exit=$?"
-            echo "compose up log:"
-            tail -n 40 "$HOME/ra-compose-up.log" || true
-
-            echo "Step 5: health check loop"
-            ok=0
-            i=1
-            while [ "$i" -le 15 ]; do
-              echo "Health attempt $i/15..."
-              if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
-                || curl -sf --max-time 5 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
-                ok=1
-                break
-              fi
-              i=$((i + 1))
-              sleep 2
-            done
-
-            echo "Step 6: container status"
-            sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true
-            cat "$HOME/ra-compose-ps.log" || true
-            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
-
-            echo "Step 7: health payload"
-            cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
-            echo
-
-            if [ "$ok" != "1" ]; then
-              echo "ERROR: health check failed after deploy" >&2
-              sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
-              tail -n 120 "$HOME/ra-compose-logs.log" || true
-              exit 1
-            fi
-
-            echo "Step 8: SITE IS UP"
-
-            if [ "${REBUILD:-false}" = "true" ]; then
-              echo "Step 9: optional rebuild"
-              sudo docker build -t resume_agent-resume-backend . </dev/null >"$HOME/ra-docker-build.log" 2>&1
-              sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
-              curl -sf --max-time 5 http://127.0.0.1:8001/api/health || curl -sf --max-time 5 http://127.0.0.1:8000/api/health
-              sudo docker image prune -f </dev/null >/dev/null 2>&1 || true
-              echo "Step 10: rebuild complete"
-            else
-              echo "Step 9: skipping image rebuild"
-            fi
-
-            echo "Step 10: deploy finished successfully"
-            exit 0
         env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           REBUILD: ${{ github.event.inputs.rebuild || 'false' }}
+        run: |
+          set -euo pipefail
+          echo "Step 3: upload and run remote deploy script"
+
+          # Keep remote script in a file so local ssh argv does not contain
+          # patterns that could confuse process matching on the server.
+          cat > /tmp/ra-remote-deploy.sh <<'REMOTE'
+          #!/bin/bash
+          set -eu
+          echo "Step R1: enter project directory"
+          cd "$HOME/resume-backend/Resume_Agent"
+          pwd
+
+          echo "Step R2: pull latest master"
+          git pull origin master
+
+          echo "Step R3: choose compose"
+          if docker compose version >/dev/null 2>&1; then
+            UP_CMD='docker compose up -d --force-recreate --remove-orphans'
+            PS_CMD='docker compose ps'
+            LOGS_CMD='docker compose logs --tail=80'
+          else
+            UP_CMD='docker-compose up -d --force-recreate --remove-orphans'
+            PS_CMD='docker-compose ps'
+            LOGS_CMD='docker-compose logs --tail=80'
+          fi
+          echo "compose command: $UP_CMD"
+
+          echo "Step R4: recreate containers (detached, FDs closed)"
+          # Close FDs so ssh cannot hang waiting on docker child streams.
+          sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
+          echo "compose up finished"
+          tail -n 40 "$HOME/ra-compose-up.log" || true
+
+          echo "Step R5: health check"
+          ok=0
+          i=1
+          while [ "$i" -le 15 ]; do
+            echo "Health attempt $i/15..."
+            if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
+              || curl -sf --max-time 5 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
+              ok=1
+              break
+            fi
+            i=$((i + 1))
+            sleep 2
+          done
+
+          echo "Step R6: status"
+          sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true
+          cat "$HOME/ra-compose-ps.log" || true
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+
+          echo "Step R7: health payload"
+          cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
+          echo
+
+          if [ "$ok" != "1" ]; then
+            echo "ERROR: health check failed" >&2
+            sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
+            tail -n 120 "$HOME/ra-compose-logs.log" || true
+            exit 1
+          fi
+
+          echo "Step R8: SITE IS UP"
+
+          if [ "${REBUILD:-false}" = "true" ]; then
+            echo "Step R9: optional rebuild"
+            sudo docker build -t resume_agent-resume-backend . </dev/null >"$HOME/ra-docker-build.log" 2>&1
+            sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
+            curl -sf --max-time 5 http://127.0.0.1:8001/api/health \
+              || curl -sf --max-time 5 http://127.0.0.1:8000/api/health
+            sudo docker image prune -f </dev/null >/dev/null 2>&1 || true
+          else
+            echo "Step R9: skipping rebuild"
+          fi
+
+          echo "Step R10: remote deploy finished"
+          exit 0
+          REMOTE
+
+          chmod +x /tmp/ra-remote-deploy.sh
+
+          # Copy script then execute. Whole SSH session hard-capped by timeout(1).
+          timeout 30s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            /tmp/ra-remote-deploy.sh \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-remote-deploy.sh"
+
+          echo "Step 4: run remote deploy (max 7 minutes)"
+          timeout 420s ssh \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=2 \
+            -o IdentitiesOnly=yes \
+            "${EC2_USERNAME}@${EC2_HOST}" \
+            "REBUILD=${REBUILD} bash /tmp/ra-remote-deploy.sh"
+
+          echo "Step 5: deploy workflow finished successfully"
