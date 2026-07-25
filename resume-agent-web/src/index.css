@@ -2301,6 +2301,24 @@ code {
   font-size: 0.92rem;
 }
 
+.tailored-cv-preamble {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tailored-cv-resume {
+  unicode-bidi: isolate;
+}
+
+.tailored-cv-resume[dir="ltr"] {
+  text-align: left;
+}
+
+.tailored-cv-resume[dir="rtl"] {
+  text-align: right;
+}
+
 .tailored-cv-body h1,
 .tailored-cv-body h2,
 .tailored-cv-body h3 {

@@ -107,8 +107,8 @@ REQUIRED MARKDOWN STRUCTURE for `markdown` (use these Hebrew headings):
   Do not invent role- or company-specific history.
 
 ## ציון התאמה למשרה
-- One short line referencing the provided current_score and how tailoring affects fit.
-- Format example: "**ציון בסיס: 76/100** → שיפור צפוי לאחר התאמה — …"
+- One short human Hebrew line about fit after tailoring (no raw "X/100 → Y/100" formulas).
+- Format example: "**שיפרנו את ההתאמה למשרה מ־76 ל־88 — התאמה טובה**"
 - Be realistic. Do NOT invent experience to inflate the score. The server computes
   the official tailored score; never contradict current_score with a made-up baseline.
 
@@ -1006,6 +1006,25 @@ def _feedback_match_score(feedback: dict[str, Any] | None) -> int | None:
     return _clamp_score(feedback.get("match_score", feedback.get("ats_score")))
 
 
+_SCORE_LABEL_HE = {
+    "Excellent Match": "התאמה מצוינת",
+    "Good Match": "התאמה טובה",
+    "Partial Match": "התאמה חלקית",
+    "Potential Match": "התאמה פוטנציאלית",
+    "Weak Match": "התאמה חלשה",
+    "Baseline": "ציון בסיס",
+}
+
+
+def _hebrew_score_label(label: str | None) -> str | None:
+    if not label:
+        return None
+    text = str(label).strip()
+    if not text or text.lower() == "baseline":
+        return None
+    return _SCORE_LABEL_HE.get(text, text)
+
+
 def _score_line_for_display(
     *,
     score: int,
@@ -1013,20 +1032,17 @@ def _score_line_for_display(
     score_before: int | None = None,
     initial_match_score: int | None = None,
 ) -> str:
-    if score_before is not None and score_before != score:
-        return (
-            f"**ציון בסיס: {score_before}/100 → ציון מותאם: {score}/100**"
-            + (f" — {label}" if label else "")
-        )
-    if initial_match_score is not None and initial_match_score != score:
-        return (
-            f"**ציון בסיס: {initial_match_score}/100 → ציון מותאם: {score}/100**"
-            + (f" — {label}" if label else "")
-        )
-    line = f"**ציון משוער: {score}/100**"
-    if label:
-        line += f" — {label} (מדד התאמה דטרמיניסטי)"
-    return line
+    """Human Hebrew score summary (server overwrites LLM score section)."""
+    he_label = _hebrew_score_label(label)
+    label_suffix = f" — {he_label}" if he_label else ""
+    before = score_before if score_before is not None else initial_match_score
+    if before is not None and before < score:
+        return f"**שיפרנו את ההתאמה למשרה מ־{before} ל־{score}{label_suffix}**"
+    if before is not None and before > score:
+        return f"**ציון ההתאמה למשרה אחרי התאמה: {score}{label_suffix}**"
+    if before is not None and before == score:
+        return f"**ציון ההתאמה למשרה: {score}{label_suffix}**"
+    return f"**ציון ההתאמה למשרה: {score}{label_suffix}**"
 
 
 def _attach_score_metadata(
@@ -1251,14 +1267,17 @@ def _regenerate_tailored_cv(
     path = save_tailored_cv(cv_id, job_id, result["markdown"])
     version_id = None
     if db_path is not None and score_before is not None:
-        version_id = record_cv_tailor_version(
-            cv_id,
-            job_id,
-            score_before=int(score_before),
-            score_after=new_score,
-            tailored_cv_path=str(path),
-            db_path=db_path,
-        )
+        try:
+            version_id = record_cv_tailor_version(
+                cv_id,
+                job_id,
+                score_before=int(score_before),
+                score_after=new_score,
+                tailored_cv_path=str(path),
+                db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001 — version history must not fail a successful tailor
+            version_id = None
     return _attach_score_metadata(
         {
             **result,
@@ -1368,14 +1387,17 @@ def tailor_cv_for_job(
     path = save_tailored_cv(cv_id, job_id, result["markdown"])
     version_id = None
     if db_path is not None and score_before is not None and score_after is not None:
-        version_id = record_cv_tailor_version(
-            cv_id,
-            job_id,
-            score_before=int(score_before),
-            score_after=int(score_after),
-            tailored_cv_path=str(path),
-            db_path=db_path,
-        )
+        try:
+            version_id = record_cv_tailor_version(
+                cv_id,
+                job_id,
+                score_before=int(score_before),
+                score_after=int(score_after),
+                tailored_cv_path=str(path),
+                db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001 — version history must not fail a successful tailor
+            version_id = None
     return _attach_score_metadata(
         {
             **result,

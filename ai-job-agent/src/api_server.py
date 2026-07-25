@@ -1625,6 +1625,8 @@ def tailor_workspace_job(
     job, workspace_db, profile_cv_id = _resolve_job_context(
         job_id, source_cv_id, user_id=user["id"]
     )
+    # Ensure cv_tailor_versions (and other match migrations) exist before first tailor.
+    db.init_db(workspace_db)
     force = (req.force if req else False) or regenerate
     try:
         result = tailor_cv_for_job(
