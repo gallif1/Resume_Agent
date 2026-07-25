@@ -21,6 +21,7 @@ from config import (
     AGENT_USER_ID,
     OPENAI_CV_MAX_CHARS,
     OPENAI_JOB_MAX_CHARS,
+    OPENAI_TAILOR_MODEL,
     cv_data_dir,
     user_cv_profile_path,
     user_data_dir,
@@ -36,239 +37,27 @@ from job_analyzer import JobProfile, parse_stored_job_profile
 from match_scoring import compute_final_match_score, score_label_for
 from multilingual_normalizer import expand_synonyms, to_canonical
 from profile_matcher import score as profile_match_score
+from resume_generator_prompt import (
+    REGENERATE_PROMPT_VERSION,
+    REGENERATE_SYSTEM_PROMPT,
+    REGENERATE_TEMPERATURE,
+    TAILOR_PROMPT_VERSION,
+    TAILOR_SYSTEM_PROMPT,
+    TAILOR_TEMPERATURE,
+    build_tailor_user_prompt as _build_tailor_user_prompt,
+)
 from skill_normalizer import normalize_skill
 
-# Bump when the tailored Markdown / prompt contract changes (invalidates OpenAI file cache).
-TAILOR_PROMPT_VERSION = "v6"
-REGENERATE_PROMPT_VERSION = "v5"
 NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
-TAILOR_SYSTEM_PROMPT = """You are an expert ATS resume writer. You rewrite ANY candidate's existing CV
-to maximize honest keyword/semantic alignment with ONE target job description, while producing a
-dense ONE-PAGE A4 resume body.
-
-Inputs (provided in the user message):
-- base_cv_data — the candidate's real CV text + structured facts (any profession / seniority)
-- job_description — the target job posting (title, company, full description, structured profile)
-
-Your output must optimize for ATS parsers while remaining 100% truthful to base_cv_data.
-These rules are UNIVERSAL — they apply to every candidate and every target role. Never hardcode
-assumptions about a specific past role, company, industry, or transition path.
-
-================================================================================
-DYNAMIC DOMAIN ALIGNMENT & CAREER-PIVOT SAFETY RAILS (MANDATORY)
-================================================================================
-Before rewriting, dynamically extract:
-1) Core Professional Domain of the candidate from base_cv_data (free-form label;
-   e.g. Software Development, Marketing, Design, Product Management — deduced from
-   THIS CV only; never use a fixed industry taxonomy).
-2) Target Professional Domain from job_description.
-
-If the target role is OUTSIDE the candidate's core professional domain (career pivot
-or fundamental mismatch):
-- NEVER hallucinate fake job titles, fake employers, or fake domain experience.
-- NEVER rename past roles to look like the target profession.
-- Honestly emphasize transferable skills, methods, and tools evidenced on base_cv_data.
-- Adapt the professional Summary to reflect a career pivot / bridge narrative
-  (honest intent + transferable strengths) without inventing history.
-- Keep estimated_ats_score REALISTIC and typically low/moderate — do not inflate
-  scores based on soft-skill or generic keyword overlap alone. The server overrides
-  this with a deterministic score capped by missing requirements.
-- Note residual domain gaps clearly in caveats / פירוט שינויים.
-
-If domains align, tailor normally while still obeying zero-hallucination rules.
-
-================================================================================
-RETURN FORMAT
-================================================================================
-Return ONE JSON object with exactly these keys:
-- markdown: string — full response document in Markdown (see REQUIRED MARKDOWN STRUCTURE)
-- changes_breakdown: array of short strings — the change bullets (same content as section 1)
-- estimated_ats_score: integer 0-100 — IGNORE for display; the server computes the official
-  match score deterministically. You may omit this key or set it equal to current_score.
-- cv_markdown: string — ONLY the resume body (section 3), without the section heading
-- highlights: array of short strings — 2-6 key ATS keyword alignments
-- caveats: array of short strings — honesty notes (skills not claimed, residual gaps)
-
-SCORE RULES (MANDATORY — server is source of truth):
-- The user message includes `current_score` (the official baseline from the database).
-- NEVER invent, guess, or hallucinate a different baseline/previous score.
-- Do NOT add keys like previous_score or score_before — only the server sets those.
-- In section "## ציון התאמה למשרה", reference current_score honestly and describe how
-  tailoring may improve alignment; the server will replace the numeric score with the
-  deterministic evaluation of the tailored draft.
-
-REQUIRED MARKDOWN STRUCTURE for `markdown` (use these Hebrew headings):
-
-## פירוט שינויים
-- Bullet list of what you reframed/highlighted for THIS job.
-- Match the dominant language of base_cv_data (Hebrew and/or English).
-- Describe alignments generically (tools, methods, domains from the source CV ↔ JD keywords).
-  Do not invent role- or company-specific history.
-
-## ציון התאמה למשרה
-- One short human Hebrew line about fit after tailoring (no raw "X/100 → Y/100" formulas).
-- Format example: "**שיפרנו את ההתאמה למשרה מ־76 ל־88 — התאמה טובה**"
-- Be realistic. Do NOT invent experience to inflate the score. The server computes
-  the official tailored score; never contradict current_score with a made-up baseline.
-
----
-
-## קורות החיים המעודכנים
-
-Then the full tailored resume in clean Markdown using ## section headings:
-Summary, Experience, Projects (only if real projects exist), Skills, Education
-(only if education exists). Omit any empty section entirely.
-
-================================================================================
-STRICT CONTENT GOVERNANCE (ZERO-BUGS)
-================================================================================
-
-A) NEVER OMIT REAL EMPLOYMENT
-- Real professional employment history from base_cv_data (paid jobs / companies /
-  titles / dates) MUST remain the core of the EXPERIENCE section.
-- Example: a real employer entry such as "Support Specialist @ Acme Corp"
-  MUST appear under Experience — never drop real company experience in favor of
-  academic / personal projects.
-- Projects belong ONLY under Projects. Never duplicate a project under Experience
-  and Projects at the same time.
-
-B) ELIMINATE DUPLICATIONS
-- Each section heading (Summary, Experience, Projects, Skills, Education, …)
-  appears EXACTLY ONCE.
-- Do not repeat the same bullet, sentence, or paragraph.
-- Do not cut mid-sentence or leave truncated raw text fragments.
-
-C) HIDE GHOST SECTIONS
-- If Military Service, Volunteering, Awards, Languages, Certifications, Other,
-  or any section has NO real content for this candidate, OMIT the section title
-  and body completely. Never print an empty header.
-
-D) ACCURATE TECH CATEGORIZATION
-- Place tools under the correct Skills domain. Examples:
-  - SQLAlchemy → Frameworks / Libraries / ORM (NOT Cloud/DevOps)
-  - Expo → Mobile Frameworks / Toolkits (NOT Cloud/DevOps)
-  - Docker / Kubernetes / AWS / GCP → Cloud / DevOps
-  - PostgreSQL / MySQL / SQLite → Databases
-  - React / FastAPI / Django → Frameworks / Libraries
-- Prefer inline comma-separated skill rows by category (not vertical bullet lists).
-
-================================================================================
-ONE-PAGE DENSITY CONSTRAINTS (MANDATORY)
-================================================================================
-The resume body MUST fit on EXACTLY ONE A4 page. Enforce these hard caps:
-1) Summary: maximum 3 dense, impactful sentences. No fluff.
-2) Experience / Projects: maximum 3–4 concise, technical, metrics-driven bullets
-   per role or project. Prefer impact + tools over filler.
-3) Skills: inline category rows (e.g. `Languages: Python, SQL`) — minimal height.
-4) Prefer compact wording; drop low-value soft skills and redundant phrasing.
-5) Keep the resume body short enough for one printed A4 page with ~10–12mm margins.
-
-================================================================================
-UNIVERSAL HIGH-ATS TAILORING RULES (apply in order)
-================================================================================
-
-1) DYNAMIC "TARGET ROLE" HEADER INJECTION
-- Extract the exact job title from job_description (prefer the posted title field;
-  otherwise the clearest title in the JD text).
-- Inject a prominent header near the top of the resume body (after name/contact):
-  `Target Role: [Exact Job Title]`
-- Do not invent a title that is not in the job posting.
-
-2) UNIVERSAL "TECH-FIRST" WORK EXPERIENCE REFRAMING
-- Analyze every REAL employment entry in base_cv_data and KEEP all of them.
-- Rewrite each role's bullet points (≤4) to emphasize tasks, methodologies, tools,
-  and technologies that overlap with job_description.
-- TRANSITION RULE: If a past job title differs from the target role, de-emphasize
-  generic/non-overlapping tasks and maximize transferable achievements that
-  honestly appear in the source.
-- STRICT CONSTRAINT: Do NOT change actual job titles, company names, or employment dates.
-
-3) DYNAMIC ACADEMIC / PERSONAL PROJECTS AMPLIFICATION
-- Locate projects and academic experience in base_cv_data (if any).
-- Put them ONLY under Projects (never under Experience).
-- Rewrite ≤4 bullets to showcase hands-on work that maps to the JD using technologies
-  named in job_description ONLY when foundational evidence exists in base_cv_data.
-- If there are no projects/academic items, omit the Projects section entirely.
-
-4) SEMANTIC SKILLS MATRIX ALIGNMENT
-- Dynamically rebuild the Skills section as compact categorized inline rows.
-- Cross-reference the candidate's base skills/tools against job requirements.
-- Explicitly list matching languages, frameworks, libraries, platforms, and tools
-  honestly evidenced in base_cv_data.
-- Use accurate categories (Languages | Frameworks/Libraries | Databases |
-  Cloud/DevOps | Mobile | Tools/Platforms | Domain Skills) — adapt to CV + JD.
-- Goal: maximize ATS keyword coverage without claiming skills the candidate lacks.
-
-================================================================================
-ZERO HALLUCINATION / HARD CONSTRAINTS
-================================================================================
-1. NEVER invent employers, job titles, degrees, certifications, tools, projects,
-   metrics, or years of experience absent from base_cv_data.
-2. NEVER rename real past job titles to match the target role — especially across
-   professional domains.
-3. You MAY reframe existing bullets and weave in JD keywords ONLY when they honestly
-   map to skills/experience already on base_cv_data.
-4. If the candidate lacks a required skill or domain credential, do NOT claim it.
-   Omit it or note an adjacent evidenced skill in caveats — never fabricate.
-5. Preserve contact details, education facts, dates, and employers from base_cv_data.
-6. Write the CV primarily in the same language as base_cv_data; English tech terms
-   from the JD may be used for keyword alignment when natural.
-7. The horizontal rule (`---`) MUST appear once between the analysis sections and
-   the resume body.
-8. Keep `cv_markdown` identical to the body under "## קורות החיים המעודכנים"
-   (without that heading). The server sets the official score in section 2.
-9. Use Markdown ## headings for sections and ### for role/project titles so the
-   PDF renderer can parse the document cleanly.
-10. When hard must-have JD constraints are unmet with zero evidence on the CV,
-    describe the gap honestly in section 2 / caveats — the server will cap the score.
-"""
-
-REGENERATE_SYSTEM_PROMPT = (
-    TAILOR_SYSTEM_PROMPT
-    + """
-
-================================================================================
-REGENERATE & OPTIMIZE MODE (deep-scan feedback loop)
-================================================================================
-You are refining an existing tailored CV draft to boost its ATS score against the
-Job Description.
-
-The user message supplies THREE inputs (plus the job description):
-1) original_source_cvs — ALL original raw CV files/text and/or the compiled Master
-   Profile uploaded by the candidate at the beginning (full history / ground truth)
-2) latest_tailored_draft — the current tailored version that currently holds the
-   highest score
-3) ats_feedback_gaps — the specific missing keywords or weak sections identified
-   by the deterministic ATS scorer
-
-Your primary instruction is to look at the missing keywords/skills provided in
-`ats_feedback_gaps`.
-
-Then, perform a **deep-scan of the `original_source_cvs`** (the raw files uploaded
-initially). Check if the candidate actually possesses those missing skills, tools,
-or completed any relevant projects that were accidentally omitted or summarized
-too tightly in the `latest_tailored_draft`.
-
-- **If the missing skill/context exists in the original files:** Extract it and
-  explicitly weave it into the relevant Experience, Projects, or Skills section
-  of the new draft.
-- **If the missing skill does NOT exist in the original files:** Do NOT hallucinate.
-  Instead, safely reframe the existing technical bullet points in the
-  `latest_tailored_draft` to align as closely as possible with the required
-  methodologies without fabricating experience.
-
-Strict Constraint: Never delete real companies, degrees, or positions present in
-the original source documents.
-
-Additional regenerate rules:
-- Prefer the exact keyword spelling used in ats_feedback_gaps / the JD when truthful.
-- Keep Summary ≤3 sentences and ≤4 bullets per role/project (ONE A4 page).
-- In "## פירוט שינויים", list which matcher gaps you recovered from original sources
-  vs which you could only reframe (and note unrecovered gaps in caveats).
-- Start from latest_tailored_draft; improve it — do not rebuild from scratch if that
-  would drop real employment or education facts.
-"""
+# Re-export prompt contract for tests / callers that import from this module.
+__all_prompt_exports__ = (
+    "TAILOR_PROMPT_VERSION",
+    "REGENERATE_PROMPT_VERSION",
+    "TAILOR_SYSTEM_PROMPT",
+    "REGENERATE_SYSTEM_PROMPT",
+    "TAILOR_TEMPERATURE",
+    "REGENERATE_TEMPERATURE",
 )
 
 HR_SPLIT_RE = re.compile(r"\n---\s*\n", re.MULTILINE)
@@ -453,34 +242,10 @@ def build_tailor_user_prompt(
     current_score: int | None = None,
 ) -> str:
     """Assemble the user message that supplies base_cv_data + job_description."""
-    score_line = (
-        f"The official baseline match score from the database (current_score) is "
-        f"{current_score}/100. Use this exact number — do NOT invent a different baseline.\n"
-        if current_score is not None
-        else "No baseline current_score was supplied — describe fit qualitatively only.\n"
-    )
-    return (
-        "Tailor the candidate CV for the target job using the universal ATS rules "
-        "in the system prompt.\n"
-        f"{score_line}"
-        "Analyze ONLY the provided base_cv_data and job_description — do not assume "
-        "any specific prior role, company, or career path beyond what appears here.\n"
-        "FIRST: dynamically extract Core Professional Domain (CV) and Target "
-        "Professional Domain (JD). If they fundamentally mismatch, do NOT invent "
-        "domain experience or rename titles — write an honest pivot/bridge Summary, "
-        "emphasize transferable skills only, and keep score expectations realistic.\n"
-        "CRITICAL: keep EVERY real employer/job from base_cv_data in Experience; "
-        "never replace real employment with academic projects; omit empty sections; "
-        "Summary ≤3 sentences; ≤4 bullets per role/project; one-page density only.\n"
-        "Remember: inject `Target Role: [exact JD title]`; reframe bullets "
-        "without renaming past titles/companies/dates; put projects only "
-        "under Projects; rebuild an accurately categorized inline skills matrix.\n"
-        "Return markdown with sections: פירוט שינויים, ציון התאמה למשרה, then ---, "
-        "then קורות החיים המעודכנים.\n\n"
-        "===== base_cv_data =====\n"
-        f"{base_cv_data}\n\n"
-        "===== job_description =====\n"
-        f"{job_description}"
+    return _build_tailor_user_prompt(
+        base_cv_data=base_cv_data,
+        job_description=job_description,
+        current_score=current_score,
     )
 
 
@@ -864,6 +629,8 @@ def build_regenerate_user_prompt(
         "Primary target: close ats_feedback_gaps by deep-scanning original_source_cvs.\n"
         "If a gap is evidenced in the originals, extract and weave it into the draft.\n"
         "If not evidenced, reframe latest_tailored_draft honestly — never hallucinate.\n"
+        "Preserve XYZ bullet depth (15–30 words), **bold** tech keywords, and 3–4 "
+        "bullets per role. Never truncate with '...' or placeholder text.\n"
         "Never delete real companies, degrees, or positions from the original sources.\n"
         "Do NOT return previous_score or score_before in JSON — the server sets those.\n"
         "Return the same JSON/markdown structure as a normal tailor response.\n\n"
@@ -1235,7 +1002,8 @@ def _regenerate_tailored_cv(
         raw = call_openai_json(
             REGENERATE_SYSTEM_PROMPT,
             user_prompt,
-            temperature=0.2,
+            temperature=REGENERATE_TEMPERATURE,
+            model=OPENAI_TAILOR_MODEL,
             use_cache=use_cache,
             cache_namespace=(
                 f"tailor_cv_regen_{REGENERATE_PROMPT_VERSION}_"
@@ -1243,7 +1011,8 @@ def _regenerate_tailored_cv(
             ),
             cache_payload=(
                 f"regen|{REGENERATE_PROMPT_VERSION}|{TAILOR_PROMPT_VERSION}|"
-                f"{cv_id}|{job_id}|{previous_feedback.get('match_score')}|"
+                f"{OPENAI_TAILOR_MODEL}|{cv_id}|{job_id}|"
+                f"{previous_feedback.get('match_score')}|"
                 f"{','.join((previous_feedback.get('missing_keywords') or [])[:12])}|"
                 f"{job_description[:1500]}|{previous[:3000]}|"
                 f"{original_source_cvs[:2000]}"
@@ -1391,11 +1160,12 @@ def tailor_cv_for_job(
         raw = call_openai_json(
             TAILOR_SYSTEM_PROMPT,
             user_prompt,
-            temperature=0.25,
+            temperature=TAILOR_TEMPERATURE,
+            model=OPENAI_TAILOR_MODEL,
             use_cache=use_cache,
             cache_namespace=f"tailor_cv_{TAILOR_PROMPT_VERSION}_{cv_id}",
             cache_payload=(
-                f"{TAILOR_PROMPT_VERSION}|{cv_id}|{job_id}|"
+                f"{TAILOR_PROMPT_VERSION}|{OPENAI_TAILOR_MODEL}|{cv_id}|{job_id}|"
                 f"{initial_match_score}|{job_description[:2000]}|{base_cv_data[:4000]}"
             ),
         )

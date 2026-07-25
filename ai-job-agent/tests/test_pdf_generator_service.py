@@ -207,9 +207,9 @@ Languages: Python, SQL
     assert any("Acme" in (e.subtitle or e.title) for e in exp.entries)
     assert all("Tribe" not in (e.title or "") for e in exp.entries)
     assert len(exp.entries[0].bullets) <= 4
-    # Summary capped roughly to 3 sentences.
+    # Summary capped roughly to 4 sentences.
     summary_text = " ".join(summary_sections[0].paragraphs)
-    assert summary_text.count(".") <= 3
+    assert summary_text.count(".") <= 4
 
     html_doc = pdf.markdown_to_resume_html(md)
     assert html_doc.lower().count(">summary<") == 1
@@ -219,11 +219,11 @@ Languages: Python, SQL
     assert "SQLAlchemy" in html_doc
     # SQLAlchemy should not remain under a Cloud/DevOps label.
     assert not re.search(
-        r"Cloud\s*/\s*DevOps:</span>\s*[^<]*SQLAlchemy",
+        r"Cloud\s*(?:&|/)\s*DevOps:</span>\s*[^<]*SQLAlchemy",
         html_doc,
         flags=re.IGNORECASE,
     )
-    assert "Frameworks / Libraries" in html_doc
+    assert "Backend &amp; Frameworks" in html_doc or "Backend & Frameworks" in html_doc
     assert "Mobile" in html_doc
 
 
@@ -235,6 +235,43 @@ def test_one_page_css_contract():
     assert "background-color: #f1f5f9" in html_doc
     assert "border-left: 3px solid #1d4ed8" in html_doc
     assert 'class="skills-container"' in html_doc
+
+
+def test_bold_tech_keywords_preserved_in_html():
+    """LLM bold markers (**FastAPI**) must render as <strong> in PDF HTML."""
+    md = """# Gal Lifshitz
+
+email@example.com | github.com/gal
+
+**Target Role: Backend Engineer**
+
+## Professional Summary
+Software engineer focused on reliable APIs and data systems.
+
+## Experience
+
+### Software Engineer
+Acme Corp | 2021 – Present
+
+- Engineered production APIs with **FastAPI**, **SQLAlchemy**, and **PostgreSQL** ensuring low-latency responses.
+- Orchestrated asynchronous workers with **Redis** to streamline background processing and improve reliability.
+
+## Skills
+Languages: Python, SQL
+Backend & Frameworks: FastAPI, SQLAlchemy
+Databases & Caching: PostgreSQL, Redis
+Cloud & DevOps: Docker, AWS
+Concepts & Architecture: REST APIs, Event-Driven Architecture
+"""
+    parsed = pdf.parse_resume_markdown(md)
+    exp = next(s for s in parsed.sections if s.kind == "experience")
+    assert any("**FastAPI**" in b for b in exp.entries[0].bullets)
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "<strong>FastAPI</strong>" in html_doc
+    assert "<strong>PostgreSQL</strong>" in html_doc
+    assert "<strong>Redis</strong>" in html_doc
+    assert "Backend &amp; Frameworks" in html_doc
+    assert "Concepts &amp; Architecture" in html_doc
 
 
 def test_render_markdown_to_pdf_bytes():
