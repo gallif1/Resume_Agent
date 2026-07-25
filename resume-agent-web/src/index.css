@@ -100,6 +100,35 @@ body {
   min-width: 0;
 }
 
+.logo-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.logo-text b {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.app-version {
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-top: 2px;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.auth-version {
+  margin: 0 0 10px;
+  text-align: center;
+  width: 100%;
+}
+
 .logo-icon {
   display: flex;
   align-items: center;
@@ -145,11 +174,6 @@ body {
 .icon-bubble-slate {
   background: var(--icon-slate-bg);
   color: var(--text-muted);
-}
-
-.logo-text b {
-  color: var(--accent);
-  font-weight: 700;
 }
 
 .header-actions {
@@ -2317,18 +2341,43 @@ code {
   unicode-bidi: isolate;
 }
 
-.job-description-text[dir="ltr"],
-.tailored-cv-preamble-section[dir="ltr"],
-.tailored-cv-resume[dir="ltr"] {
-  text-align: left;
-  direction: ltr;
+/* Force LTR for English blocks — beat the RTL <html dir="rtl"> shell. */
+.job-description-text.is-ltr,
+.tailored-cv-preamble-section.is-ltr,
+.tailored-cv-resume.is-ltr {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: isolate;
 }
 
-.job-description-text[dir="rtl"],
-.tailored-cv-preamble-section[dir="rtl"],
-.tailored-cv-resume[dir="rtl"] {
-  text-align: right;
-  direction: rtl;
+.job-description-text.is-ltr p,
+.job-description-text.is-ltr li,
+.job-description-text.is-ltr h3,
+.job-description-text.is-ltr ul,
+.job-description-text.is-ltr ol,
+.tailored-cv-preamble-section.is-ltr p,
+.tailored-cv-preamble-section.is-ltr li,
+.tailored-cv-preamble-section.is-ltr h2,
+.tailored-cv-preamble-section.is-ltr ul,
+.tailored-cv-preamble-section.is-ltr ol,
+.tailored-cv-resume.is-ltr p,
+.tailored-cv-resume.is-ltr li,
+.tailored-cv-resume.is-ltr h1,
+.tailored-cv-resume.is-ltr h2,
+.tailored-cv-resume.is-ltr h3,
+.tailored-cv-resume.is-ltr ul,
+.tailored-cv-resume.is-ltr ol {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: embed;
+}
+
+.job-description-text.is-rtl,
+.tailored-cv-preamble-section.is-rtl,
+.tailored-cv-resume.is-rtl {
+  direction: rtl !important;
+  text-align: right !important;
+  unicode-bidi: isolate;
 }
 
 .tailored-cv-body h1,
