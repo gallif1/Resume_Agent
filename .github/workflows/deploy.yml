@@ -4,11 +4,12 @@ on:
   push:
     branches:
       - master     # אם הענף הראשי שלך נקרא main, שנה כאן ל-main
+  workflow_dispatch:
 
-# Never overlap EC2 deploys — a second --no-cache build was killing the server.
+# Only one EC2 deploy at a time. Cancel a stuck older deploy so recovery can proceed.
 concurrency:
   group: deploy-ec2
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -21,22 +22,42 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          # Full image builds (frontend tsc/vite + Playwright base) can exceed 10m.
           command_timeout: 30m
           script_stop: true
           script: |
             set -euo pipefail
             cd ~/resume-backend/Resume_Agent
+
+            echo "=== 1) Clear stuck builds from timed-out deploys ==="
+            # Previous SSH timeouts left docker/npm builds running and starving the host.
+            sudo pkill -9 -f 'docker build' 2>/dev/null || true
+            sudo pkill -9 -f 'docker-compose' 2>/dev/null || true
+            sudo pkill -9 -f 'npm run build' 2>/dev/null || true
+            sudo pkill -9 -f 'vite build' 2>/dev/null || true
+            sudo pkill -9 -f '/usr/local/bin/tsc' 2>/dev/null || true
+            sleep 2
+
+            echo "=== 2) Restore service immediately from last image ==="
+            # Bring the previous image back up before spending time on a rebuild.
+            sudo docker-compose up -d || sudo docker compose up -d || true
+            sleep 2
+            curl -sf http://127.0.0.1:8001/api/health && echo " (pre-rebuild health ok)" || echo " (pre-rebuild health not ready yet)"
+
+            echo "=== 3) Pull latest code ==="
             git pull origin master
 
-            # Reuse layer cache. --no-cache made deploys exceed SSH timeout mid-build
-            # and left the site unavailable after rapid merges.
-            sudo docker compose build resume-backend || sudo docker-compose build resume-backend
-            sudo docker compose up -d resume-backend || sudo docker-compose up -d
+            echo "=== 4) Build image WITH cache (same tag the compose file uses) ==="
+            # Match the historically working flow from successful deploys:
+            #   docker build -t resume_agent-resume-backend .
+            # Do NOT use --no-cache — it caused 10m+ SSH timeouts mid vite/tsc.
+            sudo docker build -t resume_agent-resume-backend .
 
-            # Wait for the app to become healthy before pruning.
+            echo "=== 5) Roll out new container ==="
+            sudo docker-compose up -d --force-recreate || sudo docker compose up -d --force-recreate
+
+            echo "=== 6) Health check ==="
             ok=0
-            for i in 1 2 3 4 5 6 7 8 9 10; do
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
               if curl -sf http://127.0.0.1:8001/api/health >/tmp/ra-health.json \
                 || curl -sf http://127.0.0.1:8000/api/health >/tmp/ra-health.json; then
                 ok=1
@@ -45,8 +66,8 @@ jobs:
               sleep 3
             done
 
-            sudo docker compose ps || sudo docker-compose ps
-            sudo docker compose logs --tail=80 resume-backend || sudo docker-compose logs --tail=80
+            sudo docker-compose ps || sudo docker compose ps
+            sudo docker-compose logs --tail=100 || sudo docker compose logs --tail=100
             echo "=== /api/health ==="
             cat /tmp/ra-health.json 2>/dev/null || true
             echo
@@ -56,5 +77,5 @@ jobs:
               exit 1
             fi
 
-            # Only prune dangling build cache/images after a healthy rollout.
+            echo "=== 7) Light cleanup ==="
             sudo docker image prune -f
