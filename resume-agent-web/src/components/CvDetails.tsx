@@ -28,6 +28,7 @@ import {
 import { formatJobDescription } from "../lib/formatJobDescription";
 import PipelineProgress from "./PipelineProgress";
 import ProfileSettings from "./ProfileSettings";
+import type { CSSProperties } from "react";
 
 interface Props {
   cvId: string;
@@ -151,14 +152,37 @@ function textDirection(text: string): "ltr" | "rtl" {
   const sample = (text || "")
     .replace(/^#{1,6}\s+/gm, "")
     .replace(/^[-*•]\s+/gm, "")
-    .slice(0, 800);
+    .slice(0, 1200);
   let hebrew = 0;
   let latin = 0;
   for (const ch of sample) {
     if (ch >= "\u0590" && ch <= "\u05FF") hebrew += 1;
     else if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z")) latin += 1;
   }
-  return hebrew > latin ? "rtl" : "ltr";
+  // Prefer LTR when Latin is present and not clearly Hebrew-dominant.
+  if (latin === 0 && hebrew === 0) return "rtl";
+  return hebrew > latin * 1.2 ? "rtl" : "ltr";
+}
+
+/** Explicit direction props — class + inline style so parent RTL cannot win. */
+function directionalAttrs(text: string): {
+  dir: "ltr" | "rtl";
+  lang: string;
+  className: string;
+  style: CSSProperties;
+} {
+  const dir = textDirection(text);
+  const isLtr = dir === "ltr";
+  return {
+    dir,
+    lang: isLtr ? "en" : "he",
+    className: isLtr ? "is-ltr" : "is-rtl",
+    style: {
+      direction: dir,
+      textAlign: isLtr ? "left" : "right",
+      unicodeBidi: "isolate",
+    },
+  };
 }
 
 /** Rewrite legacy formula score lines into human Hebrew (for cached drafts). */
@@ -947,12 +971,13 @@ export default function CvDetails({
               {m.description?.trim() ? (
                 (() => {
                   const formatted = formatJobDescription(m.description);
-                  const descDir = textDirection(m.description);
+                  const dirAttrs = directionalAttrs(m.description);
                   return (
                     <div
-                      className="job-description-text"
-                      dir={descDir}
-                      lang={descDir === "ltr" ? "en" : "he"}
+                      className={`job-description-text ${dirAttrs.className}`}
+                      dir={dirAttrs.dir}
+                      lang={dirAttrs.lang}
+                      style={dirAttrs.style}
                     >
                       <Markdown>{formatted}</Markdown>
                     </div>
@@ -1265,18 +1290,19 @@ export default function CvDetails({
                   humanizeLegacyScoreMarkdown(tailoredCv.markdown),
                   tailoredCv.cv_markdown
                 );
-                const bodyDir = textDirection(body);
+                const bodyAttrs = directionalAttrs(body);
                 return (
                   <>
                     {preamble
                       ? splitMarkdownSections(preamble).map((section, i) => {
-                          const sectionDir = textDirection(section);
+                          const sectionAttrs = directionalAttrs(section);
                           return (
                             <div
                               key={`preamble-${i}`}
-                              className="tailored-cv-preamble-section"
-                              dir={sectionDir}
-                              lang={sectionDir === "ltr" ? "en" : "he"}
+                              className={`tailored-cv-preamble-section ${sectionAttrs.className}`}
+                              dir={sectionAttrs.dir}
+                              lang={sectionAttrs.lang}
+                              style={sectionAttrs.style}
                             >
                               <Markdown>{section}</Markdown>
                             </div>
@@ -1284,9 +1310,10 @@ export default function CvDetails({
                         })
                       : null}
                     <div
-                      className="tailored-cv-resume"
-                      dir={bodyDir}
-                      lang={bodyDir === "ltr" ? "en" : "he"}
+                      className={`tailored-cv-resume ${bodyAttrs.className}`}
+                      dir={bodyAttrs.dir}
+                      lang={bodyAttrs.lang}
+                      style={bodyAttrs.style}
                     >
                       <Markdown>{body}</Markdown>
                     </div>

@@ -32,6 +32,7 @@ import {
   scanActionTitle,
   scanEmptyHint,
 } from "./lib/scanUi";
+import { APP_VERSION } from "./lib/version";
 
 export default function App() {
   const [serverUp, setServerUp] = useState(false);
@@ -572,8 +573,13 @@ export default function App() {
             <span className="logo-icon" aria-hidden="true">
               <FileText size={20} strokeWidth={2} />
             </span>
-            <span className="logo-text">
-              Resume<b>Agent</b>
+            <span className="logo-brand">
+              <span className="logo-text">
+                Resume<b>Agent</b>
+              </span>
+              <span className="app-version" dir="ltr" title={`גרסה ${APP_VERSION}`}>
+                {APP_VERSION}
+              </span>
             </span>
           </div>
 
