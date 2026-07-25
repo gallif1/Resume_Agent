@@ -145,9 +145,13 @@ function formatScoreProgression(
   return `ציון ההתאמה אחרי התאמה: ${after}`;
 }
 
-/** Prefer LTR for Latin-heavy resume bodies so English CVs stay readable in RTL UI. */
+/** Prefer LTR for Latin-heavy blocks so English stays readable in the RTL app. */
 function textDirection(text: string): "ltr" | "rtl" {
-  const sample = (text || "").slice(0, 600);
+  // Ignore markdown heading markers / bullets when counting script dominance.
+  const sample = (text || "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[-*•]\s+/gm, "")
+    .slice(0, 800);
   let hebrew = 0;
   let latin = 0;
   for (const ch of sample) {
@@ -155,6 +159,26 @@ function textDirection(text: string): "ltr" | "rtl" {
     else if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z")) latin += 1;
   }
   return hebrew > latin ? "rtl" : "ltr";
+}
+
+/** Rewrite legacy formula score lines into human Hebrew (for cached drafts). */
+function humanizeLegacyScoreMarkdown(markdown: string): string {
+  return (markdown || "").replace(
+    /(\*{0,2})ציון בסיס(?:י)?\s*:\s*(\d+)\s*\/\s*100\s*(?:→|->|←)\s*ציון מותאם\s*:\s*(\d+)\s*\/\s*100\*{0,2}(?:\s*[—–-]\s*([^\n*]+))?/giu,
+    (_full, _stars, before, after, label) => {
+      const he = formatScoreLabel((label || "").trim() || null);
+      const suffix = he ? ` — ${he}` : "";
+      return `**שיפרנו את ההתאמה למשרה מ־${before} ל־${after}${suffix}**`;
+    }
+  );
+}
+
+/** Split markdown into ## sections so each block can pick its own text direction. */
+function splitMarkdownSections(markdown: string): string[] {
+  const text = (markdown || "").trim();
+  if (!text) return [];
+  const parts = text.split(/(?=^##\s+)/m).map((p) => p.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : [text];
 }
 
 /** Split tailor markdown into Hebrew meta preamble vs resume body. */
@@ -921,9 +945,19 @@ export default function CvDetails({
             <div className="job-description-block">
               <h4 className="job-description-title">תיאור המשרה</h4>
               {m.description?.trim() ? (
-                <div className="job-description-text" dir="auto">
-                  <Markdown>{formatJobDescription(m.description)}</Markdown>
-                </div>
+                (() => {
+                  const formatted = formatJobDescription(m.description);
+                  const descDir = textDirection(m.description);
+                  return (
+                    <div
+                      className="job-description-text"
+                      dir={descDir}
+                      lang={descDir === "ltr" ? "en" : "he"}
+                    >
+                      <Markdown>{formatted}</Markdown>
+                    </div>
+                  );
+                })()
               ) : (
                 <p className="cv-meta">אין תיאור מלא למשרה זו</p>
               )}
@@ -1228,17 +1262,27 @@ export default function CvDetails({
             >
               {(() => {
                 const { preamble, body } = splitTailoredPreview(
-                  tailoredCv.markdown,
+                  humanizeLegacyScoreMarkdown(tailoredCv.markdown),
                   tailoredCv.cv_markdown
                 );
                 const bodyDir = textDirection(body);
                 return (
                   <>
-                    {preamble ? (
-                      <div className="tailored-cv-preamble" dir="rtl">
-                        <Markdown>{preamble}</Markdown>
-                      </div>
-                    ) : null}
+                    {preamble
+                      ? splitMarkdownSections(preamble).map((section, i) => {
+                          const sectionDir = textDirection(section);
+                          return (
+                            <div
+                              key={`preamble-${i}`}
+                              className="tailored-cv-preamble-section"
+                              dir={sectionDir}
+                              lang={sectionDir === "ltr" ? "en" : "he"}
+                            >
+                              <Markdown>{section}</Markdown>
+                            </div>
+                          );
+                        })
+                      : null}
                     <div
                       className="tailored-cv-resume"
                       dir={bodyDir}

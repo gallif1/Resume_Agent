@@ -1083,6 +1083,39 @@ def _enrich_cached_result_with_db_scores(
     score_after = latest.get("score_after") if latest else result.get("estimated_ats_score")
     if score_after is None:
         score_after = _parse_score_from_markdown(result.get("markdown") or "")
+
+    # Refresh the in-document score line so cached drafts get the human wording.
+    if score_after is not None:
+        label = score_label_for(int(score_after)) if score_after is not None else None
+        score_line = _score_line_for_display(
+            score=int(score_after),
+            label=label,
+            score_before=_clamp_score(score_before),
+            initial_match_score=_clamp_score(initial),
+        )
+        changes = list(result.get("changes_breakdown") or [])
+        if not changes:
+            # Best-effort: keep existing change bullets from the saved markdown.
+            preamble, _ = split_tailored_markdown(result.get("markdown") or "")
+            for line in preamble.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("- "):
+                    changes.append(stripped[2:].strip())
+        cv_markdown = result.get("cv_markdown") or extract_cv_markdown_for_copy(
+            result.get("markdown") or ""
+        )
+        result = {
+            **result,
+            "markdown": _assemble_structured_markdown(
+                changes_breakdown=changes,
+                estimated_ats_score=int(score_after),
+                cv_markdown=cv_markdown,
+                score_line=score_line,
+            ).strip(),
+            "cv_markdown": cv_markdown,
+            "estimated_ats_score": int(score_after),
+        }
+
     return _attach_score_metadata(
         result,
         initial_match_score=initial,

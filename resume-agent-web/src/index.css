@@ -2301,22 +2301,34 @@ code {
   font-size: 0.92rem;
 }
 
-.tailored-cv-preamble {
+.tailored-cv-preamble-section {
+  margin-bottom: 0.85em;
+}
+
+.tailored-cv-preamble-section:last-of-type {
   margin-bottom: 14px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border);
 }
 
+.job-description-text,
+.tailored-cv-preamble-section,
 .tailored-cv-resume {
   unicode-bidi: isolate;
 }
 
+.job-description-text[dir="ltr"],
+.tailored-cv-preamble-section[dir="ltr"],
 .tailored-cv-resume[dir="ltr"] {
   text-align: left;
+  direction: ltr;
 }
 
+.job-description-text[dir="rtl"],
+.tailored-cv-preamble-section[dir="rtl"],
 .tailored-cv-resume[dir="rtl"] {
   text-align: right;
+  direction: rtl;
 }
 
 .tailored-cv-body h1,
