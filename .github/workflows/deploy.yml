@@ -15,7 +15,6 @@ on:
           - "false"
           - "true"
 
-# Cancel hung deploys so a fixed workflow can take over immediately.
 concurrency:
   group: deploy-ec2
   cancel-in-progress: true
@@ -23,91 +22,115 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
 
     steps:
+      # Separate tiny SSH probe so we can see connectivity vs script hang in the UI.
+      - name: SSH connectivity probe
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 30s
+          timeout: 20s
+          request_pty: false
+          script_stop: true
+          script: |
+            echo "Step 0: SSH probe ok"
+            hostname
+            date -u
+            whoami
+            exit 0
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          # Keep well under job timeout; must never hang forever.
-          command_timeout: 15m
-          script_stop: true
-          # Avoid allocating a TTY that can keep the session open.
+          command_timeout: 8m
+          timeout: 20s
           request_pty: false
+          script_stop: true
+          debug: true
           envs: REBUILD
           script: |
-            #!/usr/bin/env bash
-            set -euo pipefail
-
+            set -eu
             echo "Step 1: enter project directory"
-            cd ~/resume-backend/Resume_Agent
+            cd "$HOME/resume-backend/Resume_Agent"
             pwd
 
             echo "Step 2: pull latest master"
-            # Fail fast if git is stuck on auth/network.
-            timeout 60 git pull origin master
+            git pull origin master
 
-            echo "Step 3: recreate containers from existing image (detached)"
-            # IMPORTANT: always use -d. Never plain "up".
-            # Prefer docker compose v2; fall back to docker-compose v1.
-            if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-              COMPOSE="docker compose"
+            echo "Step 3: choose compose command"
+            if docker compose version >/dev/null 2>&1; then
+              echo "Using docker compose v2"
+              UP_CMD='docker compose up -d --force-recreate --remove-orphans'
+              PS_CMD='docker compose ps'
+              LOGS_CMD='docker compose logs --tail=80'
             else
-              COMPOSE="docker-compose"
+              echo "Using docker-compose v1"
+              UP_CMD='docker-compose up -d --force-recreate --remove-orphans'
+              PS_CMD='docker-compose ps'
+              LOGS_CMD='docker-compose logs --tail=80'
             fi
-            echo "Using: $COMPOSE"
 
-            # Bound docker client waits so compose cannot block forever.
-            export DOCKER_CLIENT_TIMEOUT=120
-            export COMPOSE_HTTP_TIMEOUT=120
+            echo "Step 4: recreate containers (detached, all FDs closed)"
+            # appleboy/ssh-action waits on open stdout/stderr from docker children.
+            # Closing all three FDs is required or the Action hangs forever even with -d.
+            # See: https://github.com/appleboy/ssh-action/issues/40
+            #      https://github.com/appleboy/ssh-action/issues/122
+            sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
+            echo "compose up exit=$?"
+            echo "compose up log:"
+            tail -n 40 "$HOME/ra-compose-up.log" || true
 
-            timeout 120 sudo $COMPOSE up -d --force-recreate --remove-orphans
-
-            echo "Step 4: wait for /api/health"
+            echo "Step 5: health check loop"
             ok=0
-            for i in $(seq 1 15); do
+            i=1
+            while [ "$i" -le 15 ]; do
               echo "Health attempt $i/15..."
-              if timeout 5 curl -sf http://127.0.0.1:8001/api/health >/tmp/ra-health.json \
-                || timeout 5 curl -sf http://127.0.0.1:8000/api/health >/tmp/ra-health.json; then
+              if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
+                || curl -sf --max-time 5 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
                 ok=1
                 break
               fi
+              i=$((i + 1))
               sleep 2
             done
 
-            echo "Step 5: show container status"
-            timeout 30 sudo $COMPOSE ps || true
-            timeout 30 sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+            echo "Step 6: container status"
+            sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true
+            cat "$HOME/ra-compose-ps.log" || true
+            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
 
-            echo "Step 6: health payload"
-            cat /tmp/ra-health.json 2>/dev/null || echo "(no health json)"
+            echo "Step 7: health payload"
+            cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
             echo
 
             if [ "$ok" != "1" ]; then
               echo "ERROR: health check failed after deploy" >&2
-              timeout 30 sudo $COMPOSE logs --tail=120 || true
+              sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
+              tail -n 120 "$HOME/ra-compose-logs.log" || true
               exit 1
             fi
 
-            echo "Step 7: SITE IS UP"
+            echo "Step 8: SITE IS UP"
 
             if [ "${REBUILD:-false}" = "true" ]; then
-              echo "Step 8: optional image rebuild requested"
-              # Bound rebuild so SSH always returns.
-              timeout 600 sudo docker build -t resume_agent-resume-backend .
-              timeout 120 sudo $COMPOSE up -d --force-recreate --remove-orphans
-              timeout 5 curl -sf http://127.0.0.1:8001/api/health \
-                || timeout 5 curl -sf http://127.0.0.1:8000/api/health
-              timeout 60 sudo docker image prune -f || true
-              echo "Step 9: rebuild complete"
+              echo "Step 9: optional rebuild"
+              sudo docker build -t resume_agent-resume-backend . </dev/null >"$HOME/ra-docker-build.log" 2>&1
+              sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
+              curl -sf --max-time 5 http://127.0.0.1:8001/api/health || curl -sf --max-time 5 http://127.0.0.1:8000/api/health
+              sudo docker image prune -f </dev/null >/dev/null 2>&1 || true
+              echo "Step 10: rebuild complete"
             else
-              echo "Step 8: skipping image rebuild (instant deploy mode)"
+              echo "Step 9: skipping image rebuild"
             fi
 
-            echo "Step 9: deploy script finished successfully"
+            echo "Step 10: deploy finished successfully"
             exit 0
         env:
           REBUILD: ${{ github.event.inputs.rebuild || 'false' }}
