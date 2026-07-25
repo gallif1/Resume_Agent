@@ -3,10 +3,19 @@ name: Deploy Resume Agent to EC2
 on:
   push:
     branches:
-      - master     # אם הענף הראשי שלך נקרא main, שנה כאן ל-main
+      - master
   workflow_dispatch:
+    inputs:
+      rebuild:
+        description: "Also rebuild Docker image (slow). Leave false for instant recovery."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
-# Only one EC2 deploy at a time. Cancel a stuck older deploy so recovery can proceed.
+# Cancel any hung deploy so recovery can start immediately.
 concurrency:
   group: deploy-ec2
   cancel-in-progress: true
@@ -24,58 +33,59 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           command_timeout: 30m
           script_stop: true
+          envs: REBUILD
           script: |
             set -euo pipefail
             cd ~/resume-backend/Resume_Agent
 
-            echo "=== 1) Clear stuck builds from timed-out deploys ==="
-            # Previous SSH timeouts left docker/npm builds running and starving the host.
+            echo "=== Kill stuck builds (from timed-out deploys) ==="
             sudo pkill -9 -f 'docker build' 2>/dev/null || true
             sudo pkill -9 -f 'docker-compose' 2>/dev/null || true
             sudo pkill -9 -f 'npm run build' 2>/dev/null || true
             sudo pkill -9 -f 'vite build' 2>/dev/null || true
-            sudo pkill -9 -f '/usr/local/bin/tsc' 2>/dev/null || true
+            sudo pkill -9 -f 'tsc' 2>/dev/null || true
             sleep 2
 
-            echo "=== 2) Restore service immediately from last image ==="
-            # Bring the previous image back up before spending time on a rebuild.
-            sudo docker-compose up -d || sudo docker compose up -d || true
-            sleep 2
-            curl -sf http://127.0.0.1:8001/api/health && echo " (pre-rebuild health ok)" || echo " (pre-rebuild health not ready yet)"
-
-            echo "=== 3) Pull latest code ==="
+            echo "=== Pull latest code ==="
             git pull origin master
 
-            echo "=== 4) Build image WITH cache (same tag the compose file uses) ==="
-            # Match the historically working flow from successful deploys:
-            #   docker build -t resume_agent-resume-backend .
-            # Do NOT use --no-cache — it caused 10m+ SSH timeouts mid vite/tsc.
-            sudo docker build -t resume_agent-resume-backend .
-
-            echo "=== 5) Roll out new container ==="
+            echo "=== INSTANT recover: start last known image (no rebuild) ==="
+            # This is what brings the site back in seconds.
             sudo docker-compose up -d --force-recreate || sudo docker compose up -d --force-recreate
 
-            echo "=== 6) Health check ==="
             ok=0
-            for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            for i in 1 2 3 4 5 6 7 8 9 10; do
               if curl -sf http://127.0.0.1:8001/api/health >/tmp/ra-health.json \
                 || curl -sf http://127.0.0.1:8000/api/health >/tmp/ra-health.json; then
                 ok=1
                 break
               fi
-              sleep 3
+              sleep 2
             done
 
+            echo "=== container status ==="
             sudo docker-compose ps || sudo docker compose ps
-            sudo docker-compose logs --tail=100 || sudo docker compose logs --tail=100
             echo "=== /api/health ==="
             cat /tmp/ra-health.json 2>/dev/null || true
             echo
 
             if [ "$ok" != "1" ]; then
-              echo "ERROR: health check failed after deploy" >&2
+              echo "ERROR: health check failed after instant recover" >&2
+              sudo docker-compose logs --tail=120 || sudo docker compose logs --tail=120 || true
               exit 1
             fi
 
-            echo "=== 7) Light cleanup ==="
-            sudo docker image prune -f
+            echo "SITE IS UP (using existing image)."
+
+            # Optional slow path — only when explicitly requested.
+            if [ "${REBUILD:-false}" = "true" ]; then
+              echo "=== Optional rebuild requested ==="
+              sudo docker build -t resume_agent-resume-backend .
+              sudo docker-compose up -d --force-recreate || sudo docker compose up -d --force-recreate
+              curl -sf http://127.0.0.1:8001/api/health || curl -sf http://127.0.0.1:8000/api/health
+              sudo docker image prune -f
+            else
+              echo "Skipping image rebuild (instant recovery mode)."
+            fi
+        env:
+          REBUILD: ${{ github.event.inputs.rebuild || 'false' }}
