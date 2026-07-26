@@ -46,8 +46,8 @@ def test_build_linkedin_search_url_uses_broad_israel_defaults():
     assert "location=Israel" in url
     assert "geoId=101620260" in url
     assert "start=10" in url
-    # Past-month guest time filter; no seniority / experience filters.
-    assert "f_TPR=r2592000" in url
+    # No hardcoded guest time filter; incremental scrapes early-break on known jobs.
+    assert "f_TPR" not in url  # no hardcoded time window; use known-job early-break
     assert "f_E=" not in url
 
 

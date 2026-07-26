@@ -8,6 +8,7 @@ from typing import Any
 
 AGENT_WARNING_PREFIX = "AGENT_WARNING:"
 COLLECT_SUMMARY_PREFIX = "COLLECT_SUMMARY:"
+MATCH_SUMMARY_PREFIX = "MATCH_SUMMARY:"
 
 
 @dataclass
@@ -38,8 +39,13 @@ def emit_collect_summary(summary: dict[str, Any]) -> None:
     print(f"{COLLECT_SUMMARY_PREFIX}{json.dumps(summary, ensure_ascii=False)}")
 
 
+def emit_match_summary(summary: dict[str, Any]) -> None:
+    """Print machine-readable matching summary for scan persistence."""
+    print(f"{MATCH_SUMMARY_PREFIX}{json.dumps(summary, ensure_ascii=False)}")
+
+
 def parse_agent_line(line: str) -> dict[str, Any] | None:
-    """Parse AGENT_* / COLLECT_* lines from subprocess stdout."""
+    """Parse AGENT_* / COLLECT_* / MATCH_* lines from subprocess stdout."""
     stripped = line.strip()
     if stripped.startswith(AGENT_WARNING_PREFIX):
         return {
@@ -50,6 +56,12 @@ def parse_agent_line(line: str) -> dict[str, Any] | None:
         payload = stripped[len(COLLECT_SUMMARY_PREFIX) :].strip()
         try:
             return {"type": "summary", "summary": json.loads(payload)}
+        except json.JSONDecodeError:
+            return None
+    if stripped.startswith(MATCH_SUMMARY_PREFIX):
+        payload = stripped[len(MATCH_SUMMARY_PREFIX) :].strip()
+        try:
+            return {"type": "match_summary", "summary": json.loads(payload)}
         except json.JSONDecodeError:
             return None
     return None
