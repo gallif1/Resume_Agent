@@ -95,18 +95,34 @@ jobs:
         run: |
           set -euo pipefail
           echo "Step 2: SSH probe to ${EC2_USERNAME}@${EC2_HOST}"
-          timeout 25s ssh \
-            -i ~/.ssh/ec2.key \
-            -o BatchMode=yes \
-            -o ConnectTimeout=8 \
-            -o ConnectionAttempts=1 \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=2 \
-            -o IdentitiesOnly=yes \
-            "${EC2_USERNAME}@${EC2_HOST}" \
-            'echo PROBE_OK; hostname; date -u; whoami; exit 0'
+          ok=0
+          for attempt in 1 2 3 4 5 6; do
+            echo "SSH probe attempt ${attempt}/6..."
+            if timeout 20s ssh \
+              -i ~/.ssh/ec2.key \
+              -o BatchMode=yes \
+              -o ConnectTimeout=8 \
+              -o ConnectionAttempts=1 \
+              -o StrictHostKeyChecking=accept-new \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              -o IdentitiesOnly=yes \
+              "${EC2_USERNAME}@${EC2_HOST}" \
+              'echo PROBE_OK; hostname; date -u; whoami; uptime; exit 0'
+            then
+              ok=1
+              break
+            fi
+            echo "SSH probe attempt ${attempt} failed — waiting before retry"
+            sleep $((attempt * 5))
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::EC2 SSH unreachable (banner/port 22 timeout)."
+            echo "The instance is likely overloaded or hung after a Docker build."
+            echo "Reboot the EC2 instance in AWS Console, wait ~2 minutes, then Re-run this workflow."
+            exit 1
+          fi
           echo "Step 2 done: probe ok"
 
       - name: Upload frontend bundle to EC2
