@@ -166,12 +166,14 @@ jobs:
           git pull origin master
 
           echo "Step R3: choose compose"
+          # Always --no-build: a full image build on this small EC2 hangs sshd
+          # (banner timeout) and leaves the host unreachable until reboot.
           if docker compose version >/dev/null 2>&1; then
-            UP_CMD='docker compose up -d --force-recreate --remove-orphans'
+            UP_CMD='docker compose up -d --no-build --force-recreate --remove-orphans'
             PS_CMD='docker compose ps'
             LOGS_CMD='docker compose logs --tail=80'
           else
-            UP_CMD='docker-compose up -d --force-recreate --remove-orphans'
+            UP_CMD='docker-compose up -d --no-build --force-recreate --remove-orphans'
             PS_CMD='docker-compose ps'
             LOGS_CMD='docker-compose logs --tail=80'
           fi
@@ -192,8 +194,14 @@ jobs:
             echo "Step R4: skipping full image rebuild (fast frontend path)"
           fi
 
-          echo "Step R5: recreate containers (detached, FDs closed)"
-          sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
+          echo "Step R5: recreate containers (detached, FDs closed, no build)"
+          # Cap compose so a wedged docker daemon cannot hang the SSH session.
+          timeout 90s sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
+            echo "ERROR: compose up failed/timed out" >&2
+            tail -n 80 "$HOME/ra-compose-up.log" || true
+            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            exit 1
+          }
           echo "compose up finished"
           tail -n 40 "$HOME/ra-compose-up.log" || true
 
