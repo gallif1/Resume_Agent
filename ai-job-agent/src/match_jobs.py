@@ -20,6 +20,7 @@ from ats_scorer import (
     score as ats_score,
 )
 from console_utils import configure_console, safe_print
+from collection_report import emit_match_summary
 from config import AGENT_CV_ID, AGENT_SCAN_ID, AGENT_USER_ID, AI_RERANK_ENABLED
 from db import (
     WORKSPACE_CV_ID,
@@ -356,6 +357,15 @@ def main() -> None:
     safe_print(f"  Scored: {stats['ats_scored']}")
     safe_print(f"  Meets min_match_score ({min_score}): {stats['matched']}")
     safe_print(f"  Below threshold: {stats['below_min']}")
+    emit_match_summary(
+        {
+            "new_jobs_scored": stats["ats_scored"],
+            "new_matches": stats["matched"],
+            "below_min": stats["below_min"],
+            "skipped_existing": stats["skipped"],
+            "total_jobs": stats["total"],
+        }
+    )
     safe_print("\nRun: python src/list_jobs.py --why")
 
 

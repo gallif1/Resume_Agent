@@ -355,25 +355,31 @@ export interface CvScanStatus {
 
 export function parseScanSummary(summary: string | null | undefined): {
   matches: number | null;
+  newJobs: number | null;
+  newMatches: number | null;
   warnings: string[];
   collection: CollectionSummary | null;
 } {
   if (!summary) {
-    return { matches: null, warnings: [], collection: null };
+    return { matches: null, newJobs: null, newMatches: null, warnings: [], collection: null };
   }
   try {
     const data = JSON.parse(summary) as {
       matches?: number;
+      new_jobs?: number;
+      new_matches?: number;
       warnings?: string[];
       collection?: CollectionSummary;
     };
     return {
       matches: typeof data.matches === "number" ? data.matches : null,
+      newJobs: typeof data.new_jobs === "number" ? data.new_jobs : null,
+      newMatches: typeof data.new_matches === "number" ? data.new_matches : null,
       warnings: Array.isArray(data.warnings) ? data.warnings : [],
       collection: data.collection ?? null,
     };
   } catch {
-    return { matches: null, warnings: [], collection: null };
+    return { matches: null, newJobs: null, newMatches: null, warnings: [], collection: null };
   }
 }
 
@@ -535,7 +541,9 @@ export function searchJobsForCv(
   });
 }
 
-/** Delta refresh using the last successful scan's domains and boards. */
+/** Delta refresh using the last successful scan's domains and boards.
+ *  Stops each keyword/channel at the first already-known job (incremental).
+ */
 export function refreshCvJobs(
   cvId: string
 ): Promise<{

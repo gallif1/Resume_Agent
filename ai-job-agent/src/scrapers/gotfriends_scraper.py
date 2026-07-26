@@ -31,7 +31,7 @@ from date_utils import (
     normalize_posted_date,
     pick_raw_posted_date,
 )
-from job_identity import normalize_job_url, trim_jobs_before_delta_stop
+from job_identity import normalize_job_url, trim_jobs_before_known_stop
 from scrapers.base import BaseScraper
 
 try:
@@ -676,7 +676,9 @@ class GotfriendsScraper(BaseScraper):
         max_pages: int = GOTFRIENDS_MAX_PAGES,
         headless: bool = HEADLESS,
         known_job_urls: set[str] | None = None,
+        known_identity_keys: set[str] | None = None,
         delta_stop_identity: dict | None = None,
+        stop_on_known: bool = False,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         listing_urls = resolve_gotfriends_listing_urls(query)
@@ -730,17 +732,35 @@ class GotfriendsScraper(BaseScraper):
                 if not page_jobs:
                     break
 
-                page_jobs, hit_delta = trim_jobs_before_delta_stop(
-                    page_jobs, delta_stop_identity
-                )
-                if hit_delta:
-                    hit_delta_stop = True
-                    print(
-                        "  GotFriends: reached previous scan watermark — "
-                        "delta early break"
+                hit_delta = False
+                if stop_on_known and (known_job_urls or known_identity_keys):
+                    page_jobs, hit_delta = trim_jobs_before_known_stop(
+                        page_jobs,
+                        known_job_urls=known_job_urls,
+                        known_identity_keys=known_identity_keys,
                     )
+                    if hit_delta:
+                        hit_delta_stop = True
+                        known_skipped = 1
+                        total_known_skipped += known_skipped
+                        print(
+                            "  GotFriends: reached already-known job — "
+                            "incremental early break"
+                        )
+                elif delta_stop_identity is not None:
+                    from job_identity import trim_jobs_before_delta_stop
 
-                # Drop known URLs first, then apply 30-day freshness filter.
+                    page_jobs, hit_delta = trim_jobs_before_delta_stop(
+                        page_jobs, delta_stop_identity
+                    )
+                    if hit_delta:
+                        hit_delta_stop = True
+                        print(
+                            "  GotFriends: reached previous scan watermark — "
+                            "delta early break"
+                        )
+
+                # Drop known URLs first; age filter only outside incremental delta.
                 candidates: list[dict[str, Any]] = []
                 known_skipped = 0
                 for job in page_jobs:
@@ -750,15 +770,23 @@ class GotfriendsScraper(BaseScraper):
                     if not url or url in seen_urls:
                         continue
                     canonical = normalize_job_url(url)
-                    if known_job_urls and canonical and canonical in known_job_urls:
+                    if (
+                        not stop_on_known
+                        and known_job_urls
+                        and canonical
+                        and canonical in known_job_urls
+                    ):
                         known_skipped += 1
                         continue
                     candidates.append(job)
 
                 total_known_skipped += known_skipped
-                kept, age_skipped, all_old = filter_jobs_by_max_age(candidates)
+                if stop_on_known:
+                    kept, age_skipped, all_old = candidates, 0, False
+                else:
+                    kept, age_skipped, all_old = filter_jobs_by_max_age(candidates)
                 total_age_skipped += age_skipped
-                if all_old:
+                if all_old and not stop_on_known:
                     print(
                         f"  GotFriends page {page_index + 1}: all dated jobs older than "
                         f"{JOB_MAX_AGE_DAYS} days — early exit"
@@ -811,7 +839,9 @@ def collect_gotfriends_jobs(
     max_pages: int = GOTFRIENDS_MAX_PAGES,
     headless: bool = HEADLESS,
     known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
     delta_stop_identity: dict | None = None,
+    stop_on_known: bool = False,
 ) -> CollectionOutcome:
     """Fetch job cards from GotFriends listing pages for a search query."""
     return GotfriendsScraper().collect(
@@ -819,5 +849,7 @@ def collect_gotfriends_jobs(
         max_pages=max_pages,
         headless=headless,
         known_job_urls=known_job_urls,
+        known_identity_keys=known_identity_keys,
         delta_stop_identity=delta_stop_identity,
+        stop_on_known=stop_on_known,
     )

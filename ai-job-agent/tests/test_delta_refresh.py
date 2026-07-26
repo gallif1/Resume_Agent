@@ -19,6 +19,7 @@ from job_identity import (
     job_matches_delta_identity,
     normalize_job_url,
     trim_jobs_before_delta_stop,
+    trim_jobs_before_known_stop,
 )
 
 
@@ -100,6 +101,121 @@ def test_trim_jobs_before_delta_stop_keeps_newer_only():
     assert hit is True
     assert [j["title"] for j in kept] == ["New"]
     assert job_matches_delta_identity(jobs[1], identity)
+
+
+def test_trim_jobs_before_known_stop_breaks_on_any_existing_url():
+    """Incremental delta: first already-known job (not only newest watermark) stops."""
+    known_urls = {
+        normalize_job_url("https://www.drushim.co.il/job/50/"),
+        normalize_job_url("https://www.drushim.co.il/job/100/"),
+    }
+    jobs = [
+        {"title": "Brand New", "job_url": "https://www.drushim.co.il/job/300/"},
+        {"title": "Also New", "job_url": "https://www.drushim.co.il/job/250/"},
+        # Older known job appears before the previous "newest" watermark — still stop.
+        {"title": "Older Known", "job_url": "https://www.drushim.co.il/job/50/"},
+        {"title": "Watermark", "job_url": "https://www.drushim.co.il/job/100/"},
+        {"title": "Ancient", "job_url": "https://www.drushim.co.il/job/10/"},
+    ]
+    kept, hit = trim_jobs_before_known_stop(jobs, known_job_urls=known_urls)
+    assert hit is True
+    assert [j["title"] for j in kept] == ["Brand New", "Also New"]
+
+
+def test_apply_collect_filters_stop_on_known_ignores_age_window():
+    known = {normalize_job_url("https://www.linkedin.com/jobs/view/100")}
+    page = [
+        {
+            "title": "Fresh",
+            "job_url": "https://www.linkedin.com/jobs/view/200",
+            "posted_date": "היום",
+        },
+        {
+            "title": "Known",
+            "job_url": "https://www.linkedin.com/jobs/view/100",
+            "posted_date": "היום",
+        },
+        {
+            "title": "Older",
+            "job_url": "https://www.linkedin.com/jobs/view/50",
+            "posted_date": "היום",
+        },
+    ]
+    kept, age, known_skipped, all_old, hit = _apply_collect_filters(
+        page,
+        known_job_urls=known,
+        stop_on_known=True,
+        apply_age_filter=False,
+    )
+    assert hit is True
+    assert all_old is False
+    assert age == 0
+    assert known_skipped == 1
+    assert [j["title"] for j in kept] == ["Fresh"]
+
+
+def test_save_jobs_to_db_stops_on_first_known_url(monkeypatch: pytest.MonkeyPatch):
+    known_url = normalize_job_url("https://www.linkedin.com/jobs/view/111")
+    inserted_urls: list[str] = []
+
+    def fake_upsert(**kwargs):
+        url = normalize_job_url(kwargs["job_url"])
+        inserted_urls.append(url)
+        return len(inserted_urls), True
+
+    monkeypatch.setattr("collect_jobs.upsert_collected_job", fake_upsert)
+
+    scraped = [
+        {
+            "title": "Brand New",
+            "job_url": "https://www.linkedin.com/jobs/view/222",
+            "company": "Beta",
+            "location": "TLV",
+            "source": "linkedin",
+            "posted_date": "היום",
+        },
+        {
+            "title": "Known",
+            "job_url": known_url,
+            "company": "Acme",
+            "location": "TLV",
+            "source": "linkedin",
+            "posted_date": "היום",
+        },
+        {
+            "title": "Should Skip",
+            "job_url": "https://www.linkedin.com/jobs/view/50",
+            "company": "Gamma",
+            "location": "TLV",
+            "source": "linkedin",
+            "posted_date": "היום",
+        },
+    ]
+    (
+        _raw,
+        _unique,
+        _dup,
+        _already,
+        _excl,
+        inserted,
+        _touched,
+        hit_delta,
+    ) = save_jobs_to_db(
+        scraped,
+        source_query="Fullstack",
+        source_category="fullstack",
+        source_strategy_hash=None,
+        seen_job_keys=set(),
+        known_db_keys=set(),
+        touched_job_keys=set(),
+        known_job_urls={known_url},
+        stop_on_known=True,
+    )
+    assert hit_delta is True
+    assert inserted == 1
+    assert inserted_urls == [
+        normalize_job_url("https://www.linkedin.com/jobs/view/222")
+    ]
 
 
 def test_apply_collect_filters_delta_early_break():

@@ -1258,7 +1258,7 @@ def refresh_jobs_for_cv(
     cv_id: str,
     user: dict = Depends(auth.get_current_user),
 ):
-    """Delta refresh: reuse last scan domains/boards and early-break at watermark."""
+    """Delta refresh: reuse last scan domains/boards; early-break on known jobs."""
     db.ensure_multi_cv_storage()
     _require_owned_cv(cv_id, user)
 

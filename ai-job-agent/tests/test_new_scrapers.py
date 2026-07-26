@@ -110,6 +110,7 @@ def test_build_indeed_search_url_encodes_query_safely():
     assert "q=c%2B%2B" in url or "q=c%2B%2B+%2F" in url or "c%2B%2B" in url
     assert "start=15" in url
     assert "il.indeed.com/jobs?" in url
+    assert "fromage" not in url  # no hardcoded time window
 
 
 def test_parse_secret_tel_aviv_listing():

@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from browser_utils import browser_http_headers, is_cloudflare_blocked_html
 from collection_report import CollectionOutcome
 from config import ALLJOBS_BASE_URL, ALLJOBS_MAX_PAGES, ALLJOBS_HTTP_TIMEOUT_SEC
-from job_identity import normalize_job_url
+from job_identity import normalize_job_url, trim_jobs_before_known_stop
 from scrapers.base import BaseScraper
 
 _JOB_ID_RE = re.compile(r"JobID=(\d+)", re.IGNORECASE)
@@ -127,6 +127,9 @@ class AllJobsScraper(BaseScraper):
         query: str,
         *,
         max_pages: int = ALLJOBS_MAX_PAGES,
+        known_job_urls: set[str] | None = None,
+        known_identity_keys: set[str] | None = None,
+        stop_on_known: bool = False,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         print(f"Searching AllJobs for: {query} (up to {max_pages} page(s))")
@@ -187,6 +190,19 @@ class AllJobsScraper(BaseScraper):
             if not page_jobs:
                 break
 
+            hit_known = False
+            if stop_on_known and (known_job_urls or known_identity_keys):
+                page_jobs, hit_known = trim_jobs_before_known_stop(
+                    page_jobs,
+                    known_job_urls=known_job_urls,
+                    known_identity_keys=known_identity_keys,
+                )
+                if hit_known:
+                    print(
+                        "  AllJobs: reached already-known job — "
+                        "incremental early break"
+                    )
+
             added = 0
             for job in page_jobs:
                 key = job.get("job_url") or ""
@@ -197,6 +213,8 @@ class AllJobsScraper(BaseScraper):
                 added += 1
 
             print(f"  AllJobs page {page}: +{added} ({len(page_jobs)} on page)")
+            if hit_known:
+                break
             if len(page_jobs) < 10:
                 break
             if page < max_pages:
@@ -217,5 +235,15 @@ def collect_alljobs_jobs(
     query: str,
     *,
     max_pages: int = ALLJOBS_MAX_PAGES,
+    known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
+    stop_on_known: bool = False,
+    **_kwargs: Any,
 ) -> CollectionOutcome:
-    return AllJobsScraper().collect(query, max_pages=max_pages)
+    return AllJobsScraper().collect(
+        query,
+        max_pages=max_pages,
+        known_job_urls=known_job_urls,
+        known_identity_keys=known_identity_keys,
+        stop_on_known=stop_on_known,
+    )
