@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       rebuild:
-        description: "Also rebuild Docker image (slow). Leave false for instant recovery."
+        description: "Rebuild Docker image. Leave false only for instant recovery (keeps old frontend)."
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
-          - "false"
           - "true"
+          - "false"
 
 concurrency:
   group: deploy-ec2
@@ -23,7 +23,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     # Hard backstop — job cannot sit on "Running..." forever.
-    timeout-minutes: 12
+    timeout-minutes: 25
 
     steps:
       - name: Prepare SSH key
@@ -66,10 +66,12 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-          REBUILD: ${{ github.event.inputs.rebuild || 'false' }}
+          # Push to master always rebuilds so baked frontend (APP_VERSION) updates.
+          # Manual dispatch can set rebuild=false for instant recovery only.
+          REBUILD: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.rebuild || 'true' }}
         run: |
           set -euo pipefail
-          echo "Step 3: upload and run remote deploy script"
+          echo "Step 3: upload and run remote deploy script (REBUILD=${REBUILD})"
 
           # Keep remote script in a file so local ssh argv does not contain
           # patterns that could confuse process matching on the server.
@@ -86,22 +88,41 @@ jobs:
           echo "Step R3: choose compose"
           if docker compose version >/dev/null 2>&1; then
             UP_CMD='docker compose up -d --force-recreate --remove-orphans'
+            BUILD_CMD='docker compose build'
             PS_CMD='docker compose ps'
             LOGS_CMD='docker compose logs --tail=80'
           else
             UP_CMD='docker-compose up -d --force-recreate --remove-orphans'
+            BUILD_CMD='docker-compose build'
             PS_CMD='docker-compose ps'
             LOGS_CMD='docker-compose logs --tail=80'
           fi
           echo "compose command: $UP_CMD"
+          echo "REBUILD=${REBUILD:-false}"
 
-          echo "Step R4: recreate containers (detached, FDs closed)"
+          if [ "${REBUILD:-false}" = "true" ]; then
+            echo "Step R4: rebuild Docker image (frontend APP_VERSION is baked here)"
+            # Prefer compose build so the service image tag matches compose up.
+            if sudo sh -c "$BUILD_CMD" </dev/null >"$HOME/ra-docker-build.log" 2>&1; then
+              echo "compose build finished"
+            else
+              echo "compose build failed — falling back to docker build"
+              tail -n 80 "$HOME/ra-docker-build.log" || true
+              sudo docker build -t resume_agent-resume-backend . </dev/null >"$HOME/ra-docker-build.log" 2>&1
+              echo "docker build finished"
+            fi
+            tail -n 40 "$HOME/ra-docker-build.log" || true
+          else
+            echo "Step R4: skipping rebuild (instant recovery mode — old image kept)"
+          fi
+
+          echo "Step R5: recreate containers (detached, FDs closed)"
           # Close FDs so ssh cannot hang waiting on docker child streams.
           sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
           echo "compose up finished"
           tail -n 40 "$HOME/ra-compose-up.log" || true
 
-          echo "Step R5: health check"
+          echo "Step R6: health check"
           ok=0
           i=1
           while [ "$i" -le 15 ]; do
@@ -115,12 +136,12 @@ jobs:
             sleep 2
           done
 
-          echo "Step R6: status"
+          echo "Step R7: status"
           sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true
           cat "$HOME/ra-compose-ps.log" || true
           sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
 
-          echo "Step R7: health payload"
+          echo "Step R8: health payload"
           cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
           echo
 
@@ -131,17 +152,9 @@ jobs:
             exit 1
           fi
 
-          echo "Step R8: SITE IS UP"
-
+          echo "Step R9: SITE IS UP"
           if [ "${REBUILD:-false}" = "true" ]; then
-            echo "Step R9: optional rebuild"
-            sudo docker build -t resume_agent-resume-backend . </dev/null >"$HOME/ra-docker-build.log" 2>&1
-            sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1
-            curl -sf --max-time 5 http://127.0.0.1:8001/api/health \
-              || curl -sf --max-time 5 http://127.0.0.1:8000/api/health
             sudo docker image prune -f </dev/null >/dev/null 2>&1 || true
-          else
-            echo "Step R9: skipping rebuild"
           fi
 
           echo "Step R10: remote deploy finished"
@@ -162,8 +175,8 @@ jobs:
             /tmp/ra-remote-deploy.sh \
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-remote-deploy.sh"
 
-          echo "Step 4: run remote deploy (max 7 minutes)"
-          timeout 420s ssh \
+          echo "Step 4: run remote deploy (max 20 minutes — includes Docker rebuild)"
+          timeout 1200s ssh \
             -i ~/.ssh/ec2.key \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
