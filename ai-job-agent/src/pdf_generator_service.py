@@ -53,34 +53,40 @@ SECTION_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_BULLETS_PER_ENTRY = 4
-MAX_SUMMARY_SENTENCES = 3
+MAX_SUMMARY_SENTENCES = 4
 
 # Known tool → preferred skill category (for taxonomy cleanup).
 SKILL_CATEGORY_HINTS: dict[str, str] = {
-    "sqlalchemy": "Frameworks / Libraries",
-    "fastapi": "Frameworks / Libraries",
-    "django": "Frameworks / Libraries",
-    "flask": "Frameworks / Libraries",
+    "sqlalchemy": "Backend & Frameworks",
+    "fastapi": "Backend & Frameworks",
+    "django": "Backend & Frameworks",
+    "flask": "Backend & Frameworks",
+    "node.js": "Backend & Frameworks",
+    "nodejs": "Backend & Frameworks",
+    "express": "Backend & Frameworks",
     "expo": "Mobile",
     "react native": "Mobile",
-    "react": "Frameworks / Libraries",
-    "next.js": "Frameworks / Libraries",
-    "nextjs": "Frameworks / Libraries",
-    "postgresql": "Databases",
-    "postgres": "Databases",
-    "mysql": "Databases",
-    "sqlite": "Databases",
-    "mongodb": "Databases",
-    "redis": "Databases",
-    "docker": "Cloud / DevOps",
-    "kubernetes": "Cloud / DevOps",
-    "aws": "Cloud / DevOps",
-    "gcp": "Cloud / DevOps",
-    "azure": "Cloud / DevOps",
+    "react": "Backend & Frameworks",
+    "next.js": "Backend & Frameworks",
+    "nextjs": "Backend & Frameworks",
+    "postgresql": "Databases & Caching",
+    "postgres": "Databases & Caching",
+    "mysql": "Databases & Caching",
+    "sqlite": "Databases & Caching",
+    "mongodb": "Databases & Caching",
+    "redis": "Databases & Caching",
+    "docker": "Cloud & DevOps",
+    "kubernetes": "Cloud & DevOps",
+    "aws": "Cloud & DevOps",
+    "gcp": "Cloud & DevOps",
+    "azure": "Cloud & DevOps",
+    "ci/cd": "Cloud & DevOps",
+    "github actions": "Cloud & DevOps",
     "python": "Languages",
     "javascript": "Languages",
     "typescript": "Languages",
     "sql": "Languages",
+    "c++": "Languages",
 }
 CLOUD_CATEGORY_RE = re.compile(
     r"cloud|devops|infrastructure|ops\b",
@@ -190,9 +196,13 @@ ul {
     padding-left: 4mm;
 }
 li {
-    margin-bottom: 0.5mm;
+    margin-bottom: 0.7mm;
     color: #334155;
     text-align: left;
+}
+li strong {
+    color: #0f172a;
+    font-weight: 700;
 }
 li::marker {
     color: #64748b;
@@ -470,7 +480,8 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
 
         bullet = BULLET_RE.match(raw_line)
         if bullet:
-            text = _strip_md_inline(bullet.group(1))
+            # Preserve **bold** markers so PDF/HTML can render <strong>.
+            text = (bullet.group(1) or "").strip()
             if current_entry is None:
                 current_entry = ResumeEntry(title="")
                 current_section.entries.append(current_entry)
@@ -521,15 +532,17 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
                     pass
             continue
 
+        # Keep inline Markdown (bold) for summary/body rendering.
+        rich_line = line
         if current_section.kind in {"summary", "other"} and current_entry is None:
-            current_section.paragraphs.append(plain)
+            current_section.paragraphs.append(rich_line)
             continue
 
         # Free text under an entry → treat as a soft bullet.
         if current_entry is not None:
-            current_entry.bullets.append(plain)
+            current_entry.bullets.append(rich_line)
         else:
-            current_section.paragraphs.append(plain)
+            current_section.paragraphs.append(rich_line)
 
     return _normalize_parsed_resume(resume)
 
@@ -589,7 +602,10 @@ def _rebalance_skill_lines(
                 "react",
                 "react native",
             }:
-                add(SKILL_CATEGORY_HINTS.get(skill.lower(), "Frameworks / Libraries"), skill)
+                add(
+                    SKILL_CATEGORY_HINTS.get(skill.lower(), "Backend & Frameworks"),
+                    skill,
+                )
             else:
                 add(category, skill)
 

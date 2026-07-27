@@ -26,7 +26,7 @@ from config import (
     INDEED_MAX_PAGES,
     INDEED_RESULTS_PER_PAGE,
 )
-from job_identity import normalize_job_url
+from job_identity import normalize_job_url, trim_jobs_before_known_stop
 from scrapers.base import BaseScraper
 
 _JK_RE = re.compile(r"[?&]jk=([a-f0-9]+)", re.IGNORECASE)
@@ -40,13 +40,16 @@ _USER_AGENTS = (
 
 
 def build_indeed_search_url(query: str, *, start: int = 0) -> str:
-    """Build an il.indeed.com search URL with sanitized query parameters."""
+    """Build an il.indeed.com search URL with sanitized query parameters.
+
+    No hardcoded ``fromage`` / time window — incremental scrapes stop when they
+    hit an already-known job instead of filtering by age in the search query.
+    """
     # Keep query params explicit and URL-encoded via urlencode (safe escaping).
     params = {
         "q": (query or "").strip(),
         "l": INDEED_LOCATION,
         "start": max(0, int(start)),
-        "fromage": "14",
         "filter": "0",
     }
     return f"{INDEED_BASE_URL}/jobs?{urlencode(params)}"
@@ -200,6 +203,9 @@ class IndeedIsraelScraper(BaseScraper):
         *,
         max_pages: int = INDEED_MAX_PAGES,
         headless: bool = HEADLESS,
+        known_job_urls: set[str] | None = None,
+        known_identity_keys: set[str] | None = None,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         page_size = max(1, INDEED_RESULTS_PER_PAGE)
@@ -228,6 +234,19 @@ class IndeedIsraelScraper(BaseScraper):
             if not page_jobs:
                 break
 
+            hit_known = False
+            if stop_on_known and (known_job_urls or known_identity_keys):
+                page_jobs, hit_known = trim_jobs_before_known_stop(
+                    page_jobs,
+                    known_job_urls=known_job_urls,
+                    known_identity_keys=known_identity_keys,
+                )
+                if hit_known:
+                    print(
+                        "  Indeed: reached already-known job — "
+                        "incremental early break"
+                    )
+
             added = 0
             for job in page_jobs:
                 key = job.get("job_url") or ""
@@ -238,6 +257,8 @@ class IndeedIsraelScraper(BaseScraper):
                 added += 1
 
             print(f"  Indeed page {page_index + 1}: +{added} ({len(page_jobs)} on page)")
+            if hit_known:
+                break
             if len(page_jobs) < max(5, page_size // 2):
                 break
             if page_index < max_pages - 1:
@@ -266,5 +287,16 @@ def collect_indeed_jobs(
     *,
     max_pages: int = INDEED_MAX_PAGES,
     headless: bool = HEADLESS,
+    known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
+    stop_on_known: bool = True,
+    **_kwargs: Any,
 ) -> CollectionOutcome:
-    return IndeedIsraelScraper().collect(query, max_pages=max_pages, headless=headless)
+    return IndeedIsraelScraper().collect(
+        query,
+        max_pages=max_pages,
+        headless=headless,
+        known_job_urls=known_job_urls,
+        known_identity_keys=known_identity_keys,
+        stop_on_known=stop_on_known,
+    )

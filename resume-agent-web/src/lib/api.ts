@@ -1,9 +1,9 @@
 // HTTP client for the ai-job-agent backend (FastAPI, separate repository).
 
 // In dev, Vite proxies /api and /cvs to the FastAPI server (see vite.config.ts).
-const BASE_URL: string =
-  (import.meta.env.VITE_API_URL as string | undefined) ??
-  (import.meta.env.DEV ? "" : "http://127.0.0.1:8000");
+// In production the frontend is served by the same FastAPI app, so default to
+// same-origin requests unless an explicit API URL override is provided.
+const BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
 const TOKEN_KEY = "resume_agent_jwt";
 
@@ -355,25 +355,31 @@ export interface CvScanStatus {
 
 export function parseScanSummary(summary: string | null | undefined): {
   matches: number | null;
+  newJobs: number | null;
+  newMatches: number | null;
   warnings: string[];
   collection: CollectionSummary | null;
 } {
   if (!summary) {
-    return { matches: null, warnings: [], collection: null };
+    return { matches: null, newJobs: null, newMatches: null, warnings: [], collection: null };
   }
   try {
     const data = JSON.parse(summary) as {
       matches?: number;
+      new_jobs?: number;
+      new_matches?: number;
       warnings?: string[];
       collection?: CollectionSummary;
     };
     return {
       matches: typeof data.matches === "number" ? data.matches : null,
+      newJobs: typeof data.new_jobs === "number" ? data.new_jobs : null,
+      newMatches: typeof data.new_matches === "number" ? data.new_matches : null,
       warnings: Array.isArray(data.warnings) ? data.warnings : [],
       collection: data.collection ?? null,
     };
   } catch {
-    return { matches: null, warnings: [], collection: null };
+    return { matches: null, newJobs: null, newMatches: null, warnings: [], collection: null };
   }
 }
 
@@ -535,23 +541,9 @@ export function searchJobsForCv(
   });
 }
 
-/**
- * Build the URL for the live scan SSE stream (job_found / status_update /
- * scan_complete events). Native EventSource can't set an Authorization
- * header, so the JWT is passed as a query param instead.
+/** Delta refresh using the last successful scan's domains and boards.
+ *  Stops each keyword/channel at the first already-known job (incremental).
  */
-export function getScanStreamUrl(opts: {
-  cvId?: string;
-  workspaceMode: boolean;
-}): string {
-  const token = getStoredToken() ?? "";
-  const path = opts.workspaceMode
-    ? "/jobs/match/stream"
-    : `/cvs/${opts.cvId}/scan/stream`;
-  return `${BASE_URL}${path}?token=${encodeURIComponent(token)}`;
-}
-
-/** Delta refresh using the last successful scan's domains and boards. */
 export function refreshCvJobs(
   cvId: string
 ): Promise<{
@@ -589,6 +581,13 @@ export function getJobMatchStatus(): Promise<CvScanStatus & {
   can_stop?: boolean;
 }> {
   return request(`/jobs/match-status`);
+}
+
+/** Build the SSE URL for live scan events (EventSource cannot set Auth headers). */
+export function scanStreamUrl(): string {
+  const token = getStoredToken() ?? "";
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${BASE_URL}/api/scan/stream${qs}`;
 }
 
 export function getJobMatches(

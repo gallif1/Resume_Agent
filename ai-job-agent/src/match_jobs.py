@@ -19,8 +19,8 @@ from ats_scorer import (
     HARD_CONSTRAINT_FAIL_CAP,
     score as ats_score,
 )
-from collection_report import emit_job_scored
 from console_utils import configure_console, safe_print
+from collection_report import emit_job_found, emit_match_summary, emit_status_update
 from config import AGENT_CV_ID, AGENT_SCAN_ID, AGENT_USER_ID, AI_RERANK_ENABLED
 from db import (
     WORKSPACE_CV_ID,
@@ -79,12 +79,112 @@ def _store_match_result(
     *,
     cv_id: str | None,
     scan_id: int | None,
-) -> None:
-    """Persist a match result per-CV (multi-CV mode) or globally (legacy mode)."""
+) -> int | None:
+    """Persist a match result per-CV (multi-CV mode) or globally (legacy mode).
+
+    Returns the cv_job_matches row id when in multi-CV mode, else None.
+    """
     if cv_id:
-        upsert_cv_job_match(cv_id, job_id, _to_cv_match_fields(fields), scan_id=scan_id)
-    else:
-        update_match_result(job_id, fields)
+        return upsert_cv_job_match(
+            cv_id, job_id, _to_cv_match_fields(fields), scan_id=scan_id
+        )
+    update_match_result(job_id, fields)
+    return None
+
+
+def _parse_json_list(value) -> list:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _job_stream_payload(
+    job: dict,
+    fields: dict,
+    *,
+    match_id: int | None,
+    scan_id: int | None,
+) -> dict:
+    """Build the public match shape streamed to the UI via SSE."""
+    from date_utils import inject_posted_date_header, normalize_posted_date
+
+    posted_date = normalize_posted_date(
+        job.get("posted_date")
+        or job.get("first_seen_at")
+        or job.get("collected_at")
+        or job.get("created_at"),
+        default_to_today=True,
+    )
+    full = (job.get("full_description") or "").strip()
+    body = full if full else (job.get("description") or "").strip()
+    description = inject_posted_date_header(body, posted_date)
+
+    matched_skills = (
+        _parse_json_list(fields.get("matched_keywords"))
+        or _parse_json_list(fields.get("matched_skills"))
+        or _parse_json_list(fields.get("ai_strengths"))
+    )
+    missing_skills = (
+        _parse_json_list(fields.get("missing_keywords"))
+        or _parse_json_list(fields.get("missing_skills"))
+        or _parse_json_list(fields.get("ai_missing_skills"))
+    )
+
+    return {
+        "match_id": match_id,
+        "job_id": job.get("id"),
+        "scan_id": scan_id,
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "location": job.get("location"),
+        "job_url": job.get("job_url"),
+        "source": job.get("source"),
+        "description": description,
+        "posted_date": posted_date,
+        "job_created_at": posted_date
+        or job.get("created_at")
+        or job.get("first_seen_at")
+        or job.get("collected_at"),
+        "match_score": fields.get("match_score"),
+        "match_reason": fields.get("match_reason"),
+        "explanation": fields.get("ai_explanation") or fields.get("match_reason"),
+        "matched_skills": matched_skills,
+        "missing_skills": missing_skills,
+        "score_label": fields.get("ats_score_label"),
+        "missing_mandatory": _parse_json_list(fields.get("ats_missing_mandatory")),
+        "relevant_experience": _parse_json_list(fields.get("ats_relevant_experience")),
+        "score_reasons": _parse_json_list(fields.get("ats_reasons")),
+        "cv_improvements": _parse_json_list(fields.get("ats_improvements")),
+        "is_potential_junior_match": bool(fields.get("is_potential_junior_match")),
+        "has_tailored_cv": False,
+        "tailored_cv_updated_at": None,
+        "application_status": "not_sent",
+        "application_notes": None,
+        "job_application": None,
+        "updated_at": None,
+        "streamed": True,
+    }
+
+
+def _emit_scored_job(
+    job: dict,
+    fields: dict,
+    *,
+    match_id: int | None,
+    scan_id: int | None,
+) -> None:
+    try:
+        emit_job_found(
+            _job_stream_payload(job, fields, match_id=match_id, scan_id=scan_id)
+        )
+    except Exception:  # noqa: BLE001 — streaming must not fail matching
+        pass
 
 
 def _ensure_job_profile(job: dict, *, use_ai: bool = False) -> JobProfile:
@@ -199,6 +299,7 @@ def match_all_jobs(
     candidate = build_ats_candidate(cv_profile)
     min_score = profile.get("min_match_score", 0)
     jobs = get_all_jobs()
+    emit_status_update(f"מחשב ציוני התאמה ({len(jobs)} משרות)…")
 
     stats = {
         "total": len(jobs),
@@ -223,7 +324,6 @@ def match_all_jobs(
             # Keep already-scored jobs visible on the current scan in the UI.
             if cv_id and scan_id is not None:
                 refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
-                emit_job_scored(int(job["id"]))
             stats["skipped"] += 1
             safe_print(
                 f"Reusing prior match for current scan: "
@@ -283,10 +383,11 @@ def match_all_jobs(
         fields["is_potential_junior_match"] = (
             1 if ats_result.is_potential_junior_match else 0
         )
-        _store_match_result(job["id"], fields, cv_id=cv_id, scan_id=scan_id)
-        if cv_id:
-            emit_job_scored(int(job["id"]))
+        match_id = _store_match_result(
+            job["id"], fields, cv_id=cv_id, scan_id=scan_id
+        )
         stats["ats_scored"] += 1
+        _emit_scored_job(job, fields, match_id=match_id, scan_id=scan_id)
 
         if final_score >= min_score:
             stats["matched"] += 1
@@ -360,6 +461,15 @@ def main() -> None:
     safe_print(f"  Scored: {stats['ats_scored']}")
     safe_print(f"  Meets min_match_score ({min_score}): {stats['matched']}")
     safe_print(f"  Below threshold: {stats['below_min']}")
+    emit_match_summary(
+        {
+            "new_jobs_scored": stats["ats_scored"],
+            "new_matches": stats["matched"],
+            "below_min": stats["below_min"],
+            "skipped_existing": stats["skipped"],
+            "total_jobs": stats["total"],
+        }
+    )
     safe_print("\nRun: python src/list_jobs.py --why")
 
 

@@ -405,8 +405,9 @@ def run_search(
     New jobs are inserted incrementally (``INSERT OR IGNORE`` / identity dedupe).
     Already-known jobs are skipped by enrich/match and remain in the listing.
 
-    When ``delta=True``, collectors early-break once they reach the previous
-    newest job identity for each category/board (fast refresh).
+    When ``delta=True``, collectors walk listings newest → oldest and early-break
+    each keyword/channel when the first already-known job URL/identity is hit
+    (no hardcoded search time window).
     """
     import os
 
@@ -448,10 +449,13 @@ def run_search(
     error: str | None = None
     warnings: list[str] = []
     collection_summary: dict[str, Any] | None = None
+    match_summary: dict[str, Any] | None = None
     domains_arg = ",".join(cleaned_domains)
 
     if delta:
-        _log(">> רענון דלתא — בדיקת משרות חדשות בלבד")
+        _log(">> רענון דלתא — בדיקת משרות חדשות בלבד (עצירה במשרה קיימת)")
+    else:
+        _log(">> איסוף משרות — מצב דלתא אינקרמנטלי (עצירה במשרה קיימת)")
 
     for key, name, script, extra in SEARCH_STEPS:
         skipped = key == "enrich" and skip_enrich
@@ -471,28 +475,30 @@ def run_search(
             if delta:
                 extra_args = [*extra_args, "--delta"]
 
-        collect_warnings: list[str] = []
-        collect_summary_holder: dict[str, Any] = {}
+        step_warnings: list[str] = []
+        step_summary_holder: dict[str, Any] = {}
 
-        def _on_collect_line(line: str, *, _key: str = key) -> None:
-            if _key != "collect":
+        def _on_agent_line(line: str, *, _key: str = key) -> None:
+            if _key not in ("collect", "match"):
                 return
             parsed = parse_agent_line(line)
             if parsed is None:
                 return
             if parsed.get("type") == "warning":
                 message = parsed.get("message")
-                if message and message not in collect_warnings:
-                    collect_warnings.append(message)
-            elif parsed.get("type") == "summary":
-                collect_summary_holder["summary"] = parsed.get("summary")
+                if message and message not in step_warnings:
+                    step_warnings.append(message)
+            elif parsed.get("type") == "summary" and _key == "collect":
+                step_summary_holder["collection"] = parsed.get("summary")
+            elif parsed.get("type") == "match_summary" and _key == "match":
+                step_summary_holder["match"] = parsed.get("summary")
 
         try:
             code = _run_logged_subprocess(
                 [PYTHON, str(SRC / script), *extra_args],
                 env=env,
                 log=_log,
-                on_line=_on_collect_line if key == "collect" else None,
+                on_line=_on_agent_line if key in ("collect", "match") else None,
             )
         except ScanCancelled:
             _step(key, "failed")
@@ -500,11 +506,13 @@ def run_search(
             error = "הסריקה בוטלה על ידי המשתמש"
             break
 
-        for message in collect_warnings:
+        for message in step_warnings:
             if message not in warnings:
                 warnings.append(message)
-        if collect_summary_holder.get("summary"):
-            collection_summary = collect_summary_holder["summary"]
+        if step_summary_holder.get("collection"):
+            collection_summary = step_summary_holder["collection"]
+        if step_summary_holder.get("match"):
+            match_summary = step_summary_holder["match"]
 
         if code != 0:
             _step(key, "failed")
@@ -517,14 +525,26 @@ def run_search(
 
     # All historical matches for this CV (past + current scans).
     match_count = len(db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db))
+    new_jobs = _new_jobs_from_collection_summary(collection_summary)
+    new_matches = 0
+    if isinstance(match_summary, dict) and isinstance(
+        match_summary.get("new_matches"), int
+    ):
+        new_matches = match_summary["new_matches"]
+
     summary_payload: dict[str, Any] = {
         "matches": match_count,
+        "new_jobs": new_jobs,
+        "new_matches": new_matches,
         "domains": cleaned_domains,
         "job_sites": selected_sites,
-        "delta": bool(delta),
+        "incremental": True,
+        "delta": True,
     }
     if collection_summary:
         summary_payload["collection"] = collection_summary
+    if match_summary:
+        summary_payload["matching"] = match_summary
     if warnings:
         summary_payload["warnings"] = warnings
     summary = json.dumps(summary_payload, ensure_ascii=False)
@@ -543,11 +563,32 @@ def run_search(
         scan_record["warnings"] = warnings
     if collection_summary:
         scan_record["collection"] = collection_summary
+    if match_summary:
+        scan_record["matching"] = match_summary
     scan_record["domains"] = cleaned_domains
     scan_record["job_sites"] = selected_sites
-    scan_record["delta"] = bool(delta)
+    scan_record["delta"] = True
+    scan_record["incremental"] = True
     scan_record["match_count"] = match_count
+    scan_record["new_jobs"] = new_jobs
+    scan_record["new_matches"] = new_matches
     return scan_record
+
+
+def _new_jobs_from_collection_summary(
+    collection_summary: dict[str, Any] | None,
+) -> int:
+    """Count brand-new jobs inserted during a collect run."""
+    if not isinstance(collection_summary, dict):
+        return 0
+    raw_new = collection_summary.get("new_jobs_total")
+    if isinstance(raw_new, int):
+        return raw_new
+    return sum(
+        int(site.get("new") or 0)
+        for key_name, site in collection_summary.items()
+        if key_name in _BOARD_SUMMARY_KEYS and isinstance(site, dict)
+    )
 
 
 _BOARD_SUMMARY_KEYS = frozenset(
@@ -636,7 +677,7 @@ def run_delta_refresh(
     set_step_status: Callable[[str, str], None] | None = None,
     db_path: Path = db.REGISTRY_DB_PATH,
 ) -> dict[str, Any]:
-    """Re-run collect/enrich/match using the last scan's domains and boards."""
+    """Incremental delta: reuse last scan criteria; early-break on known jobs."""
     criteria = get_last_scan_criteria(cv_id, db_path=db_path)
     if criteria is None:
         raise ValueError(
@@ -708,6 +749,7 @@ def run_scan(
     error: str | None = None
     warnings: list[str] = []
     collection_summary: dict[str, Any] | None = None
+    match_summary: dict[str, Any] | None = None
     for key, name, script, extra in SCAN_STEPS:
         skipped = (key == "collect" and skip_collect) or (
             key == "enrich" and skip_enrich
@@ -742,7 +784,7 @@ def run_scan(
             line = line.rstrip()
             if line:
                 _log(line)
-                if key == "collect":
+                if key in ("collect", "match"):
                     parsed = parse_agent_line(line)
                     if parsed is None:
                         continue
@@ -750,8 +792,10 @@ def run_scan(
                         message = parsed.get("message")
                         if message and message not in warnings:
                             warnings.append(message)
-                    elif parsed.get("type") == "summary":
+                    elif parsed.get("type") == "summary" and key == "collect":
                         collection_summary = parsed.get("summary")
+                    elif parsed.get("type") == "match_summary" and key == "match":
+                        match_summary = parsed.get("summary")
         code = proc.wait()
 
         if code != 0:
@@ -768,13 +812,28 @@ def run_scan(
     match_count = len(
         db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db)
     )
-    summary_payload: dict[str, Any] = {"matches": match_count}
+    new_jobs = _new_jobs_from_collection_summary(collection_summary)
+    new_matches = 0
+    if isinstance(match_summary, dict) and isinstance(
+        match_summary.get("new_matches"), int
+    ):
+        new_matches = match_summary["new_matches"]
+
+    summary_payload: dict[str, Any] = {
+        "matches": match_count,
+        "new_jobs": new_jobs,
+        "new_matches": new_matches,
+        "incremental": True,
+        "delta": True,
+    }
     if cleaned_domains:
         summary_payload["domains"] = cleaned_domains
     if selected_sites:
         summary_payload["job_sites"] = selected_sites
     if collection_summary:
         summary_payload["collection"] = collection_summary
+    if match_summary:
+        summary_payload["matching"] = match_summary
     if warnings:
         summary_payload["warnings"] = warnings
     summary = json.dumps(summary_payload, ensure_ascii=False)
@@ -793,6 +852,12 @@ def run_scan(
         scan_record["warnings"] = warnings
     if collection_summary:
         scan_record["collection"] = collection_summary
+    if match_summary:
+        scan_record["matching"] = match_summary
+    scan_record["new_jobs"] = new_jobs
+    scan_record["new_matches"] = new_matches
+    scan_record["incremental"] = True
+    scan_record["delta"] = True
     return scan_record
 
 

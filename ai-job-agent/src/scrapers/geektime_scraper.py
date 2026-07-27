@@ -25,7 +25,7 @@ from config import (
     GEEKTIME_MAX_PAGES,
     HEADLESS,
 )
-from job_identity import normalize_job_url
+from job_identity import normalize_job_url, trim_jobs_before_known_stop
 from scrapers.base import BaseScraper
 
 def build_geektime_jobs_url(query: str = "", *, page: int = 1) -> str:
@@ -265,6 +265,9 @@ class GeektimeScraper(BaseScraper):
         *,
         max_pages: int = GEEKTIME_MAX_PAGES,
         headless: bool = HEADLESS,
+        known_job_urls: set[str] | None = None,
+        known_identity_keys: set[str] | None = None,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         print(f"Searching Geektime Insider for: {query} (up to {max_pages} page(s))")
@@ -315,6 +318,19 @@ class GeektimeScraper(BaseScraper):
             if not page_jobs:
                 break
 
+            hit_known = False
+            if stop_on_known and (known_job_urls or known_identity_keys):
+                page_jobs, hit_known = trim_jobs_before_known_stop(
+                    page_jobs,
+                    known_job_urls=known_job_urls,
+                    known_identity_keys=known_identity_keys,
+                )
+                if hit_known:
+                    print(
+                        "  Geektime: reached already-known job — "
+                        "incremental early break"
+                    )
+
             added = 0
             for job in page_jobs:
                 key = job.get("job_url") or ""
@@ -325,6 +341,8 @@ class GeektimeScraper(BaseScraper):
                 added += 1
 
             print(f"  Geektime page {page}: +{added}")
+            if hit_known:
+                break
             if added == 0:
                 break
             if page < max_pages:
@@ -353,5 +371,16 @@ def collect_geektime_jobs(
     *,
     max_pages: int = GEEKTIME_MAX_PAGES,
     headless: bool = HEADLESS,
+    known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
+    stop_on_known: bool = True,
+    **_kwargs: Any,
 ) -> CollectionOutcome:
-    return GeektimeScraper().collect(query, max_pages=max_pages, headless=headless)
+    return GeektimeScraper().collect(
+        query,
+        max_pages=max_pages,
+        headless=headless,
+        known_job_urls=known_job_urls,
+        known_identity_keys=known_identity_keys,
+        stop_on_known=stop_on_known,
+    )

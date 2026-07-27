@@ -3,22 +3,297 @@ name: Deploy Resume Agent to EC2
 on:
   push:
     branches:
-      - master     # אם הענף הראשי שלך נקרא main, שנה כאן ל-main
+      - master
+  workflow_dispatch:
+    inputs:
+      rebuild_image:
+        description: "Also rebuild the full Docker image on EC2 (slow; usually not needed)."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  # APP_VERSION and UI assets are baked at frontend build time.
+  # Build them on the GitHub runner (fast/reliable) instead of a full
+  # Playwright Docker rebuild on the small EC2 host (which hangs).
+  build-frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: resume-agent-web/package-lock.json
+
+      - name: Install and build
+        working-directory: resume-agent-web
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -f dist/index.html
+          VERSION="$(sed -n 's/.*APP_VERSION = "\([^"]*\)".*/\1/p' src/lib/version.ts | head -1)"
+          echo "Built frontend APP_VERSION=${VERSION}"
+          test -n "$VERSION"
+          if ! grep -R --fixed-strings "$VERSION" dist >/dev/null; then
+            echo "ERROR: APP_VERSION ${VERSION} not found in dist bundle" >&2
+            exit 1
+          fi
+          echo "Frontend dist ready:"
+          du -sh dist
+          find dist -maxdepth 2 -type f | head -30
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: resume-agent-web/dist
+          if-no-files-found: error
+          retention-days: 2
+
+  deploy:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
 
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd ~/resume-backend/Resume_Agent
-            git pull origin master
-            sudo DOCKER_BUILDKIT=0 docker build --no-cache -t resume_agent-resume-backend .
-            sudo DOCKER_BUILDKIT=0 docker-compose up -d
-            sudo docker system prune -f
+          name: frontend-dist
+          path: frontend-dist
+
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          echo "Step 1: write SSH key"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          test -s ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+          echo "Step 1 done: key ok"
+
+      - name: SSH connectivity probe
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          echo "Step 2: SSH probe to ${EC2_USERNAME}@${EC2_HOST}"
+          ok=0
+          for attempt in 1 2 3 4 5 6; do
+            echo "SSH probe attempt ${attempt}/6..."
+            if timeout 20s ssh \
+              -i ~/.ssh/ec2.key \
+              -o BatchMode=yes \
+              -o ConnectTimeout=8 \
+              -o ConnectionAttempts=1 \
+              -o StrictHostKeyChecking=accept-new \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              -o IdentitiesOnly=yes \
+              "${EC2_USERNAME}@${EC2_HOST}" \
+              'echo PROBE_OK; hostname; date -u; whoami; uptime; exit 0'
+            then
+              ok=1
+              break
+            fi
+            echo "SSH probe attempt ${attempt} failed — waiting before retry"
+            sleep $((attempt * 5))
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::EC2 SSH unreachable (banner/port 22 timeout)."
+            echo "The instance is likely overloaded or hung after a Docker build."
+            echo "Reboot the EC2 instance in AWS Console, wait ~2 minutes, then Re-run this workflow."
+            exit 1
+          fi
+          echo "Step 2 done: probe ok"
+
+      - name: Upload frontend bundle to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          echo "Step 3: upload frontend dist"
+          test -f frontend-dist/index.html
+          tar -C frontend-dist -czf /tmp/ra-frontend-dist.tgz .
+          timeout 60s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            /tmp/ra-frontend-dist.tgz \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-frontend-dist.tgz"
+          echo "Step 3 done: frontend uploaded"
+
+      - name: Deploy via SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          REBUILD_IMAGE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.rebuild_image || 'false' }}
+        run: |
+          set -euo pipefail
+          echo "Step 4: run remote deploy (REBUILD_IMAGE=${REBUILD_IMAGE})"
+
+          cat > /tmp/ra-remote-deploy.sh <<'REMOTE'
+          #!/bin/bash
+          set -eu
+          echo "Step R1: enter project directory"
+          cd "$HOME/resume-backend/Resume_Agent"
+          pwd
+
+          echo "Step R2: pull latest master"
+          git pull origin master
+
+          echo "Step R3: choose compose"
+          # Always --no-build: a full image build on this small EC2 hangs sshd
+          # (banner timeout) and leaves the host unreachable until reboot.
+          if docker compose version >/dev/null 2>&1; then
+            UP_CMD='docker compose up -d --no-build --force-recreate --remove-orphans'
+            PS_CMD='docker compose ps'
+            LOGS_CMD='docker compose logs --tail=80'
+          else
+            UP_CMD='docker-compose up -d --no-build --force-recreate --remove-orphans'
+            PS_CMD='docker-compose ps'
+            LOGS_CMD='docker-compose logs --tail=80'
+          fi
+          echo "compose command: $UP_CMD"
+
+          # Optional full image rebuild — off by default (hangs on small EC2).
+          if [ "${REBUILD_IMAGE:-false}" = "true" ]; then
+            echo "Step R4: full Docker image rebuild (requested)"
+            timeout 480s sudo docker build -t resume_agent-resume-backend . \
+              </dev/null >"$HOME/ra-docker-build.log" 2>&1 || {
+              echo "ERROR: docker build failed/timed out" >&2
+              tail -n 120 "$HOME/ra-docker-build.log" || true
+              exit 1
+            }
+            echo "docker build finished"
+            tail -n 40 "$HOME/ra-docker-build.log" || true
+          else
+            echo "Step R4: skipping full image rebuild (fast frontend path)"
+          fi
+
+          echo "Step R5: recreate containers (detached, FDs closed, no build)"
+          # Cap compose so a wedged docker daemon cannot hang the SSH session.
+          timeout 90s sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
+            echo "ERROR: compose up failed/timed out" >&2
+            tail -n 80 "$HOME/ra-compose-up.log" || true
+            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            exit 1
+          }
+          echo "compose up finished"
+          tail -n 40 "$HOME/ra-compose-up.log" || true
+
+          echo "Step R6: inject freshly built frontend into running container"
+          test -f /tmp/ra-frontend-dist.tgz
+          CID="$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')"
+          if [ -z "${CID:-}" ]; then
+            CID="$(sudo docker ps -q | head -n 1)"
+          fi
+          if [ -z "${CID:-}" ]; then
+            echo "ERROR: no running docker container found to inject frontend" >&2
+            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            exit 1
+          fi
+          echo "Target container: $CID"
+          sudo docker exec "$CID" mkdir -p /app/resume-agent-web/dist
+          # Clear old assets then extract new bundle inside the container.
+          sudo docker exec "$CID" sh -c 'rm -rf /app/resume-agent-web/dist/*'
+          sudo docker cp /tmp/ra-frontend-dist.tgz "$CID:/tmp/ra-frontend-dist.tgz"
+          sudo docker exec "$CID" sh -c \
+            'mkdir -p /app/resume-agent-web/dist && tar -C /app/resume-agent-web/dist -xzf /tmp/ra-frontend-dist.tgz && rm -f /tmp/ra-frontend-dist.tgz && ls -la /app/resume-agent-web/dist | head'
+          echo "Restarting container to pick up static files"
+          sudo docker restart "$CID" </dev/null >/dev/null 2>&1
+          echo "frontend inject finished"
+
+          echo "Step R7: health check"
+          ok=0
+          i=1
+          while [ "$i" -le 20 ]; do
+            echo "Health attempt $i/20..."
+            if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
+              || curl -sf --max-time 5 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
+              ok=1
+              break
+            fi
+            i=$((i + 1))
+            sleep 2
+          done
+
+          echo "Step R8: status"
+          sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true
+          cat "$HOME/ra-compose-ps.log" || true
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+
+          echo "Step R9: health payload"
+          cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
+          echo
+
+          if [ "$ok" != "1" ]; then
+            echo "ERROR: health check failed" >&2
+            sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
+            tail -n 120 "$HOME/ra-compose-logs.log" || true
+            exit 1
+          fi
+
+          echo "Step R10: verify frontend bundle serves index.html"
+          curl -sf --max-time 5 http://127.0.0.1:8001/ >/tmp/ra-index.html \
+            || curl -sf --max-time 5 http://127.0.0.1:8000/ >/tmp/ra-index.html \
+            || true
+          head -c 200 /tmp/ra-index.html 2>/dev/null || echo "(no index)"
+          echo
+
+          echo "Step R11: SITE IS UP"
+          echo "Step R12: remote deploy finished"
+          exit 0
+          REMOTE
+
+          chmod +x /tmp/ra-remote-deploy.sh
+
+          timeout 30s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            /tmp/ra-remote-deploy.sh \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-remote-deploy.sh"
+
+          echo "Step 5: run remote deploy (max 7 minutes)"
+          timeout 420s ssh \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=2 \
+            -o IdentitiesOnly=yes \
+            "${EC2_USERNAME}@${EC2_HOST}" \
+            "REBUILD_IMAGE=${REBUILD_IMAGE} bash /tmp/ra-remote-deploy.sh"
+
+          echo "Step 6: deploy workflow finished successfully"

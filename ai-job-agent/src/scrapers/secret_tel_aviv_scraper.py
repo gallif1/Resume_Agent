@@ -24,7 +24,7 @@ from config import (
     SECRET_TEL_AVIV_HTTP_TIMEOUT_SEC,
     SECRET_TEL_AVIV_MAX_PAGES,
 )
-from job_identity import normalize_job_url
+from job_identity import normalize_job_url, trim_jobs_before_known_stop
 from scrapers.base import BaseScraper
 
 _JOB_PATH_RE = re.compile(r"/job/[^?#]+", re.IGNORECASE)
@@ -160,6 +160,9 @@ class SecretTelAvivScraper(BaseScraper):
         *,
         max_pages: int = SECRET_TEL_AVIV_MAX_PAGES,
         headless: bool = HEADLESS,
+        known_job_urls: set[str] | None = None,
+        known_identity_keys: set[str] | None = None,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         print(f"Searching Secret Tel Aviv for: {query} (up to {max_pages} page(s))")
@@ -183,6 +186,19 @@ class SecretTelAvivScraper(BaseScraper):
             if not page_jobs:
                 break
 
+            hit_known = False
+            if stop_on_known and (known_job_urls or known_identity_keys):
+                page_jobs, hit_known = trim_jobs_before_known_stop(
+                    page_jobs,
+                    known_job_urls=known_job_urls,
+                    known_identity_keys=known_identity_keys,
+                )
+                if hit_known:
+                    print(
+                        "  Secret Tel Aviv: reached already-known job — "
+                        "incremental early break"
+                    )
+
             added = 0
             for job in page_jobs:
                 key = job.get("job_url") or ""
@@ -193,6 +209,8 @@ class SecretTelAvivScraper(BaseScraper):
                 added += 1
 
             print(f"  Secret Tel Aviv page {page}: +{added}")
+            if hit_known:
+                break
             if len(page_jobs) < 5:
                 break
             if page < max_pages:
@@ -221,5 +239,16 @@ def collect_secret_tel_aviv_jobs(
     *,
     max_pages: int = SECRET_TEL_AVIV_MAX_PAGES,
     headless: bool = HEADLESS,
+    known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
+    stop_on_known: bool = True,
+    **_kwargs: Any,
 ) -> CollectionOutcome:
-    return SecretTelAvivScraper().collect(query, max_pages=max_pages, headless=headless)
+    return SecretTelAvivScraper().collect(
+        query,
+        max_pages=max_pages,
+        headless=headless,
+        known_job_urls=known_job_urls,
+        known_identity_keys=known_identity_keys,
+        stop_on_known=stop_on_known,
+    )

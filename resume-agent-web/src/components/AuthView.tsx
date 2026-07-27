@@ -6,6 +6,7 @@ import {
   setStoredToken,
   type AuthUser,
 } from "../lib/api";
+import { APP_VERSION } from "../lib/version";
 
 interface Props {
   onAuthenticated: (user: AuthUser) => void;
@@ -48,6 +49,9 @@ export default function AuthView({ onAuthenticated }: Props) {
           <h1 className="auth-title">
             Resume<b>Agent</b>
           </h1>
+          <p className="app-version auth-version" dir="ltr">
+            {APP_VERSION}
+          </p>
           <p className="auth-subtitle">
             {mode === "login"
               ? "התחבר כדי לצפות בקורות החיים והמשרות שלך"

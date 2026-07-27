@@ -329,15 +329,72 @@ def job_matches_delta_identity(
     return False
 
 
+def job_is_already_known(
+    job: dict[str, Any] | None,
+    *,
+    known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
+    job_url: str | None = None,
+    title: str = "",
+    company: str = "",
+    location: str = "",
+) -> bool:
+    """True when the listing already exists in the local job index (URL or identity)."""
+    if not known_job_urls and not known_identity_keys:
+        return False
+
+    url = normalize_job_url(
+        job_url if job_url is not None else (job or {}).get("job_url", "")
+    )
+    if url and known_job_urls and url in known_job_urls:
+        return True
+
+    if not known_identity_keys:
+        return False
+
+    title_val = title or str((job or {}).get("title") or "")
+    company_val = company or str((job or {}).get("company") or "")
+    location_val = location or str((job or {}).get("location") or "")
+    job_key = compute_job_identity_key(url, title_val, company_val, location_val)
+    return bool(job_key) and job_key in known_identity_keys
+
+
+def trim_jobs_before_known_stop(
+    jobs: list[dict[str, Any]],
+    *,
+    known_job_urls: set[str] | None = None,
+    known_identity_keys: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Keep only brand-new listings before the first already-known job.
+
+    Assumes scrapers return jobs newest → oldest. When any listing already exists
+    in the DB index, stop immediately — older results were processed in prior scans.
+
+    Returns ``(jobs_before_known, hit_known)``.
+    """
+    if not jobs or (not known_job_urls and not known_identity_keys):
+        return list(jobs), False
+
+    kept: list[dict[str, Any]] = []
+    for job in jobs:
+        if job_is_already_known(
+            job,
+            known_job_urls=known_job_urls,
+            known_identity_keys=known_identity_keys,
+        ):
+            return kept, True
+        kept.append(job)
+    return kept, False
+
+
 def trim_jobs_before_delta_stop(
     jobs: list[dict[str, Any]],
     identity: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Keep only listings newer than the watermark (assumes newest → oldest order).
+    """Keep only listings newer than a single watermark (newest → oldest).
 
-    Returns ``(jobs_before_watermark, hit_watermark)``. When the watermark is
-    found, callers should early-break pagination — older pages cannot contain
-    unseen jobs for this search.
+    Prefer :func:`trim_jobs_before_known_stop` for incremental delta scrapes that
+    break on *any* already-known job URL/identity.
     """
     if not identity or not jobs:
         return list(jobs), False

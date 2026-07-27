@@ -10,8 +10,8 @@ import {
   getJobMatches,
   getJobMatchStatus,
   getJobApplication,
-  getScanStreamUrl,
   parseScanSummary,
+  scanStreamUrl,
   tailorCvForJob,
   tailorWorkspaceJob,
   updateMatchStatus,
@@ -29,6 +29,7 @@ import {
 import { formatJobDescription } from "../lib/formatJobDescription";
 import PipelineProgress from "./PipelineProgress";
 import ProfileSettings from "./ProfileSettings";
+import type { CSSProperties } from "react";
 
 interface Props {
   cvId: string;
@@ -38,6 +39,12 @@ interface Props {
   workspaceMode?: boolean;
   onBack?: () => void;
   emptyHint?: string;
+  /** Called when SSE delivers a status_update during a live scan. */
+  onStreamStatus?: (message: string) => void;
+  /** Called when SSE delivers scan_complete (or the stream errors out). */
+  onStreamComplete?: (payload?: { error?: string }) => void;
+  /** Bump workspace match count as jobs stream in. */
+  onStreamJobFound?: (job: CvMatch) => void;
 }
 
 const STATUS_OPTIONS: { value: ApplicationStatus; label: string }[] = [
@@ -131,13 +138,100 @@ function formatScoreProgression(
 ): string | null {
   if (after == null) return null;
   if (before == null) {
-    return original ? `ציון בסיס: ${after}/100` : `ציון מותאם: ${after}/100`;
+    return original
+      ? `ציון ההתאמה למשרה: ${after}`
+      : `ציון ההתאמה אחרי התאמה: ${after}`;
   }
   if (before === after) {
-    return `ציון התאמה: ${after}/100`;
+    return `ציון ההתאמה למשרה: ${after}`;
   }
-  const beforeLabel = original ? "ציון בסיס" : "ציון קודם";
-  return `${beforeLabel} (${before}%) → ציון מותאם (${after}%)`;
+  if (before < after) {
+    return original
+      ? `שיפרנו את ההתאמה למשרה מ־${before} ל־${after}`
+      : `שיפרנו עוד את ההתאמה מ־${before} ל־${after}`;
+  }
+  return `ציון ההתאמה אחרי התאמה: ${after}`;
+}
+
+/** Prefer LTR for Latin-heavy blocks so English stays readable in the RTL app. */
+function textDirection(text: string): "ltr" | "rtl" {
+  // Ignore markdown heading markers / bullets when counting script dominance.
+  const sample = (text || "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[-*•]\s+/gm, "")
+    .slice(0, 1200);
+  let hebrew = 0;
+  let latin = 0;
+  for (const ch of sample) {
+    if (ch >= "\u0590" && ch <= "\u05FF") hebrew += 1;
+    else if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z")) latin += 1;
+  }
+  // Prefer LTR when Latin is present and not clearly Hebrew-dominant.
+  if (latin === 0 && hebrew === 0) return "rtl";
+  return hebrew > latin * 1.2 ? "rtl" : "ltr";
+}
+
+/** Explicit direction props — class + inline style so parent RTL cannot win. */
+function directionalAttrs(text: string): {
+  dir: "ltr" | "rtl";
+  lang: string;
+  className: string;
+  style: CSSProperties;
+} {
+  const dir = textDirection(text);
+  const isLtr = dir === "ltr";
+  return {
+    dir,
+    lang: isLtr ? "en" : "he",
+    className: isLtr ? "is-ltr" : "is-rtl",
+    style: {
+      direction: dir,
+      textAlign: isLtr ? "left" : "right",
+      unicodeBidi: "isolate",
+    },
+  };
+}
+
+/** Rewrite legacy formula score lines into human Hebrew (for cached drafts). */
+function humanizeLegacyScoreMarkdown(markdown: string): string {
+  return (markdown || "").replace(
+    /(\*{0,2})ציון בסיס(?:י)?\s*:\s*(\d+)\s*\/\s*100\s*(?:→|->|←)\s*ציון מותאם\s*:\s*(\d+)\s*\/\s*100\*{0,2}(?:\s*[—–-]\s*([^\n*]+))?/giu,
+    (_full, _stars, before, after, label) => {
+      const he = formatScoreLabel((label || "").trim() || null);
+      const suffix = he ? ` — ${he}` : "";
+      return `**שיפרנו את ההתאמה למשרה מ־${before} ל־${after}${suffix}**`;
+    }
+  );
+}
+
+/** Split markdown into ## sections so each block can pick its own text direction. */
+function splitMarkdownSections(markdown: string): string[] {
+  const text = (markdown || "").trim();
+  if (!text) return [];
+  const parts = text.split(/(?=^##\s+)/m).map((p) => p.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : [text];
+}
+
+/** Split tailor markdown into Hebrew meta preamble vs resume body. */
+function splitTailoredPreview(markdown: string, cvMarkdown?: string | null): {
+  preamble: string | null;
+  body: string;
+} {
+  const body = extractTailoredCvBody(markdown, cvMarkdown);
+  const text = (markdown || "").trim();
+  if (!text || !body || body === text) {
+    return { preamble: null, body: body || text };
+  }
+  const idx = text.indexOf(body);
+  if (idx <= 0) {
+    return { preamble: null, body };
+  }
+  let preamble = text.slice(0, idx).trim();
+  preamble = preamble.replace(/\n---\s*$/u, "").trim();
+  preamble = preamble
+    .replace(/^##\s*קורות החיים המעודכנים\s*$/imu, "")
+    .trim();
+  return { preamble: preamble || null, body };
 }
 
 const IMPROVE_MATCH_HELPER =
@@ -239,6 +333,9 @@ export default function CvDetails({
   workspaceMode = false,
   onBack,
   emptyHint,
+  onStreamStatus,
+  onStreamComplete,
+  onStreamJobFound,
 }: Props) {
   const [matches, setMatches] = useState<CvMatch[]>([]);
   const [loading, setLoading] = useState(false);
@@ -262,11 +359,13 @@ export default function CvDetails({
   const [stagnantAttempts, setStagnantAttempts] = useState(0);
   const [maxMatchReached, setMaxMatchReached] = useState(false);
   const [previewAnimKey, setPreviewAnimKey] = useState(0);
+  const [liveJobIds, setLiveJobIds] = useState<Set<number>>(() => new Set());
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
-  const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const prevRunning = useRef(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const streamedJobIdsRef = useRef<Set<number>>(new Set());
   /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
   const bestSessionRef = useRef<{
     jobId: number;
@@ -305,13 +404,29 @@ export default function CvDetails({
       const data = workspaceMode
         ? await getJobMatches(sortOpts)
         : await getCvMatches(cvId, sortOpts);
-      setMatches(data.matches);
+      // Badge counts all matches; list defaults to latest scan. If the latest
+      // scan filter yields nothing but the CV still has matches, fall back so
+      // the Jobs tab is not empty while the card shows hundreds of matches.
+      if (
+        !workspaceMode &&
+        data.matches.length === 0 &&
+        (cv?.match_count ?? 0) > 0
+      ) {
+        const all = await getCvMatches(cvId, {
+          latest: false,
+          sortBy,
+          order: sortOrder,
+        });
+        setMatches(all.matches);
+      } else {
+        setMatches(data.matches);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
     } finally {
       setLoading(false);
     }
-  }, [cvId, workspaceMode, sortBy, sortOrder]);
+  }, [cvId, workspaceMode, sortBy, sortOrder, cv?.match_count]);
 
   const refreshJobList = useCallback(async () => {
     if (listRefreshing) return;
@@ -322,13 +437,26 @@ export default function CvDetails({
       const data = workspaceMode
         ? await getJobMatches(sortOpts)
         : await getCvMatches(cvId, sortOpts);
-      setMatches(data.matches);
+      if (
+        !workspaceMode &&
+        data.matches.length === 0 &&
+        (cv?.match_count ?? 0) > 0
+      ) {
+        const all = await getCvMatches(cvId, {
+          latest: false,
+          sortBy,
+          order: sortOrder,
+        });
+        setMatches(all.matches);
+      } else {
+        setMatches(data.matches);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
     } finally {
       setListRefreshing(false);
     }
-  }, [cvId, workspaceMode, sortBy, sortOrder, listRefreshing]);
+  }, [cvId, workspaceMode, sortBy, sortOrder, listRefreshing, cv?.match_count]);
 
   const handleSortChange = (value: string) => {
     // Encoded as "field:order" so one dropdown covers the common sorts.
@@ -367,57 +495,98 @@ export default function CvDetails({
   useEffect(() => {
     if (prevRunning.current && !running) {
       load();
+      setLiveJobIds(new Set());
+      streamedJobIdsRef.current = new Set();
     }
     prevRunning.current = running;
   }, [running, load]);
 
-  // Live job feed: stream newly-scored jobs in as soon as the scan finds
-  // them, instead of waiting for the whole scan to finish.
+  // Live SSE stream: append each scored job as soon as the backend emits it.
   useEffect(() => {
-    if (!running || (!workspaceMode && !cvId)) return;
+    if (!running) {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      return;
+    }
 
-    const eventSource = new EventSource(
-      getScanStreamUrl({ cvId, workspaceMode })
-    );
+    streamedJobIdsRef.current = new Set();
+    setMatches([]);
+    setLiveJobIds(new Set());
+    let closed = false;
+    const source = new EventSource(scanStreamUrl());
+    eventSourceRef.current = source;
 
-    const handleJobFound = (event: MessageEvent<string>) => {
-      try {
-        const job = JSON.parse(event.data) as CvMatch;
-        setMatches((prev) =>
-          prev.some((m) => m.match_id === job.match_id)
-            ? prev.map((m) => (m.match_id === job.match_id ? job : m))
-            : [job, ...prev]
-        );
-      } catch {
-        /* ignore malformed event payload */
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      source.close();
+      if (eventSourceRef.current === source) {
+        eventSourceRef.current = null;
       }
     };
 
-    const handleStatusUpdate = (event: MessageEvent<string>) => {
-      setLiveStatus(event.data);
-    };
+    source.addEventListener("job_found", (ev) => {
+      const message = ev as MessageEvent<string>;
+      let job: CvMatch;
+      try {
+        job = JSON.parse(message.data) as CvMatch;
+      } catch {
+        return;
+      }
+      if (job?.job_id == null) return;
 
-    const handleScanComplete = () => {
-      setLiveStatus(null);
-      eventSource.close();
-    };
+      const isNew = !streamedJobIdsRef.current.has(job.job_id);
+      streamedJobIdsRef.current.add(job.job_id);
 
-    eventSource.addEventListener("job_found", handleJobFound);
-    eventSource.addEventListener("status_update", handleStatusUpdate);
-    eventSource.addEventListener("scan_complete", handleScanComplete);
-    eventSource.onerror = () => {
-      setLiveStatus(null);
-      eventSource.close();
+      setMatches((prev) => {
+        const idx = prev.findIndex((m) => m.job_id === job.job_id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], ...job };
+          return next;
+        }
+        return [job, ...prev];
+      });
+      setLiveJobIds((prev) => {
+        const next = new Set(prev);
+        next.add(job.job_id);
+        return next;
+      });
+      if (isNew) onStreamJobFound?.(job);
+    });
+
+    source.addEventListener("status_update", (ev) => {
+      const message = ev as MessageEvent<string>;
+      const text = (message.data || "").trim();
+      if (text) onStreamStatus?.(text);
+    });
+
+    source.addEventListener("scan_complete", (ev) => {
+      const message = ev as MessageEvent<string>;
+      let payload: { error?: string } = {};
+      try {
+        payload = JSON.parse(message.data || "{}") as { error?: string };
+      } catch {
+        payload = {};
+      }
+      closeStream();
+      onStreamComplete?.(payload);
+    });
+
+    source.onerror = () => {
+      // EventSource auto-retries; only tear down if the scan already ended.
+      if (!running) {
+        closeStream();
+        onStreamComplete?.();
+      }
     };
 
     return () => {
-      eventSource.removeEventListener("job_found", handleJobFound);
-      eventSource.removeEventListener("status_update", handleStatusUpdate);
-      eventSource.removeEventListener("scan_complete", handleScanComplete);
-      eventSource.close();
-      setLiveStatus(null);
+      closeStream();
     };
-  }, [running, cvId, workspaceMode]);
+  }, [running, onStreamStatus, onStreamComplete, onStreamJobFound]);
 
   // Poll while any application is in progress.
   useEffect(() => {
@@ -792,7 +961,12 @@ export default function CvDetails({
     const busyTailor = tailoringId === m.job_id;
 
     return (
-      <li key={m.match_id} className={`cv-item job-item ${potential ? "job-item-potential" : ""}`}>
+      <li
+        key={m.match_id ?? m.job_id}
+        className={`cv-item job-item ${potential ? "job-item-potential" : ""} ${
+          liveJobIds.has(m.job_id) ? "job-item-live-in" : ""
+        }`}
+      >
         <div
           className="job-row"
           onClick={() => setExpandedId(expanded ? null : m.match_id)}
@@ -902,9 +1076,20 @@ export default function CvDetails({
             <div className="job-description-block">
               <h4 className="job-description-title">תיאור המשרה</h4>
               {m.description?.trim() ? (
-                <div className="job-description-text" dir="auto">
-                  <Markdown>{formatJobDescription(m.description)}</Markdown>
-                </div>
+                (() => {
+                  const formatted = formatJobDescription(m.description);
+                  const dirAttrs = directionalAttrs(m.description);
+                  return (
+                    <div
+                      className={`job-description-text ${dirAttrs.className}`}
+                      dir={dirAttrs.dir}
+                      lang={dirAttrs.lang}
+                      style={dirAttrs.style}
+                    >
+                      <Markdown>{formatted}</Markdown>
+                    </div>
+                  );
+                })()
               ) : (
                 <p className="cv-meta">אין תיאור מלא למשרה זו</p>
               )}
@@ -1004,13 +1189,6 @@ export default function CvDetails({
           />
         </div>
       </div>
-
-      {panelVisible && liveStatus && (
-        <p className="live-status-line" role="status">
-          <span className="live-status-dot" aria-hidden="true" />
-          {liveStatus}
-        </p>
-      )}
 
       {error && (
         <div
@@ -1157,9 +1335,13 @@ export default function CvDetails({
                         { original: true }
                       );
                   if (!progression) return null;
+                  const labelHe = formatScoreLabel(
+                    tailoredCv.matcher_feedback?.current?.score_label ?? null
+                  );
                   return (
                     <>
-                      <b>התאמה:</b> {progression}
+                      {progression}
+                      {labelHe ? ` · ${labelHe}` : ""}
                       {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
                     </>
                   );
@@ -1209,9 +1391,42 @@ export default function CvDetails({
             <div
               key={previewAnimKey}
               className={`tailored-cv-body ${isGenerating ? "tailored-cv-body-dimmed" : "tailored-cv-body-fade-in"}`}
-              dir="auto"
             >
-              <Markdown>{tailoredCv.markdown}</Markdown>
+              {(() => {
+                const { preamble, body } = splitTailoredPreview(
+                  humanizeLegacyScoreMarkdown(tailoredCv.markdown),
+                  tailoredCv.cv_markdown
+                );
+                const bodyAttrs = directionalAttrs(body);
+                return (
+                  <>
+                    {preamble
+                      ? splitMarkdownSections(preamble).map((section, i) => {
+                          const sectionAttrs = directionalAttrs(section);
+                          return (
+                            <div
+                              key={`preamble-${i}`}
+                              className={`tailored-cv-preamble-section ${sectionAttrs.className}`}
+                              dir={sectionAttrs.dir}
+                              lang={sectionAttrs.lang}
+                              style={sectionAttrs.style}
+                            >
+                              <Markdown>{section}</Markdown>
+                            </div>
+                          );
+                        })
+                      : null}
+                    <div
+                      className={`tailored-cv-resume ${bodyAttrs.className}`}
+                      dir={bodyAttrs.dir}
+                      lang={bodyAttrs.lang}
+                      style={bodyAttrs.style}
+                    >
+                      <Markdown>{body}</Markdown>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
             <div className="improve-match-block">
               <div className="modal-actions modal-actions-improve">
@@ -1402,7 +1617,7 @@ export default function CvDetails({
           </div>
           <p>
             {scanStatus?.running
-              ? "הסריקה רצה — משרות מתאימות יופיעו כאן בהמשך"
+              ? "הסריקה רצה — משרות יופיעו כאן בזמן אמת ברגע שיימצאו"
               : "לא נמצאו משרות עדיין"}
           </p>
           {!scanStatus?.running &&

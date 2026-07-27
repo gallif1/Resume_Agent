@@ -27,3 +27,7 @@ def test_health_includes_persistence_fields(monkeypatch):
     assert payload["data_persistent"] is True
     assert "data_dir" in payload
     assert "registry_db_exists" in payload
+    assert "database_ok" in payload
+    assert "uses_postgres" in payload
+    assert payload["database_ok"] is True
+    assert payload["database_error"] is None

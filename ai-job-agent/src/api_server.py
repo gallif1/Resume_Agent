@@ -20,12 +20,11 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     POST   /cvs/{cv_id}/refresh             delta refresh using last scan criteria
     POST   /cvs/{cv_id}/run-agent           run full per-CV pipeline (incremental)
     GET    /cvs/{cv_id}/scan-status         live scan progress + log tail
-    GET    /cvs/{cv_id}/scan/stream         SSE stream of live job_found/status_update events (?token=JWT)
     GET    /cvs/{cv_id}/matches             CV's job matches (all scans by default)
            (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
     GET    /jobs/match-status                 live workspace scan progress
-    GET    /jobs/match/stream                 SSE stream of live job_found/status_update events (?token=JWT)
+    GET    /api/scan/stream                   SSE: job_found / status_update / scan_complete
     GET    /jobs/matches                      workspace job matches
            (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/matches/reset                clear workspace match results
@@ -55,6 +54,7 @@ Legacy (single global CV) endpoints, kept for backward compatibility:
 import argparse
 import asyncio
 import json
+import logging
 import os
 import queue
 import subprocess
@@ -62,7 +62,9 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
+
+logger = logging.getLogger("api_server")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -77,6 +79,7 @@ from sse_starlette.sse import EventSourceResponse
 import auth
 import cv_service
 import db
+import scan_stream
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
 from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
@@ -136,31 +139,6 @@ def _require_owned_cv(cv_id: str, user: dict) -> dict:
     return cv
 
 
-def _user_from_query_token(token: str) -> dict:
-    """Authenticate the SSE scan stream via a ``?token=`` query param.
-
-    The browser's native ``EventSource`` cannot set an ``Authorization``
-    header, so the stream endpoints accept the same JWT as a query param
-    instead of Bearer auth.
-    """
-    payload = auth.decode_access_token(token)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=401,
-            detail="טוקן לא תקין — התחבר מחדש",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    user = db.get_user_by_id(str(user_id))
-    if user is None:
-        raise HTTPException(
-            status_code=401,
-            detail="המשתמש לא נמצא — התחבר מחדש",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
-
-
 def _parse_match_sort(sort_by: str | None, order: str | None) -> tuple[str | None, str | None]:
     """Validate sort query params (None keeps DB defaults)."""
     if sort_by is None and order is None:
@@ -194,19 +172,31 @@ class AuthLoginRequest(BaseModel):
 
 @app.post("/api/auth/register")
 def auth_register(req: AuthRegisterRequest):
-    db.ensure_multi_cv_storage()
+    # Auth uses ensure_auth_schema (users only) — not full CV/Postgres migration.
     try:
         user = auth.register_user(req.email, req.password)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface DB/connectivity failures
+        logger.exception("auth register failed")
+        raise HTTPException(
+            status_code=500,
+            detail="שגיאת שרת בהרשמה — בעיית מסד נתונים. נסה שוב מאוחר יותר",
+        ) from exc
     token = auth.create_access_token(user["id"], user["email"])
     return {"access_token": token, "token_type": "bearer", "user": auth.public_user(user)}
 
 
 @app.post("/api/auth/login")
 def auth_login(req: AuthLoginRequest):
-    db.ensure_multi_cv_storage()
-    user = auth.authenticate_user(req.email, req.password)
+    try:
+        user = auth.authenticate_user(req.email, req.password)
+    except Exception as exc:  # noqa: BLE001 — surface DB/connectivity failures
+        logger.exception("auth login failed")
+        raise HTTPException(
+            status_code=500,
+            detail="שגיאת שרת בהתחברות — בעיית מסד נתונים. נסה שוב מאוחר יותר",
+        ) from exc
     if user is None:
         raise HTTPException(status_code=401, detail="אימייל או סיסמה שגויים")
     token = auth.create_access_token(user["id"], user["email"] or "")
@@ -460,11 +450,6 @@ async def upload_cv(file: UploadFile = File(...)):
 
 # Per-CV scan runner (one scan at a time; separate from the legacy pipeline).
 _scan_lock = threading.Lock()
-# Live scan events (status text + freshly-scored jobs) are fanned out to every
-# open SSE connection, each with its own queue — a shared single queue would
-# let concurrent tabs steal each other's events instead of each seeing all of
-# them.
-_scan_listeners: "list[queue.Queue[tuple[str, Any]]]" = []
 _scan_state: dict = {
     "running": False,
     "mode": None,
@@ -480,53 +465,6 @@ _scan_state: dict = {
     "log": [],
     "current_detail": None,
 }
-
-
-def _register_scan_listener() -> "queue.Queue[tuple[str, Any]]":
-    """Attach a fresh per-connection queue that receives every scan event."""
-    listener: "queue.Queue[tuple[str, Any]]" = queue.Queue()
-    with _scan_lock:
-        _scan_listeners.append(listener)
-    return listener
-
-
-def _unregister_scan_listener(listener: "queue.Queue[tuple[str, Any]]") -> None:
-    with _scan_lock:
-        try:
-            _scan_listeners.remove(listener)
-        except ValueError:
-            pass
-
-
-def _broadcast_scan_event(kind: str, payload: Any) -> None:
-    with _scan_lock:
-        listeners = list(_scan_listeners)
-    for listener in listeners:
-        listener.put((kind, payload))
-
-
-def _push_job_found_event(job_id: int) -> None:
-    """Look up a freshly-scored job row and broadcast it as a ``job_found`` event."""
-    with _scan_lock:
-        mode = _scan_state.get("mode")
-        cv_id = _scan_state.get("cv_id")
-        user_id = _scan_state.get("user_id")
-    try:
-        if mode == "user":
-            target_cv_id = db.WORKSPACE_CV_ID
-            db_path = user_db_path(user_id or db.DEFAULT_USER_ID)
-        elif cv_id:
-            target_cv_id = cv_id
-            db_path = cv_db_path(cv_id)
-        else:
-            return
-        rows = db.get_cv_matches(target_cv_id, job_id=job_id, db_path=db_path)
-        if not rows:
-            return
-        match = _match_public(_reshape_match_row(rows[0]))
-    except Exception:  # noqa: BLE001 — never let SSE bridging crash the scan
-        return
-    _broadcast_scan_event("job_found", match)
 
 
 def _parse_scan_summary(summary: str | None) -> dict:
@@ -565,9 +503,21 @@ def _persist_scan_state() -> None:
         pass
 
 
+def _scan_user_id() -> str:
+    with _scan_lock:
+        return _scan_state.get("user_id") or db.DEFAULT_USER_ID
+
+
+def _finish_scan_stream(*, error: str | None = None) -> None:
+    """Notify SSE subscribers that the scan finished."""
+    user_id = _scan_user_id()
+    payload: dict[str, Any] = {}
+    if error:
+        payload["error"] = error
+    scan_stream.publish_scan_complete(user_id, payload)
+
+
 def _scan_log(line: str) -> None:
-    status_text: str | None = None
-    job_scored_id: int | None = None
     with _scan_lock:
         log = _scan_state["log"]
         log.append(line)
@@ -576,7 +526,7 @@ def _scan_log(line: str) -> None:
         stripped = line.strip()
         if stripped and not stripped.startswith(">>") and not stripped.startswith("--"):
             _scan_state["current_detail"] = stripped
-            status_text = stripped
+        user_id = _scan_state.get("user_id") or db.DEFAULT_USER_ID
         parsed = parse_agent_line(stripped)
         if parsed is not None:
             if parsed.get("type") == "warning":
@@ -585,28 +535,32 @@ def _scan_log(line: str) -> None:
                     _scan_state["warnings"].append(message)
             elif parsed.get("type") == "summary":
                 _scan_state["collection"] = parsed.get("summary")
-            elif parsed.get("type") == "job_scored":
-                job_scored_id = parsed.get("job_id")
+            elif parsed.get("type") == "job_found":
+                job = parsed.get("job")
+                if isinstance(job, dict):
+                    scan_stream.publish_job_found(user_id, job)
+            elif parsed.get("type") == "status_update":
+                message = parsed.get("message") or ""
+                if message:
+                    _scan_state["current_detail"] = message
+                    scan_stream.publish_status(user_id, message)
     _persist_scan_state()
-    if status_text:
-        _broadcast_scan_event("status_update", status_text)
-    if job_scored_id is not None:
-        _push_job_found_event(job_scored_id)
 
 
 def _scan_set_step(key: str, status: str) -> None:
-    status_text: str | None = None
+    status_message: str | None = None
     with _scan_lock:
+        user_id = _scan_state.get("user_id") or db.DEFAULT_USER_ID
         for step in _scan_state["steps"]:
             if step["key"] == key:
                 step["status"] = status
                 if status == "running":
                     _scan_state["current_detail"] = step["name"]
-                    status_text = step["name"]
+                    status_message = step["name"]
                 break
     _persist_scan_state()
-    if status_text:
-        _broadcast_scan_event("status_update", status_text)
+    if status_message:
+        scan_stream.publish_status(user_id, status_message)
 
 
 def _running_step_key_from_steps(steps: list[dict]) -> str | None:
@@ -661,7 +615,7 @@ def _run_scan_thread(
                 _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
-        _broadcast_scan_event("scan_complete", {})
+        _finish_scan_stream(error=error)
 
 
 def _run_search_thread(
@@ -704,12 +658,13 @@ def _run_search_thread(
                 _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
-        _broadcast_scan_event("scan_complete", {})
+        _finish_scan_stream(error=error)
 
 
 def _cv_match_count(cv_id: str) -> int:
     cv_db = cv_db_path(cv_id)
-    if not cv_db.exists():
+    # On Postgres the logical jobs.db path may not exist as a file.
+    if not db.uses_postgres() and not cv_db.exists():
         return 0
     try:
         db.ensure_jobs_schema(cv_db)
@@ -756,12 +711,12 @@ def _run_user_scan_thread(
                 _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
-        _broadcast_scan_event("scan_complete", {})
+        _finish_scan_stream(error=error)
 
 
 def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
     workspace_db = user_db_path(user_id)
-    if not workspace_db.exists():
+    if not db.uses_postgres() and not workspace_db.exists():
         return 0
     try:
         # Repair empty/partial DBs created by an earlier get_connection without init_db.
@@ -1125,88 +1080,47 @@ def job_match_status(user: dict = Depends(auth.get_current_user)):
     return _user_scan_status(user_id=user["id"])
 
 
-def _scan_belongs_to(*, cv_id: str | None, user_id: str | None) -> bool:
-    """True if the currently tracked scan matches this stream connection's target."""
-    if cv_id is not None:
-        return _scan_state.get("cv_id") == cv_id
-    return _scan_state.get("mode") == "user" and _scan_state.get("user_id") == user_id
-
-
-async def _scan_event_generator(
+@app.get("/api/scan/stream")
+async def scan_stream_endpoint(
     request: Request,
-    *,
-    cv_id: str | None = None,
-    user_id: str | None = None,
-) -> AsyncIterator[dict[str, str]]:
-    """Shared SSE generator for both the per-CV and workspace scan streams.
+    user: dict = Depends(auth.get_current_user_sse),
+):
+    """Server-Sent Events stream of live scan progress and found jobs.
 
-    First replays any jobs the in-progress scan already scored (covers the
-    race between the scan starting in a background thread and the browser
-    opening the ``EventSource``), then streams live ``job_found`` /
-    ``status_update`` events, finishing with ``scan_complete`` once the scan
-    this connection is watching is done.
+    Events:
+      - ``status_update`` — human-readable progress string
+      - ``job_found`` — JSON match object (after collect→enrich→match for that job)
+      - ``scan_complete`` — scan finished (closes the stream)
+
+    Auth: ``Authorization: Bearer …`` or ``?token=`` (EventSource cannot set headers).
     """
-    target_cv_id = cv_id if cv_id is not None else db.WORKSPACE_CV_ID
-    db_path = cv_db_path(cv_id) if cv_id is not None else user_db_path(user_id or db.DEFAULT_USER_ID)
+    user_id = user["id"]
+    q = scan_stream.subscribe(user_id)
 
-    seen_match_ids: set[int] = set()
-    try:
-        for row in db.get_cv_matches(target_cv_id, latest_only=True, db_path=db_path):
-            shaped = _match_public(_reshape_match_row(row))
-            match_id = shaped.get("match_id")
-            if match_id is not None:
-                seen_match_ids.add(match_id)
-            yield {"event": "job_found", "data": json.dumps(shaped, ensure_ascii=False)}
-    except Exception:  # noqa: BLE001 — the catch-up snapshot is best-effort
-        pass
-
-    listener = _register_scan_listener()
-    try:
-        while True:
-            if await request.is_disconnected():
-                return
-            try:
-                kind, payload = await asyncio.to_thread(listener.get, True, 1.0)
-            except queue.Empty:
-                with _scan_lock:
-                    still_running = _scan_state["running"] and _scan_belongs_to(
-                        cv_id=cv_id, user_id=user_id
-                    )
-                if not still_running:
-                    yield {"event": "scan_complete", "data": "{}"}
-                    return
-                continue
-
-            with _scan_lock:
-                belongs = _scan_belongs_to(cv_id=cv_id, user_id=user_id)
-            if not belongs:
-                continue
-
-            if kind == "job_found":
-                match_id = payload.get("match_id")
-                if match_id is not None and match_id in seen_match_ids:
+    async def event_generator():
+        try:
+            # Immediate hello so the client knows the stream is live.
+            yield {"event": "status_update", "data": "מחובר לזרם הסריקה…"}
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.to_thread(q.get, True, 1.5)
+                except queue.Empty:
+                    # Keepalive so proxies don't close idle connections.
+                    yield {"event": "ping", "data": "{}"}
                     continue
-                if match_id is not None:
-                    seen_match_ids.add(match_id)
-                yield {"event": "job_found", "data": json.dumps(payload, ensure_ascii=False)}
-            elif kind == "status_update":
-                yield {"event": "status_update", "data": payload}
-            elif kind == "scan_complete":
-                yield {"event": "scan_complete", "data": "{}"}
-                return
-    finally:
-        _unregister_scan_listener(listener)
+                if item is scan_stream.SCAN_COMPLETE_SENTINEL:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                yield {"event": item.get("event", "message"), "data": item.get("data", "{}")}
+                if item.get("event") == "scan_complete":
+                    break
+        finally:
+            scan_stream.unsubscribe(user_id, q)
 
-
-@app.get("/jobs/match/stream")
-async def job_match_stream(request: Request, token: str):
-    """SSE stream of live job_found/status_update events for the workspace scan."""
-    user = _user_from_query_token(token)
-    db.ensure_multi_cv_storage()
-    return EventSourceResponse(
-        _scan_event_generator(request, user_id=user["id"]),
-        ping=15,
-    )
+    return EventSourceResponse(event_generator())
 
 
 @app.get("/jobs/matches")
@@ -1424,7 +1338,7 @@ def refresh_jobs_for_cv(
     cv_id: str,
     user: dict = Depends(auth.get_current_user),
 ):
-    """Delta refresh: reuse last scan domains/boards and early-break at watermark."""
+    """Delta refresh: reuse last scan domains/boards; early-break on known jobs."""
     db.ensure_multi_cv_storage()
     _require_owned_cv(cv_id, user)
 
@@ -1579,17 +1493,6 @@ def cv_scan_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
             live["collection"] = summary_data.get("collection")
     live["latest_scan"] = latest_scan
     return live
-
-
-@app.get("/cvs/{cv_id}/scan/stream")
-async def cv_scan_stream(cv_id: str, request: Request, token: str):
-    """SSE stream of live job_found/status_update events for this CV's scan."""
-    user = _user_from_query_token(token)
-    _require_owned_cv(cv_id, user)
-    return EventSourceResponse(
-        _scan_event_generator(request, cv_id=cv_id),
-        ping=15,
-    )
 
 
 @app.get("/cvs/{cv_id}/matches")
@@ -1802,6 +1705,8 @@ def tailor_workspace_job(
     job, workspace_db, profile_cv_id = _resolve_job_context(
         job_id, source_cv_id, user_id=user["id"]
     )
+    # Ensure cv_tailor_versions (and other match migrations) exist before first tailor.
+    db.init_db(workspace_db)
     force = (req.force if req else False) or regenerate
     try:
         result = tailor_cv_for_job(
@@ -2145,6 +2050,15 @@ def _data_dir_looks_persistent() -> bool:
 async def health():
     browser_ok, browser_error = _playwright_browser_ready()
     data_persistent = _data_dir_looks_persistent()
+    database_ok = True
+    database_error = None
+    try:
+        db.init_registry_db()
+        with db.get_connection(db.REGISTRY_DB_PATH) as conn:
+            conn.execute("SELECT 1 AS ok").fetchone()
+    except Exception as exc:  # noqa: BLE001
+        database_ok = False
+        database_error = str(exc)[:200]
     return {
         "ok": True,
         "pipeline_running": _pipeline_state["running"],
@@ -2154,6 +2068,9 @@ async def health():
         "data_dir": str(DATA_DIR),
         "data_persistent": data_persistent,
         "registry_db_exists": db.REGISTRY_DB_PATH.is_file(),
+        "uses_postgres": db.uses_postgres(),
+        "database_ok": database_ok,
+        "database_error": database_error,
     }
 
 
