@@ -12,11 +12,11 @@ beautifulsoup4
 markdown
 fastapi
 uvicorn
+sse-starlette>=2.2.1,<3.0.0
 python-multipart
 passlib[bcrypt]
 bcrypt>=4.0.1,<4.1
 PyJWT>=2.7.0
-sse-starlette
 pytest
 sqlalchemy>=2.0
 psycopg[binary]>=3.1
