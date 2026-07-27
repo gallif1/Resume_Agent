@@ -272,6 +272,44 @@ export default function App() {
     if (serverUp) refreshJobSites();
   }, [serverUp, refreshJobSites]);
 
+  const handleStreamStatus = useCallback((message: string) => {
+    setScanStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            detail: message,
+            current_step: prev.current_step,
+          }
+        : prev
+    );
+  }, []);
+
+  const handleStreamJobFound = useCallback((_job: import("./lib/api").CvMatch) => {
+    setWorkspaceMatchCount((count) => count + 1);
+  }, []);
+
+  const handleStreamComplete = useCallback(
+    (payload?: { error?: string }) => {
+      setScanStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              running: false,
+              finished_at: prev.finished_at ?? new Date().toISOString(),
+              error: payload?.error ?? prev.error,
+              detail: payload?.error ? prev.detail : "הסריקה הושלמה",
+            }
+          : prev
+      );
+      setShowScanPanel(false);
+      refreshCvs();
+      if (payload?.error) {
+        showToast(payload.error);
+      }
+    },
+    [refreshCvs]
+  );
+
   const stopPolling = useCallback(() => {
     if (pollRef.current != null) {
       window.clearInterval(pollRef.current);
@@ -493,7 +531,9 @@ export default function App() {
         ],
         log: [],
         latest_scan: null,
+        match_count: 0,
       });
+      setWorkspaceMatchCount(0);
       setDetailsRefreshKey((value) => value + 1);
       startPolling(cvId);
     } catch (e) {
@@ -717,6 +757,9 @@ export default function App() {
               workspaceMode={false}
               onBack={undefined}
               emptyHint={scanEmptyHint(selectedCv)}
+              onStreamStatus={handleStreamStatus}
+              onStreamJobFound={handleStreamJobFound}
+              onStreamComplete={handleStreamComplete}
             />
           )}
           {scanModalOpen && selectedCv && (

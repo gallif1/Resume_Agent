@@ -583,6 +583,13 @@ export function getJobMatchStatus(): Promise<CvScanStatus & {
   return request(`/jobs/match-status`);
 }
 
+/** Build the SSE URL for live scan events (EventSource cannot set Auth headers). */
+export function scanStreamUrl(): string {
+  const token = getStoredToken() ?? "";
+  const qs = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${BASE_URL}/api/scan/stream${qs}`;
+}
+
 export function getJobMatches(
   options?: {
     latest?: boolean;

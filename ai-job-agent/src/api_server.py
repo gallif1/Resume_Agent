@@ -24,6 +24,7 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
            (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
     GET    /jobs/match-status                 live workspace scan progress
+    GET    /api/scan/stream                   SSE: job_found / status_update / scan_complete
     GET    /jobs/matches                      workspace job matches
            (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/matches/reset                clear workspace match results
@@ -51,9 +52,11 @@ Legacy (single global CV) endpoints, kept for backward compatibility:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -66,15 +69,17 @@ logger = logging.getLogger("api_server")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import uvicorn
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sse_starlette.sse import EventSourceResponse
 
 import auth
 import cv_service
 import db
+import scan_stream
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
 from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
@@ -498,6 +503,20 @@ def _persist_scan_state() -> None:
         pass
 
 
+def _scan_user_id() -> str:
+    with _scan_lock:
+        return _scan_state.get("user_id") or db.DEFAULT_USER_ID
+
+
+def _finish_scan_stream(*, error: str | None = None) -> None:
+    """Notify SSE subscribers that the scan finished."""
+    user_id = _scan_user_id()
+    payload: dict[str, Any] = {}
+    if error:
+        payload["error"] = error
+    scan_stream.publish_scan_complete(user_id, payload)
+
+
 def _scan_log(line: str) -> None:
     with _scan_lock:
         log = _scan_state["log"]
@@ -507,6 +526,7 @@ def _scan_log(line: str) -> None:
         stripped = line.strip()
         if stripped and not stripped.startswith(">>") and not stripped.startswith("--"):
             _scan_state["current_detail"] = stripped
+        user_id = _scan_state.get("user_id") or db.DEFAULT_USER_ID
         parsed = parse_agent_line(stripped)
         if parsed is not None:
             if parsed.get("type") == "warning":
@@ -515,18 +535,32 @@ def _scan_log(line: str) -> None:
                     _scan_state["warnings"].append(message)
             elif parsed.get("type") == "summary":
                 _scan_state["collection"] = parsed.get("summary")
+            elif parsed.get("type") == "job_found":
+                job = parsed.get("job")
+                if isinstance(job, dict):
+                    scan_stream.publish_job_found(user_id, job)
+            elif parsed.get("type") == "status_update":
+                message = parsed.get("message") or ""
+                if message:
+                    _scan_state["current_detail"] = message
+                    scan_stream.publish_status(user_id, message)
     _persist_scan_state()
 
 
 def _scan_set_step(key: str, status: str) -> None:
+    status_message: str | None = None
     with _scan_lock:
+        user_id = _scan_state.get("user_id") or db.DEFAULT_USER_ID
         for step in _scan_state["steps"]:
             if step["key"] == key:
                 step["status"] = status
                 if status == "running":
                     _scan_state["current_detail"] = step["name"]
+                    status_message = step["name"]
                 break
     _persist_scan_state()
+    if status_message:
+        scan_stream.publish_status(user_id, status_message)
 
 
 def _running_step_key_from_steps(steps: list[dict]) -> str | None:
@@ -581,6 +615,7 @@ def _run_scan_thread(
                 _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
+        _finish_scan_stream(error=error)
 
 
 def _run_search_thread(
@@ -623,6 +658,7 @@ def _run_search_thread(
                 _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
+        _finish_scan_stream(error=error)
 
 
 def _cv_match_count(cv_id: str) -> int:
@@ -675,6 +711,7 @@ def _run_user_scan_thread(
                 _scan_state["current_detail"] = "הסריקה נעצרה"
             _scan_state["error"] = error
         _persist_scan_state()
+        _finish_scan_stream(error=error)
 
 
 def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
@@ -1041,6 +1078,49 @@ def stop_job_matcher(user: dict = Depends(auth.get_current_user)):
 def job_match_status(user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
     return _user_scan_status(user_id=user["id"])
+
+
+@app.get("/api/scan/stream")
+async def scan_stream_endpoint(
+    request: Request,
+    user: dict = Depends(auth.get_current_user_sse),
+):
+    """Server-Sent Events stream of live scan progress and found jobs.
+
+    Events:
+      - ``status_update`` — human-readable progress string
+      - ``job_found`` — JSON match object (after collect→enrich→match for that job)
+      - ``scan_complete`` — scan finished (closes the stream)
+
+    Auth: ``Authorization: Bearer …`` or ``?token=`` (EventSource cannot set headers).
+    """
+    user_id = user["id"]
+    q = scan_stream.subscribe(user_id)
+
+    async def event_generator():
+        try:
+            # Immediate hello so the client knows the stream is live.
+            yield {"event": "status_update", "data": "מחובר לזרם הסריקה…"}
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.to_thread(q.get, True, 1.5)
+                except queue.Empty:
+                    # Keepalive so proxies don't close idle connections.
+                    yield {"event": "ping", "data": "{}"}
+                    continue
+                if item is scan_stream.SCAN_COMPLETE_SENTINEL:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                yield {"event": item.get("event", "message"), "data": item.get("data", "{}")}
+                if item.get("event") == "scan_complete":
+                    break
+        finally:
+            scan_stream.unsubscribe(user_id, q)
+
+    return EventSourceResponse(event_generator())
 
 
 @app.get("/jobs/matches")
