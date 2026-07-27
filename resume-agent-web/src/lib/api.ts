@@ -1,9 +1,9 @@
 // HTTP client for the ai-job-agent backend (FastAPI, separate repository).
 
 // In dev, Vite proxies /api and /cvs to the FastAPI server (see vite.config.ts).
-const BASE_URL: string =
-  (import.meta.env.VITE_API_URL as string | undefined) ??
-  (import.meta.env.DEV ? "" : "http://127.0.0.1:8000");
+// In production the frontend is served by the same FastAPI app, so default to
+// same-origin requests unless an explicit API URL override is provided.
+const BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
 const TOKEN_KEY = "resume_agent_jwt";
 
