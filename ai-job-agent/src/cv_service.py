@@ -454,6 +454,8 @@ def run_search(
 
     if delta:
         _log(">> רענון דלתא — בדיקת משרות חדשות בלבד (עצירה במשרה קיימת)")
+    else:
+        _log(">> איסוף משרות — מצב דלתא אינקרמנטלי (עצירה במשרה קיימת)")
 
     for key, name, script, extra in SEARCH_STEPS:
         skipped = key == "enrich" and skip_enrich
@@ -523,17 +525,7 @@ def run_search(
 
     # All historical matches for this CV (past + current scans).
     match_count = len(db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db))
-    new_jobs = 0
-    if isinstance(collection_summary, dict):
-        raw_new = collection_summary.get("new_jobs_total")
-        if isinstance(raw_new, int):
-            new_jobs = raw_new
-        else:
-            new_jobs = sum(
-                int(site.get("new") or 0)
-                for key_name, site in collection_summary.items()
-                if key_name in _BOARD_SUMMARY_KEYS and isinstance(site, dict)
-            )
+    new_jobs = _new_jobs_from_collection_summary(collection_summary)
     new_matches = 0
     if isinstance(match_summary, dict) and isinstance(
         match_summary.get("new_matches"), int
@@ -546,7 +538,8 @@ def run_search(
         "new_matches": new_matches,
         "domains": cleaned_domains,
         "job_sites": selected_sites,
-        "delta": bool(delta),
+        "incremental": True,
+        "delta": True,
     }
     if collection_summary:
         summary_payload["collection"] = collection_summary
@@ -574,11 +567,28 @@ def run_search(
         scan_record["matching"] = match_summary
     scan_record["domains"] = cleaned_domains
     scan_record["job_sites"] = selected_sites
-    scan_record["delta"] = bool(delta)
+    scan_record["delta"] = True
+    scan_record["incremental"] = True
     scan_record["match_count"] = match_count
     scan_record["new_jobs"] = new_jobs
     scan_record["new_matches"] = new_matches
     return scan_record
+
+
+def _new_jobs_from_collection_summary(
+    collection_summary: dict[str, Any] | None,
+) -> int:
+    """Count brand-new jobs inserted during a collect run."""
+    if not isinstance(collection_summary, dict):
+        return 0
+    raw_new = collection_summary.get("new_jobs_total")
+    if isinstance(raw_new, int):
+        return raw_new
+    return sum(
+        int(site.get("new") or 0)
+        for key_name, site in collection_summary.items()
+        if key_name in _BOARD_SUMMARY_KEYS and isinstance(site, dict)
+    )
 
 
 _BOARD_SUMMARY_KEYS = frozenset(
@@ -739,6 +749,7 @@ def run_scan(
     error: str | None = None
     warnings: list[str] = []
     collection_summary: dict[str, Any] | None = None
+    match_summary: dict[str, Any] | None = None
     for key, name, script, extra in SCAN_STEPS:
         skipped = (key == "collect" and skip_collect) or (
             key == "enrich" and skip_enrich
@@ -773,7 +784,7 @@ def run_scan(
             line = line.rstrip()
             if line:
                 _log(line)
-                if key == "collect":
+                if key in ("collect", "match"):
                     parsed = parse_agent_line(line)
                     if parsed is None:
                         continue
@@ -781,8 +792,10 @@ def run_scan(
                         message = parsed.get("message")
                         if message and message not in warnings:
                             warnings.append(message)
-                    elif parsed.get("type") == "summary":
+                    elif parsed.get("type") == "summary" and key == "collect":
                         collection_summary = parsed.get("summary")
+                    elif parsed.get("type") == "match_summary" and key == "match":
+                        match_summary = parsed.get("summary")
         code = proc.wait()
 
         if code != 0:
@@ -799,13 +812,28 @@ def run_scan(
     match_count = len(
         db.get_cv_matches(cv_id, latest_only=False, db_path=cv_db)
     )
-    summary_payload: dict[str, Any] = {"matches": match_count}
+    new_jobs = _new_jobs_from_collection_summary(collection_summary)
+    new_matches = 0
+    if isinstance(match_summary, dict) and isinstance(
+        match_summary.get("new_matches"), int
+    ):
+        new_matches = match_summary["new_matches"]
+
+    summary_payload: dict[str, Any] = {
+        "matches": match_count,
+        "new_jobs": new_jobs,
+        "new_matches": new_matches,
+        "incremental": True,
+        "delta": True,
+    }
     if cleaned_domains:
         summary_payload["domains"] = cleaned_domains
     if selected_sites:
         summary_payload["job_sites"] = selected_sites
     if collection_summary:
         summary_payload["collection"] = collection_summary
+    if match_summary:
+        summary_payload["matching"] = match_summary
     if warnings:
         summary_payload["warnings"] = warnings
     summary = json.dumps(summary_payload, ensure_ascii=False)
@@ -824,6 +852,12 @@ def run_scan(
         scan_record["warnings"] = warnings
     if collection_summary:
         scan_record["collection"] = collection_summary
+    if match_summary:
+        scan_record["matching"] = match_summary
+    scan_record["new_jobs"] = new_jobs
+    scan_record["new_matches"] = new_matches
+    scan_record["incremental"] = True
+    scan_record["delta"] = True
     return scan_record
 
 

@@ -205,7 +205,7 @@ class IndeedIsraelScraper(BaseScraper):
         headless: bool = HEADLESS,
         known_job_urls: set[str] | None = None,
         known_identity_keys: set[str] | None = None,
-        stop_on_known: bool = False,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         page_size = max(1, INDEED_RESULTS_PER_PAGE)
@@ -289,7 +289,7 @@ def collect_indeed_jobs(
     headless: bool = HEADLESS,
     known_job_urls: set[str] | None = None,
     known_identity_keys: set[str] | None = None,
-    stop_on_known: bool = False,
+    stop_on_known: bool = True,
     **_kwargs: Any,
 ) -> CollectionOutcome:
     return IndeedIsraelScraper().collect(

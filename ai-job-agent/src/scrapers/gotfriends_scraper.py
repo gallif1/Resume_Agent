@@ -678,7 +678,7 @@ class GotfriendsScraper(BaseScraper):
         known_job_urls: set[str] | None = None,
         known_identity_keys: set[str] | None = None,
         delta_stop_identity: dict | None = None,
-        stop_on_known: bool = False,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         listing_urls = resolve_gotfriends_listing_urls(query)
@@ -841,7 +841,7 @@ def collect_gotfriends_jobs(
     known_job_urls: set[str] | None = None,
     known_identity_keys: set[str] | None = None,
     delta_stop_identity: dict | None = None,
-    stop_on_known: bool = False,
+    stop_on_known: bool = True,
 ) -> CollectionOutcome:
     """Fetch job cards from GotFriends listing pages for a search query."""
     return GotfriendsScraper().collect(

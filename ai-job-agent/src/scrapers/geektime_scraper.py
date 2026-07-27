@@ -267,7 +267,7 @@ class GeektimeScraper(BaseScraper):
         headless: bool = HEADLESS,
         known_job_urls: set[str] | None = None,
         known_identity_keys: set[str] | None = None,
-        stop_on_known: bool = False,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         print(f"Searching Geektime Insider for: {query} (up to {max_pages} page(s))")
@@ -373,7 +373,7 @@ def collect_geektime_jobs(
     headless: bool = HEADLESS,
     known_job_urls: set[str] | None = None,
     known_identity_keys: set[str] | None = None,
-    stop_on_known: bool = False,
+    stop_on_known: bool = True,
     **_kwargs: Any,
 ) -> CollectionOutcome:
     return GeektimeScraper().collect(
