@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from passlib.context import CryptContext
 
@@ -118,7 +118,12 @@ async def get_current_user(
             detail="נדרשת התחברות",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    payload = decode_access_token(credentials.credentials)
+    return user_from_token(credentials.credentials)
+
+
+def user_from_token(token: str) -> dict[str, Any]:
+    """Resolve a raw JWT string to a user row (shared by Bearer + query auth)."""
+    payload = decode_access_token(token)
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -134,3 +139,21 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+async def get_current_user_sse(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = Query(None, description="JWT for EventSource clients"),
+) -> dict[str, Any]:
+    """Auth for EventSource: Bearer header or ``?token=`` query param."""
+    if credentials is not None and credentials.scheme.lower() == "bearer":
+        return user_from_token(credentials.credentials)
+    query_token = token or request.query_params.get("token")
+    if query_token:
+        return user_from_token(query_token)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="נדרשת התחברות",
+        headers={"WWW-Authenticate": "Bearer"},
+    )

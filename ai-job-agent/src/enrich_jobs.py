@@ -19,6 +19,7 @@ from browser_utils import (
 )
 from config import ENRICH_BLOCKED_DEBUG_DIR, HEADLESS, LINKEDIN_BASE_URL
 from console_utils import configure_console, safe_print
+from collection_report import emit_status_update
 from gotfriends_collector import fetch_gotfriends_html
 from job_identity import extract_linkedin_job_id
 from db import (
@@ -567,6 +568,7 @@ def enrich_jobs(
         return counters, skipped
 
     safe_print(f"Enriching {len(pending)} job(s)...")
+    emit_status_update(f"שולף תיאורי משרה ({len(pending)})…")
 
     # LinkedIn and GotFriends are enriched over plain HTTP; only Drushim needs a browser.
     linkedin_pending = [(job, reason) for job, reason in pending if job.get("source") == "linkedin"]

@@ -9,6 +9,8 @@ from typing import Any
 AGENT_WARNING_PREFIX = "AGENT_WARNING:"
 COLLECT_SUMMARY_PREFIX = "COLLECT_SUMMARY:"
 MATCH_SUMMARY_PREFIX = "MATCH_SUMMARY:"
+JOB_FOUND_PREFIX = "JOB_FOUND:"
+STATUS_UPDATE_PREFIX = "STATUS_UPDATE:"
 
 
 @dataclass
@@ -44,8 +46,20 @@ def emit_match_summary(summary: dict[str, Any]) -> None:
     print(f"{MATCH_SUMMARY_PREFIX}{json.dumps(summary, ensure_ascii=False)}")
 
 
+def emit_job_found(job: dict[str, Any]) -> None:
+    """Print one scored job for the API SSE stream (collect→enrich→match done)."""
+    print(f"{JOB_FOUND_PREFIX}{json.dumps(job, ensure_ascii=False, default=str)}")
+
+
+def emit_status_update(message: str) -> None:
+    """Print a user-facing progress line for the API SSE stream."""
+    text = message.strip()
+    if text:
+        print(f"{STATUS_UPDATE_PREFIX}{text}")
+
+
 def parse_agent_line(line: str) -> dict[str, Any] | None:
-    """Parse AGENT_* / COLLECT_* / MATCH_* lines from subprocess stdout."""
+    """Parse AGENT_* / COLLECT_* / MATCH_* / JOB_FOUND / STATUS lines from stdout."""
     stripped = line.strip()
     if stripped.startswith(AGENT_WARNING_PREFIX):
         return {
@@ -64,6 +78,17 @@ def parse_agent_line(line: str) -> dict[str, Any] | None:
             return {"type": "match_summary", "summary": json.loads(payload)}
         except json.JSONDecodeError:
             return None
+    if stripped.startswith(JOB_FOUND_PREFIX):
+        payload = stripped[len(JOB_FOUND_PREFIX) :].strip()
+        try:
+            return {"type": "job_found", "job": json.loads(payload)}
+        except json.JSONDecodeError:
+            return None
+    if stripped.startswith(STATUS_UPDATE_PREFIX):
+        return {
+            "type": "status_update",
+            "message": stripped[len(STATUS_UPDATE_PREFIX) :].strip(),
+        }
     return None
 
 

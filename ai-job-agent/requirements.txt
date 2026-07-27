@@ -16,6 +16,7 @@ python-multipart
 passlib[bcrypt]
 bcrypt>=4.0.1,<4.1
 PyJWT>=2.7.0
+sse-starlette
 pytest
 sqlalchemy>=2.0
 psycopg[binary]>=3.1

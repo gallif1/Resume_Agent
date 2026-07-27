@@ -26,6 +26,7 @@ from collection_report import (
     CollectionOutcome,
     emit_agent_warning,
     emit_collect_summary,
+    emit_status_update,
     outcome_to_dict,
 )
 from config import (
@@ -1792,6 +1793,7 @@ def main() -> None:
                 queries = queries_for_board(
                     entry, site_name, max_items=args.max_queries
                 )
+                emit_status_update(f"סורק את {_site_label(site_name)}…")
                 print(f"\n{'-' * 50}")
                 print(
                     f"[{site_name}] Queries ({len(queries)}): "

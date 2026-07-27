@@ -11,6 +11,7 @@ import {
   getJobMatchStatus,
   getJobApplication,
   parseScanSummary,
+  scanStreamUrl,
   tailorCvForJob,
   tailorWorkspaceJob,
   updateMatchStatus,
@@ -38,6 +39,12 @@ interface Props {
   workspaceMode?: boolean;
   onBack?: () => void;
   emptyHint?: string;
+  /** Called when SSE delivers a status_update during a live scan. */
+  onStreamStatus?: (message: string) => void;
+  /** Called when SSE delivers scan_complete (or the stream errors out). */
+  onStreamComplete?: (payload?: { error?: string }) => void;
+  /** Bump workspace match count as jobs stream in. */
+  onStreamJobFound?: (job: CvMatch) => void;
 }
 
 const STATUS_OPTIONS: { value: ApplicationStatus; label: string }[] = [
@@ -326,6 +333,9 @@ export default function CvDetails({
   workspaceMode = false,
   onBack,
   emptyHint,
+  onStreamStatus,
+  onStreamComplete,
+  onStreamJobFound,
 }: Props) {
   const [matches, setMatches] = useState<CvMatch[]>([]);
   const [loading, setLoading] = useState(false);
@@ -349,10 +359,13 @@ export default function CvDetails({
   const [stagnantAttempts, setStagnantAttempts] = useState(0);
   const [maxMatchReached, setMaxMatchReached] = useState(false);
   const [previewAnimKey, setPreviewAnimKey] = useState(0);
+  const [liveJobIds, setLiveJobIds] = useState<Set<number>>(() => new Set());
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
   const prevRunning = useRef(false);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const streamedJobIdsRef = useRef<Set<number>>(new Set());
   /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
   const bestSessionRef = useRef<{
     jobId: number;
@@ -482,9 +495,98 @@ export default function CvDetails({
   useEffect(() => {
     if (prevRunning.current && !running) {
       load();
+      setLiveJobIds(new Set());
+      streamedJobIdsRef.current = new Set();
     }
     prevRunning.current = running;
   }, [running, load]);
+
+  // Live SSE stream: append each scored job as soon as the backend emits it.
+  useEffect(() => {
+    if (!running) {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      return;
+    }
+
+    streamedJobIdsRef.current = new Set();
+    setMatches([]);
+    setLiveJobIds(new Set());
+    let closed = false;
+    const source = new EventSource(scanStreamUrl());
+    eventSourceRef.current = source;
+
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      source.close();
+      if (eventSourceRef.current === source) {
+        eventSourceRef.current = null;
+      }
+    };
+
+    source.addEventListener("job_found", (ev) => {
+      const message = ev as MessageEvent<string>;
+      let job: CvMatch;
+      try {
+        job = JSON.parse(message.data) as CvMatch;
+      } catch {
+        return;
+      }
+      if (job?.job_id == null) return;
+
+      const isNew = !streamedJobIdsRef.current.has(job.job_id);
+      streamedJobIdsRef.current.add(job.job_id);
+
+      setMatches((prev) => {
+        const idx = prev.findIndex((m) => m.job_id === job.job_id);
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], ...job };
+          return next;
+        }
+        return [job, ...prev];
+      });
+      setLiveJobIds((prev) => {
+        const next = new Set(prev);
+        next.add(job.job_id);
+        return next;
+      });
+      if (isNew) onStreamJobFound?.(job);
+    });
+
+    source.addEventListener("status_update", (ev) => {
+      const message = ev as MessageEvent<string>;
+      const text = (message.data || "").trim();
+      if (text) onStreamStatus?.(text);
+    });
+
+    source.addEventListener("scan_complete", (ev) => {
+      const message = ev as MessageEvent<string>;
+      let payload: { error?: string } = {};
+      try {
+        payload = JSON.parse(message.data || "{}") as { error?: string };
+      } catch {
+        payload = {};
+      }
+      closeStream();
+      onStreamComplete?.(payload);
+    });
+
+    source.onerror = () => {
+      // EventSource auto-retries; only tear down if the scan already ended.
+      if (!running) {
+        closeStream();
+        onStreamComplete?.();
+      }
+    };
+
+    return () => {
+      closeStream();
+    };
+  }, [running, onStreamStatus, onStreamComplete, onStreamJobFound]);
 
   // Poll while any application is in progress.
   useEffect(() => {
@@ -859,7 +961,12 @@ export default function CvDetails({
     const busyTailor = tailoringId === m.job_id;
 
     return (
-      <li key={m.match_id} className={`cv-item job-item ${potential ? "job-item-potential" : ""}`}>
+      <li
+        key={m.match_id ?? m.job_id}
+        className={`cv-item job-item ${potential ? "job-item-potential" : ""} ${
+          liveJobIds.has(m.job_id) ? "job-item-live-in" : ""
+        }`}
+      >
         <div
           className="job-row"
           onClick={() => setExpandedId(expanded ? null : m.match_id)}
@@ -1510,7 +1617,7 @@ export default function CvDetails({
           </div>
           <p>
             {scanStatus?.running
-              ? "הסריקה רצה — משרות מתאימות יופיעו כאן בהמשך"
+              ? "הסריקה רצה — משרות יופיעו כאן בזמן אמת ברגע שיימצאו"
               : "לא נמצאו משרות עדיין"}
           </p>
           {!scanStatus?.running &&
