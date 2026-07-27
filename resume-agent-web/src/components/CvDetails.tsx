@@ -10,6 +10,7 @@ import {
   getJobMatches,
   getJobMatchStatus,
   getJobApplication,
+  getScanStreamUrl,
   parseScanSummary,
   tailorCvForJob,
   tailorWorkspaceJob,
@@ -264,6 +265,7 @@ export default function CvDetails({
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
+  const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const prevRunning = useRef(false);
   /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
   const bestSessionRef = useRef<{
@@ -368,6 +370,54 @@ export default function CvDetails({
     }
     prevRunning.current = running;
   }, [running, load]);
+
+  // Live job feed: stream newly-scored jobs in as soon as the scan finds
+  // them, instead of waiting for the whole scan to finish.
+  useEffect(() => {
+    if (!running || (!workspaceMode && !cvId)) return;
+
+    const eventSource = new EventSource(
+      getScanStreamUrl({ cvId, workspaceMode })
+    );
+
+    const handleJobFound = (event: MessageEvent<string>) => {
+      try {
+        const job = JSON.parse(event.data) as CvMatch;
+        setMatches((prev) =>
+          prev.some((m) => m.match_id === job.match_id)
+            ? prev.map((m) => (m.match_id === job.match_id ? job : m))
+            : [job, ...prev]
+        );
+      } catch {
+        /* ignore malformed event payload */
+      }
+    };
+
+    const handleStatusUpdate = (event: MessageEvent<string>) => {
+      setLiveStatus(event.data);
+    };
+
+    const handleScanComplete = () => {
+      setLiveStatus(null);
+      eventSource.close();
+    };
+
+    eventSource.addEventListener("job_found", handleJobFound);
+    eventSource.addEventListener("status_update", handleStatusUpdate);
+    eventSource.addEventListener("scan_complete", handleScanComplete);
+    eventSource.onerror = () => {
+      setLiveStatus(null);
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.removeEventListener("job_found", handleJobFound);
+      eventSource.removeEventListener("status_update", handleStatusUpdate);
+      eventSource.removeEventListener("scan_complete", handleScanComplete);
+      eventSource.close();
+      setLiveStatus(null);
+    };
+  }, [running, cvId, workspaceMode]);
 
   // Poll while any application is in progress.
   useEffect(() => {
@@ -954,6 +1004,13 @@ export default function CvDetails({
           />
         </div>
       </div>
+
+      {panelVisible && liveStatus && (
+        <p className="live-status-line" role="status">
+          <span className="live-status-dot" aria-hidden="true" />
+          {liveStatus}
+        </p>
+      )}
 
       {error && (
         <div

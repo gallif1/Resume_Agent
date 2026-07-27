@@ -3515,6 +3515,41 @@ code {
   animation: fade-up 0.4s ease-out both;
 }
 
+.live-status-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  width: fit-content;
+  animation: fade-up 0.3s ease-out both;
+}
+
+.live-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: live-status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes live-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.7);
+  }
+}
+
 .cv-list > .cv-item,
 .cv-list > li {
   animation: fade-up 0.35s ease-out both;

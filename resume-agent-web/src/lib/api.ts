@@ -535,6 +535,22 @@ export function searchJobsForCv(
   });
 }
 
+/**
+ * Build the URL for the live scan SSE stream (job_found / status_update /
+ * scan_complete events). Native EventSource can't set an Authorization
+ * header, so the JWT is passed as a query param instead.
+ */
+export function getScanStreamUrl(opts: {
+  cvId?: string;
+  workspaceMode: boolean;
+}): string {
+  const token = getStoredToken() ?? "";
+  const path = opts.workspaceMode
+    ? "/jobs/match/stream"
+    : `/cvs/${opts.cvId}/scan/stream`;
+  return `${BASE_URL}${path}?token=${encodeURIComponent(token)}`;
+}
+
 /** Delta refresh using the last successful scan's domains and boards. */
 export function refreshCvJobs(
   cvId: string

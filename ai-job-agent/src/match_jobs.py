@@ -19,6 +19,7 @@ from ats_scorer import (
     HARD_CONSTRAINT_FAIL_CAP,
     score as ats_score,
 )
+from collection_report import emit_job_scored
 from console_utils import configure_console, safe_print
 from config import AGENT_CV_ID, AGENT_SCAN_ID, AGENT_USER_ID, AI_RERANK_ENABLED
 from db import (
@@ -222,6 +223,7 @@ def match_all_jobs(
             # Keep already-scored jobs visible on the current scan in the UI.
             if cv_id and scan_id is not None:
                 refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
+                emit_job_scored(int(job["id"]))
             stats["skipped"] += 1
             safe_print(
                 f"Reusing prior match for current scan: "
@@ -282,6 +284,8 @@ def match_all_jobs(
             1 if ats_result.is_potential_junior_match else 0
         )
         _store_match_result(job["id"], fields, cv_id=cv_id, scan_id=scan_id)
+        if cv_id:
+            emit_job_scored(int(job["id"]))
         stats["ats_scored"] += 1
 
         if final_score >= min_score:

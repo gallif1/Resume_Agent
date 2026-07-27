@@ -2933,6 +2933,7 @@ def get_cv_matches(
     min_score: int | None = None,
     sort_by: str | None = None,
     order: str | None = None,
+    job_id: int | None = None,
     db_path: Path = DB_PATH,
 ) -> list[dict[str, Any]]:
     """Return a CV's job matches joined with the global job record.
@@ -2942,6 +2943,9 @@ def get_cv_matches(
     Optional ``order``: ``asc`` or ``desc`` (default depends on sort_by).
     When ``latest_only`` is True, only the matches produced by the CV's most
     recent scan are returned.
+    When ``job_id`` is given, only that job's match row is returned (there is
+    at most one row per cv_id/job_id pair) — used by the scan SSE stream to
+    fetch a single freshly-scored job.
     """
     if not Path(db_path).exists():
         return []
@@ -2962,6 +2966,10 @@ def get_cv_matches(
     if min_score is not None:
         conditions.append("m.match_score IS NOT NULL AND m.match_score >= ?")
         params.append(min_score)
+
+    if job_id is not None:
+        conditions.append("m.job_id = ?")
+        params.append(job_id)
 
     sort_key = (sort_by or "score").strip().lower()
     if sort_key not in _MATCH_SORT_COLUMNS:
