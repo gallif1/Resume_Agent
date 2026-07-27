@@ -162,7 +162,7 @@ class SecretTelAvivScraper(BaseScraper):
         headless: bool = HEADLESS,
         known_job_urls: set[str] | None = None,
         known_identity_keys: set[str] | None = None,
-        stop_on_known: bool = False,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         print(f"Searching Secret Tel Aviv for: {query} (up to {max_pages} page(s))")
@@ -241,7 +241,7 @@ def collect_secret_tel_aviv_jobs(
     headless: bool = HEADLESS,
     known_job_urls: set[str] | None = None,
     known_identity_keys: set[str] | None = None,
-    stop_on_known: bool = False,
+    stop_on_known: bool = True,
     **_kwargs: Any,
 ) -> CollectionOutcome:
     return SecretTelAvivScraper().collect(

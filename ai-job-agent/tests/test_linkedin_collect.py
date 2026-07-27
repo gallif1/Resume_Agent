@@ -119,14 +119,6 @@ def test_save_jobs_to_db_skips_known_urls_without_upsert():
     known_url = "https://www.linkedin.com/jobs/view/999001"
     jobs = [
         {
-            "title": "Already Seen",
-            "company": "Acme",
-            "location": "Israel",
-            "job_url": known_url,
-            "source": "linkedin",
-            "description": "should not be written",
-        },
-        {
             "title": "Brand New",
             "company": "Beta",
             "location": "Israel",
@@ -134,9 +126,17 @@ def test_save_jobs_to_db_skips_known_urls_without_upsert():
             "source": "linkedin",
             "description": "ok",
         },
+        {
+            "title": "Already Seen",
+            "company": "Acme",
+            "location": "Israel",
+            "job_url": known_url,
+            "source": "linkedin",
+            "description": "should not be written",
+        },
     ]
     with patch("collect_jobs.upsert_collected_job", side_effect=fake_upsert):
-        raw, unique, _dup, already, _ex, inserted, _touched, _hit = save_jobs_to_db(
+        raw, unique, _dup, already, _ex, inserted, _touched, hit = save_jobs_to_db(
             jobs,
             source_query="Software Engineer",
             source_category="backend",
@@ -148,9 +148,10 @@ def test_save_jobs_to_db_skips_known_urls_without_upsert():
         )
 
     assert raw == 2
-    assert unique == 2
-    assert already == 1
+    assert unique == 1
+    assert already == 0
     assert inserted == 1
+    assert hit is True
     assert upsert_calls == ["https://www.linkedin.com/jobs/view/999002"]
 
 
@@ -177,7 +178,10 @@ def test_apply_collect_filters_skips_old_and_known():
         },
     ]
     kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
-        jobs, known_job_urls=known
+        jobs,
+        known_job_urls=known,
+        stop_on_known=False,
+        apply_age_filter=True,
     )
     assert [j["title"] for j in kept] == ["Fresh"]
     assert age_skipped == 1
@@ -189,7 +193,11 @@ def test_apply_collect_filters_skips_old_and_known():
         {"title": "a", "job_url": "https://www.drushim.co.il/job/9/", "posted_date": "לפני שנה"},
         {"title": "b", "job_url": "https://www.drushim.co.il/job/8/", "posted_date": "לפני חודשיים"},
     ]
-    kept2, age2, known2, all_old2, hit_delta2 = _apply_collect_filters(only_old)
+    kept2, age2, known2, all_old2, hit_delta2 = _apply_collect_filters(
+        only_old,
+        stop_on_known=False,
+        apply_age_filter=True,
+    )
     assert kept2 == []
     assert age2 == 2
     assert known2 == 0

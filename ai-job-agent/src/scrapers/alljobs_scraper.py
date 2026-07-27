@@ -129,7 +129,7 @@ class AllJobsScraper(BaseScraper):
         max_pages: int = ALLJOBS_MAX_PAGES,
         known_job_urls: set[str] | None = None,
         known_identity_keys: set[str] | None = None,
-        stop_on_known: bool = False,
+        stop_on_known: bool = True,
         **_kwargs: Any,
     ) -> CollectionOutcome:
         print(f"Searching AllJobs for: {query} (up to {max_pages} page(s))")
@@ -237,7 +237,7 @@ def collect_alljobs_jobs(
     max_pages: int = ALLJOBS_MAX_PAGES,
     known_job_urls: set[str] | None = None,
     known_identity_keys: set[str] | None = None,
-    stop_on_known: bool = False,
+    stop_on_known: bool = True,
     **_kwargs: Any,
 ) -> CollectionOutcome:
     return AllJobsScraper().collect(

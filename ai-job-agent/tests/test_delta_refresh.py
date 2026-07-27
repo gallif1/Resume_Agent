@@ -80,6 +80,26 @@ def delta_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_path: Path):
     }
 
 
+def test_apply_collect_filters_stop_on_known_empty_db_skips_age_filter():
+    """First scan (empty DB index) must not apply a hardcoded age/time window."""
+    page = [
+        {
+            "title": "Ancient",
+            "job_url": "https://www.drushim.co.il/job/10/",
+            "posted_date": "שנת 2020",
+        },
+    ]
+    kept, age, known_skipped, all_old, hit = _apply_collect_filters(
+        page,
+        stop_on_known=True,
+    )
+    assert hit is False
+    assert all_old is False
+    assert age == 0
+    assert known_skipped == 0
+    assert [j["title"] for j in kept] == ["Ancient"]
+
+
 def test_trim_jobs_before_delta_stop_keeps_newer_only():
     watermark_url = "https://www.drushim.co.il/job/100/"
     identity = {
@@ -243,7 +263,10 @@ def test_apply_collect_filters_delta_early_break():
         },
     ]
     kept, _age, _known, _all_old, hit = _apply_collect_filters(
-        page, delta_stop_identity=identity, apply_age_filter=False
+        page,
+        delta_stop_identity=identity,
+        stop_on_known=False,
+        apply_age_filter=False,
     )
     assert hit is True
     assert [j["title"] for j in kept] == ["Fresh"]
@@ -310,6 +333,7 @@ def test_save_jobs_to_db_stops_at_watermark(monkeypatch: pytest.MonkeyPatch):
         touched_job_keys=set(),
         known_job_urls=set(),
         delta_stop_identity=identity,
+        stop_on_known=False,
     )
     assert hit_delta is True
     assert inserted == 1
