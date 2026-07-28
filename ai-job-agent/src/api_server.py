@@ -723,7 +723,7 @@ def _workspace_match_count(user_id: str = db.DEFAULT_USER_ID) -> int:
         db.ensure_jobs_schema(workspace_db)
         return len(
             db.get_cv_matches(
-                db.WORKSPACE_CV_ID,
+                db.workspace_scope_id(user_id),
                 latest_only=False,
                 db_path=workspace_db,
             )
@@ -872,7 +872,7 @@ def _user_scan_status(user_id: str = db.DEFAULT_USER_ID) -> dict:
                 "log": list(_scan_state["log"][-20:]),
             }
 
-    latest_scan = db.get_latest_scan(db.WORKSPACE_CV_ID, db_path=workspace_db)
+    latest_scan = db.get_latest_scan(db.workspace_scope_id(user_id), db_path=workspace_db)
     if latest_scan and not live.get("warnings"):
         summary_data = _parse_scan_summary(latest_scan.get("summary"))
         live["warnings"] = summary_data.get("warnings") or []
@@ -1136,7 +1136,7 @@ def get_job_matches(
     workspace_db = user_db_path(user["id"])
     try:
         matches = db.get_cv_matches(
-            db.WORKSPACE_CV_ID,
+            db.workspace_scope_id(user["id"]),
             latest_only=latest,
             min_score=min_score,
             sort_by=sort_key,
@@ -1660,7 +1660,7 @@ def update_workspace_match_status(
         )
     workspace_db = user_db_path(user["id"])
     updated = db.update_cv_match_status(
-        db.WORKSPACE_CV_ID,
+        db.workspace_scope_id(user["id"]),
         match_id,
         req.status,
         notes=req.notes,
@@ -1729,7 +1729,7 @@ def tailor_workspace_job(
     # Record tailored metadata on the workspace match when content changed.
     if not result.get("no_improvement"):
         db.mark_cv_match_tailored(
-            db.WORKSPACE_CV_ID,
+            db.workspace_scope_id(user["id"]),
             job_id,
             tailored_cv_path=relative_path,
             db_path=workspace_db,

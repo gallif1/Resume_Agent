@@ -19,6 +19,7 @@ from config import (
     DB_PATH,
     LEGACY_DB_PATH,
     REGISTRY_DB_PATH,
+    USERS_DIR,
     cv_db_path,
 )
 from date_utils import normalize_posted_date, today_iso
@@ -75,6 +76,23 @@ def get_engine():
     return _pg_engine
 
 
+def workspace_scope_id(user_id: str) -> str:
+    """The owner_cv_id / cv_id used for a user's aggregated "workspace" scan.
+
+    Per-CV scans are already isolated in Postgres because each real ``cv_id``
+    is a globally-unique value. The workspace (aggregate, multi-CV) scan has
+    no such natural key — it used to fall back to a single literal
+    ``"workspace"`` shared by every user, which meant every user's aggregated
+    jobs/matches collided into the same rows in the shared Postgres schema.
+    Namespacing per user_id fixes that. SQLite mode keeps the bare literal
+    since each user already has an isolated per-user ``jobs.db`` file there.
+    """
+    uid = (user_id or "").strip() or DEFAULT_USER_ID
+    if uses_postgres():
+        return f"{WORKSPACE_CV_ID}:{uid}"
+    return WORKSPACE_CV_ID
+
+
 def owner_cv_id_for_path(db_path: Path) -> str:
     """Map a logical db_path to jobs.owner_cv_id (Postgres multi-CV isolation)."""
     try:
@@ -93,6 +111,18 @@ def owner_cv_id_for_path(db_path: Path) -> str:
     # Fallback: .../cvs/<cv_id>/jobs.db even if CVS_DIR differs (tests).
     if resolved.name == "jobs.db" and resolved.parent.parent.name == "cvs":
         return resolved.parent.name
+
+    try:
+        users_root = USERS_DIR.resolve()
+        rel = resolved.relative_to(users_root)
+        if rel.parts:
+            return workspace_scope_id(rel.parts[0])
+    except ValueError:
+        pass
+
+    # Fallback: .../users/<user_id>/jobs.db even if USERS_DIR differs (tests).
+    if resolved.name == "jobs.db" and resolved.parent.parent.name == "users":
+        return workspace_scope_id(resolved.parent.name)
 
     return LEGACY_OWNER_CV_ID
 
@@ -1546,6 +1576,10 @@ def get_latest_known_job_identity(
         "SELECT id, job_url, job_hash, title, company, location, source, "
         "source_category, first_seen_at, collected_at FROM jobs"
     )
+    # Postgres shares one jobs table across every CV/user — every attempt below
+    # must stay scoped to this CV's owner_cv_id or delta-refresh would seed
+    # itself from a *different* CV's most recent job and miss real results.
+    scope_sql, scope_params = _jobs_scope_sql(db_path)
 
     with get_connection(db_path) as conn:
         if "jobs" not in _table_names(conn):
@@ -1557,8 +1591,9 @@ def get_latest_known_job_identity(
         if category and board:
             attempts.append(
                 (
-                    f"{select_sql} WHERE source_category = ? AND source = ? {order_sql} LIMIT 1",
-                    (category, board),
+                    f"{select_sql} WHERE source_category = ? AND source = ?{scope_sql} "
+                    f"{order_sql} LIMIT 1",
+                    (category, board, *scope_params),
                 )
             )
             # source_categories JSON may list the category without source_category set.
@@ -1566,32 +1601,34 @@ def get_latest_known_job_identity(
                 (
                     f"{select_sql} WHERE source = ? AND ("
                     f"source_category = ? OR instr(COALESCE(source_categories, ''), ?) > 0"
-                    f") {order_sql} LIMIT 1",
-                    (board, category, category),
+                    f"){scope_sql} {order_sql} LIMIT 1",
+                    (board, category, category, *scope_params),
                 )
             )
         if category:
             attempts.append(
                 (
-                    f"{select_sql} WHERE source_category = ? {order_sql} LIMIT 1",
-                    (category,),
+                    f"{select_sql} WHERE source_category = ?{scope_sql} {order_sql} LIMIT 1",
+                    (category, *scope_params),
                 )
             )
             attempts.append(
                 (
-                    f"{select_sql} WHERE instr(COALESCE(source_categories, ''), ?) > 0 "
-                    f"{order_sql} LIMIT 1",
-                    (category,),
+                    f"{select_sql} WHERE instr(COALESCE(source_categories, ''), ?) > 0"
+                    f"{scope_sql} {order_sql} LIMIT 1",
+                    (category, *scope_params),
                 )
             )
         if board:
             attempts.append(
                 (
-                    f"{select_sql} WHERE source = ? {order_sql} LIMIT 1",
-                    (board,),
+                    f"{select_sql} WHERE source = ?{scope_sql} {order_sql} LIMIT 1",
+                    (board, *scope_params),
                 )
             )
-        attempts.append((f"{select_sql} {order_sql} LIMIT 1", ()))
+        attempts.append(
+            (f"{select_sql} WHERE 1=1{scope_sql} {order_sql} LIMIT 1", tuple(scope_params))
+        )
 
         for sql, params in attempts:
             try:
@@ -1605,14 +1642,20 @@ def get_latest_known_job_identity(
 
 
 def get_known_job_urls(db_path: Path = DB_PATH) -> set[str]:
-    """Return canonical ``job_url`` values already stored in SQLite.
+    """Return canonical ``job_url`` values already stored for this CV/workspace.
 
     Used by collectors to skip known listings before any description fetch /
-    enrichment work.
+    enrichment work. In Postgres mode (one shared ``jobs`` table) this must be
+    scoped by ``owner_cv_id`` — otherwise any URL ever collected by *any* other
+    CV/user would look "already known" and incremental collection would stop
+    almost immediately, finding little to nothing new.
     """
     urls: set[str] = set()
+    scope_sql, scope_params = _jobs_scope_sql(db_path)
     with get_connection(db_path) as conn:
-        rows = conn.execute("SELECT job_url FROM jobs").fetchall()
+        rows = conn.execute(
+            f"SELECT job_url FROM jobs WHERE 1=1{scope_sql}", scope_params
+        ).fetchall()
         for row in rows:
             canonical = normalize_job_url(row["job_url"] or "")
             if canonical:
@@ -2697,6 +2740,14 @@ def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
             job_ids = [r["id"] for r in job_rows]
             deleted_jobs = len(job_ids)
             orphaned_job_ids = list(job_ids)
+            # cv_tailor_versions.job_id has no ON DELETE CASCADE — deleting jobs
+            # first would raise a ForeignKeyViolation if any job was ever tailored.
+            try:
+                conn.execute(
+                    "DELETE FROM cv_tailor_versions WHERE cv_id = ?", (cv_id,)
+                )
+            except Exception:
+                pass
             if job_ids:
                 placeholders = ",".join("?" for _ in job_ids)
                 try:
@@ -2734,6 +2785,11 @@ def delete_cv(cv_id: str, db_path: Path = REGISTRY_DB_PATH) -> dict[str, Any]:
             tables = _table_names(conn)
             has_matches = "cv_job_matches" in tables
             has_scans = "cv_scans" in tables
+
+            if "cv_tailor_versions" in tables:
+                conn.execute(
+                    "DELETE FROM cv_tailor_versions WHERE cv_id = ?", (cv_id,)
+                )
 
             if has_matches:
                 deleted_matches = int(
@@ -2823,6 +2879,14 @@ def reset_cv_job_pool(cv_id: str, db_path: Path | None = None) -> None:
             ).fetchall()
             job_ids = [r["id"] for r in job_rows]
             conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
+            # cv_tailor_versions.job_id has no ON DELETE CASCADE — deleting jobs
+            # first would raise a ForeignKeyViolation if any job was ever tailored.
+            try:
+                conn.execute(
+                    "DELETE FROM cv_tailor_versions WHERE cv_id = ?", (cv_id,)
+                )
+            except Exception:
+                pass
             if job_ids:
                 placeholders = ",".join("?" for _ in job_ids)
                 try:
@@ -2850,6 +2914,8 @@ def reset_cv_job_pool(cv_id: str, db_path: Path | None = None) -> None:
                 conn.execute("DELETE FROM job_applications")
             if "applications" in tables:
                 conn.execute("DELETE FROM applications")
+            if "cv_tailor_versions" in tables:
+                conn.execute("DELETE FROM cv_tailor_versions")
             conn.execute("DELETE FROM cv_job_matches WHERE cv_id = ?", (cv_id,))
             conn.execute("DELETE FROM jobs")
         conn.commit()

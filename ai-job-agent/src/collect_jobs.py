@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -47,6 +47,7 @@ from config import (
     GOTFRIENDS_MAX_PAGES,
     HEADLESS,
     INDEED_MAX_PAGES,
+    INLINE_PIPELINE_ENABLED,
     LINKEDIN_BASE_URL,
     LINKEDIN_GEO_ID,
     LINKEDIN_JOBS_PER_PAGE,
@@ -63,12 +64,16 @@ from date_utils import (
     pick_raw_posted_date,
 )
 from db import (
+    get_job_by_id,
     get_known_job_identity_keys,
     get_known_job_urls,
     init_db,
+    record_enrichment_attempt,
     upsert_collected_job,
 )
+from enrich_jobs import enrich_job_inline
 from job_boards import collection_searches, job_boards_label, normalize_job_board_ids
+from match_jobs import MatchContext, build_match_context, score_one_job
 from scrapers.alljobs_scraper import collect_alljobs_jobs
 from scrapers.geektime_scraper import collect_geektime_jobs
 from scrapers.gotfriends_scraper import collect_gotfriends_jobs
@@ -953,6 +958,50 @@ def _collect_drushim_with_page(
     )
 
 
+class InlineEnrichBrowser:
+    """Lazily-opened Playwright browser for enriching Drushim jobs inline.
+
+    Collection itself no longer keeps a Drushim browser open (it prefers the
+    HTTP/JSON API — see ``_drushim_uses_browser``), but enriching a Drushim
+    job page still requires a real page load. Opening this on first use (only
+    when a Drushim job that actually needs enrichment is found) keeps the
+    cost proportional to how much inline enrichment is actually needed.
+    """
+
+    def __init__(self, headless: bool = HEADLESS) -> None:
+        self.headless = headless
+        self._playwright = None
+        self._context = None
+        self.page: Page | None = None
+        self._failed = False
+
+    def get_page(self) -> Page | None:
+        if self.page is not None or self._failed:
+            return self.page
+        try:
+            self._playwright = sync_playwright().start()
+            self._context, self.page = create_browser_context(
+                self._playwright, headless=self.headless
+            )
+        except Exception as error:
+            print(f"  Could not start inline enrichment browser: {error}")
+            self._failed = True
+            self.page = None
+        return self.page
+
+    def close(self) -> None:
+        if self._context is not None:
+            try:
+                self._context.close()
+            except Exception:
+                pass
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+
+
 class DrushimBrowserSession:
     """Reuse one Chromium instance across many Drushim searches in a single run."""
 
@@ -1354,6 +1403,7 @@ def save_jobs_to_db(
     known_identity_keys: set[str] | None = None,
     delta_stop_identity: dict | None = None,
     stop_on_known: bool = True,
+    on_job_saved: Callable[[int], None] | None = None,
 ) -> tuple[int, int, int, int, int, int, int, bool]:
     """Upsert jobs into SQLite with strict run-level deduplication.
 
@@ -1365,6 +1415,10 @@ def save_jobs_to_db(
     In incremental delta mode (``stop_on_known=True``), listings are walked
     newest → oldest and the first already-known job triggers an early break —
     remaining older listings are ignored and ``hit_delta_stop`` is True.
+
+    ``on_job_saved`` is invoked (synchronously, once) with the new job's id
+    right after a genuinely new job is inserted — used to enrich + score it
+    immediately so it streams to the UI before the next job is collected.
 
     Returns:
         (raw_found, unique_processed, duplicates_skipped, already_in_db,
@@ -1453,6 +1507,13 @@ def save_jobs_to_db(
             known_db_keys.add(job_key)
             touched_job_keys.add(job_key)
             url_index.add(url)
+            if on_job_saved is not None and job_id is not None:
+                try:
+                    on_job_saved(job_id)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as error:  # noqa: BLE001 — one job must not abort collection
+                    print(f"  Inline enrich/match failed for job {job_id}: {error}")
         elif job_id is not None:
             # Collision via UNIQUE constraint (URL/hash) — treat as already in DB.
             already_in_db += 1
@@ -1770,6 +1831,46 @@ def main() -> None:
     elif "drushim" in selected_sites:
         print("Drushim: using HTTP mode (no browser — saves server memory)")
 
+    # Inline pipeline: enrich + score each freshly-collected job immediately so
+    # it streams to the UI right away, instead of waiting for the whole
+    # collection batch to finish before enrich/match even start.
+    match_ctx: MatchContext | None = None
+    inline_enrich_browser: InlineEnrichBrowser | None = None
+    if INLINE_PIPELINE_ENABLED:
+        try:
+            match_ctx = build_match_context()
+        except Exception as error:
+            print(f"  Could not prepare inline matching context — falling back to batch matching: {error}")
+            match_ctx = None
+        if match_ctx is not None:
+            inline_enrich_browser = InlineEnrichBrowser(headless=HEADLESS)
+            print("Inline pipeline: each new job will be enriched + scored right after collection.")
+
+    def _process_job_inline(job_id: int) -> None:
+        if match_ctx is None:
+            return
+        row = get_job_by_id(job_id)
+        if not row:
+            return
+        source = row.get("source")
+        if source in ("drushim", "linkedin", "gotfriends"):
+            page = (
+                inline_enrich_browser.get_page()
+                if source == "drushim" and inline_enrich_browser is not None
+                else None
+            )
+            status, description, error = enrich_job_inline(row, drushim_page=page)
+            if status is not None:
+                record_enrichment_attempt(
+                    row["id"], status, full_description=description, error=error
+                )
+                row["enrich_status"] = status
+                if description:
+                    row["full_description"] = description
+        score_one_job(row, match_ctx)
+
+    on_job_saved = _process_job_inline if match_ctx is not None else None
+
     try:
         searches = collection_searches(selected_sites, _job_collectors())
         for entry in plan:
@@ -1896,6 +1997,7 @@ def main() -> None:
                         known_job_urls=known_job_urls,
                         known_identity_keys=known_db_keys,
                         stop_on_known=incremental_mode,
+                        on_job_saved=on_job_saved,
                     )
                     total_raw_found += raw
                     total_unique += unique
@@ -1931,6 +2033,8 @@ def main() -> None:
     finally:
         if drushim_session is not None:
             drushim_session.__exit__(None, None, None)
+        if inline_enrich_browser is not None:
+            inline_enrich_browser.close()
 
     print(f"\n{'=' * 60}")
     print("Overall:")
