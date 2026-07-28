@@ -209,8 +209,13 @@ jobs:
 
           inject_backend() {
             local cid="$1"
-            echo "Injecting backend Python source into $cid"
-            tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz src
+            echo "Injecting backend hotfix files into $cid"
+            # Copy only the files needed for reset/delete fixes. Injecting the full
+            # src/ tree pulls in api_server.py imports (e.g. sse-starlette) that are
+            # not present in the long-lived Docker image and crash on restart.
+            tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz \
+              src/cv_service.py \
+              src/db.py
             sudo docker cp /tmp/ra-backend-src.tgz "$cid:/tmp/ra-backend-src.tgz"
             sudo docker exec "$cid" sh -c \
               'tar -C /app/ai-job-agent -xzf /tmp/ra-backend-src.tgz && rm -f /tmp/ra-backend-src.tgz && find /app/ai-job-agent/src -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
