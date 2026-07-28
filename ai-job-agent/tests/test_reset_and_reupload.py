@@ -160,6 +160,8 @@ def test_reset_user_results_keeps_files_clears_matches(reset_env, monkeypatch):
     db_path = reset_env["db_path"]
     users_dir = reset_env["users_dir"]
     cv = cv_service.upload_cv("a.pdf", b"keep-me", db_path=db_path)
+    cv_db = config.cv_db_path(cv["id"])
+    db.init_db(cv_db)
 
     user_id = db.DEFAULT_USER_ID
     user_db = config.user_db_path(user_id)
@@ -186,6 +188,28 @@ def test_reset_user_results_keeps_files_clears_matches(reset_env, monkeypatch):
         scan_id=scan_id,
         db_path=user_db,
     )
+    cv_scan_id = db.create_scan(cv["id"], db_path=cv_db)
+    cv_job_id = db.insert_job(
+        title="CV Dev",
+        job_url="https://example.com/cv-j1",
+        company="Acme",
+        db_path=cv_db,
+    )
+    db.upsert_cv_job_match(
+        cv["id"],
+        cv_job_id,
+        {
+            "match_score": 75,
+            "match_reason": "ok",
+            "match_method": "local",
+            "match_category": "backend",
+            "matched_skills": "[]",
+            "missing_skills": "[]",
+            "candidate_strategy_hash": "h",
+        },
+        scan_id=cv_scan_id,
+        db_path=cv_db,
+    )
     db.set_cv_last_scan(cv["id"], db_path=db_path)
 
     state_path = users_dir / user_id / "scan_state.json"
@@ -194,10 +218,13 @@ def test_reset_user_results_keeps_files_clears_matches(reset_env, monkeypatch):
 
     summary = cv_service.reset_user_results(user_id, db_path=db_path)
     assert summary["reset"] == "results"
+    assert summary["cleared_cv_count"] == 1
     assert db.get_cv(cv["id"], db_path=db_path) is not None
     assert (reset_env["cvs_dir"] / cv["id"] / "resume.pdf").exists()
     assert db.get_cv_matches(db.WORKSPACE_CV_ID, db_path=user_db) == []
     assert db.get_latest_scan(db.WORKSPACE_CV_ID, db_path=user_db) is None
+    assert db.get_cv_matches(cv["id"], db_path=cv_db) == []
+    assert db.get_latest_scan(cv["id"], db_path=cv_db) is None
     assert db.get_cv(cv["id"], db_path=db_path)["last_scan_at"] is None
     assert not state_path.exists()
 
