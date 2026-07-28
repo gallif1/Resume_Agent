@@ -1,7 +1,7 @@
 {
   "name": "resume-agent-web",
   "private": true,
-  "version": "0.092",
+  "version": "0.093",
   "type": "module",
   "scripts": {
     "dev": "vite",
