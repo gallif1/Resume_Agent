@@ -54,11 +54,18 @@ MAX_CV_SIZE = 15 * 1024 * 1024
 
 # Steps run for a single CV. Each runs as a subprocess with AGENT_CV_ID (and
 # AGENT_SCAN_ID) set, so config.py resolves per-CV paths automatically.
+# The enrich step doubles as a catch-up pass for jobs the inline
+# collect->enrich->match pipeline (see collect_jobs.py) could not enrich
+# immediately (e.g. no Drushim browser available for that job). --retry-failed
+# lets it retry those within the same scan instead of waiting for the
+# multi-day staleness window, since already-enriched jobs are skipped instantly.
+_ENRICH_STEP_ARGS = ["--retry-failed"]
+
 SCAN_STEPS = [
     ("parse_cv", "ניתוח קורות החיים", "parse_cv.py", ["--yes"]),
     ("analyze_roles", "בניית אסטרטגיית חיפוש", "analyze_roles.py", []),
     ("collect", "איסוף משרות", "collect_jobs.py", []),
-    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", []),
+    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", _ENRICH_STEP_ARGS),
     ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
 ]
 
@@ -70,7 +77,7 @@ ANALYZE_STEPS = [
 
 SEARCH_STEPS = [
     ("collect", "איסוף משרות", "collect_jobs.py", []),
-    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", []),
+    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", _ENRICH_STEP_ARGS),
     ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
 ]
 
@@ -80,7 +87,7 @@ USER_SCAN_STEPS = [
     ("aggregate", "איחוד לפרופיל מועמד מאוחד", None, []),
     ("analyze_roles", "בניית אסטרטגיית חיפוש", "analyze_roles.py", []),
     ("collect", "איסוף משרות", "collect_jobs.py", []),
-    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", []),
+    ("enrich", "שליפת תיאורי משרה", "enrich_jobs.py", _ENRICH_STEP_ARGS),
     ("match", "חישוב ציוני התאמה", "match_jobs.py", []),
 ]
 
@@ -1032,7 +1039,7 @@ def run_user_scan(
 
     from job_boards import normalize_job_board_ids
 
-    workspace_cv_id = db.WORKSPACE_CV_ID
+    workspace_cv_id = db.workspace_scope_id(user_id)
     user_db = user_db_path(user_id)
     db.init_db(user_db)
     user_data_dir(user_id).mkdir(parents=True, exist_ok=True)
@@ -1239,18 +1246,19 @@ def reset_user_results(
     from scan_control import clear_scan_state
 
     user_db = user_db_path(user_id)
+    workspace_cv_id = db.workspace_scope_id(user_id)
     cleared_jobs = False
-    if user_db.exists():
-        db.reset_cv_job_pool(db.WORKSPACE_CV_ID, db_path=user_db)
+    # In Postgres mode there's no per-user file to check for existence — the
+    # workspace data lives in the shared DB, scoped by workspace_cv_id below.
+    if db.uses_postgres() or user_db.exists():
+        db.reset_cv_job_pool(workspace_cv_id, db_path=user_db)
         with db.get_connection(user_db) as conn:
-            tables = {
-                row["name"]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            if "cv_scans" in tables:
-                conn.execute("DELETE FROM cv_scans")
+            try:
+                conn.execute(
+                    "DELETE FROM cv_scans WHERE cv_id = ?", (workspace_cv_id,)
+                )
+            except Exception:
+                pass
             conn.commit()
         cleared_jobs = True
 

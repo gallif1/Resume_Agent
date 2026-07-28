@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -23,7 +25,6 @@ from console_utils import configure_console, safe_print
 from collection_report import emit_job_found, emit_match_summary, emit_status_update
 from config import AGENT_CV_ID, AGENT_SCAN_ID, AGENT_USER_ID, AI_RERANK_ENABLED
 from db import (
-    WORKSPACE_CV_ID,
     cv_job_needs_matching,
     get_all_jobs,
     init_db,
@@ -35,6 +36,7 @@ from db import (
     update_job_profile,
     update_match_result,
     upsert_cv_job_match,
+    workspace_scope_id,
 )
 from job_analyzer import (
     JobProfile,
@@ -259,18 +261,36 @@ def _combined_db_fields(
     return fields
 
 
-def match_all_jobs(
+@dataclass
+class MatchContext:
+    """Shared, once-per-scan state needed to score any individual job.
+
+    Building this (loading profile/strategy/universal profile/ATS candidate)
+    is relatively expensive, so it is computed once per scan and then reused
+    by :func:`score_one_job` for every job — whether scored in a batch via
+    :func:`match_all_jobs` or inline, immediately after each job is collected.
+    """
+
+    cv_id: str | None
+    scan_id: int | None
+    profile: dict
+    cv_profile: dict
+    strategy: dict
+    strategy_hash: str
+    universal: dict
+    candidate: Any
+    min_score: int
+
+
+def build_match_context(
     *,
-    rematch: bool = False,
-    ai_rerank: bool = False,
     cv_id: str | None = None,
     scan_id: int | None = None,
-) -> dict[str, int]:
-    """Score jobs using deterministic profile matcher + ATS engine (no per-job AI)."""
-    configure_console()
+) -> MatchContext:
+    """Load and precompute everything :func:`score_one_job` needs, once per scan."""
     if cv_id is None:
         if AGENT_USER_ID:
-            cv_id = WORKSPACE_CV_ID
+            cv_id = workspace_scope_id(AGENT_USER_ID)
         else:
             cv_id = AGENT_CV_ID or None
     if scan_id is None:
@@ -298,6 +318,130 @@ def match_all_jobs(
 
     candidate = build_ats_candidate(cv_profile)
     min_score = profile.get("min_match_score", 0)
+
+    return MatchContext(
+        cv_id=cv_id,
+        scan_id=scan_id,
+        profile=profile,
+        cv_profile=cv_profile,
+        strategy=strategy,
+        strategy_hash=strategy_hash,
+        universal=universal,
+        candidate=candidate,
+        min_score=min_score,
+    )
+
+
+def score_one_job(job: dict, ctx: MatchContext, *, rematch: bool = False) -> dict | None:
+    """Analyze, score, persist and stream a single job using a shared context.
+
+    Reused both by the batch :func:`match_all_jobs` loop and by the inline
+    collect->enrich->match pipeline so a job scored right after collection
+    behaves identically to one scored in a full batch run. Returns ``None``
+    when the job is missing an id, otherwise a small dict describing what
+    happened: ``{"action": "skipped"}`` or
+    ``{"action": "scored", "analyzed": bool, "final_score": int, "matched": bool, "match_id": int|None}``.
+    """
+    if not job or job.get("id") is None:
+        return None
+
+    cv_id = ctx.cv_id
+    scan_id = ctx.scan_id
+
+    if cv_id:
+        needs = cv_job_needs_matching(
+            cv_id, job["id"], current_strategy_hash=ctx.strategy_hash, rematch=rematch
+        )
+    else:
+        needs = job_needs_matching(
+            job, current_strategy_hash=ctx.strategy_hash, rematch=rematch
+        )
+    if not needs:
+        # Keep already-scored jobs visible on the current scan in the UI.
+        if cv_id and scan_id is not None:
+            refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
+        return {"action": "skipped"}
+
+    analyzed = job_needs_analysis(job)
+    job_profile = _ensure_job_profile(job, use_ai=False)
+
+    legacy_result = classify_job_with_strategy(
+        job, profile=ctx.profile, cv_profile=ctx.cv_profile, strategy=ctx.strategy
+    )
+    fallback_score = legacy_result.match_score
+
+    pm_result = profile_score(ctx.universal, job, job_profile)
+    ats_result = ats_score(
+        ctx.candidate,
+        job_profile,
+        job,
+        fallback_score=fallback_score,
+    )
+
+    final_score = _blend_scores(pm_result.score, ats_result.ats_score)
+    if pm_result.exclusion_hit:
+        final_score = min(final_score, pm_result.score)
+    if ats_result.hard_constraint_failed:
+        # Critical must-haves unmet — hard ceiling regardless of soft overlap.
+        final_score = min(final_score, HARD_CONSTRAINT_FAIL_CAP, ats_result.ats_score)
+    elif ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
+        final_score = min(final_score, ats_result.ats_score)
+    if ats_result.domain_mismatch:
+        final_score = min(final_score, DOMAIN_MISMATCH_SCORE_CAP, ats_result.ats_score)
+
+    score_label = pm_result.score_label if final_score == pm_result.score else ats_result.score_label
+    if final_score >= 85:
+        score_label = "Excellent Match"
+    elif final_score >= 70:
+        score_label = "Good Match"
+    elif final_score >= 50:
+        score_label = "Partial Match"
+    elif ats_result.is_potential_junior_match:
+        score_label = "Potential Match"
+    else:
+        score_label = "Weak Match"
+
+    fields = _combined_db_fields(
+        final_score=final_score,
+        score_label=score_label,
+        profile_result=pm_result,
+        ats_result=ats_result,
+        strategy_hash=ctx.strategy_hash,
+        fallback_score=fallback_score,
+    )
+    fields["is_potential_junior_match"] = (
+        1 if ats_result.is_potential_junior_match else 0
+    )
+    match_id = _store_match_result(
+        job["id"], fields, cv_id=cv_id, scan_id=scan_id
+    )
+    _emit_scored_job(job, fields, match_id=match_id, scan_id=scan_id)
+
+    safe_print(
+        f"  [{final_score}] {score_label} "
+        f"(profile={pm_result.score}, ats={ats_result.ats_score}): "
+        f"{job.get('title', '')} @ {job.get('company', '')}"
+    )
+
+    return {
+        "action": "scored",
+        "analyzed": analyzed,
+        "final_score": final_score,
+        "matched": final_score >= ctx.min_score,
+        "match_id": match_id,
+    }
+
+
+def match_all_jobs(
+    *,
+    rematch: bool = False,
+    ai_rerank: bool = False,
+    cv_id: str | None = None,
+    scan_id: int | None = None,
+) -> dict[str, int]:
+    """Score jobs using deterministic profile matcher + ATS engine (no per-job AI)."""
+    configure_console()
+    ctx = build_match_context(cv_id=cv_id, scan_id=scan_id)
     jobs = get_all_jobs()
     emit_status_update(f"מחשב ציוני התאמה ({len(jobs)} משרות)…")
 
@@ -312,100 +456,30 @@ def match_all_jobs(
     }
 
     for job in jobs:
-        if cv_id:
-            needs = cv_job_needs_matching(
-                cv_id, job["id"], current_strategy_hash=strategy_hash, rematch=rematch
-            )
-        else:
-            needs = job_needs_matching(
-                job, current_strategy_hash=strategy_hash, rematch=rematch
-            )
-        if not needs:
-            # Keep already-scored jobs visible on the current scan in the UI.
-            if cv_id and scan_id is not None:
-                refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
+        result = score_one_job(job, ctx, rematch=rematch)
+        if result is None:
+            continue
+        if result["action"] == "skipped":
             stats["skipped"] += 1
             safe_print(
                 f"Reusing prior match for current scan: "
                 f"{job.get('title', '')} @ {job.get('company', '')}"
             )
             continue
-
-        if job_needs_analysis(job):
+        if result["analyzed"]:
             stats["analyzed"] += 1
-
-        job_profile = _ensure_job_profile(job, use_ai=False)
-
-        legacy_result = classify_job_with_strategy(
-            job, profile=profile, cv_profile=cv_profile, strategy=strategy
-        )
-        fallback_score = legacy_result.match_score
-
-        pm_result = profile_score(universal, job, job_profile)
-        ats_result = ats_score(
-            candidate,
-            job_profile,
-            job,
-            fallback_score=fallback_score,
-        )
-
-        final_score = _blend_scores(pm_result.score, ats_result.ats_score)
-        if pm_result.exclusion_hit:
-            final_score = min(final_score, pm_result.score)
-        if ats_result.hard_constraint_failed:
-            # Critical must-haves unmet — hard ceiling regardless of soft overlap.
-            final_score = min(final_score, HARD_CONSTRAINT_FAIL_CAP, ats_result.ats_score)
-        elif ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
-            final_score = min(final_score, ats_result.ats_score)
-        if ats_result.domain_mismatch:
-            final_score = min(final_score, DOMAIN_MISMATCH_SCORE_CAP, ats_result.ats_score)
-
-        score_label = pm_result.score_label if final_score == pm_result.score else ats_result.score_label
-        if final_score >= 85:
-            score_label = "Excellent Match"
-        elif final_score >= 70:
-            score_label = "Good Match"
-        elif final_score >= 50:
-            score_label = "Partial Match"
-        elif ats_result.is_potential_junior_match:
-            score_label = "Potential Match"
-        else:
-            score_label = "Weak Match"
-
-        fields = _combined_db_fields(
-            final_score=final_score,
-            score_label=score_label,
-            profile_result=pm_result,
-            ats_result=ats_result,
-            strategy_hash=strategy_hash,
-            fallback_score=fallback_score,
-        )
-        fields["is_potential_junior_match"] = (
-            1 if ats_result.is_potential_junior_match else 0
-        )
-        match_id = _store_match_result(
-            job["id"], fields, cv_id=cv_id, scan_id=scan_id
-        )
         stats["ats_scored"] += 1
-        _emit_scored_job(job, fields, match_id=match_id, scan_id=scan_id)
-
-        if final_score >= min_score:
+        if result["matched"]:
             stats["matched"] += 1
         else:
             stats["below_min"] += 1
 
-        safe_print(
-            f"  [{final_score}] {score_label} "
-            f"(profile={pm_result.score}, ats={ats_result.ats_score}): "
-            f"{job.get('title', '')} @ {job.get('company', '')}"
-        )
-
     if ai_rerank and AI_RERANK_ENABLED:
         safe_print("\nAI rerank is disabled — matching is fully deterministic.")
 
-    save_pipeline_state({"candidate_strategy_hash": strategy_hash})
-    if cv_id:
-        set_cv_last_scan(cv_id)
+    save_pipeline_state({"candidate_strategy_hash": ctx.strategy_hash})
+    if ctx.cv_id:
+        set_cv_last_scan(ctx.cv_id)
     return stats
 
 

@@ -187,6 +187,14 @@ AI_RERANK_ENABLED = os.getenv("AI_RERANK_ENABLED", "false").lower() in ("1", "tr
 AI_RERANK_TOP_N = int(os.getenv("AI_RERANK_TOP_N", "25"))
 AI_RERANK_MIN_LOCAL_SCORE = int(os.getenv("AI_RERANK_MIN_LOCAL_SCORE", "40"))
 
+# Inline per-job pipeline — enrich + score each freshly-collected job immediately
+# (streamed to the UI right away) instead of waiting for the whole collection
+# batch to finish before enriching/matching. Safety valve: set to "false" to
+# fall back to the previous strictly-batched collect -> enrich -> match flow.
+INLINE_PIPELINE_ENABLED = os.getenv("INLINE_PIPELINE_ENABLED", "true").lower() in (
+    "1", "true", "yes",
+)
+
 DRUSHIM_BASE_URL = "https://www.drushim.co.il"
 
 # LinkedIn job search (public guest endpoints — no login required)

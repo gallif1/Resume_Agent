@@ -511,6 +511,35 @@ def enrich_one(
     return ENRICH_NO_DESCRIPTION, None, None
 
 
+def enrich_job_inline(
+    job: dict,
+    *,
+    drushim_page: Page | None = None,
+    debug_blocked: bool = False,
+) -> tuple[str, str | None, str | None]:
+    """Enrich a single freshly-collected job immediately (no batching).
+
+    Used by the inline collect -> enrich -> match pipeline so a job can be
+    fully processed and streamed to the UI before the next one is collected.
+    LinkedIn/GotFriends are plain HTTP (no browser needed). Drushim needs a
+    live page — when none is available inline, enrichment is skipped here
+    (status ``None``) so the job keeps its listing description for now and
+    the batch enrich step can still pick it up normally. Sources without a
+    per-job enrichment step (AllJobs, Indeed, Secret Tel Aviv, Geektime, ...)
+    already carry a sufficient description straight from collection.
+    """
+    source = job.get("source")
+    if source == "linkedin":
+        return enrich_linkedin_one(job)
+    if source == "gotfriends":
+        return enrich_gotfriends_one(job)
+    if source == "drushim":
+        if drushim_page is None:
+            return None, None, None
+        return enrich_one(drushim_page, job, debug_blocked=debug_blocked)
+    return ENRICH_SUCCESS, job.get("description") or None, None
+
+
 def _job_label(job: dict) -> str:
     return f"{job.get('title', '') or '(no title)'} @ {job.get('company', '') or '(no company)'}"
 
