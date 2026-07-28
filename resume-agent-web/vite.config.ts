@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         "/api": apiTarget,
         "/cvs": apiTarget,
+        "/jobs": apiTarget,
       },
     },
   };

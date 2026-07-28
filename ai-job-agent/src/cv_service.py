@@ -1245,6 +1245,7 @@ def reset_user_results(
     """Clear workspace match/scan results; keep uploaded CV files."""
     from scan_control import clear_scan_state
 
+    cvs = db.list_cvs(user_id=user_id, db_path=db_path)
     user_db = user_db_path(user_id)
     workspace_cv_id = db.workspace_scope_id(user_id)
     cleared_jobs = False
@@ -1262,7 +1263,20 @@ def reset_user_results(
             conn.commit()
         cleared_jobs = True
 
-    for cv in db.list_cvs(user_id=user_id, db_path=db_path):
+    # The UI currently shows per-CV match lists, not only the aggregated
+    # workspace view. Resetting "results" must therefore clear each uploaded
+    # CV's own scans/matches too, otherwise the button appears to do nothing.
+    for cv in cvs:
+        cv_id = cv["id"]
+        cv_db = cv_db_path(cv_id)
+        if db.uses_postgres() or cv_db.exists():
+            db.reset_cv_job_pool(cv_id, db_path=cv_db)
+            with db.get_connection(cv_db) as conn:
+                try:
+                    conn.execute("DELETE FROM cv_scans WHERE cv_id = ?", (cv_id,))
+                except Exception:
+                    pass
+                conn.commit()
         db.update_cv(cv["id"], {"last_scan_at": None}, db_path=db_path)
 
     clear_scan_state(user_id)
@@ -1270,6 +1284,7 @@ def reset_user_results(
         "reset": "results",
         "user_id": user_id,
         "cleared_workspace_db": cleared_jobs,
+        "cleared_cv_count": len(cvs),
     }
 
 

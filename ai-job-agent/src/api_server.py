@@ -1039,7 +1039,13 @@ def reset_all_cvs(user: dict = Depends(auth.get_current_user)):
     db.ensure_multi_cv_storage()
     user_id = user["id"]
     _clear_live_scan_state(user_id)
-    summary = cv_service.reset_user_files(user_id)
+    try:
+        summary = cv_service.reset_user_files(user_id)
+    except Exception as exc:  # noqa: BLE001 — surface bulk-delete failures clearly
+        raise HTTPException(
+            status_code=500,
+            detail=f"מחיקת כל הקבצים נכשלה: {exc}",
+        ) from exc
     return {"ok": True, **summary}
 
 
