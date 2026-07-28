@@ -217,13 +217,22 @@ jobs:
             exit 1
           fi
           echo "Target container: $CID"
+
+          echo "Step R6a: inject backend Python source from git pull (no full image rebuild)"
+          tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz src
+          sudo docker cp /tmp/ra-backend-src.tgz "$CID:/tmp/ra-backend-src.tgz"
+          sudo docker exec "$CID" sh -c \
+            'tar -C /app/ai-job-agent -xzf /tmp/ra-backend-src.tgz && rm -f /tmp/ra-backend-src.tgz && ls -la /app/ai-job-agent/src | head'
+          echo "backend inject finished"
+
+          echo "Step R6b: inject freshly built frontend into running container"
           sudo docker exec "$CID" mkdir -p /app/resume-agent-web/dist
           # Clear old assets then extract new bundle inside the container.
           sudo docker exec "$CID" sh -c 'rm -rf /app/resume-agent-web/dist/*'
           sudo docker cp /tmp/ra-frontend-dist.tgz "$CID:/tmp/ra-frontend-dist.tgz"
           sudo docker exec "$CID" sh -c \
             'mkdir -p /app/resume-agent-web/dist && tar -C /app/resume-agent-web/dist -xzf /tmp/ra-frontend-dist.tgz && rm -f /tmp/ra-frontend-dist.tgz && ls -la /app/resume-agent-web/dist | head'
-          echo "Restarting container to pick up static files"
+          echo "Restarting container to pick up backend + frontend updates"
           sudo docker restart "$CID" </dev/null >/dev/null 2>&1
           echo "frontend inject finished"
 
