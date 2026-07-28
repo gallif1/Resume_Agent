@@ -66,7 +66,7 @@ jobs:
   deploy:
     needs: build-frontend
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
 
     steps:
       - name: Download frontend dist
@@ -242,27 +242,57 @@ jobs:
           fi
 
           echo "Step R5: ensure containers are running (detached, FDs closed, no build)"
-          # Cap compose so a wedged docker daemon cannot hang the SSH session.
-          timeout 90s sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
-            echo "WARN: compose up failed; retrying with force-recreate" >&2
-            timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
-              echo "ERROR: compose up failed/timed out" >&2
-              tail -n 80 "$HOME/ra-compose-up.log" || true
-              sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
-              exit 1
+          ensure_container_running() {
+            timeout 90s sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
+              echo "WARN: compose up failed; retrying with force-recreate" >&2
+              timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || return 1
             }
+            return 0
           }
-          echo "compose up finished"
-          tail -n 40 "$HOME/ra-compose-up.log" || true
 
-          echo "Step R6: inject backend + frontend into running container"
-          test -f /tmp/ra-frontend-dist.tgz
-          CID="$(find_container_id)"
-          if [ -z "${CID:-}" ]; then
-            echo "ERROR: no running docker container found to inject assets" >&2
+          if ! ensure_container_running; then
+            echo "ERROR: compose up failed/timed out" >&2
+            tail -n 80 "$HOME/ra-compose-up.log" || true
             sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
             exit 1
           fi
+          echo "compose up finished"
+          tail -n 40 "$HOME/ra-compose-up.log" || true
+
+          CID="$(find_container_id)"
+          if [ -z "${CID:-}" ]; then
+            echo "WARN: no running container after compose up; forcing recreate" >&2
+            timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
+              echo "ERROR: force-recreate failed" >&2
+              tail -n 80 "$HOME/ra-compose-up.log" || true
+              sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+              exit 1
+            }
+            CID="$(find_container_id)"
+          fi
+          if [ -z "${CID:-}" ]; then
+            echo "ERROR: no running docker container found after compose recovery" >&2
+            sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            exit 1
+          fi
+          echo "Base container: $CID"
+
+          echo "Step R6: baseline health before injecting new code"
+          if ! wait_for_health 25; then
+            echo "WARN: baseline health failed; force-recreating container from image" >&2
+            timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-recover.log" 2>&1 || true
+            CID="$(find_container_id)"
+            if [ -z "${CID:-}" ] || ! wait_for_health 30; then
+              echo "ERROR: baseline health failed after force-recreate" >&2
+              sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
+              tail -n 120 "$HOME/ra-compose-logs.log" || true
+              sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+              exit 1
+            fi
+          fi
+
+          echo "Step R7: inject backend + frontend into running container"
+          test -f /tmp/ra-frontend-dist.tgz
           echo "Target container: $CID"
           inject_backend "$CID"
           inject_frontend "$CID"
@@ -273,26 +303,29 @@ jobs:
             || true
           tail -n 40 "$HOME/ra-compose-restart.log" 2>/dev/null || true
 
-          echo "Step R7: health check"
+          echo "Step R8: post-inject health check"
           if ! wait_for_health 45; then
-            echo "WARN: health check failed after restart; recovering with compose up + reinject" >&2
+            echo "WARN: health failed after inject; rolling back to image baseline" >&2
             timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-recover.log" 2>&1 || true
             tail -n 40 "$HOME/ra-compose-recover.log" 2>/dev/null || true
             CID="$(find_container_id)"
             if [ -n "${CID:-}" ]; then
-              inject_backend "$CID"
               inject_frontend "$CID"
               timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >"$HOME/ra-compose-restart2.log" 2>&1 \
                 || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
                 || true
             fi
-            if ! wait_for_health 45; then
-              echo "ERROR: health check failed after recovery" >&2
+            if wait_for_health 30; then
+              echo "ERROR: deploy inject failed, but site restored to previous image baseline" >&2
               sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
               tail -n 120 "$HOME/ra-compose-logs.log" || true
-              sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
               exit 1
             fi
+            echo "ERROR: health check failed even after rollback" >&2
+            sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
+            tail -n 120 "$HOME/ra-compose-logs.log" || true
+            sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            exit 1
           fi
 
           echo "Step R8: status"
