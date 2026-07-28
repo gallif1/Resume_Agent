@@ -169,15 +169,62 @@ jobs:
           # Always --no-build: a full image build on this small EC2 hangs sshd
           # (banner timeout) and leaves the host unreachable until reboot.
           if docker compose version >/dev/null 2>&1; then
-            UP_CMD='docker compose up -d --no-build --force-recreate --remove-orphans'
+            UP_CMD='docker compose up -d --no-build --remove-orphans'
+            UP_FORCE_CMD='docker compose up -d --no-build --force-recreate --remove-orphans'
+            RESTART_CMD='docker compose restart'
             PS_CMD='docker compose ps'
-            LOGS_CMD='docker compose logs --tail=80'
+            LOGS_CMD='docker compose logs --tail=120'
           else
-            UP_CMD='docker-compose up -d --no-build --force-recreate --remove-orphans'
+            UP_CMD='docker-compose up -d --no-build --remove-orphans'
+            UP_FORCE_CMD='docker-compose up -d --no-build --force-recreate --remove-orphans'
+            RESTART_CMD='docker-compose restart'
             PS_CMD='docker-compose ps'
-            LOGS_CMD='docker-compose logs --tail=80'
+            LOGS_CMD='docker-compose logs --tail=120'
           fi
           echo "compose command: $UP_CMD"
+
+          wait_for_health() {
+            local max_attempts="$1"
+            local i=1
+            while [ "$i" -le "$max_attempts" ]; do
+              echo "Health attempt $i/$max_attempts..."
+              if curl -sf --max-time 8 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
+                || curl -sf --max-time 8 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 3
+            done
+            return 1
+          }
+
+          find_container_id() {
+            local cid
+            cid="$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')"
+            if [ -z "${cid:-}" ]; then
+              cid="$(sudo docker ps -q | head -n 1)"
+            fi
+            printf '%s' "$cid"
+          }
+
+          inject_backend() {
+            local cid="$1"
+            echo "Injecting backend Python source into $cid"
+            tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz src
+            sudo docker cp /tmp/ra-backend-src.tgz "$cid:/tmp/ra-backend-src.tgz"
+            sudo docker exec "$cid" sh -c \
+              'tar -C /app/ai-job-agent -xzf /tmp/ra-backend-src.tgz && rm -f /tmp/ra-backend-src.tgz && find /app/ai-job-agent/src -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
+          }
+
+          inject_frontend() {
+            local cid="$1"
+            echo "Injecting frontend bundle into $cid"
+            sudo docker exec "$cid" mkdir -p /app/resume-agent-web/dist
+            sudo docker exec "$cid" sh -c 'rm -rf /app/resume-agent-web/dist/*'
+            sudo docker cp /tmp/ra-frontend-dist.tgz "$cid:/tmp/ra-frontend-dist.tgz"
+            sudo docker exec "$cid" sh -c \
+              'mkdir -p /app/resume-agent-web/dist && tar -C /app/resume-agent-web/dist -xzf /tmp/ra-frontend-dist.tgz && rm -f /tmp/ra-frontend-dist.tgz'
+          }
 
           # Optional full image rebuild — off by default (hangs on small EC2).
           if [ "${REBUILD_IMAGE:-false}" = "true" ]; then
@@ -194,61 +241,59 @@ jobs:
             echo "Step R4: skipping full image rebuild (fast frontend path)"
           fi
 
-          echo "Step R5: recreate containers (detached, FDs closed, no build)"
+          echo "Step R5: ensure containers are running (detached, FDs closed, no build)"
           # Cap compose so a wedged docker daemon cannot hang the SSH session.
           timeout 90s sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
-            echo "ERROR: compose up failed/timed out" >&2
-            tail -n 80 "$HOME/ra-compose-up.log" || true
-            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
-            exit 1
+            echo "WARN: compose up failed; retrying with force-recreate" >&2
+            timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
+              echo "ERROR: compose up failed/timed out" >&2
+              tail -n 80 "$HOME/ra-compose-up.log" || true
+              sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+              exit 1
+            }
           }
           echo "compose up finished"
           tail -n 40 "$HOME/ra-compose-up.log" || true
 
-          echo "Step R6: inject freshly built frontend into running container"
+          echo "Step R6: inject backend + frontend into running container"
           test -f /tmp/ra-frontend-dist.tgz
-          CID="$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')"
+          CID="$(find_container_id)"
           if [ -z "${CID:-}" ]; then
-            CID="$(sudo docker ps -q | head -n 1)"
-          fi
-          if [ -z "${CID:-}" ]; then
-            echo "ERROR: no running docker container found to inject frontend" >&2
-            sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            echo "ERROR: no running docker container found to inject assets" >&2
+            sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
             exit 1
           fi
           echo "Target container: $CID"
+          inject_backend "$CID"
+          inject_frontend "$CID"
 
-          echo "Step R6a: inject backend Python source from git pull (no full image rebuild)"
-          tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz src
-          sudo docker cp /tmp/ra-backend-src.tgz "$CID:/tmp/ra-backend-src.tgz"
-          sudo docker exec "$CID" sh -c \
-            'tar -C /app/ai-job-agent -xzf /tmp/ra-backend-src.tgz && rm -f /tmp/ra-backend-src.tgz && ls -la /app/ai-job-agent/src | head'
-          echo "backend inject finished"
-
-          echo "Step R6b: inject freshly built frontend into running container"
-          sudo docker exec "$CID" mkdir -p /app/resume-agent-web/dist
-          # Clear old assets then extract new bundle inside the container.
-          sudo docker exec "$CID" sh -c 'rm -rf /app/resume-agent-web/dist/*'
-          sudo docker cp /tmp/ra-frontend-dist.tgz "$CID:/tmp/ra-frontend-dist.tgz"
-          sudo docker exec "$CID" sh -c \
-            'mkdir -p /app/resume-agent-web/dist && tar -C /app/resume-agent-web/dist -xzf /tmp/ra-frontend-dist.tgz && rm -f /tmp/ra-frontend-dist.tgz && ls -la /app/resume-agent-web/dist | head'
           echo "Restarting container to pick up backend + frontend updates"
-          sudo docker restart "$CID" </dev/null >/dev/null 2>&1
-          echo "frontend inject finished"
+          timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >"$HOME/ra-compose-restart.log" 2>&1 \
+            || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
+            || true
+          tail -n 40 "$HOME/ra-compose-restart.log" 2>/dev/null || true
 
           echo "Step R7: health check"
-          ok=0
-          i=1
-          while [ "$i" -le 20 ]; do
-            echo "Health attempt $i/20..."
-            if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
-              || curl -sf --max-time 5 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
-              ok=1
-              break
+          if ! wait_for_health 45; then
+            echo "WARN: health check failed after restart; recovering with compose up + reinject" >&2
+            timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-recover.log" 2>&1 || true
+            tail -n 40 "$HOME/ra-compose-recover.log" 2>/dev/null || true
+            CID="$(find_container_id)"
+            if [ -n "${CID:-}" ]; then
+              inject_backend "$CID"
+              inject_frontend "$CID"
+              timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >"$HOME/ra-compose-restart2.log" 2>&1 \
+                || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
+                || true
             fi
-            i=$((i + 1))
-            sleep 2
-          done
+            if ! wait_for_health 45; then
+              echo "ERROR: health check failed after recovery" >&2
+              sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
+              tail -n 120 "$HOME/ra-compose-logs.log" || true
+              sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+              exit 1
+            fi
+          fi
 
           echo "Step R8: status"
           sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true
@@ -258,13 +303,6 @@ jobs:
           echo "Step R9: health payload"
           cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
           echo
-
-          if [ "$ok" != "1" ]; then
-            echo "ERROR: health check failed" >&2
-            sudo sh -c "$LOGS_CMD" </dev/null >"$HOME/ra-compose-logs.log" 2>&1 || true
-            tail -n 120 "$HOME/ra-compose-logs.log" || true
-            exit 1
-          fi
 
           echo "Step R10: verify frontend bundle serves index.html"
           curl -sf --max-time 5 http://127.0.0.1:8001/ >/tmp/ra-index.html \
@@ -291,8 +329,8 @@ jobs:
             /tmp/ra-remote-deploy.sh \
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-remote-deploy.sh"
 
-          echo "Step 5: run remote deploy (max 7 minutes)"
-          timeout 420s ssh \
+          echo "Step 5: run remote deploy (max 10 minutes)"
+          timeout 600s ssh \
             -i ~/.ssh/ec2.key \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
