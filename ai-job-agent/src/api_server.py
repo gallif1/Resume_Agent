@@ -85,6 +85,7 @@ from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
+from match_tailor_service import MatchTailorError, evaluate_candidate_for_job
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from scan_control import (
     begin_scan,
@@ -100,6 +101,7 @@ from site_credentials import public_site_credentials, update_site_credentials
 from tailor_cv_service import (
     TailorCvError,
     extract_cv_markdown_for_copy,
+    load_cv_profile_for_job,
     load_saved_tailored_cv,
     tailor_cv_for_job,
 )
@@ -1613,6 +1615,68 @@ def tailor_cv_endpoint(
     }
 
 
+class MatchReportRequest(BaseModel):
+    force: bool = False
+
+
+def _match_report_response(
+    *, cv_id: str, job: dict[str, Any], report: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "cv_id": cv_id,
+        "job_id": int(job["id"]),
+        "title": job.get("title"),
+        "company": job.get("company"),
+        **report,
+    }
+
+
+def _build_match_report(
+    *,
+    cv_id: str,
+    job: dict[str, Any],
+    force: bool,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Run the three-phase match evaluation, mapping engine errors to HTTP."""
+    try:
+        cv_profile = load_cv_profile_for_job(cv_id, user_id=user_id)
+        report = evaluate_candidate_for_job(
+            cv_profile=cv_profile, job=job, use_cache=not force
+        )
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except MatchTailorError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return _match_report_response(cv_id=cv_id, job=job, report=report)
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/match-report")
+def match_report_endpoint(
+    cv_id: str,
+    job_id: int,
+    req: MatchReportRequest | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Honest requirement-by-requirement fit report for one CV against one job.
+
+    Returns the extracted hard/soft requirements with their evidence, the
+    rubric-computed ``realistic_match_score`` (capped when a core hard
+    requirement is missing), and a tailored CV that frames gaps as transferable
+    experience instead of hiding them.
+    """
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None:
+        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+
+    return _build_match_report(cv_id=cv_id, job=job, force=bool(req and req.force))
+
+
 @app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf")
 def download_tailored_cv_pdf(
     cv_id: str,
@@ -1768,6 +1832,30 @@ def tailor_workspace_job(
         "message": result.get("message"),
         "matcher_feedback": result.get("matcher_feedback"),
     }
+
+
+@app.post("/jobs/{job_id}/match-report")
+def match_report_workspace_job(
+    job_id: int,
+    source_cv_id: str | None = None,
+    req: MatchReportRequest | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Match report for a workspace job using the aggregated master profile."""
+    db.ensure_multi_cv_storage()
+    if source_cv_id:
+        _require_owned_cv(source_cv_id, user)
+    job, workspace_db, profile_cv_id = _resolve_job_context(
+        job_id, source_cv_id, user_id=user["id"]
+    )
+    db.init_db(workspace_db)
+
+    return _build_match_report(
+        cv_id=profile_cv_id,
+        job=job,
+        force=bool(req and req.force),
+        user_id=user["id"],
+    )
 
 
 @app.patch("/cvs/{cv_id}/matches/{match_id}/status")
