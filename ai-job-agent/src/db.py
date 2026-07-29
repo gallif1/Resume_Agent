@@ -3338,6 +3338,66 @@ def mark_cv_match_tailored(
         return dict(row) if row is not None else None
 
 
+def apply_honest_match_score(
+    cv_id: str,
+    job_id: int,
+    *,
+    match_score: int,
+    score_label: str | None = None,
+    explanation: str | None = None,
+    matched_skills: list[str] | None = None,
+    missing_skills: list[str] | None = None,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    """Overwrite the scan estimate with the requirement-level match evaluation.
+
+    The lightweight scan scores every job without an LLM, so its number is an
+    estimate. Once a job has been evaluated requirement-by-requirement, that
+    score is the better answer and must replace the estimate everywhere the user
+    can see it — otherwise the job list and the tailored-CV view disagree.
+    ``initial_score`` is left alone: it stays the frozen scan baseline.
+    """
+    now = _utc_now()
+    matched_json = json.dumps(matched_skills or [], ensure_ascii=False)
+    missing_json = json.dumps(missing_skills or [], ensure_ascii=False)
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE cv_job_matches
+            SET match_score = ?,
+                match_method = 'match_tailor',
+                ats_score_label = ?,
+                ai_explanation = ?,
+                matched_skills = ?,
+                ai_strengths = ?,
+                missing_skills = ?,
+                ai_missing_skills = ?,
+                updated_at = ?
+            WHERE cv_id = ? AND job_id = ?
+            """,
+            (
+                int(match_score),
+                score_label,
+                explanation,
+                matched_json,
+                matched_json,
+                missing_json,
+                missing_json,
+                now,
+                cv_id,
+                job_id,
+            ),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM cv_job_matches WHERE cv_id = ? AND job_id = ?",
+            (cv_id, job_id),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
 def get_match_baseline_score(
     cv_id: str,
     job_id: int,

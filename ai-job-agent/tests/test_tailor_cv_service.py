@@ -1,13 +1,20 @@
-"""Tests for on-demand ATS CV tailoring."""
+"""Tests for the tailored-CV document layer.
+
+Scoring and resume writing belong to match_tailor_service; this module only owns
+the document, its persistence and the API-facing payload. The tests therefore
+stub the engine's OpenAI call and assert on what the user ends up seeing.
+"""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import config
+import match_tailor_service
 import tailor_cv_service as svc
 
 
@@ -29,6 +36,129 @@ SAMPLE_STRUCTURED = """## פירוט שינויים
 - Troubleshooting and SQL queries for production systems
 """
 
+PROFILE = {
+    "contact": {
+        "name": "Gal Lifshiz",
+        "email": "gal@example.com",
+        "phone": "+972-50-000-0000",
+        "location": "Tel Aviv",
+    },
+    "raw_text": (
+        "Gal Lifshiz — Technical Support Engineer at Acme. Troubleshot Windows "
+        "and SQL issues, automated reports with Python, ran Docker containers "
+        "and stored data in Postgres."
+    ),
+    "skills": {"programming_languages": ["Python", "SQL"]},
+    "experience": {
+        "job_titles": ["Technical Support Engineer"],
+        "years_of_experience_estimate": 2,
+        "seniority_level": "junior",
+    },
+}
+
+JOB = {
+    "id": 9,
+    "title": "Backend Engineer",
+    "company": "Acme",
+    "full_description": "Python, SQL and Docker experience required.",
+    "job_profile": None,
+}
+
+
+def _engine_response(
+    *,
+    score: int = 62,
+    skills: list[str] | None = None,
+    hard_statuses: tuple[str, ...] = ("MATCH", "PARTIAL"),
+) -> dict[str, Any]:
+    return {
+        "requirement_extraction": {
+            "hard_requirements": [
+                {
+                    "requirement": f"Requirement {index}",
+                    "candidate_status": status,
+                    "evidence_or_gap": "evidence",
+                }
+                for index, status in enumerate(hard_statuses, start=1)
+            ],
+            "soft_requirements": [
+                {
+                    "requirement": "Docker",
+                    "candidate_status": "MATCH",
+                    "evidence_or_gap": "Ran Docker containers",
+                }
+            ],
+        },
+        "scoring": {
+            "hard_score_pct": 75,
+            "soft_score_pct": 100,
+            "hard_cap_applied": False,
+            "realistic_match_score": score,
+            "score_rationale": "Solid Python and SQL overlap.",
+        },
+        "key_matching_points": ["Python automation", "SQL troubleshooting"],
+        "missing_critical_skills": ["Kubernetes"],
+        "transferable_skills_framing": [
+            {
+                "gap": "Kubernetes",
+                "how_to_honestly_frame_existing_experience": (
+                    "Docker container work is the closest honest parallel."
+                ),
+            }
+        ],
+        "tailored_cv": {
+            "summary": "Support engineer moving into backend work.",
+            "skills": skills if skills is not None else ["Python", "SQL", "Docker"],
+            "experience": [
+                {
+                    "company": "Acme",
+                    "title": "Technical Support Engineer",
+                    "dates": "2023-2025",
+                    "bullets": [
+                        "Troubleshot production Windows and SQL incidents daily.",
+                        "Automated recurring reports with Python, saving hours weekly.",
+                    ],
+                }
+            ],
+            "projects": [],
+            "education": [],
+        },
+        "recommendation": "APPLY_WITH_HONEST_FRAMING",
+    }
+
+
+@pytest.fixture
+def cv_env(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+
+    def _make(cv_id: str, profile: dict[str, Any] | None = None) -> str:
+        profile_dir = cvs_dir / cv_id
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        (profile_dir / "cv_profile.json").write_text(
+            json.dumps(profile or PROFILE), encoding="utf-8"
+        )
+        return cv_id
+
+    return _make
+
+
+@pytest.fixture
+def engine(monkeypatch: pytest.MonkeyPatch):
+    state: dict[str, Any] = {"calls": 0, "response": _engine_response()}
+
+    def _fake_openai(*_args, **_kwargs):
+        state["calls"] += 1
+        return dict(state["response"])
+
+    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
+    monkeypatch.setattr(match_tailor_service, "call_openai_json", _fake_openai)
+    return state
+
+
+# --------------------------------------------------------------------------- #
+# Document plumbing
+# --------------------------------------------------------------------------- #
+
 
 def test_save_and_load_tailored_cv(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
     cv_id = "cv_test"
@@ -41,6 +171,21 @@ def test_save_and_load_tailored_cv(cvs_dir: Path, monkeypatch: pytest.MonkeyPatc
     loaded = svc.load_saved_tailored_cv(cv_id, job_id)
     assert loaded is not None
     assert loaded.startswith("# Hello")
+    # The pipeline marker lives on disk only.
+    assert "tailor-pipeline" in path.read_text(encoding="utf-8")
+    assert "tailor-pipeline" not in loaded
+    assert svc.saved_draft_is_current(cv_id, job_id) is True
+
+
+def test_saved_draft_from_another_pipeline_is_not_current(
+    cvs_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    path = svc.tailored_cv_path("cv_legacy", 5)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(SAMPLE_STRUCTURED, encoding="utf-8")
+    assert svc.load_saved_tailored_cv("cv_legacy", 5) is not None
+    assert svc.saved_draft_is_current("cv_legacy", 5) is False
 
 
 def test_extract_cv_markdown_for_copy_accepts_result_dict():
@@ -70,250 +215,174 @@ def test_split_tailored_markdown_on_horizontal_rule():
     assert svc.extract_cv_markdown_for_copy(SAMPLE_STRUCTURED).startswith("# Gal")
 
 
-def test_normalize_tailor_result_requires_markdown():
-    with pytest.raises(svc.TailorCvError):
-        svc._normalize_tailor_result({"markdown": "  ", "highlights": []})
+# --------------------------------------------------------------------------- #
+# tailored_cv JSON -> resume Markdown
+# --------------------------------------------------------------------------- #
 
-    out = svc._normalize_tailor_result(
+
+def test_render_tailored_cv_markdown_covers_every_section():
+    markdown = svc.render_tailored_cv_markdown(
         {
-            "markdown": SAMPLE_STRUCTURED,
-            "changes_breakdown": ["הודגשו כישורי SQL"],
-            "estimated_ats_score": 68,
-            "cv_markdown": "# Gal Lifshiz\n\n## Experience\n",
-            "highlights": ["SQL"],
-            "caveats": ["No Kubernetes experience claimed"],
-        }
-    )
-    assert "## פירוט שינויים" in out["markdown"]
-    assert "---" in out["markdown"]
-    assert out["cv_markdown"].startswith("# Gal")
-    assert out["estimated_ats_score"] == 68
-    assert out["changes_breakdown"] == ["הודגשו כישורי SQL"]
-    assert "Kubernetes" in out["caveats"][0]
-
-
-def test_normalize_assembles_markdown_from_parts():
-    out = svc._normalize_tailor_result(
-        {
-            "changes_breakdown": ["Reframed support bullets around SQL"],
-            "estimated_ats_score": 55,
-            "cv_markdown": "# Name\n\n## Summary\nBackend-leaning support engineer.\n",
-            "caveats": [],
-        }
-    )
-    assert "## פירוט שינויים" in out["markdown"]
-    assert "## ציון התאמה למשרה" in out["markdown"]
-    assert "---" in out["markdown"]
-    assert "## קורות החיים המעודכנים" in out["markdown"]
-    assert out["estimated_ats_score"] == 55
-    assert "Backend-leaning" in out["cv_markdown"]
-
-
-def test_tailor_cv_for_job_uses_cache(
-    cvs_dir: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    cv_id = "cv_cache"
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    profile_dir = cvs_dir / cv_id
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "cv_profile.json").write_text(
-        json.dumps(
-            {
-                "raw_text": "Gal Lifshiz\nTechnical Support\nPython, SQL",
-                "experience": {
-                    "job_titles": ["Technical Support"],
-                    "years_of_experience_estimate": 1,
-                    "seniority_level": "junior",
-                },
-                "skills": {"programming_languages": ["Python", "SQL"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    svc.save_tailored_cv(cv_id, 7, SAMPLE_STRUCTURED)
-
-    called = {"n": 0}
-
-    def _fake_openai(*_args, **_kwargs):
-        called["n"] += 1
-        return {"markdown": "# Should not be used\n", "highlights": [], "caveats": []}
-
-    monkeypatch.setattr(svc, "call_openai_json", _fake_openai)
-    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
-
-    result = svc.tailor_cv_for_job(
-        cv_id,
-        {"id": 7, "title": "Software Engineer", "company": "Acme", "full_description": "Python"},
-        force=False,
-    )
-    assert result["from_cache"] is True
-    assert "פירוט שינויים" in result["markdown"]
-    assert result["cv_markdown"].startswith("# Gal")
-    assert result["estimated_ats_score"] == 68
-    assert called["n"] == 0
-
-
-def test_tailor_cv_for_job_calls_openai(
-    cvs_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    cv_id = "cv_ai"
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    profile_dir = cvs_dir / cv_id
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "cv_profile.json").write_text(
-        json.dumps(
-            {
-                "raw_text": "Name\nTechnical Support Engineer\n- Troubleshot Windows and SQL",
-                "experience": {
-                    "job_titles": ["Technical Support Engineer"],
-                    "years_of_experience_estimate": 1,
-                    "seniority_level": "junior",
-                },
-                "skills": {"programming_languages": ["Python", "SQL"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    def _fake_openai(*_args, **_kwargs):
-        return {
-            "markdown": SAMPLE_STRUCTURED.replace("Gal Lifshiz", "Name").replace(
-                "### Technical Support", "### Technical Support Engineer"
-            ),
-            "changes_breakdown": ["Highlighted SQL troubleshooting"],
-            "estimated_ats_score": 68,
-            "cv_markdown": (
-                "# Name\n\n## Experience\n### Technical Support Engineer\n"
-                "- Troubleshooting and SQL queries for production systems\n"
-            ),
-            "highlights": ["SQL troubleshooting"],
-            "caveats": ["Did not invent Software Engineer title"],
-            "_from_cache": False,
-        }
-
-    monkeypatch.setattr(svc, "call_openai_json", _fake_openai)
-    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
-
-    result = svc.tailor_cv_for_job(
-        cv_id,
-        {
-            "id": 9,
-            "title": "Software Engineer",
-            "company": "Acme",
-            "full_description": "Need Python and SQL",
-            "job_profile": None,
+            "summary": "Backend developer with production Python experience.",
+            "skills": ["Languages: Python, SQL", "Docker", "Linux"],
+            "experience": [
+                {
+                    "title": "Backend Developer",
+                    "company": "Acme",
+                    "dates": "2023-2025",
+                    "bullets": ["Built FastAPI services on AWS."],
+                }
+            ],
+            "projects": [
+                {
+                    "name": "Job Agent",
+                    "description": "Automation platform",
+                    "bullets": ["Shipped a React client."],
+                }
+            ],
+            "education": [
+                {
+                    "degree": "B.Sc. Computer Science",
+                    "institution": "Open University",
+                    "dates": "2019-2022",
+                }
+            ],
         },
-        force=True,
-        use_cache=False,
+        name="Gal Lifshiz",
+        contact_line="Tel Aviv | gal@example.com",
+        target_role="Backend Engineer",
     )
-    assert "Technical Support Engineer" in result["cv_markdown"]
+
+    assert markdown.startswith("# Gal Lifshiz")
+    assert "Tel Aviv | gal@example.com" in markdown
+    assert "Target Role: Backend Engineer" in markdown
+    for heading in ("## Professional Summary", "## Experience", "## Projects", "## Skills", "## Education"):
+        assert heading in markdown
+    assert "### Backend Developer" in markdown
+    assert "Acme | 2023-2025" in markdown
+    assert "- Built FastAPI services on AWS." in markdown
+    # Grouped rows stay grouped; ungrouped skills share one row.
+    assert "Languages: Python, SQL" in markdown
+    assert "Docker, Linux" in markdown
+    assert "Open University | 2019-2022" in markdown
+
+
+def test_render_tailored_cv_markdown_omits_sections_without_source_material():
+    markdown = svc.render_tailored_cv_markdown(
+        {
+            "summary": "Junior developer.",
+            "skills": ["Python"],
+            "experience": [],
+            "projects": [],
+            "education": [],
+        },
+        name="Dana",
+    )
+    assert "## Education" not in markdown
+    assert "## Projects" not in markdown
+    assert "## Skills" in markdown
+
+
+def test_header_facts_come_from_the_profile_not_the_model():
+    name, contact, role = svc.build_resume_header(PROFILE, JOB)
+    assert name == "Gal Lifshiz"
+    assert "gal@example.com" in contact
+    assert "Tel Aviv" in contact
+    assert role == "Backend Engineer"
+
+
+# --------------------------------------------------------------------------- #
+# Production tailoring flow
+# --------------------------------------------------------------------------- #
+
+
+def test_tailor_cv_for_job_uses_the_honest_engine(cv_env, engine):
+    cv_id = cv_env("cv_ai")
+    result = svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
+
+    assert engine["calls"] == 1
+    # The rubric recomputes the score server-side; the model's 62 is advisory.
+    assert result["score_after"] == 77
+    assert result["estimated_ats_score"] == 77
+    assert result["realistic_match_score"] == 77
+    assert result["recommendation"] == "APPLY_WITH_HONEST_FRAMING"
+    assert result["score_validation"]["model_reported_score"] == 62
+    assert result["score_validation"]["recomputed_composite_score"] == 77
+    assert result["score_validation"]["score_overridden"] is True
     assert result["from_cache"] is False
-    # Score is computed deterministically — not the LLM's estimated_ats_score (68).
-    assert isinstance(result["estimated_ats_score"], int)
-    assert result["estimated_ats_score"] == result.get("score_after")
+
+    # The document is assembled from the evaluation.
+    assert "## פירוט שינויים" in result["markdown"]
+    assert "## ציון התאמה למשרה" in result["markdown"]
+    assert "Solid Python and SQL overlap." in result["markdown"]
+    assert result["cv_markdown"].startswith("# Gal Lifshiz")
+    assert "Technical Support Engineer" in result["cv_markdown"]
+    assert any("Kubernetes" in caveat for caveat in result["caveats"])
     assert svc.tailored_cv_path(cv_id, 9).exists()
-    assert "Did not invent" in result["caveats"][0]
-    # Cache namespace should include prompt version.
-    assert "v7" in svc.TAILOR_PROMPT_VERSION
-    assert "ONE-PAGE" in svc.TAILOR_SYSTEM_PROMPT or "ONE PAGE" in svc.TAILOR_SYSTEM_PROMPT.upper()
-    assert "NEVER OMIT REAL EMPLOYMENT" in svc.TAILOR_SYSTEM_PROMPT
-    assert "SQLAlchemy" in svc.TAILOR_SYSTEM_PROMPT
+
+    feedback = result["matcher_feedback"]["current"]
+    assert feedback["match_score"] == 77
+    assert feedback["missing_keywords"] == ["Kubernetes"]
 
 
-def test_tailor_system_prompt_is_role_agnostic():
-    """Prompt must stay universal — no hardcoded roles/companies as the target path."""
-    prompt = svc.TAILOR_SYSTEM_PROMPT
-    assert "Target Role:" in prompt
-    assert "TRANSITION RULE" in prompt
-    assert "SEMANTIC SKILLS MATRIX" in prompt
-    assert "base_cv_data" in prompt
-    assert "job_description" in prompt
-    assert "NEVER OMIT REAL EMPLOYMENT" in prompt
-    assert "HIDE GHOST SECTIONS" in prompt
-    assert "ONE-PAGE DENSITY" in prompt
-    assert "CAREER-PIVOT SAFETY RAILS" in prompt
-    assert "Core Professional Domain" in prompt
-    assert "NEVER hallucinate fake job titles" in prompt
-    # GPT-4o human-grade writing contract.
-    assert "Senior Technical Recruiter" in prompt
-    assert "Principal Backend Engineer" in prompt
-    assert "XYZ" in prompt
-    assert "15–30" in prompt or "15-30" in prompt
-    assert "**bold**" in prompt or "Markdown **bold**" in prompt
-    assert "hardworking" in prompt  # listed as a banned cliché
-    assert "[rest of bullets here]" in prompt
-    assert "Backend & Frameworks" in prompt
-    assert "Concepts & Architecture" in prompt
-    assert 0.3 <= svc.TAILOR_TEMPERATURE <= 0.5
-    assert 0.3 <= svc.REGENERATE_TEMPERATURE <= 0.5
-    # Examples of specific career paths must not be baked in as the default narrative.
-    for banned in (
-        "Technical Support",
-        "Backend Developer",
-        "keep \"Technical Support\"",
-    ):
-        assert banned not in prompt
+def test_tailor_cv_for_job_serves_a_current_draft_without_calling_the_model(
+    cv_env, engine
+):
+    cv_id = cv_env("cv_cache")
+    first = svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
+    second = svc.tailor_cv_for_job(cv_id, JOB, force=False)
+
+    assert engine["calls"] == 1
+    assert second["from_cache"] is True
+    assert second["cv_markdown"].startswith("# Gal Lifshiz")
+    assert second["estimated_ats_score"] == first["score_after"]
 
 
-def test_build_tailor_user_prompt_labels_inputs():
-    user = svc.build_tailor_user_prompt(
-        base_cv_data="RAW CV TEXT HERE",
-        job_description="Title: React Frontend Developer\nDescription: React, TypeScript",
+def test_first_generate_reports_one_score_without_a_fake_improvement(cv_env, engine):
+    cv_id = cv_env("cv_single_score")
+    result = svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
+
+    # No prior honest evaluation exists, so there is no progression to claim.
+    assert result["score_before"] == result["score_after"]
+    assert result["initial_match_score"] == result["score_after"]
+    assert "שיפרנו" not in result["markdown"]
+    assert f"ציון ההתאמה למשרה: {result['score_after']}" in result["markdown"]
+
+
+def test_unsupported_skills_are_stripped_but_reworded_ones_survive(cv_env, engine):
+    cv_id = cv_env("cv_skills")
+    engine["response"] = _engine_response(
+        skills=["PostgreSQL", "Docker", "Salesforce Apex", "Kubernetes Operators"]
     )
-    assert "===== base_cv_data =====" in user
-    assert "===== job_description =====" in user
-    assert "RAW CV TEXT HERE" in user
-    assert "React Frontend Developer" in user
-    assert "Target Role:" in user
-    assert "XYZ" in user
-    assert "FORBIDDEN" in user
-    assert "Backend & Frameworks" in user
+    result = svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
+
+    resume = result["cv_markdown"]
+    assert "PostgreSQL" in resume  # profile says "Postgres"
+    assert "Docker" in resume
+    assert "Salesforce Apex" not in resume
+    assert "Kubernetes Operators" not in resume
+    dropped = result["score_validation"]["dropped_unsupported_skills"]
+    assert "Salesforce Apex" in dropped
 
 
-def test_tailor_requires_api_key(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
-    cv_id = "cv_no_key"
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    profile_dir = cvs_dir / cv_id
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "cv_profile.json").write_text(
-        json.dumps({"raw_text": "hello", "experience": {"job_titles": ["Support"]}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(svc, "is_ai_available", lambda: False)
+def test_tailor_requires_an_api_key(cv_env, monkeypatch: pytest.MonkeyPatch):
+    cv_id = cv_env("cv_no_key")
+    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: False)
     with pytest.raises(svc.TailorCvError) as exc:
-        svc.tailor_cv_for_job(
-            cv_id,
-            {"id": 1, "title": "Dev", "full_description": "x"},
-            force=True,
-        )
+        svc.tailor_cv_for_job(cv_id, JOB, force=True)
     assert exc.value.status_code == 503
 
 
-def test_format_matcher_feedback_lists_gaps():
-    text = svc.format_matcher_feedback(
-        {
-            "ats_score": 54,
-            "score_label": "Partial Match",
-            "missing_keywords": ["Docker", "Kubernetes"],
-            "missing_mandatory_requirements": ["3+ years experience"],
-            "cv_improvements": ["Add Docker to skills"],
-            "score_reasons": ["Required skills: 1/3 matched"],
-            "component_scores": {"required_skills": 33.0},
-            "profile_match_score": 48,
-        }
-    )
-    assert "54/100" in text
-    assert "Docker" in text
-    assert "Kubernetes" in text
-    assert "3+ years experience" in text
-    assert "original_source_cvs" in text
-    assert "latest_tailored_draft" in text
+def test_missing_profile_raises_404(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
+    with pytest.raises(svc.TailorCvError) as exc:
+        svc.tailor_cv_for_job("cv_unknown", JOB, force=True)
+    assert exc.value.status_code == 404
 
 
-def test_gather_original_source_cvs_includes_master_and_raw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_gather_original_source_cvs_includes_master_and_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setattr(config, "CVS_DIR", tmp_path / "cvs")
     (tmp_path / "cvs").mkdir(parents=True)
     profile = {
@@ -325,326 +394,93 @@ def test_gather_original_source_cvs_includes_master_and_raw(tmp_path: Path, monk
         "skills": {"programming_languages": ["Python"]},
         "experience": {"job_titles": ["Developer"]},
     }
-    text = svc.gather_original_source_cvs(
-        "cv_solo",
-        cv_profile=profile,
-    )
+    text = svc.gather_original_source_cvs("cv_solo", cv_profile=profile)
     assert "COMPILED MASTER PROFILE" in text
     assert "Expo" in text or "SQLAlchemy" in text
     assert "Docker" in text or "Compiled summary" in text
     assert "COMPILED STRUCTURED PROFILE" in text
 
 
-def test_evaluate_tailored_draft_detects_missing_skills(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
-    from job_analyzer import JobProfile
+def test_tailoring_sends_original_source_documents_to_the_engine(
+    cv_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Completeness needs full history, not just the parsed profile."""
+    cv_id = cv_env("cv_sources")
+    captured: dict[str, str] = {}
 
-    profile = {
-        "raw_text": "Gal\nTechnical Support\nPython SQL",
-        "experience": {
-            "job_titles": ["Technical Support"],
-            "years_of_experience_estimate": 2,
-            "seniority_level": "junior",
-        },
-        "skills": {"programming_languages": ["Python", "SQL"]},
-        "universal_profile": {
-            "canonical_skills": ["Python", "SQL"],
-            "seniority_level": "junior",
-            "years_of_experience": 2,
-        },
-    }
-    draft = "# Gal\n\n## Skills\nPython | SQL\n\n## Experience\n- Support work\n"
-    job = {"id": 1, "title": "Backend Engineer", "full_description": "Need Python Docker"}
-    job_profile = JobProfile(
-        title="Backend Engineer",
-        required_skills=["Python", "Docker", "Kubernetes"],
-        technologies=["Python", "Docker"],
-        seniority="junior",
-        years_experience_min=1,
-    )
-    feedback = svc.evaluate_tailored_draft(
-        cv_profile=profile,
-        draft_markdown=draft,
-        job=job,
-        job_profile=job_profile,
-    )
-    assert feedback["ats_score"] is not None
-    assert "Docker" in feedback["missing_required_skills"] or "Docker" in feedback["missing_keywords"]
-    assert "Python" in feedback["matched_required_skills"]
+    def _fake_openai(_system, user_prompt, **_kwargs):
+        captured["user"] = user_prompt
+        return _engine_response()
+
+    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
+    monkeypatch.setattr(match_tailor_service, "call_openai_json", _fake_openai)
+
+    svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
+    assert "ORIGINAL SOURCE DOCUMENTS" in captured["user"]
+    assert "Postgres" in captured["user"]
 
 
-def test_build_regenerate_user_prompt_includes_sections():
-    prompt = svc.build_regenerate_user_prompt(
-        original_source_cvs="RAW SOURCE + MASTER",
-        latest_tailored_draft="# Draft\nPython",
-        ats_feedback_gaps={
-            "ats_score": 40,
-            "score_label": "Weak Match",
-            "missing_keywords": ["Go"],
-            "cv_improvements": ["Add Go evidence"],
-        },
-        job_description="Title: Dev",
-    )
-    assert "===== ats_feedback_gaps =====" in prompt
-    assert "===== latest_tailored_draft =====" in prompt
-    assert "===== original_source_cvs =====" in prompt
-    assert "===== job_description =====" in prompt
-    assert "40/100" in prompt
-    assert "Go" in prompt
-    assert "dual-lookup" in prompt.lower() or "deep-scan" in prompt.lower() or "Deep-scan" in prompt
-    assert "RAW SOURCE + MASTER" in prompt
+# --------------------------------------------------------------------------- #
+# Regenerate ("improve match")
+# --------------------------------------------------------------------------- #
 
 
-def test_build_regenerate_user_prompt_accepts_legacy_aliases():
-    prompt = svc.build_regenerate_user_prompt(
-        base_cv_data="LEGACY_BASE",
-        job_description="Title: Dev",
-        previous_tailored_cv="# Draft\nPython",
-        matcher_feedback={
-            "ats_score": 40,
-            "score_label": "Weak Match",
-            "missing_keywords": ["Go"],
-        },
-        original_source_cvs="",
-        latest_tailored_draft="",
-        ats_feedback_gaps="",
-    )
-    assert "LEGACY_BASE" in prompt
-    assert "===== original_source_cvs =====" in prompt
-    assert "===== latest_tailored_draft =====" in prompt
-
-
-def test_regenerate_requires_previous_draft(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
-    cv_id = "cv_regen_missing"
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    profile_dir = cvs_dir / cv_id
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "cv_profile.json").write_text(
-        json.dumps({"raw_text": "hello", "experience": {"job_titles": ["Support"]}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
+def test_regenerate_requires_a_previous_draft(cv_env, engine):
+    cv_id = cv_env("cv_regen_missing")
     with pytest.raises(svc.TailorCvError) as exc:
-        svc.tailor_cv_for_job(
-            cv_id,
-            {"id": 3, "title": "Dev", "full_description": "x"},
-            regenerate=True,
-        )
+        svc.tailor_cv_for_job(cv_id, {**JOB, "id": 3}, regenerate=True)
     assert exc.value.status_code == 404
 
 
-def test_regenerate_sends_matcher_feedback(
-    cvs_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    cv_id = "cv_regen"
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    profile_dir = cvs_dir / cv_id
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "cv_profile.json").write_text(
-        json.dumps(
-            {
-                "raw_text": "Name\nTechnical Support\nPython SQL Docker basics",
-                "experience": {
-                    "job_titles": ["Technical Support"],
-                    "years_of_experience_estimate": 2,
-                    "seniority_level": "junior",
-                },
-                "skills": {
-                    "programming_languages": ["Python", "SQL"],
-                    "cloud_devops_tools": ["Docker"],
-                },
-                "universal_profile": {
-                    "canonical_skills": ["Python", "SQL", "Docker"],
-                    "technologies_tools": ["Docker"],
-                    "seniority_level": "junior",
-                    "years_of_experience": 2,
-                    "core_professional_domain": "Software Development",
-                    "preferred_role_titles": ["Backend Engineer", "Technical Support"],
-                    "domain_keywords": ["backend", "python", "sql"],
-                },
-                "core_professional_domain": "Software Development",
-            }
-        ),
-        encoding="utf-8",
-    )
-    weak_draft = """## פירוט שינויים
-- Draft 1
+def test_regenerate_keeps_the_better_scoring_draft(cv_env, engine):
+    cv_id = cv_env("cv_regen")
+    job = {**JOB, "id": 5}
+    first = svc.tailor_cv_for_job(cv_id, job, force=True, use_cache=False)
+    assert first["score_after"] == 77
 
-## ציון התאמה למשרה
-**ציון משוער: 45/100**
+    # A fresh pass that finds evidence for the partially-met requirement.
+    engine["response"] = _engine_response(hard_statuses=("MATCH", "MATCH"))
+    improved = svc.tailor_cv_for_job(cv_id, job, regenerate=True)
 
----
+    assert improved["regenerated"] is True
+    assert improved["improved"] is True
+    assert improved["no_improvement"] is False
+    assert improved["score_before"] == 77
+    assert improved["score_after"] == 100
+    assert "שיפרנו את ההתאמה למשרה מ־77 ל־100" in improved["markdown"]
+    assert improved["matcher_feedback"]["previous"]["match_score"] == 77
+    assert improved["matcher_feedback"]["current"]["match_score"] == 100
 
-## קורות החיים המעודכנים
 
-# Name
+def test_regenerate_discards_a_draft_that_does_not_score_better(cv_env, engine):
+    cv_id = cv_env("cv_regen_guard")
+    job = {**JOB, "id": 8}
+    first = svc.tailor_cv_for_job(cv_id, job, force=True, use_cache=False)
+    saved_before = svc.tailored_cv_path(cv_id, 8).read_text(encoding="utf-8")
 
-## Skills
-Python | SQL
-
-## Experience
-### Technical Support
-- Helped users with Windows
-"""
-    svc.save_tailored_cv(cv_id, 5, weak_draft)
-
-    captured: dict = {}
-
-    def _fake_openai(system_prompt, user_prompt, **kwargs):
-        captured["system"] = system_prompt
-        captured["user"] = user_prompt
-        return {
-            "markdown": "",
-            "changes_breakdown": ["Integrated Docker from matcher gaps"],
-            "estimated_ats_score": 72,
-            "cv_markdown": (
-                "# Name\n\n## Skills\nPython | SQL | Docker\n\n"
-                "## Experience\n### Technical Support\n"
-                "- Supported production apps with Docker containers and SQL\n"
-            ),
-            "highlights": ["Docker"],
-            "caveats": [],
-            "_from_cache": False,
-        }
-
-    monkeypatch.setattr(svc, "call_openai_json", _fake_openai)
-    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
-
-    job = {
-        "id": 5,
-        "title": "Backend Engineer",
-        "company": "Acme",
-        "full_description": "Python Docker SQL",
-        "job_profile": json.dumps(
-            {
-                "title": "Backend Engineer",
-                "professional_domain": "Software Development",
-                "required_skills": ["Python", "Docker", "SQL"],
-                "technologies": ["Python", "Docker", "SQL"],
-                "seniority": "junior",
-                "years_experience_min": 1,
-                "hard_constraints": [],
-            }
-        ),
-    }
+    engine["response"] = _engine_response(hard_statuses=("MISSING", "MISSING"))
     result = svc.tailor_cv_for_job(cv_id, job, regenerate=True)
-    assert result["regenerated"] is True
-    assert result["improved"] is True
-    assert result["no_improvement"] is False
-    assert result.get("message") is None
-    assert "deep-scan" in captured["system"].lower() or "original_source_cvs" in captured["system"]
-    assert "===== ats_feedback_gaps =====" in captured["user"]
-    assert "===== original_source_cvs =====" in captured["user"]
-    assert "===== latest_tailored_draft =====" in captured["user"]
-    assert "Docker" in captured["user"]
-    assert "Technical Support" in captured["user"] or "Python SQL Docker" in captured["user"]
-    assert result["matcher_feedback"]["previous"]["match_score"] is not None
-    assert result["matcher_feedback"]["current"]["match_score"] is not None
-    assert (
-        result["matcher_feedback"]["current"]["match_score"]
-        > result["matcher_feedback"]["previous"]["match_score"]
-    )
-    assert "Docker" in result["cv_markdown"]
-    assert svc.tailored_cv_path(cv_id, 5).exists()
-    # Deterministic score should be embedded in the returned markdown.
-    assert result["estimated_ats_score"] == result["matcher_feedback"]["current"]["match_score"]
 
-
-def test_regenerate_discards_when_score_not_improved(
-    cvs_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    cv_id = "cv_regen_guard"
-    monkeypatch.setattr(config, "CVS_DIR", cvs_dir)
-    profile_dir = cvs_dir / cv_id
-    profile_dir.mkdir(parents=True)
-    (profile_dir / "cv_profile.json").write_text(
-        json.dumps(
-            {
-                "raw_text": "Name\nTechnical Support\nPython SQL Docker",
-                "experience": {
-                    "job_titles": ["Technical Support"],
-                    "years_of_experience_estimate": 2,
-                    "seniority_level": "junior",
-                },
-                "skills": {
-                    "programming_languages": ["Python", "SQL"],
-                    "cloud_devops_tools": ["Docker"],
-                },
-                "universal_profile": {
-                    "canonical_skills": ["Python", "SQL", "Docker"],
-                    "technologies_tools": ["Docker"],
-                    "seniority_level": "junior",
-                    "years_of_experience": 2,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    strong_draft = """## פירוט שינויים
-- Strong draft with Python SQL Docker
-
-## ציון התאמה למשרה
-**ציון משוער: 80/100**
-
----
-
-## קורות החיים המעודכנים
-
-# Name
-
-## Skills
-Python | SQL | Docker
-
-## Experience
-### Technical Support
-- Production support with Python, SQL, and Docker
-"""
-    path = svc.save_tailored_cv(cv_id, 8, strong_draft)
-    original_text = path.read_text(encoding="utf-8")
-
-    def _fake_openai(*_args, **_kwargs):
-        # Deliberately weaker wording that omits Docker/SQL keywords.
-        return {
-            "markdown": "",
-            "changes_breakdown": ["Rewrote summary"],
-            "estimated_ats_score": 90,
-            "cv_markdown": (
-                "# Name\n\n## Skills\nCommunication\n\n"
-                "## Experience\n### Technical Support\n"
-                "- Helped users politely\n"
-            ),
-            "highlights": [],
-            "caveats": [],
-            "_from_cache": False,
-        }
-
-    monkeypatch.setattr(svc, "call_openai_json", _fake_openai)
-    monkeypatch.setattr(svc, "is_ai_available", lambda: True)
-
-    job = {
-        "id": 8,
-        "title": "Backend Engineer",
-        "company": "Acme",
-        "full_description": "Python Docker SQL",
-        "job_profile": json.dumps(
-            {
-                "title": "Backend Engineer",
-                "required_skills": ["Python", "Docker", "SQL"],
-                "technologies": ["Python", "Docker", "SQL"],
-                "seniority": "junior",
-                "years_experience_min": 1,
-            }
-        ),
-    }
-    result = svc.tailor_cv_for_job(cv_id, job, regenerate=True)
     assert result["no_improvement"] is True
     assert result["improved"] is False
     assert result["regenerated"] is False
     assert result["message"] == svc.NO_IMPROVEMENT_MESSAGE
-    assert "Docker" in result["cv_markdown"]
-    assert "Helped users politely" not in result["cv_markdown"]
-    assert path.read_text(encoding="utf-8") == original_text
-    assert result["matcher_feedback"]["discarded"]["match_score"] <= result[
-        "matcher_feedback"
-    ]["previous"]["match_score"]
+    assert result["score_after"] == first["score_after"]
+    assert svc.tailored_cv_path(cv_id, 8).read_text(encoding="utf-8") == saved_before
+    assert (
+        result["matcher_feedback"]["discarded"]["match_score"]
+        <= result["matcher_feedback"]["previous"]["match_score"]
+    )
+
+
+def test_no_second_tailoring_prompt_exists():
+    """Guard against a parallel tailoring path creeping back in."""
+    source = Path(svc.__file__).read_text(encoding="utf-8")
+    for banned in (
+        "SYSTEM_PROMPT",
+        "call_openai_json",
+        "resume_generator_prompt",
+        "ats_scorer",
+        "profile_matcher",
+    ):
+        assert banned not in source, f"{banned} must live in match_tailor_service only"
