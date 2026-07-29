@@ -145,6 +145,35 @@ Each job gets a `match_score` (0-100) that blends:
 
 If no CV is loaded, it falls back to profile-only scoring.
 
+### Honest match report (requirement-by-requirement)
+
+`match_tailor_service.py` adds a GPT-4o evaluation that explains a score instead
+of only producing one, and tailors the resume in the same pass:
+
+```
+POST /jobs/{job_id}/match-report                  # workspace (master profile)
+POST /cvs/{cv_id}/jobs/{job_id}/match-report      # a single uploaded CV
+```
+
+The model runs three strictly sequential phases (`match_tailor_prompt.py`):
+
+1. **Requirement extraction** — every JD requirement split into hard must-haves
+   and soft nice-to-haves, domain-agnostically.
+2. **Gap analysis & scoring** — each requirement marked `MATCH` / `PARTIAL` /
+   `MISSING`, then scored with a fixed rubric:
+   `(HARD_SCORE x 0.75) + (SOFT_SCORE x 0.25)`.
+3. **Tailored resume generation** — reordering, JD terminology and honest
+   transferable framing only; never a skill the resume cannot support.
+
+The backend does not trust the model's arithmetic. It re-computes both sub-scores
+from the per-requirement statuses and re-applies the **Hard Cap Rule**: one core
+hard requirement missing caps the score at 55, two or more cap it at 40. A
+candidate with zero Salesforce experience therefore cannot score 83% against a
+"Salesforce Developer (Apex, LWC)" role. Skills with no support anywhere in the
+source resume are stripped from the tailored CV, `recommendation` is clamped to
+what the score justifies, and every adjustment is reported under
+`score_validation` and written to the `match_tailor` log.
+
 ## 5. List saved jobs
 
 ```bash
