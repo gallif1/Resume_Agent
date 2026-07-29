@@ -174,6 +174,39 @@ source resume are stripped from the tailored CV, `recommendation` is clamped to
 what the score justifies, and every adjustment is reported under
 `score_validation` and written to the `match_tailor` log.
 
+Skill support is checked with normalized matching, not string equality: a resume
+that says "Postgres", "CICD" or "communicated with stakeholders" supports a
+tailored CV that says "PostgreSQL", "CI/CD" or "Stakeholder communication". Only
+skills with no trace at all in the candidate's source documents are stripped.
+
+### One tailoring pipeline
+
+The tailor endpoints the web app calls run the same engine — there is no second
+prompt or scoring path:
+
+```
+POST /jobs/{job_id}/tailor-cv                  # workspace (master profile)
+POST /cvs/{cv_id}/jobs/{job_id}/tailor-cv      # a single uploaded CV
+```
+
+`tailor_cv_service.py` loads the candidate's original uploads plus the compiled
+profile, calls `match_tailor_service.evaluate_candidate_for_job`, renders the
+returned `tailored_cv` JSON into resume Markdown (the header comes from the
+verified profile, so contact facts cannot be invented), saves it and records a
+score version. Two consequences worth knowing:
+
+- **The job list keeps its cheap score.** The scan scores every job without an
+  LLM call. Once a job is tailored, the evaluated score replaces the estimate on
+  that job's row (`match_method = 'match_tailor'`), so the list and the tailored
+  CV never show two different numbers. `initial_score` stays the frozen scan
+  baseline.
+- **Score progression is honest-score to honest-score.** The first evaluation
+  reports a single number; only a later re-run can show a change, and only when
+  a fresh pass finds evidence the previous draft missed.
+
+Saved drafts carry the pipeline version, so a draft written by an older pipeline
+is regenerated instead of replayed with its stale score.
+
 ## 5. List saved jobs
 
 ```bash
