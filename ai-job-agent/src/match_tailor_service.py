@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from ai_client import (
@@ -290,34 +291,128 @@ def _skill_atoms(entry: str) -> list[str]:
     return [atom for atom in atoms if len(atom) >= 2]
 
 
-def skill_supported_by_source(skill: str, source_text: str) -> bool:
-    """True when a skill (or a known synonym) appears in the source resume text."""
-    haystack = (source_text or "").lower()
-    if not skill or not haystack:
-        return False
-    candidates = {skill.strip().lower()}
+# Words that carry no evidence on their own, so they must not decide whether a
+# multi-word skill is supported ("Stakeholder communication" hinges on the two
+# real words, not on "and").
+_SKILL_STOPWORDS = frozenset(
+    {"and", "or", "of", "the", "with", "in", "for", "a", "an", "to", "on", "using"}
+)
+_SUFFIXES = ("ations", "ation", "ings", "ing", "ers", "er", "ies", "ed", "es", "s")
+# Shortest word stem allowed to match on a shared prefix alone.
+_PREFIX_MATCH_MIN = 6
+
+
+def _stem(word: str) -> str:
+    """Crude suffix stripper — applied to both sides, so it only needs to be consistent."""
+    for suffix in _SUFFIXES:
+        if len(word) > len(suffix) + 3 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _squash(text: str) -> str:
+    """Drop everything but letters/digits so "Node.js" matches "NodeJS"."""
+    return re.sub(r"[^a-z0-9\u0590-\u05FF]+", "", text.lower())
+
+
+@dataclass(frozen=True)
+class SourceEvidence:
+    """Pre-indexed source resume text used to verify claimed skills."""
+
+    text: str
+    squashed: str
+    stems: frozenset[str]
+
+    @classmethod
+    def build(cls, source_text: str) -> SourceEvidence:
+        lowered = (source_text or "").lower()
+        words = _TOKEN_RE.findall(lowered)
+        return cls(
+            text=lowered,
+            squashed=_squash(lowered),
+            stems=frozenset(_stem(w.strip(".")) for w in words if len(w) >= 2),
+        )
+
+    def __bool__(self) -> bool:
+        return bool(self.text)
+
+    def has_word(self, token: str) -> bool:
+        """True when the source contains this word in any inflected form.
+
+        Suffix stripping alone cannot bridge every pair ("communication" vs
+        "communicated"), so a long shared prefix also counts as the same word.
+        """
+        if token in self.stems:
+            return True
+        if len(token) < _PREFIX_MATCH_MIN:
+            return False
+        return any(
+            len(stem) >= _PREFIX_MATCH_MIN
+            and (stem.startswith(token) or token.startswith(stem))
+            for stem in self.stems
+        )
+
+
+def _alias_forms(skill: str) -> set[str]:
+    forms = {skill.strip().lower()}
     canonical = to_canonical(skill) or normalize_skill(skill)
     if canonical:
-        candidates.add(canonical.lower())
-        candidates.update(v.lower() for v in expand_synonyms(canonical) if v)
-    candidates.update(v.lower() for v in expand_synonyms(skill) if v)
-    for term in candidates:
-        cleaned = re.sub(r"\s+", " ", term).strip()
-        if len(cleaned) >= 2 and cleaned in haystack:
+        forms.add(canonical.lower())
+        forms.update(v.lower() for v in expand_synonyms(canonical) if v)
+    forms.update(v.lower() for v in expand_synonyms(skill) if v)
+    return {re.sub(r"\s+", " ", f).strip() for f in forms if len(f.strip()) >= 2}
+
+
+def _supported(skill: str, evidence: SourceEvidence) -> bool:
+    if not skill or not evidence:
+        return False
+
+    forms = _alias_forms(skill)
+    for form in forms:
+        if form in evidence.text:
             return True
-    return False
+    # Punctuation/spacing variants: "CI/CD" vs "CICD", "Node.js" vs "Node JS".
+    for form in forms:
+        squashed = _squash(form)
+        if len(squashed) >= 3 and squashed in evidence.squashed:
+            return True
+
+    # Word-level fallback: a multi-word skill counts as supported when every
+    # meaningful word appears somewhere in the source, in any order or form
+    # ("Stakeholder communication" <- "communicated with stakeholders").
+    tokens = [
+        _stem(token.strip("."))
+        for token in _TOKEN_RE.findall(skill.lower())
+        if len(token) >= 2 and token not in _SKILL_STOPWORDS
+    ]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return False
+    return all(evidence.has_word(token) for token in tokens)
+
+
+def skill_supported_by_source(skill: str, source_text: str) -> bool:
+    """True when a skill is evidenced in the source resume text.
+
+    Matching is normalized rather than literal: canonical synonyms ("Postgres" /
+    "PostgreSQL"), punctuation variants ("CI/CD" / "CICD") and word-order or
+    inflection differences all count as support. Only a skill with no trace at
+    all in the source is treated as unsupported.
+    """
+    return _supported(skill, SourceEvidence.build(source_text))
 
 
 def find_unsupported_skills(skills: list[str], source_text: str) -> list[str]:
     """Skill atoms claimed in the tailored CV with no support in the source resume."""
-    if not source_text:
+    evidence = SourceEvidence.build(source_text)
+    if not evidence:
         return []
     unsupported: list[str] = []
     for entry in skills:
         for atom in _skill_atoms(entry):
             if atom in unsupported:
                 continue
-            if not skill_supported_by_source(atom, source_text):
+            if not _supported(atom, evidence):
                 unsupported.append(atom)
     return unsupported
 
@@ -326,13 +421,14 @@ def _strip_unsupported_skills(
     skills: list[str], source_text: str
 ) -> tuple[list[str], list[str]]:
     """Drop skills entries whose every atom is unsupported by the source resume."""
-    if not source_text:
+    evidence = SourceEvidence.build(source_text)
+    if not evidence:
         return skills, []
     kept: list[str] = []
     dropped: list[str] = []
     for entry in skills:
         atoms = _skill_atoms(entry)
-        if atoms and not any(skill_supported_by_source(a, source_text) for a in atoms):
+        if atoms and not any(_supported(a, evidence) for a in atoms):
             dropped.append(entry)
             continue
         kept.append(entry)
@@ -543,8 +639,16 @@ def normalize_match_tailor_result(
 # --------------------------------------------------------------------------- #
 
 
-def build_candidate_payload(cv_profile: dict[str, Any]) -> str:
-    """Build the parsed-resume payload for `candidate_parsed_resume_json_or_text`."""
+def build_candidate_payload(
+    cv_profile: dict[str, Any], source_documents: str | None = None
+) -> str:
+    """Build the parsed-resume payload for `candidate_parsed_resume_json_or_text`.
+
+    ``source_documents`` carries the candidate's original uploaded CV text. It is
+    included so the completeness rules can mine skills that only ever appear in an
+    experience bullet, and so honest tailoring works from full history rather than
+    from whatever survived parsing.
+    """
     parts: list[str] = []
     raw = str(cv_profile.get("raw_text") or "").strip()
     if raw:
@@ -566,6 +670,11 @@ def build_candidate_payload(cv_profile: dict[str, Any]) -> str:
             parts.append(f"=== {key.upper()} ===")
             parts.append(json.dumps(value, ensure_ascii=False, indent=2)[:8000])
 
+    extra = (source_documents or "").strip()
+    if extra:
+        parts.append("=== ORIGINAL SOURCE DOCUMENTS ===")
+        parts.append(truncate_text(extra, OPENAI_CV_MAX_CHARS))
+
     return "\n\n".join(parts).strip()
 
 
@@ -582,9 +691,12 @@ def build_job_payload(job: dict[str, Any], job_profile: JobProfile | None = None
     return "\n\n".join(p for p in parts if p).strip()
 
 
-def source_resume_text(cv_profile: dict[str, Any]) -> str:
-    """Flatten a parsed profile into one blob for the anti-fabrication check."""
-    return json.dumps(cv_profile, ensure_ascii=False).lower()
+def source_resume_text(
+    cv_profile: dict[str, Any], source_documents: str | None = None
+) -> str:
+    """Flatten every source of truth into one blob for the anti-fabrication check."""
+    profile_blob = json.dumps(cv_profile, ensure_ascii=False)
+    return f"{profile_blob}\n{source_documents or ''}".lower()
 
 
 # --------------------------------------------------------------------------- #
@@ -618,6 +730,7 @@ def evaluate_candidate_for_job(
     cv_profile: dict[str, Any],
     job: dict[str, Any],
     use_cache: bool = True,
+    source_documents: str | None = None,
 ) -> dict[str, Any]:
     """Run the three-phase match + tailor evaluation for one candidate/job pair.
 
@@ -634,7 +747,7 @@ def evaluate_candidate_for_job(
     company = str(job.get("company") or "")
     job_profile = parse_stored_job_profile(job.get("job_profile"))
 
-    candidate_payload = build_candidate_payload(cv_profile)
+    candidate_payload = build_candidate_payload(cv_profile, source_documents)
     job_payload = build_job_payload(job, job_profile)
     user_prompt = build_match_tailor_user_prompt(
         candidate_resume=candidate_payload,
@@ -679,7 +792,7 @@ def evaluate_candidate_for_job(
     result = normalize_match_tailor_result(
         raw,
         job_title=job_title,
-        source_resume_text=source_resume_text(cv_profile),
+        source_resume_text=source_resume_text(cv_profile, source_documents),
     )
     result["from_cache"] = bool(raw.get("_from_cache"))
     _log_evaluation(job, result)
@@ -731,6 +844,8 @@ __all__ = [
     "find_unsupported_skills",
     "normalize_match_tailor_result",
     "normalize_status",
+    "skill_supported_by_source",
+    "source_resume_text",
     "unmet_core_requirements",
     "validate_schema_keys",
 ]

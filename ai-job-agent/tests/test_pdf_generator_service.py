@@ -82,6 +82,83 @@ Tools: Git, Linux
     assert "Git, Linux" in html_doc
 
 
+def test_bulleted_skills_section_is_not_dropped():
+    """Regression: a bulleted Skills list rendered as an empty section header."""
+    md = """# Name
+
+name@example.com
+
+## Skills
+
+- Python
+- PostgreSQL
+- CI/CD
+
+## Experience
+### Developer
+Acme | 2021 – 2024
+
+- Shipped a billing service.
+"""
+    parsed = pdf.parse_resume_markdown(md)
+    skills = next(s for s in parsed.sections if s.kind == "skills")
+    assert skills.entries == []
+    assert "Python" in skills.flat_skills
+    html_doc = pdf.markdown_to_resume_html(md)
+    for skill in ("Python", "PostgreSQL", "CI/CD"):
+        assert skill in html_doc
+
+
+def test_skills_section_uses_entry_headings_as_categories():
+    md = """# Name
+
+name@example.com
+
+## Skills
+
+### Languages
+- Python
+- SQL
+
+### Cloud
+- AWS
+"""
+    parsed = pdf.parse_resume_markdown(md)
+    skills = next(s for s in parsed.sections if s.kind == "skills")
+    assert ("Languages", "Python, SQL") in skills.skill_lines
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "Languages" in html_doc and "AWS" in html_doc
+
+
+def test_grouped_and_ungrouped_skills_both_render():
+    """Mixed shapes: the ungrouped row used to be discarded."""
+    md = """# Name
+
+name@example.com
+
+## Skills
+Languages: Python, SQL
+Docker, Linux, CI/CD
+"""
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "Python, SQL" in html_doc
+    for skill in ("Docker", "Linux", "CI/CD"):
+        assert skill in html_doc
+
+
+def test_slash_skills_are_not_split_into_fragments():
+    md = """# Name
+
+name@example.com
+
+## Skills
+Cloud & DevOps: Docker, CI/CD, TCP/IP
+"""
+    html_doc = pdf.markdown_to_resume_html(md)
+    assert "CI/CD" in html_doc
+    assert "TCP/IP" in html_doc
+
+
 def test_parse_puts_dates_in_meta_right():
     parsed = pdf.parse_resume_markdown(SAMPLE_CV)
     exp = next(s for s in parsed.sections if s.kind == "experience")

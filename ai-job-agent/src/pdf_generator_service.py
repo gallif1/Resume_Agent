@@ -92,6 +92,7 @@ CLOUD_CATEGORY_RE = re.compile(
     r"cloud|devops|infrastructure|ops\b",
     re.IGNORECASE,
 )
+SKILL_SPLIT_RE = re.compile(r"\s*[,•]\s*|\s+/\s+|\s*\|\s*")
 BULLET_RE = re.compile(r"^\s*[-*•]\s+(.+)$")
 MD_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
 MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
@@ -391,6 +392,38 @@ def _looks_like_skill_category_line(text: str) -> bool:
     return bool(left.strip()) and bool(right.strip()) and len(left.strip()) < 40
 
 
+def _add_skill_content(
+    section: ResumeSection, text: str, *, category: str = ""
+) -> None:
+    """Record one line of a Skills section, whatever shape it arrived in.
+
+    Skills reach us as "Category: a, b" rows, as bare comma lists, or as Markdown
+    bullets under an optional ``### Category`` heading. All three end up in
+    ``skill_lines`` / ``flat_skills``, which are the only fields the Skills
+    renderer reads — anything else would be dropped and leave an empty section.
+    """
+    cleaned = _strip_md_inline(text)
+    if not cleaned:
+        return
+
+    if _looks_like_skill_category_line(cleaned):
+        left, right = cleaned.split(":", 1)
+        section.skill_lines.append((left.strip().rstrip(":"), right.strip()))
+        return
+
+    if category:
+        for index, (existing, values) in enumerate(section.skill_lines):
+            if existing.lower() == category.lower():
+                section.skill_lines[index] = (existing, f"{values}, {cleaned}")
+                return
+        section.skill_lines.append((category, cleaned))
+        return
+
+    section.flat_skills = (
+        f"{section.flat_skills} · {cleaned}" if section.flat_skills else cleaned
+    )
+
+
 def parse_resume_markdown(markdown: str) -> ParsedResume:
     """Parse tailored CV markdown into a structured resume model."""
     resume = ParsedResume()
@@ -398,14 +431,16 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
 
     current_section: ResumeSection | None = None
     current_entry: ResumeEntry | None = None
+    skills_category = ""
     header_done = False
     sections_by_kind: dict[str, ResumeSection] = {}
 
     def ensure_section(title: str) -> ResumeSection:
         """Create or reuse a section so headings like SUMMARY are never duplicated."""
-        nonlocal current_section, current_entry, header_done
+        nonlocal current_section, current_entry, header_done, skills_category
         header_done = True
         current_entry = None
+        skills_category = ""
         kind = _section_kind(title)
         existing = sections_by_kind.get(kind)
         if existing is not None and kind != "other":
@@ -441,6 +476,10 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
                 if current_section is None:
                     ensure_section("Experience")
                 assert current_section is not None
+                if current_section.kind == "skills":
+                    # "### Databases" is a skills category, not a resume entry.
+                    skills_category = text
+                    continue
                 title, embedded_dates = _split_company_and_dates(text)
                 current_entry = ResumeEntry(
                     title=title or text,
@@ -479,6 +518,18 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
         assert current_section is not None
 
         bullet = BULLET_RE.match(raw_line)
+
+        # Skills content is collected before the generic bullet handling: a
+        # bulleted skills list would otherwise become entry bullets, which the
+        # Skills renderer ignores — the section rendered as a bare header.
+        if current_section.kind == "skills":
+            _add_skill_content(
+                current_section,
+                (bullet.group(1) if bullet else plain_for_title) or "",
+                category=skills_category,
+            )
+            continue
+
         if bullet:
             # Preserve **bold** markers so PDF/HTML can render <strong>.
             text = (bullet.group(1) or "").strip()
@@ -492,19 +543,6 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
         target = TARGET_ROLE_RE.match(plain)
         if target and not resume.target_role:
             resume.target_role = target.group(1).strip()
-            continue
-
-        if current_section.kind == "skills":
-            if _looks_like_skill_category_line(plain):
-                left, right = plain.split(":", 1)
-                current_section.skill_lines.append(
-                    (left.strip().rstrip(":"), right.strip())
-                )
-            else:
-                if current_section.flat_skills:
-                    current_section.flat_skills += " · " + plain
-                else:
-                    current_section.flat_skills = plain
             continue
 
         # Meta line under an entry title (company | dates).
@@ -586,7 +624,9 @@ def _rebalance_skill_lines(
             buckets[cat].append(skill)
 
     for category, values in skill_lines:
-        for raw in re.split(r"[,•|/]+", values):
+        # Bare "/" is part of skill names ("CI/CD", "TCP/IP"), so only a spaced
+        # slash counts as a separator.
+        for raw in SKILL_SPLIT_RE.split(values):
             skill = raw.strip()
             if not skill:
                 continue
@@ -693,15 +733,16 @@ def _render_section(section: ResumeSection) -> str:
 
     if section.kind == "skills":
         chunks.append('<div class="skills-container">')
-        if section.skill_lines:
-            for category, values in section.skill_lines:
-                chunks.append(
-                    '<div class="skills-line">'
-                    f'<span class="skills-category">{html.escape(category)}:</span> '
-                    f"{html.escape(values)}"
-                    "</div>"
-                )
-        elif section.flat_skills:
+        for category, values in section.skill_lines:
+            chunks.append(
+                '<div class="skills-line">'
+                f'<span class="skills-category">{html.escape(category)}:</span> '
+                f"{html.escape(values)}"
+                "</div>"
+            )
+        # Ungrouped skills render alongside grouped rows — a resume that mixes
+        # both shapes must not lose half of its skills.
+        if section.flat_skills:
             chunks.append(
                 f'<div class="skills-line">{html.escape(section.flat_skills)}</div>'
             )

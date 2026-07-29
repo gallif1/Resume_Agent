@@ -695,11 +695,17 @@ export default function CvDetails({
     trackSessionBest(result, { resetSession });
     setTailoredCv(result);
     setPreviewAnimKey((k) => k + 1);
+    // The evaluated score replaces the scan estimate on the card too, so the
+    // list and the tailored-CV view can never show two different numbers.
+    const evaluated = getTailoredScore(result);
     setMatches((prev) =>
       prev.map((m) =>
         m.job_id === result.job_id
           ? {
               ...m,
+              match_score: evaluated ?? m.match_score,
+              score_label:
+                result.matcher_feedback?.current?.score_label ?? m.score_label,
               has_tailored_cv: true,
               tailored_cv_updated_at:
                 result.generated_at ?? new Date().toISOString(),

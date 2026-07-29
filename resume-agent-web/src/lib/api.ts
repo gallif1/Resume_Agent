@@ -336,6 +336,34 @@ export interface TailoredCvResponse {
     current?: MatcherFeedbackSnapshot;
     discarded?: MatcherFeedbackSnapshot;
   } | null;
+  /** Requirement-level evaluation behind the score (additive, optional). */
+  realistic_match_score?: number | null;
+  requirement_extraction?: {
+    hard_requirements?: RequirementAssessment[];
+    soft_requirements?: RequirementAssessment[];
+  } | null;
+  key_matching_points?: string[];
+  missing_critical_skills?: string[];
+  transferable_skills_framing?: TransferableFraming[];
+  score_validation?: {
+    model_reported_score?: number | null;
+    recomputed_composite_score?: number | null;
+    score_overridden?: boolean;
+    cap?: number | null;
+    dropped_unsupported_skills?: string[];
+  } | null;
+  recommendation?: string | null;
+}
+
+export interface RequirementAssessment {
+  requirement: string;
+  candidate_status: "MATCH" | "PARTIAL" | "MISSING" | string;
+  evidence: string;
+}
+
+export interface TransferableFraming {
+  gap: string;
+  how_to_honestly_frame_existing_experience: string;
 }
 
 export interface CvScanStatus {

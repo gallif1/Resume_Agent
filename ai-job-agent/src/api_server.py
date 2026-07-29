@@ -85,7 +85,6 @@ from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
-from match_tailor_service import MatchTailorError, evaluate_candidate_for_job
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from scan_control import (
     begin_scan,
@@ -100,8 +99,8 @@ from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
 from tailor_cv_service import (
     TailorCvError,
+    evaluate_job_for_cv,
     extract_cv_markdown_for_copy,
-    load_cv_profile_for_job,
     load_saved_tailored_cv,
     tailor_cv_for_job,
 )
@@ -1549,6 +1548,53 @@ class TailorCvRequest(BaseModel):
     force: bool = False
 
 
+def _tailored_cv_response(
+    *,
+    cv_id: str,
+    job_id: int,
+    job: dict[str, Any],
+    result: dict[str, Any],
+    relative_path: str,
+) -> dict[str, Any]:
+    """Shape the tailored-CV payload for the web client.
+
+    The legacy fields are unchanged; the evaluation fields are additive so the UI
+    can show why a score is what it is.
+    """
+    return {
+        "cv_id": cv_id,
+        "job_id": job_id,
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "markdown": result["markdown"],
+        "cv_markdown": result.get("cv_markdown") or result["markdown"],
+        "changes_breakdown": result.get("changes_breakdown") or [],
+        "estimated_ats_score": result.get("estimated_ats_score"),
+        "initial_match_score": result.get("initial_match_score"),
+        "score_before": result.get("score_before"),
+        "score_after": result.get("score_after"),
+        "version_id": result.get("version_id"),
+        "highlights": result.get("highlights") or [],
+        "caveats": result.get("caveats") or [],
+        "from_cache": bool(result.get("from_cache")),
+        "saved_path": relative_path,
+        "generated_at": result.get("generated_at"),
+        "regenerated": bool(result.get("regenerated")),
+        "improved": bool(result.get("improved")),
+        "no_improvement": bool(result.get("no_improvement")),
+        "message": result.get("message"),
+        "matcher_feedback": result.get("matcher_feedback"),
+        # Honest evaluation behind the score (additive fields).
+        "realistic_match_score": result.get("realistic_match_score"),
+        "requirement_extraction": result.get("requirement_extraction"),
+        "key_matching_points": result.get("key_matching_points") or [],
+        "missing_critical_skills": result.get("missing_critical_skills") or [],
+        "transferable_skills_framing": result.get("transferable_skills_framing") or [],
+        "score_validation": result.get("score_validation"),
+        "recommendation": result.get("recommendation"),
+    }
+
+
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailor-cv")
 def tailor_cv_endpoint(
     cv_id: str,
@@ -1589,30 +1635,13 @@ def tailor_cv_endpoint(
             db_path=cv_db,
         )
 
-    return {
-        "cv_id": cv_id,
-        "job_id": job_id,
-        "title": job.get("title"),
-        "company": job.get("company"),
-        "markdown": result["markdown"],
-        "cv_markdown": result.get("cv_markdown") or result["markdown"],
-        "changes_breakdown": result.get("changes_breakdown") or [],
-        "estimated_ats_score": result.get("estimated_ats_score"),
-        "initial_match_score": result.get("initial_match_score"),
-        "score_before": result.get("score_before"),
-        "score_after": result.get("score_after"),
-        "version_id": result.get("version_id"),
-        "highlights": result.get("highlights") or [],
-        "caveats": result.get("caveats") or [],
-        "from_cache": bool(result.get("from_cache")),
-        "saved_path": relative_path,
-        "generated_at": result.get("generated_at"),
-        "regenerated": bool(result.get("regenerated")),
-        "improved": bool(result.get("improved")),
-        "no_improvement": bool(result.get("no_improvement")),
-        "message": result.get("message"),
-        "matcher_feedback": result.get("matcher_feedback"),
-    }
+    return _tailored_cv_response(
+        cv_id=cv_id,
+        job_id=job_id,
+        job=job,
+        result=result,
+        relative_path=relative_path,
+    )
 
 
 class MatchReportRequest(BaseModel):
@@ -1640,13 +1669,10 @@ def _build_match_report(
 ) -> dict[str, Any]:
     """Run the three-phase match evaluation, mapping engine errors to HTTP."""
     try:
-        cv_profile = load_cv_profile_for_job(cv_id, user_id=user_id)
-        report = evaluate_candidate_for_job(
-            cv_profile=cv_profile, job=job, use_cache=not force
+        report = evaluate_job_for_cv(
+            cv_id, job, user_id=user_id, use_cache=not force
         )
     except TailorCvError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    except MatchTailorError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return _match_report_response(cv_id=cv_id, job=job, report=report)
 
@@ -1805,33 +1831,17 @@ def tailor_workspace_job(
             db_path=workspace_db,
         )
 
-    cv_body = result.get("cv_markdown") or extract_cv_markdown_for_copy(
+    payload = _tailored_cv_response(
+        cv_id=profile_cv_id,
+        job_id=job_id,
+        job=job,
+        result=result,
+        relative_path=relative_path,
+    )
+    payload["cv_markdown"] = result.get("cv_markdown") or extract_cv_markdown_for_copy(
         result.get("markdown") or ""
     )
-    return {
-        "cv_id": profile_cv_id,
-        "job_id": job_id,
-        "title": job.get("title"),
-        "company": job.get("company"),
-        "markdown": result["markdown"],
-        "cv_markdown": cv_body,
-        "changes_breakdown": result.get("changes_breakdown") or [],
-        "estimated_ats_score": result.get("estimated_ats_score"),
-        "initial_match_score": result.get("initial_match_score"),
-        "score_before": result.get("score_before"),
-        "score_after": result.get("score_after"),
-        "version_id": result.get("version_id"),
-        "highlights": result.get("highlights") or [],
-        "caveats": result.get("caveats") or [],
-        "from_cache": bool(result.get("from_cache")),
-        "saved_path": relative_path,
-        "generated_at": result.get("generated_at"),
-        "regenerated": bool(result.get("regenerated")),
-        "improved": result.get("improved"),
-        "no_improvement": bool(result.get("no_improvement")),
-        "message": result.get("message"),
-        "matcher_feedback": result.get("matcher_feedback"),
-    }
+    return payload
 
 
 @app.post("/jobs/{job_id}/match-report")
