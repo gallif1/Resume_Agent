@@ -767,6 +767,13 @@ def _load_cv_profile_or_raise(cv_id: str, *, user_id: str | None = None) -> dict
     return cv_profile
 
 
+def load_cv_profile_for_job(
+    cv_id: str, *, user_id: str | None = None
+) -> dict[str, Any]:
+    """Public accessor for the parsed profile behind a tailor/match request."""
+    return _load_cv_profile_or_raise(cv_id, user_id=user_id)
+
+
 def _feedback_match_score(feedback: dict[str, Any] | None) -> int | None:
     if not feedback:
         return None
