@@ -3358,35 +3358,30 @@ def apply_honest_match_score(
     ``initial_score`` is left alone: it stays the frozen scan baseline.
     """
     now = _utc_now()
-    matched_json = json.dumps(matched_skills or [], ensure_ascii=False)
-    missing_json = json.dumps(missing_skills or [], ensure_ascii=False)
+    assignments = ["match_score = ?", "match_method = 'match_tailor'"]
+    params: list[Any] = [int(match_score)]
+    if score_label is not None:
+        assignments.append("ats_score_label = ?")
+        params.append(score_label)
+    if explanation is not None:
+        assignments.append("ai_explanation = ?")
+        params.append(explanation)
+    if matched_skills is not None:
+        matched_json = json.dumps(matched_skills, ensure_ascii=False)
+        assignments += ["matched_skills = ?", "ai_strengths = ?"]
+        params += [matched_json, matched_json]
+    if missing_skills is not None:
+        missing_json = json.dumps(missing_skills, ensure_ascii=False)
+        assignments += ["missing_skills = ?", "ai_missing_skills = ?"]
+        params += [missing_json, missing_json]
+    assignments.append("updated_at = ?")
+    params += [now, cv_id, job_id]
+
     with get_connection(db_path) as conn:
         cursor = conn.execute(
-            """
-            UPDATE cv_job_matches
-            SET match_score = ?,
-                match_method = 'match_tailor',
-                ats_score_label = ?,
-                ai_explanation = ?,
-                matched_skills = ?,
-                ai_strengths = ?,
-                missing_skills = ?,
-                ai_missing_skills = ?,
-                updated_at = ?
-            WHERE cv_id = ? AND job_id = ?
-            """,
-            (
-                int(match_score),
-                score_label,
-                explanation,
-                matched_json,
-                matched_json,
-                missing_json,
-                missing_json,
-                now,
-                cv_id,
-                job_id,
-            ),
+            f"UPDATE cv_job_matches SET {', '.join(assignments)} "
+            f"WHERE cv_id = ? AND job_id = ?",
+            tuple(params),
         )
         conn.commit()
         if cursor.rowcount == 0:

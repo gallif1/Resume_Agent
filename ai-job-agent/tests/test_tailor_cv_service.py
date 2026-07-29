@@ -338,6 +338,30 @@ def test_tailor_cv_for_job_serves_a_current_draft_without_calling_the_model(
     assert second["estimated_ats_score"] == first["score_after"]
 
 
+def test_replaying_a_saved_draft_keeps_changes_and_score_notes_apart(cv_env, engine):
+    """The score rationale must not migrate into the changes list on replay."""
+    cv_id = cv_env("cv_replay")
+    first = svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
+    saved = svc.load_saved_tailored_cv(cv_id, 9)
+    assert saved is not None
+
+    result = svc._enrich_cached_result_with_db_scores(
+        svc._result_from_saved_markdown(saved, saved_path="x.md"),
+        cv_id=cv_id,
+        job_id=9,
+        db_path=None,
+    )
+    # Without a DB the draft still describes its own score.
+    assert result["estimated_ats_score"] == first["score_after"]
+
+    changes, notes = svc._split_preamble_bullets(
+        svc.split_tailored_markdown(saved)[0]
+    )
+    assert any("נותחו" in change for change in changes)
+    assert all("Solid Python and SQL overlap." not in change for change in changes)
+    assert "Solid Python and SQL overlap." in notes
+
+
 def test_first_generate_reports_one_score_without_a_fake_improvement(cv_env, engine):
     cv_id = cv_env("cv_single_score")
     result = svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)

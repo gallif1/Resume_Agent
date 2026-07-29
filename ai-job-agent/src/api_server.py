@@ -85,7 +85,6 @@ from application_worker import enqueue_application, is_application_active
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
-from match_tailor_service import MatchTailorError, evaluate_candidate_for_job
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from scan_control import (
     begin_scan,
@@ -100,8 +99,8 @@ from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
 from tailor_cv_service import (
     TailorCvError,
+    evaluate_job_for_cv,
     extract_cv_markdown_for_copy,
-    load_cv_profile_for_job,
     load_saved_tailored_cv,
     tailor_cv_for_job,
 )
@@ -1670,13 +1669,10 @@ def _build_match_report(
 ) -> dict[str, Any]:
     """Run the three-phase match evaluation, mapping engine errors to HTTP."""
     try:
-        cv_profile = load_cv_profile_for_job(cv_id, user_id=user_id)
-        report = evaluate_candidate_for_job(
-            cv_profile=cv_profile, job=job, use_cache=not force
+        report = evaluate_job_for_cv(
+            cv_id, job, user_id=user_id, use_cache=not force
         )
     except TailorCvError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    except MatchTailorError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return _match_report_response(cv_id=cv_id, job=job, report=report)
 

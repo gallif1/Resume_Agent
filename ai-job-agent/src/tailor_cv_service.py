@@ -663,13 +663,6 @@ def _load_cv_profile_or_raise(cv_id: str, *, user_id: str | None = None) -> dict
     return cv_profile
 
 
-def load_cv_profile_for_job(
-    cv_id: str, *, user_id: str | None = None
-) -> dict[str, Any]:
-    """Public accessor for the parsed profile behind a tailor/match request."""
-    return _load_cv_profile_or_raise(cv_id, user_id=user_id)
-
-
 # --------------------------------------------------------------------------- #
 # Persistence
 # --------------------------------------------------------------------------- #
@@ -754,6 +747,21 @@ def _attach_score_metadata(
     return enriched
 
 
+def _split_preamble_bullets(preamble: str) -> tuple[list[str], list[str]]:
+    """Split a saved preamble back into (change bullets, score notes)."""
+    changes: list[str] = []
+    notes: list[str] = []
+    target = changes
+    for line in preamble.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            target = notes if "ציון" in stripped else changes
+            continue
+        if stripped.startswith("- "):
+            target.append(stripped[2:].strip())
+    return changes, notes
+
+
 def _enrich_cached_result_with_db_scores(
     result: dict[str, Any],
     *,
@@ -778,13 +786,9 @@ def _enrich_cached_result_with_db_scores(
             label=score_label_for(int(score_after)),
             score_before=_clamp_score(score_before),
         )
-        changes = list(result.get("changes_breakdown") or [])
-        if not changes:
-            preamble, _ = split_tailored_markdown(result.get("markdown") or "")
-            for line in preamble.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("- "):
-                    changes.append(stripped[2:].strip())
+        preamble, _ = split_tailored_markdown(result.get("markdown") or "")
+        saved_changes, score_notes = _split_preamble_bullets(preamble)
+        changes = list(result.get("changes_breakdown") or []) or saved_changes
         cv_markdown = result.get("cv_markdown") or extract_cv_markdown_for_copy(
             result.get("markdown") or ""
         )
@@ -795,7 +799,9 @@ def _enrich_cached_result_with_db_scores(
                 estimated_ats_score=int(score_after),
                 cv_markdown=cv_markdown,
                 score_line=score_line,
+                score_notes=score_notes,
             ).strip(),
+            "changes_breakdown": changes,
             "cv_markdown": cv_markdown,
             "estimated_ats_score": int(score_after),
         }
@@ -822,18 +828,22 @@ def _match_scope_id(cv_id: str, user_id: str | None) -> str:
     return workspace_scope_id(user_id or AGENT_USER_ID or DEFAULT_USER_ID)
 
 
-def _publish_match_score(
+def _publish_score(
     cv_id: str,
     job_id: int,
     *,
-    report: dict[str, Any],
+    score: int,
     db_path: Path | None,
+    report: dict[str, Any] | None = None,
 ) -> None:
-    """Replace the scan estimate on the job row with the honest score."""
+    """Replace the scan estimate on the job row with the evaluated score.
+
+    Called after every evaluation and also when a saved draft is replayed, so a
+    rescan cannot leave the job list quoting a different number than the CV.
+    """
     if db_path is None:
         return
-    scoring = report.get("scoring") or {}
-    score = report_match_score(report)
+    scoring = (report or {}).get("scoring") or {}
     try:
         apply_honest_match_score(
             cv_id,
@@ -841,8 +851,12 @@ def _publish_match_score(
             match_score=score,
             score_label=score_label_for(score),
             explanation=str(scoring.get("score_rationale") or "").strip() or None,
-            matched_skills=list(report.get("key_matching_points") or []),
-            missing_skills=list(report.get("missing_critical_skills") or []),
+            matched_skills=(
+                list(report.get("key_matching_points") or []) if report else None
+            ),
+            missing_skills=(
+                list(report.get("missing_critical_skills") or []) if report else None
+            ),
             db_path=db_path,
         )
     except Exception:  # noqa: BLE001 — never fail a successful tailor on bookkeeping
@@ -875,6 +889,28 @@ def _evaluate(
         )
     except MatchTailorError as exc:
         raise TailorCvError(exc.message, status_code=exc.status_code) from exc
+
+
+def evaluate_job_for_cv(
+    cv_id: str,
+    job: dict[str, Any],
+    *,
+    user_id: str | None = None,
+    use_cache: bool = True,
+) -> dict[str, Any]:
+    """Evaluate one job for one CV with exactly the inputs tailoring uses.
+
+    The match-report endpoints go through here so a report and a tailored CV can
+    never quote different scores for the same job.
+    """
+    cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)
+    return _evaluate(
+        cv_id,
+        job,
+        cv_profile=cv_profile,
+        user_id=user_id,
+        use_cache=use_cache,
+    )
 
 
 def _honest_version_scores(
@@ -1016,8 +1052,12 @@ def _regenerate_tailored_cv(
         path=path,
         db_path=db_path,
     )
-    _publish_match_score(
-        _match_scope_id(cv_id, user_id), job_id, report=report, db_path=db_path
+    _publish_score(
+        _match_scope_id(cv_id, user_id),
+        job_id,
+        score=new_score,
+        report=report,
+        db_path=db_path,
     )
 
     return _attach_score_metadata(
@@ -1069,12 +1109,22 @@ def tailor_cv_for_job(
     if not force and saved_draft_is_current(cv_id, job_id):
         cached = load_saved_tailored_cv(cv_id, job_id)
         if cached:
-            result = _result_from_saved_markdown(
-                cached, saved_path=str(tailored_cv_path(cv_id, job_id))
+            result = _enrich_cached_result_with_db_scores(
+                _result_from_saved_markdown(
+                    cached, saved_path=str(tailored_cv_path(cv_id, job_id))
+                ),
+                cv_id=cv_id,
+                job_id=job_id,
+                db_path=db_path,
             )
-            return _enrich_cached_result_with_db_scores(
-                result, cv_id=cv_id, job_id=job_id, db_path=db_path
-            )
+            if result.get("score_after") is not None:
+                _publish_score(
+                    _match_scope_id(cv_id, user_id),
+                    job_id,
+                    score=int(result["score_after"]),
+                    db_path=db_path,
+                )
+            return result
 
     cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)
     first_score, latest_score = _honest_version_scores(cv_id, job_id, db_path=db_path)
@@ -1106,8 +1156,12 @@ def tailor_cv_for_job(
         path=path,
         db_path=db_path,
     )
-    _publish_match_score(
-        _match_scope_id(cv_id, user_id), job_id, report=report, db_path=db_path
+    _publish_score(
+        _match_scope_id(cv_id, user_id),
+        job_id,
+        score=score,
+        report=report,
+        db_path=db_path,
     )
 
     feedback = matcher_feedback_from_report(report)

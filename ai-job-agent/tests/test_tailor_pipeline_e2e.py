@@ -336,6 +336,50 @@ def test_tailored_cv_renders_skills_into_the_downloaded_pdf(
     assert len(pdf_res.content) > 2000
 
 
+def test_reopening_a_tailored_job_realigns_a_rescanned_card_score(
+    workspace_env, monkeypatch: pytest.MonkeyPatch
+):
+    """A rescan re-estimates the card; reopening the draft restores agreement."""
+    user_db = workspace_env["user_db"]
+    _write_profile(workspace_env["user_id"])
+    job_id = _seed_job(
+        user_db, title="Backend Engineer", company="Acme", description="Python."
+    )
+    calls = _patch_engine(monkeypatch, _inflated_salesforce_response())
+
+    job = db.get_job_by_id(job_id, db_path=user_db)
+    first = tailor_cv_service.tailor_cv_for_job(
+        db.WORKSPACE_CV_ID,
+        job,
+        force=True,
+        use_cache=False,
+        user_id=workspace_env["user_id"],
+        db_path=user_db,
+    )
+    honest = first["score_after"]
+
+    db.upsert_cv_job_match(
+        db.WORKSPACE_CV_ID,
+        job_id,
+        {"match_score": 81, "match_reason": "rescan"},
+        db_path=user_db,
+    )
+    assert db.get_cv_job_match(db.WORKSPACE_CV_ID, job_id, db_path=user_db)[
+        "match_score"
+    ] == 81
+
+    replayed = tailor_cv_service.tailor_cv_for_job(
+        db.WORKSPACE_CV_ID,
+        job,
+        user_id=workspace_env["user_id"],
+        db_path=user_db,
+    )
+    assert calls["count"] == 1
+    assert replayed["score_after"] == honest
+    match = db.get_cv_job_match(db.WORKSPACE_CV_ID, job_id, db_path=user_db)
+    assert match["match_score"] == honest
+
+
 def test_stale_drafts_from_the_old_pipeline_are_regenerated(
     workspace_env, monkeypatch: pytest.MonkeyPatch
 ):
