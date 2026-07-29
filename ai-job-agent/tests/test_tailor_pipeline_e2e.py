@@ -7,7 +7,9 @@ regression that re-introduces a second, unfixed tailoring path fails here.
 
 from __future__ import annotations
 
+import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -334,6 +336,70 @@ def test_tailored_cv_renders_skills_into_the_downloaded_pdf(
     assert pdf_res.status_code == 200, pdf_res.text
     assert pdf_res.content.startswith(b"%PDF")
     assert len(pdf_res.content) > 2000
+
+
+def test_skills_survive_into_the_pdf_file_bytes(
+    workspace_env, monkeypatch: pytest.MonkeyPatch
+):
+    """API call -> PDF file: the Skills section of the printed page is not empty.
+
+    Asserting on HTML was not enough to catch the production regression, so this
+    reads the text back out of the generated PDF bytes and checks the skills sit
+    under the SKILLS heading rather than only inside experience bullets.
+    """
+    pypdf = pytest.importorskip("pypdf")
+
+    user_db = workspace_env["user_db"]
+    _write_profile(workspace_env["user_id"])
+    job_id = _seed_job(
+        user_db,
+        title="Backend Engineer",
+        company="Acme",
+        description="Python, PostgreSQL, AWS.",
+    )
+    _patch_engine(monkeypatch, _inflated_salesforce_response())
+
+    cv = cv_service.upload_cv("c.pdf", b"pdf-bytes", db_path=workspace_env["db_path"])
+    real_get_cv = db.get_cv
+    monkeypatch.setattr(
+        api_server.db,
+        "get_cv",
+        lambda cv_id, **kw: real_get_cv(cv_id, db_path=workspace_env["db_path"]),
+    )
+
+    from conftest import authed_client
+
+    with authed_client() as client:
+        assert (
+            client.post(
+                f"/jobs/{job_id}/tailor-cv",
+                params={"source_cv_id": cv["id"]},
+                json={"force": True},
+            ).status_code
+            == 200
+        )
+        pdf_res = client.get(
+            f"/cvs/{db.WORKSPACE_CV_ID}/jobs/{job_id}/tailored-cv/download-pdf"
+        )
+
+    if pdf_res.status_code == 503:  # Chromium not installed in this environment
+        pytest.skip("Playwright Chromium unavailable")
+    assert pdf_res.status_code == 200, pdf_res.text
+    assert pdf_res.content.startswith(b"%PDF")
+
+    reader = pypdf.PdfReader(io.BytesIO(pdf_res.content))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    flat = re.sub(r"\s+", " ", text)
+
+    heading = re.search(r"skills", flat, re.IGNORECASE)
+    assert heading is not None, f"no Skills heading in the PDF text: {flat[:400]}"
+    skills_region = flat[heading.end() :]
+    assert skills_region.strip(), "the Skills section of the PDF is empty"
+    for skill in ("Python", "SQL", "PostgreSQL", "Redis", "CI/CD"):
+        assert skill in skills_region, (
+            f"{skill} is missing from the PDF Skills section: {skills_region[:400]}"
+        )
+    assert "Salesforce Apex" not in flat
 
 
 def test_reopening_a_tailored_job_realigns_a_rescanned_card_score(

@@ -164,6 +164,8 @@ jobs:
 
           echo "Step R2: pull latest master"
           git pull origin master
+          BACKEND_REVISION="$(git rev-parse HEAD)"
+          echo "Backend revision to deploy: $BACKEND_REVISION"
 
           echo "Step R3: choose compose"
           # Always --no-build: a full image build on this small EC2 hangs sshd
@@ -209,16 +211,49 @@ jobs:
 
           inject_backend() {
             local cid="$1"
-            echo "Injecting backend hotfix files into $cid"
-            # Copy only the files needed for reset/delete fixes. Injecting the full
-            # src/ tree pulls in api_server.py imports (e.g. sse-starlette) that are
-            # not present in the long-lived Docker image and crash on restart.
-            tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz \
-              src/cv_service.py \
-              src/db.py
+            echo "Injecting backend source into $cid (revision $BACKEND_REVISION)"
+            # The whole src/ tree ships as one unit. A hand-picked file list used
+            # to be injected instead, which silently kept the container running
+            # months-old modules while the workflow still reported success.
+            # Missing imports are handled below (deps install + rollback) rather
+            # than by shipping less code.
+            printf '%s\n' "$BACKEND_REVISION" > ai-job-agent/src/BUILD_REVISION
+            tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz src requirements.txt
             sudo docker cp /tmp/ra-backend-src.tgz "$cid:/tmp/ra-backend-src.tgz"
+            # Snapshot the code that is currently serving so a broken injection
+            # can be undone in place, without waiting for an image recreate.
+            sudo docker exec "$cid" sh -c \
+              'rm -rf /tmp/ra-src-backup && cp -a /app/ai-job-agent/src /tmp/ra-src-backup'
             sudo docker exec "$cid" sh -c \
               'tar -C /app/ai-job-agent -xzf /tmp/ra-backend-src.tgz && rm -f /tmp/ra-backend-src.tgz && find /app/ai-job-agent/src -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
+          }
+
+          backend_imports_ok() {
+            local cid="$1"
+            timeout 60s sudo docker exec "$cid" python -c \
+              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); import api_server' \
+              >"$HOME/ra-import-check.log" 2>&1
+          }
+
+          install_backend_deps() {
+            local cid="$1"
+            echo "Installing backend requirements inside $cid"
+            timeout 420s sudo docker exec "$cid" pip install --no-input \
+              --disable-pip-version-check -q -r /app/ai-job-agent/requirements.txt \
+              >"$HOME/ra-pip-install.log" 2>&1
+          }
+
+          restore_backend() {
+            local cid="$1"
+            echo "Restoring the backend source that was serving before this deploy"
+            sudo docker exec "$cid" sh -c \
+              'test -d /tmp/ra-src-backup && rm -rf /app/ai-job-agent/src && cp -a /tmp/ra-src-backup /app/ai-job-agent/src' \
+              || echo "WARN: no backup to restore" >&2
+          }
+
+          live_backend_revision() {
+            sed -n 's/.*"backend_revision"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+              "$HOME/ra-health.json" 2>/dev/null | head -1 || true
           }
 
           inject_frontend() {
@@ -300,6 +335,27 @@ jobs:
           test -f /tmp/ra-frontend-dist.tgz
           echo "Target container: $CID"
           inject_backend "$CID"
+
+          echo "Step R7b: check the injected backend imports before restarting"
+          if ! backend_imports_ok "$CID"; then
+            echo "WARN: injected backend fails to import — installing requirements" >&2
+            tail -n 40 "$HOME/ra-import-check.log" || true
+            install_backend_deps "$CID" || echo "WARN: pip install failed/timed out" >&2
+            tail -n 30 "$HOME/ra-pip-install.log" 2>/dev/null || true
+            if ! backend_imports_ok "$CID"; then
+              echo "::error::Injected backend fails to import even after installing requirements." >&2
+              echo "Re-run this workflow with rebuild_image=true to rebuild the image from scratch." >&2
+              tail -n 60 "$HOME/ra-import-check.log" || true
+              restore_backend "$CID"
+              timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >/dev/null 2>&1 \
+                || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
+                || true
+              wait_for_health 30 || true
+              exit 1
+            fi
+          fi
+          echo "Injected backend imports cleanly"
+
           inject_frontend "$CID"
 
           echo "Restarting container to pick up backend + frontend updates"
@@ -332,6 +388,19 @@ jobs:
             sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
             exit 1
           fi
+
+          echo "Step R8b: verify the live backend is the revision we just shipped"
+          LIVE_REVISION="$(live_backend_revision)"
+          echo "shipped: $BACKEND_REVISION"
+          echo "live:    ${LIVE_REVISION:-(not reported)}"
+          if [ "${LIVE_REVISION:-}" != "$BACKEND_REVISION" ]; then
+            echo "::error::The container is not serving the deployed backend revision." >&2
+            echo "The site is up, but it is running older code — treat this deploy as failed." >&2
+            echo "Check that the injected path (/app/ai-job-agent/src) is the one the process imports." >&2
+            cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
+            exit 1
+          fi
+          echo "Live backend revision matches the deployed revision"
 
           echo "Step R8: status"
           sudo sh -c "$PS_CMD" </dev/null >"$HOME/ra-compose-ps.log" 2>&1 || true

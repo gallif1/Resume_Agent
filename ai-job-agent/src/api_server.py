@@ -82,6 +82,7 @@ import db
 import scan_stream
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
 from application_worker import enqueue_application, is_application_active
+from build_info import build_info
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
@@ -2165,6 +2166,7 @@ async def health():
         database_error = str(exc)[:200]
     return {
         "ok": True,
+        **build_info(),
         "pipeline_running": _pipeline_state["running"],
         "scan_running": _scan_state["running"],
         "playwright_ready": browser_ok,

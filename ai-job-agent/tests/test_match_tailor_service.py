@@ -239,6 +239,36 @@ def test_absent_skills_are_still_unsupported(skill: str):
     assert svc.skill_supported_by_source(skill, SOURCE_RESUME) is False
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (["- Python", "* FastAPI", "• AWS"], ["Python", "FastAPI", "AWS"]),
+        (
+            [
+                {"category": "Databases", "skills": ["PostgreSQL", "Redis"]},
+                {"category": "Languages", "skills": ["Python"]},
+            ],
+            ["Databases: PostgreSQL, Redis", "Languages: Python"],
+        ),
+        ([["Python", "SQL"], ["AWS"]], ["Python, SQL", "AWS"]),
+        ("Python, FastAPI", ["Python, FastAPI"]),
+    ],
+)
+def test_grouped_or_bulleted_skill_shapes_become_clean_rows(
+    raw: object, expected: list[str]
+):
+    """Schema drift must not put bullets or Python syntax on the resume.
+
+    The model is asked for flat strings, but it also returns bulleted strings and
+    ``{"category": ..., "skills": [...]}`` objects. Those are flattened into the
+    "Category: a, b" rows the resume renderer understands.
+    """
+    normalized, _dropped = svc._normalize_tailored_cv(
+        {"skills": raw}, source_text=SOURCE_RESUME
+    )
+    assert normalized["skills"] == expected
+
+
 def test_prompt_requires_complete_sections():
     from match_tailor_prompt import MATCH_TAILOR_SYSTEM_PROMPT
 

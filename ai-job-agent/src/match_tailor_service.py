@@ -126,6 +126,43 @@ def normalize_status(value: Any) -> str:
     return "MISSING"
 
 
+_BULLET_PREFIX_RE = re.compile(r"^\s*[-*•]\s+")
+
+
+def _flatten_item(item: Any) -> str:
+    """Coerce one list entry to display text, even when the model nests it.
+
+    GPT-4o sometimes returns skills as ``{"category": "Databases", "skills":
+    [...]}`` or as nested lists instead of the flat strings the schema asks for.
+    Rendering ``str(dict)`` would put Python syntax on the resume, so grouped
+    shapes are flattened into the ``"Category: a, b"`` row form the renderer
+    already understands.
+    """
+    if isinstance(item, dict):
+        label = next(
+            (
+                str(item[key]).strip()
+                for key in ("category", "group", "name", "label", "title")
+                if isinstance(item.get(key), str) and item.get(key, "").strip()
+            ),
+            "",
+        )
+        values: list[str] = []
+        for key, value in item.items():
+            if isinstance(value, str):
+                if value.strip() and value.strip() != label:
+                    values.append(value.strip())
+            elif isinstance(value, (list, tuple)):
+                values.extend(_flatten_item(entry) for entry in value)
+        body = ", ".join(v for v in values if v)
+        if label and body:
+            return f"{label}: {body}"
+        return body or label
+    if isinstance(item, (list, tuple)):
+        return ", ".join(text for text in (_flatten_item(entry) for entry in item) if text)
+    return _BULLET_PREFIX_RE.sub("", str(item)).strip()
+
+
 def _string_list(value: Any, *, max_items: int = 20) -> list[str]:
     if isinstance(value, str):
         value = [value]
@@ -133,7 +170,7 @@ def _string_list(value: Any, *, max_items: int = 20) -> list[str]:
         return []
     items: list[str] = []
     for item in value:
-        text = str(item).strip()
+        text = _flatten_item(item)
         if text and text not in items:
             items.append(text)
         if len(items) >= max_items:
