@@ -39,6 +39,9 @@ test-results/
 logs/
 *.log
 
+# Deploy stamp written into the container by .github/workflows/deploy.yml
+ai-job-agent/src/BUILD_REVISION
+
 # Runtime data (CVs, caches, DBs)
 ai-job-agent/data/cvs/
 ai-job-agent/data/ai_cache/
