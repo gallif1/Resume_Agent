@@ -214,6 +214,47 @@ def test_categorized_skill_row_survives_when_partly_supported():
     assert result["tailored_cv"]["skills"] == ["Languages: Python, Apex"]
 
 
+@pytest.mark.parametrize(
+    "skill, source",
+    [
+        ("PostgreSQL", "Stored data in Postgres for two years"),
+        ("Postgres", "Modelled schemas in PostgreSQL"),
+        ("CI/CD", "Set up CICD in GitHub Actions"),
+        ("Node.js", "Wrote a NodeJS worker"),
+        ("Stakeholder communication", "Communicated with stakeholders weekly"),
+        ("REST API design", "Designed REST APIs for internal clients"),
+        ("Kubernetes", "Deployed to kubernetes clusters"),
+    ],
+)
+def test_reworded_skills_count_as_supported(skill: str, source: str):
+    """Normalized matching, so a real skill is not stripped over its spelling."""
+    assert svc.skill_supported_by_source(skill, source) is True
+
+
+@pytest.mark.parametrize(
+    "skill",
+    ["Salesforce Apex", "Terraform", "Kubernetes Operators", "SAP HANA"],
+)
+def test_absent_skills_are_still_unsupported(skill: str):
+    assert svc.skill_supported_by_source(skill, SOURCE_RESUME) is False
+
+
+def test_prompt_requires_complete_sections():
+    from match_tailor_prompt import MATCH_TAILOR_SYSTEM_PROMPT
+
+    prompt = MATCH_TAILOR_SYSTEM_PROMPT
+    assert "COMPLETENESS REQUIREMENT" in prompt
+    assert "never contain empty or near-empty sections" in prompt
+    assert "appear only in Experience/Projects bullets" in prompt
+    assert "do not omit real skills" in prompt
+    assert "Worked on backend systems." in prompt
+    assert "do not fabricate content to fill it" in prompt
+    # The completeness block belongs to Phase 3, after the scoring phase.
+    assert prompt.index("COMPLETENESS REQUIREMENT") > prompt.index(
+        "PHASE 3 — TAILORED RESUME GENERATION"
+    )
+
+
 def test_unmet_core_requirements_ignores_covered_tokens():
     hard = [
         _requirement("Salesforce Apex development", "PARTIAL"),

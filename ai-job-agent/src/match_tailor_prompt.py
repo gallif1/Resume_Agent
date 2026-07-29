@@ -14,7 +14,7 @@ safety net.
 from __future__ import annotations
 
 # Bump when the prompt / JSON contract changes (invalidates the OpenAI cache).
-MATCH_TAILOR_PROMPT_VERSION = "v1"
+MATCH_TAILOR_PROMPT_VERSION = "v2"
 
 # Scoring must be as deterministic as possible; tailoring needs no creativity.
 MATCH_TAILOR_TEMPERATURE = 0.25
@@ -126,6 +126,27 @@ STRICTLY FORBIDDEN:
 
 If a critical skill is missing, do NOT hide the gap through vague language. Instead, the `missing_critical_skills` field in your output must name it plainly, and the tailored resume should lean into honest transferable framing rather than implied false equivalence.
 
+COMPLETENESS REQUIREMENT:
+The tailored_cv object must never contain empty or near-empty sections when the source
+resume contains relevant content. Specifically:
+- "skills": Must be populated with ALL genuinely relevant skills from the candidate's
+  source resume/profile — both those explicitly listed in a Skills section AND those
+  that appear only in Experience/Projects bullets (e.g., if "PostgreSQL" appears only
+  in a project bullet but never in a Skills list, extract it into skills anyway).
+  Prioritize and order them by relevance to the JD, but do not omit real skills just
+  because the source resume organized them poorly.
+- "experience" and "projects": Include every role/project from the source resume that
+  has ANY relevance to the target JD (direct or transferable) — do not drop entries just
+  because they aren't a perfect match. Only omit an entry if it is truly irrelevant to
+  any reasonable reading of the JD, and even then prefer shortening it over deleting it
+  entirely, unless the source resume is very long.
+- Every bullet point must be a complete, specific sentence with concrete detail
+  (technology, scale, outcome) — never a placeholder, a fragment, or a vague one-liner
+  like "Worked on backend systems."
+- If a section is legitimately empty in the source resume (e.g., no formal education),
+  return an empty array — do not fabricate content to fill it, but also do not empty a
+  section that has real source material.
+
 ================================================================================
 OUTPUT FORMAT
 ================================================================================
@@ -177,6 +198,8 @@ Rules for the JSON:
 - Every field must be present, even if an array is empty ([]).
 - Do not fabricate content for any field — if the source resume lacks education info, return an empty array, not invented data.
 - `recommendation` must align logically with `realistic_match_score` (e.g., a score below 40 cannot map to STRONG_APPLY).
+- Each `tailored_cv.skills` entry is either a single skill name ("PostgreSQL") or one grouped row using the form "Category: skill, skill, skill" ("Databases: PostgreSQL, Redis"). Grouped rows read better on the rendered resume — prefer them when you have enough skills to group, and keep every group non-empty.
+- `tailored_cv` carries no name, contact details or job title: the server fills the resume header from the candidate's verified profile so those facts can never be invented.
 """
 
 
