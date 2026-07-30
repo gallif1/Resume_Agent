@@ -33,9 +33,11 @@ from config import (
 )
 from job_analyzer import JobProfile, parse_stored_job_profile
 from match_tailor_prompt import (
+    CANONICAL_SKILL_CATEGORIES,
     CORE_GAP_SCORE_CAP,
     HARD_REQUIREMENT_WEIGHT,
     HARD_STATUS_WEIGHTS,
+    HONEST_TITLE_HARD_SCORE_THRESHOLD,
     JSON_RETRY_NOTE,
     MATCH_TAILOR_PROMPT_VERSION,
     MATCH_TAILOR_SYSTEM_PROMPT,
@@ -85,6 +87,71 @@ _GENERIC_TITLE_WORDS = frozenset(
 )
 
 _TOKEN_RE = re.compile(r"[a-z0-9#+.]+|[\u0590-\u05FF]+")
+
+# Alias spellings the model invents → exact canonical category label.
+_SKILL_CATEGORY_ALIASES: dict[str, str] = {
+    "language": "Languages",
+    "languages": "Languages",
+    "programming languages": "Languages",
+    "programming": "Languages",
+    "backend": "Backend & Frameworks",
+    "backend & frameworks": "Backend & Frameworks",
+    "backend frameworks": "Backend & Frameworks",
+    "frameworks": "Backend & Frameworks",
+    "frameworks & libraries": "Backend & Frameworks",
+    "libraries": "Backend & Frameworks",
+    "frontend": "Frontend",
+    "front end": "Frontend",
+    "front-end": "Frontend",
+    "ui": "Frontend",
+    "mobile": "Mobile",
+    "mobile development": "Mobile",
+    "databases": "Databases",
+    "database": "Databases",
+    "databases & caching": "Databases",
+    "data stores": "Databases",
+    "cloud": "Cloud & DevOps",
+    "devops": "Cloud & DevOps",
+    "cloud & devops": "Cloud & DevOps",
+    "cloud & devops tools": "Cloud & DevOps",
+    "cloud & tools": "Cloud & DevOps",
+    "cloud devops": "Cloud & DevOps",
+    "cloud/devops": "Cloud & DevOps",
+    "infrastructure": "Cloud & DevOps",
+    "ai & data": "AI & Data",
+    "ai": "AI & Data",
+    "data": "AI & Data",
+    "data & ai": "AI & Data",
+    "machine learning": "AI & Data",
+    "ml": "AI & Data",
+    "tools": "Tools & Version Control",
+    "tools & version control": "Tools & Version Control",
+    "version control": "Tools & Version Control",
+    "devtools": "Tools & Version Control",
+    "soft skills": "Soft Skills",
+    "soft": "Soft Skills",
+    "other": "Other",
+    "misc": "Other",
+    "miscellaneous": "Other",
+}
+
+# Generic phrases that do not count as a real gap-analysis reason.
+_GENERIC_GAP_REASONS = frozenset(
+    {
+        "missing",
+        "not on resume",
+        "not on the resume",
+        "absent",
+        "no evidence",
+        "not found",
+        "n/a",
+        "none",
+        "gap",
+        "lacking",
+        "does not have",
+        "candidate lacks",
+    }
+)
 
 
 class MatchTailorError(RuntimeError):
@@ -473,6 +540,272 @@ def _strip_unsupported_skills(
 
 
 # --------------------------------------------------------------------------- #
+# Fixed skill taxonomy
+# --------------------------------------------------------------------------- #
+
+
+def _category_lookup_key(label: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 &/+-]+", " ", label.lower())).strip()
+
+
+def canonicalize_skill_category(label: str) -> str:
+    """Map a free-form category label onto the fixed taxonomy.
+
+    Exact matches win first, then known aliases, then a light fuzzy contains
+    check against canonical names. Truly unmappable labels fall back to Other.
+    """
+    raw = (label or "").strip().rstrip(":")
+    if not raw:
+        return "Other"
+    if raw in CANONICAL_SKILL_CATEGORIES:
+        return raw
+
+    key = _category_lookup_key(raw)
+    if key in _SKILL_CATEGORY_ALIASES:
+        return _SKILL_CATEGORY_ALIASES[key]
+
+    # Fuzzy: canonical name contained in the invented label, or vice versa.
+    for canonical in CANONICAL_SKILL_CATEGORIES:
+        canon_key = _category_lookup_key(canonical)
+        if canon_key == key:
+            return canonical
+        if len(key) >= 4 and (key in canon_key or canon_key in key):
+            return canonical
+        # Token overlap for near-misses like "Cloud DevOps Tools" vs "Cloud & DevOps".
+        key_tokens = {t for t in re.split(r"[\s&/+-]+", key) if len(t) >= 3}
+        canon_tokens = {t for t in re.split(r"[\s&/+-]+", canon_key) if len(t) >= 3}
+        if key_tokens and canon_tokens and key_tokens <= canon_tokens | {"tools"}:
+            if key_tokens & canon_tokens:
+                return canonical
+
+    return "Other"
+
+
+def normalize_skill_category_rows(skills: list[str]) -> tuple[list[str], list[str]]:
+    """Rewrite grouped skill rows onto canonical category labels.
+
+    Returns ``(normalized_rows, rewritten_labels)`` where ``rewritten_labels``
+    lists original labels that were mapped away from their invented spelling.
+    Plain (ungrouped) skill names are left untouched.
+    """
+    normalized: list[str] = []
+    rewritten: list[str] = []
+    for entry in skills:
+        if ":" not in entry:
+            normalized.append(entry)
+            continue
+        label, body = entry.split(":", 1)
+        body = body.strip()
+        if not body:
+            normalized.append(entry)
+            continue
+        canonical = canonicalize_skill_category(label)
+        original = label.strip().rstrip(":")
+        if original != canonical:
+            rewritten.append(original)
+        normalized.append(f"{canonical}: {body}")
+    return normalized, rewritten
+
+
+# --------------------------------------------------------------------------- #
+# Title / summary overclaim guard
+# --------------------------------------------------------------------------- #
+
+
+def _role_claim_patterns(job_title: str) -> list[re.Pattern[str]]:
+    """Regexes that catch 'I am a <JD title>' style claims in title/summary text."""
+    title = re.sub(r"\s+", " ", (job_title or "").strip())
+    if len(title) < 3:
+        return []
+    escaped = re.escape(title)
+    # Also try without parenthetical specializations: "DevOps Engineer (AWS)" -> "DevOps Engineer"
+    bare = re.sub(r"\([^)]*\)", "", title).strip(" -–,/")
+    patterns = [
+        re.compile(rf"\b{escaped}\b", re.IGNORECASE),
+    ]
+    if bare and bare.lower() != title.lower() and len(bare) >= 3:
+        patterns.append(re.compile(rf"\b{re.escape(bare)}\b", re.IGNORECASE))
+
+    tokens = core_title_tokens(job_title)
+    # Specialization nouns alone ("devops", "salesforce") as a role claim opener.
+    for token in tokens:
+        if len(token) < 4:
+            continue
+        patterns.append(
+            re.compile(
+                rf"\b{re.escape(token)}\s+(engineer|developer|specialist|architect|"
+                rf"analyst|manager|consultant)\b",
+                re.IGNORECASE,
+            )
+        )
+    return patterns
+
+
+def text_overclaims_job_title(text: str, job_title: str) -> bool:
+    """True when ``text`` presents the candidate as already holding the JD role."""
+    haystack = (text or "").strip()
+    if not haystack or not (job_title or "").strip():
+        return False
+    return any(pattern.search(haystack) for pattern in _role_claim_patterns(job_title))
+
+
+def build_honest_professional_title(
+    job_title: str,
+    hard_requirements: list[dict[str, str]],
+) -> str:
+    """Fallback title when the model overclaims a role the hard score does not support."""
+    matched = [
+        r["requirement"]
+        for r in hard_requirements
+        if r.get("candidate_status") == "MATCH"
+    ]
+    partial = [
+        r["requirement"]
+        for r in hard_requirements
+        if r.get("candidate_status") == "PARTIAL"
+    ]
+    # Prefer a short matched skill noun for the honest framing.
+    highlight = ""
+    for candidate in matched + partial:
+        words = [
+            w for w in _TOKEN_RE.findall(candidate.lower())
+            if len(w) >= 3 and w not in _GENERIC_TITLE_WORDS
+        ]
+        if words:
+            highlight = " ".join(words[:3]).title()
+            break
+
+    core = core_title_tokens(job_title)
+    pursuing = " ".join(t.title() for t in core[:2]) if core else (job_title or "the role").strip()
+
+    if highlight:
+        return f"Software Engineer with {highlight} Experience"
+    if pursuing:
+        return f"Software Engineer pursuing {pursuing}"
+    return "Software Engineer"
+
+
+def enforce_honest_title_summary(
+    *,
+    professional_title: str,
+    summary: str,
+    job_title: str,
+    hard_score_pct: int | None,
+    hard_requirements: list[dict[str, str]],
+    threshold: int = HONEST_TITLE_HARD_SCORE_THRESHOLD,
+) -> tuple[str, str, list[str]]:
+    """Rewrite title/summary that overclaim the JD role when hard coverage is weak.
+
+    Returns ``(title, summary, flags)`` — ``flags`` lists what was corrected.
+    """
+    flags: list[str] = []
+    title = (professional_title or "").strip()
+    summary_text = (summary or "").strip()
+    score = 100 if hard_score_pct is None else int(hard_score_pct)
+
+    if score >= threshold:
+        return title, summary_text, flags
+
+    honest = build_honest_professional_title(job_title, hard_requirements)
+    if text_overclaims_job_title(title, job_title) or not title:
+        if title != honest:
+            flags.append("professional_title")
+        title = honest
+
+    if text_overclaims_job_title(summary_text, job_title):
+        flags.append("summary")
+        # Replace an overclaiming opening clause with the honest title framing.
+        sentences = re.split(r"(?<=[.!?])\s+", summary_text)
+        if sentences:
+            first = sentences[0]
+            if text_overclaims_job_title(first, job_title):
+                rest = " ".join(sentences[1:]).strip()
+                summary_text = (
+                    f"{honest}. {rest}".strip()
+                    if rest
+                    else f"{honest}."
+                )
+            else:
+                # Overclaim appears mid-summary — prepend honest framing and keep body.
+                summary_text = f"{honest}. {summary_text}"
+        else:
+            summary_text = f"{honest}."
+
+    return title, summary_text, flags
+
+
+# --------------------------------------------------------------------------- #
+# Gap-analysis list normalization
+# --------------------------------------------------------------------------- #
+
+
+def _is_generic_gap_reason(reason: str) -> bool:
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", (reason or "").lower())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return True
+    if cleaned in _GENERIC_GAP_REASONS:
+        return True
+    # Very short reasons without a profile-section cue are treated as generic.
+    if len(cleaned) < 20 and not any(
+        cue in cleaned
+        for cue in ("experience", "project", "education", "bullet", "resume", "profile")
+    ):
+        return True
+    return False
+
+
+def normalize_missing_critical_skills(value: Any) -> list[str]:
+    """Coerce missing_critical_skills to ``'skill — reason'`` display strings.
+
+    Accepts plain strings (legacy) and ``{{skill, reason}}`` objects. Generic
+    reasons are expanded with a profile-scoped default so downstream consumers
+    always see a concrete gap statement.
+    """
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+
+    out: list[str] = []
+    for entry in value[:20]:
+        skill = ""
+        reason = ""
+        if isinstance(entry, dict):
+            skill = str(
+                entry.get("skill") or entry.get("name") or entry.get("requirement") or ""
+            ).strip()
+            reason = str(entry.get("reason") or entry.get("evidence_or_gap") or "").strip()
+        else:
+            text = _flatten_item(entry)
+            if " — " in text:
+                skill, reason = text.split(" — ", 1)
+            elif " - " in text and len(text) > 40:
+                skill, reason = text.split(" - ", 1)
+            else:
+                skill, reason = text, ""
+            skill = skill.strip()
+            reason = reason.strip()
+
+        if not skill:
+            continue
+        if _is_generic_gap_reason(reason):
+            reason = (
+                "no supporting evidence found across Experience, Projects, "
+                "or Education in the full candidate profile"
+            )
+        formatted = f"{skill} — {reason}"
+        if formatted not in out:
+            out.append(formatted)
+    return out
+
+
+def normalize_key_matching_points(value: Any) -> list[str]:
+    """Keep key matching points as strings; drop empties."""
+    return _string_list(value, max_items=20)
+
+
+# --------------------------------------------------------------------------- #
 # Schema validation / normalization
 # --------------------------------------------------------------------------- #
 
@@ -495,7 +828,9 @@ def validate_schema_keys(payload: Any) -> None:
         raise MatchTailorSchemaError("tailored_cv must be an object")
 
 
-def _normalize_tailored_cv(value: Any, *, source_text: str) -> tuple[dict[str, Any], list[str]]:
+def _normalize_tailored_cv(
+    value: Any, *, source_text: str
+) -> tuple[dict[str, Any], list[str], list[str]]:
     raw = value if isinstance(value, dict) else {}
 
     experience: list[dict[str, Any]] = []
@@ -538,9 +873,15 @@ def _normalize_tailored_cv(value: Any, *, source_text: str) -> tuple[dict[str, A
     skills, dropped = _strip_unsupported_skills(
         _string_list(raw.get("skills"), max_items=40), source_text
     )
+    skills, rewritten_categories = normalize_skill_category_rows(skills)
+
+    professional_title = str(
+        raw.get("professional_title") or raw.get("title") or ""
+    ).strip()
 
     return (
         {
+            "professional_title": professional_title,
             "summary": str(raw.get("summary") or "").strip(),
             "skills": skills,
             "experience": experience,
@@ -548,6 +889,7 @@ def _normalize_tailored_cv(value: Any, *, source_text: str) -> tuple[dict[str, A
             "education": education,
         },
         dropped,
+        rewritten_categories,
     )
 
 
@@ -616,17 +958,22 @@ def normalize_match_tailor_result(
 
     recommendation = align_recommendation(raw.get("recommendation"), final_score)
 
-    missing_critical = _string_list(raw.get("missing_critical_skills"))
+    missing_critical = normalize_missing_critical_skills(
+        raw.get("missing_critical_skills")
+    )
     for item in unmet_core:
         for requirement in item["requirements"]:
             if not any(
                 requirement.lower() in existing.lower()
-                or existing.lower() in requirement.lower()
+                or existing.lower().split(" — ", 1)[0] in requirement.lower()
                 for existing in missing_critical
             ):
-                missing_critical.append(requirement)
+                missing_critical.append(
+                    f"{requirement} — no supporting evidence found across "
+                    "Experience, Projects, or Education in the full candidate profile"
+                )
 
-    key_points = _string_list(raw.get("key_matching_points"))
+    key_points = normalize_key_matching_points(raw.get("key_matching_points"))
     if not key_points:
         key_points = [
             r["requirement"]
@@ -634,9 +981,20 @@ def normalize_match_tailor_result(
             if r["candidate_status"] == "MATCH"
         ][:8]
 
-    tailored_cv, dropped_skills = _normalize_tailored_cv(
+    tailored_cv, dropped_skills, rewritten_categories = _normalize_tailored_cv(
         raw.get("tailored_cv"), source_text=source_resume_text
     )
+
+    hard_score_pct = rubric["hard_score_pct"]
+    title, summary, overclaim_flags = enforce_honest_title_summary(
+        professional_title=tailored_cv.get("professional_title") or "",
+        summary=tailored_cv.get("summary") or "",
+        job_title=job_title,
+        hard_score_pct=hard_score_pct,
+        hard_requirements=hard,
+    )
+    tailored_cv["professional_title"] = title
+    tailored_cv["summary"] = summary
 
     return {
         "requirement_extraction": {
@@ -644,7 +1002,7 @@ def normalize_match_tailor_result(
             "soft_requirements": soft,
         },
         "scoring": {
-            "hard_score_pct": rubric["hard_score_pct"] or 0,
+            "hard_score_pct": hard_score_pct or 0,
             "soft_score_pct": rubric["soft_score_pct"] or 0,
             "hard_cap_applied": cap is not None,
             "realistic_match_score": final_score,
@@ -667,8 +1025,68 @@ def normalize_match_tailor_result(
             "hard_requirement_count": rubric["hard_requirement_count"],
             "soft_requirement_count": rubric["soft_requirement_count"],
             "dropped_unsupported_skills": dropped_skills,
+            "rewritten_skill_categories": rewritten_categories,
+            "overclaim_corrections": overclaim_flags,
         },
     }
+
+
+def experience_bullet_fingerprint(tailored_cv: dict[str, Any]) -> list[tuple[str, int, str]]:
+    """Compact signature of Experience bullet order and depth for differentiation checks.
+
+    Each tuple is ``(role_title, bullet_length, first_40_chars_lower)`` so two
+    tailored resumes can be compared for substantive (not cosmetic) differences.
+    """
+    fingerprint: list[tuple[str, int, str]] = []
+    for entry in tailored_cv.get("experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        role = str(entry.get("title") or entry.get("company") or "").strip().lower()
+        for bullet in entry.get("bullets") or []:
+            text = str(bullet or "").strip()
+            if not text:
+                continue
+            fingerprint.append((role, len(text), text[:40].lower()))
+    return fingerprint
+
+
+def bullets_differ_substantively(
+    cv_a: dict[str, Any], cv_b: dict[str, Any], *, min_order_or_depth_deltas: int = 2
+) -> bool:
+    """True when two tailored CVs differ in bullet order and/or depth, not just wording.
+
+    Counts positions where the same role has a different first-bullet prefix or a
+    length delta of at least 40 characters — the bar for "substantive" per-JD shift.
+    """
+    fp_a = experience_bullet_fingerprint(cv_a)
+    fp_b = experience_bullet_fingerprint(cv_b)
+    if not fp_a or not fp_b:
+        return fp_a != fp_b
+
+    deltas = 0
+    # Compare by role: first-bullet identity and per-position length.
+    roles_a: dict[str, list[tuple[int, str]]] = {}
+    roles_b: dict[str, list[tuple[int, str]]] = {}
+    for role, length, prefix in fp_a:
+        roles_a.setdefault(role, []).append((length, prefix))
+    for role, length, prefix in fp_b:
+        roles_b.setdefault(role, []).append((length, prefix))
+
+    for role in set(roles_a) | set(roles_b):
+        bullets_a = roles_a.get(role) or []
+        bullets_b = roles_b.get(role) or []
+        if not bullets_a or not bullets_b:
+            deltas += 1
+            continue
+        if bullets_a[0][1] != bullets_b[0][1]:
+            deltas += 1  # different lead bullet
+        for (len_a, _), (len_b, _) in zip(bullets_a, bullets_b):
+            if abs(len_a - len_b) >= 40:
+                deltas += 1
+        # Extra / missing bullets also count as ordering/depth shifts.
+        deltas += abs(len(bullets_a) - len(bullets_b))
+
+    return deltas >= min_order_or_depth_deltas
 
 
 # --------------------------------------------------------------------------- #
@@ -865,6 +1283,18 @@ def _log_evaluation(job: dict[str, Any], result: dict[str, Any]) -> None:
             job.get("id"),
             ", ".join(validation["dropped_unsupported_skills"]),
         )
+    if validation.get("rewritten_skill_categories"):
+        logger.info(
+            "match_tailor job=%s normalized skill categories: %s",
+            job.get("id"),
+            ", ".join(validation["rewritten_skill_categories"]),
+        )
+    if validation.get("overclaim_corrections"):
+        logger.warning(
+            "match_tailor job=%s corrected overclaiming title/summary fields: %s",
+            job.get("id"),
+            ", ".join(validation["overclaim_corrections"]),
+        )
 
 
 __all__ = [
@@ -873,16 +1303,25 @@ __all__ = [
     "VALID_RECOMMENDATIONS",
     "align_recommendation",
     "build_candidate_payload",
+    "build_honest_professional_title",
     "build_job_payload",
+    "canonicalize_skill_category",
     "cap_for_unmet_core_count",
     "compute_rubric_scores",
     "core_title_tokens",
+    "enforce_honest_title_summary",
     "evaluate_candidate_for_job",
+    "experience_bullet_fingerprint",
+    "bullets_differ_substantively",
     "find_unsupported_skills",
+    "normalize_key_matching_points",
     "normalize_match_tailor_result",
+    "normalize_missing_critical_skills",
+    "normalize_skill_category_rows",
     "normalize_status",
     "skill_supported_by_source",
     "source_resume_text",
+    "text_overclaims_job_title",
     "unmet_core_requirements",
     "validate_schema_keys",
 ]
