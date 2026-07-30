@@ -162,6 +162,47 @@ If everything is supported, return {"validation_warnings": []}.
 Output JSON only.
 """
 
+DEEP_TAILOR_REWRITE_SYSTEM = """You are a Principal Recruiter performing DEEP, job-family-specific resume tailoring.
+You receive a pre-reordered resume structure, a tailoring strategy, relevance scores, ranked requirements, and evidence.
+
+Your job is NOT light editing. Each job family must read like a different intentional resume:
+- Backend: emphasize APIs, databases, business logic, SQL, architecture
+- Frontend: emphasize React/Angular/UI, responsive interfaces, client-side work
+- DevOps: emphasize AWS, CI/CD, deployment, monitoring, infrastructure BEFORE CRUD details
+- QA: emphasize debugging, testing, validation, bug reproduction, documentation
+- Support: emphasize troubleshooting, customer issues, root cause analysis, collaboration
+
+CRITICAL RULES:
+1. NEVER invent employers, projects, technologies, dates, metrics, certifications, or responsibilities.
+2. ONLY rephrase/reorganize existing facts. Strongly Inferred items need evidence in change_log.
+3. The professional_summary MUST be written fresh for THIS job family — never reuse a generic summary.
+4. Preserve the pre-reordered skills list and project order unless a bullet rewrite is needed.
+5. Rewrite experience and project bullets to highlight what matters for THIS job family.
+6. Demote or condense bullets about skills_to_deprioritize from the strategy.
+7. Insert keywords_to_insert only when they accurately describe existing experience.
+8. Do NOT use keywords_to_avoid as primary emphasis.
+9. Preserve the requested output language — do not translate.
+
+Return STRICT JSON only:
+{
+  "tailored_resume": {
+    "professional_title": "string",
+    "professional_summary": "string — MUST differ by job family",
+    "skills": ["keep provided order unless condensing"],
+    "experience": [{"company": "", "title": "", "dates": "", "bullets": []}],
+    "projects": [{"name": "", "description": "", "bullets": []}],
+    "education": [],
+    "certifications": []
+  },
+  "change_log": [...],
+  "matched_requirements": [],
+  "missing_requirements": [],
+  "removed_or_deprioritized_content": [],
+  "ats_keywords_added": []
+}
+Output JSON only.
+"""
+
 
 def build_job_requirement_user_prompt(*, job_title: str, company: str, jd_text: str) -> str:
     return (
@@ -217,6 +258,49 @@ def build_resume_generation_user_prompt(
     return (
         f"Output language for the tailored resume: {language}\n"
         "Generate the tailored resume and change_log.\n\n"
+        "=== ORIGINAL RESUME FACTS ===\n"
+        f"{resume_facts}\n\n"
+        "=== RANKED JOB REQUIREMENTS ===\n"
+        f"{ranked_requirements_json}\n\n"
+        "=== STRONGLY INFERRED COMPETENCIES ===\n"
+        f"{inferred_json}\n\n"
+        "=== TRIAGE ===\n"
+        f"{triage_json}\n\n"
+        "=== EVIDENCE MAP ===\n"
+        f"{evidence_map_json}\n"
+    )
+
+
+def build_deep_tailor_rewrite_user_prompt(
+    *,
+    resume_facts: str,
+    rebuilt_resume_json: str,
+    strategy_json: str,
+    scores_json: str,
+    ranked_requirements_json: str,
+    inferred_json: str,
+    triage_json: str,
+    evidence_map_json: str,
+    language: str,
+    regeneration_attempt: int = 0,
+) -> str:
+    regen_note = ""
+    if regeneration_attempt > 0:
+        regen_note = (
+            "\n\nREGENERATION REQUIRED: Previous output was too similar to the original resume. "
+            "Write a MORE DISTINCT summary and rewrite MORE bullets with stronger job-family emphasis. "
+            "Do not change facts — change emphasis and wording more aggressively.\n"
+        )
+    return (
+        f"Output language: {language}\n"
+        f"Job family tailoring — attempt {regeneration_attempt + 1}\n"
+        f"{regen_note}\n"
+        "=== TAILORING STRATEGY (follow this) ===\n"
+        f"{strategy_json}\n\n"
+        "=== RELEVANCE SCORES (higher = emphasize more) ===\n"
+        f"{scores_json}\n\n"
+        "=== PRE-REORDERED RESUME STRUCTURE ===\n"
+        f"{rebuilt_resume_json}\n\n"
         "=== ORIGINAL RESUME FACTS ===\n"
         f"{resume_facts}\n\n"
         "=== RANKED JOB REQUIREMENTS ===\n"
