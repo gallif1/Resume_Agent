@@ -50,7 +50,20 @@ from intelligent_tailoring.stages.job_requirement_extraction import (
 from intelligent_tailoring.stages.normalization import normalize_terms
 from intelligent_tailoring.stages.requirement_ranking import rank_requirements
 from intelligent_tailoring.stages.resume_extraction import extract_structured_resume
-from intelligent_tailoring.stages.resume_generation import generate_tailored_resume
+from intelligent_tailoring.services.job_analyzer import analyze_job
+from intelligent_tailoring.services.resume_analyzer import (
+    analyze_resume,
+    resume_facts_to_baseline_resume,
+)
+from intelligent_tailoring.services.resume_rebuilder import rebuild_resume_structure
+from intelligent_tailoring.services.resume_rewriter import rewrite_resume_with_strategy
+from intelligent_tailoring.services.resume_scorer import score_resume_content
+from intelligent_tailoring.services.resume_validator import (
+    should_regenerate,
+    validate_tailoring_depth,
+)
+from intelligent_tailoring.services.tailoring_reporter import build_tailoring_report
+from intelligent_tailoring.services.tailoring_strategy_builder import build_tailoring_strategy
 from intelligent_tailoring.stages.semantic_inference import run_semantic_inference
 from match_tailor_service import (
     MatchTailorError,
@@ -104,6 +117,7 @@ def run_intelligent_tailoring(
 
     # --- Stage 1: resume extraction ---
     resume_facts = extract_structured_resume(cv_profile, source_documents)
+    display_skills = list(resume_facts.get("skills") or [])
     if resume_facts.get("sparse"):
         raise IntelligentTailorError(
             "Resume text is too short or sparse to extract meaningful structured data",
@@ -162,7 +176,11 @@ def run_intelligent_tailoring(
         # --- Stage 3: normalization ---
         normalized = normalize_terms(requirements, resume_facts, ontology=ontology)
         requirements = normalized["requirements"]
-        resume_facts = {**resume_facts, "skills": normalized["resume_skills"]}
+        resume_facts = {
+            **resume_facts,
+            "skills": normalized["resume_skills"],
+            "display_skills": display_skills,
+        }
 
         # --- Stage 4: semantic inference ---
         inferred = run_semantic_inference(
@@ -198,16 +216,63 @@ def run_intelligent_tailoring(
             use_cache=use_cache,
         )
 
-        # --- Stage 8: resume generation ---
-        generated = generate_tailored_resume(
-            resume_facts=resume_facts,
-            ranked_requirements=ranked,
-            inferred=inferred,
-            triage=triage,
-            evidence_map=evidence_map,
-            language=output_language,
+        # --- Deep tailoring: strategy → score → rebuild → rewrite → validate ---
+        job_analysis = analyze_job(
+            job,
             use_cache=use_cache,
+            jd_snapshot=jd_snapshot,
+            requirements=requirements,
         )
+        strategy = build_tailoring_strategy(
+            job_analysis=job_analysis,
+            resume_facts=resume_facts,
+            evidence_map=evidence_map,
+            ranked_requirements=ranked,
+            language=output_language,
+        )
+        content_scores = score_resume_content(
+            resume_facts=resume_facts,
+            strategy=strategy,
+            job_analysis=job_analysis,
+            evidence_map=evidence_map,
+        )
+        rebuilt = rebuild_resume_structure(
+            resume_facts=resume_facts,
+            scores=content_scores,
+            strategy=strategy,
+        )
+        baseline_resume = resume_facts_to_baseline_resume(resume_facts)
+
+        generated: dict[str, Any] = {}
+        validation_depth: dict[str, Any] = {}
+        regeneration_attempt = 0
+        while True:
+            generated = rewrite_resume_with_strategy(
+                resume_facts=resume_facts,
+                rebuilt_resume=rebuilt,
+                strategy=strategy,
+                scores=content_scores,
+                ranked_requirements=ranked,
+                inferred=inferred,
+                evidence_map=evidence_map,
+                triage=triage,
+                language=output_language,
+                use_cache=use_cache,
+                regeneration_attempt=regeneration_attempt,
+            )
+            validation_depth = validate_tailoring_depth(
+                tailored_resume=generated["tailored_resume"],
+                baseline_resume=baseline_resume,
+                strategy=strategy,
+            )
+            if not should_regenerate(validation_depth, regeneration_attempt):
+                break
+            regeneration_attempt += 1
+            logger.info(
+                "intelligent_tailoring: similarity %.2f > threshold — regenerating (attempt %d)",
+                validation_depth.get("overall_similarity") or 0,
+                regeneration_attempt,
+            )
 
         # Optional section regenerate: keep other sections from a prior generation
         # is handled at the API layer; here regenerate_section just annotates.
@@ -258,6 +323,16 @@ def run_intelligent_tailoring(
         )
         tailored_score = int(tailored_scoring["realistic_match_score"])
 
+        tailoring_report = build_tailoring_report(
+            strategy=strategy,
+            scores=content_scores,
+            validation=validation_depth,
+            generated=generated,
+            original_score=original_score,
+            tailored_score=tailored_score,
+            regeneration_attempts=regeneration_attempt,
+        )
+
         matched = generated.get("matched_requirements") or [
             e["requirement"]
             for e in evidence_map
@@ -306,6 +381,10 @@ def run_intelligent_tailoring(
             "pipeline_version": PIPELINE_VERSION,
             "claim_validator_passed": True,
             "rejected_statements": validation.get("rejected_statements") or [],
+            "tailoring_strategy": strategy,
+            "content_scores": content_scores,
+            "tailoring_report": tailoring_report,
+            "tailoring_validation": validation_depth,
         }
 
         # Strict schema validation of the assembled result
@@ -318,6 +397,9 @@ def run_intelligent_tailoring(
         result_payload["claim_validator_passed"] = True
         result_payload["rejected_statements"] = validation.get("rejected_statements") or []
         result_payload["pipeline_version"] = PIPELINE_VERSION
+        result_payload["tailoring_strategy"] = strategy
+        result_payload["tailoring_report"] = tailoring_report
+        result_payload["tailoring_validation"] = validation_depth
 
     except SchemaValidationError as exc:
         raise IntelligentTailorError(
