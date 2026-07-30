@@ -100,9 +100,18 @@ def build_tailoring_strategy(
                 facts_to_omit.append(text)
 
     ats_keywords = list(job_analysis.get("ats_keywords") or [])
+    # CRITICAL: only insert keywords already evidenced on the resume.
+    # JD-only keywords must NEVER be pushed into the rewrite plan.
     keywords_to_insert = [
-        kw for kw in ats_keywords if kw and kw.lower() not in blob
+        kw
+        for kw in ats_keywords
+        if kw and kw.lower() in blob
     ][:12]
+    # Also allow matched requirements that appear in resume text
+    for req in matched_reqs:
+        if req and req.lower() in blob and req not in keywords_to_insert:
+            keywords_to_insert.append(req)
+    keywords_to_insert = keywords_to_insert[:12]
 
     summary_focus = _summary_focus(job_analysis, matched_reqs, strengths)
     experience_focus = _experience_focus(job_analysis, matched_reqs)

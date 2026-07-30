@@ -289,7 +289,18 @@ def run_intelligent_tailoring(
         generated: dict[str, Any] = {}
         validation_depth: dict[str, Any] = {}
         quality_report: dict[str, Any] = {}
+        validation: dict[str, Any] = {}
+        cleaned_resume: dict[str, Any] = {}
+        scope_result: dict[str, Any] = {"violations": [], "passed": True}
+        deterministic_log: list[dict[str, Any]] = []
+        quality_gates: dict[str, Any] = {"passed": True, "failures": []}
         regeneration_attempt = 0
+        max_gate_attempts = 1
+
+        from intelligent_tailoring.scope_validator import validate_resume_tech_scope
+        from intelligent_tailoring.change_log import build_deterministic_change_log
+        from intelligent_tailoring.quality_gates import evaluate_quality_gates
+
         while True:
             generated = rewrite_resume_with_strategy(
                 resume_facts=resume_facts,
@@ -309,7 +320,10 @@ def run_intelligent_tailoring(
                 baseline_resume=baseline_resume,
                 strategy=strategy,
             )
-            quality_report = evaluate_tailoring_quality(
+            # Depth/quality regen decisions use the raw rewrite result (pre-claim),
+            # matching prior pipeline behaviour and avoiding regen loops caused solely
+            # by claim stripping of unsupported phrases.
+            preclaim_quality = evaluate_tailoring_quality(
                 tailored_resume=generated["tailored_resume"],
                 baseline_resume=baseline_resume,
                 strategy=strategy,
@@ -321,60 +335,199 @@ def run_intelligent_tailoring(
             )
             needs_depth = should_regenerate(validation_depth, regeneration_attempt)
             needs_quality = should_regenerate_for_quality(
-                quality_report, regeneration_attempt
+                preclaim_quality, regeneration_attempt
             )
-            if not needs_depth and not needs_quality:
+            if needs_depth or needs_quality:
+                if regeneration_attempt >= max_gate_attempts:
+                    # Fall through to claim/scope validation of the best attempt
+                    pass
+                else:
+                    regeneration_attempt += 1
+                    logger.info(
+                        "intelligent_tailoring: regenerating pre-claim (attempt %d) "
+                        "depth=%s quality=%s warnings=%s",
+                        regeneration_attempt,
+                        needs_depth,
+                        needs_quality,
+                        preclaim_quality.get("warnings"),
+                    )
+                    strategy = enrich_strategy_with_missed_evidence(strategy, missed)
+                    continue
+
+            # Claim + scope validation after rewrite settles
+            validation = run_claim_validation(
+                original_resume_text=resume_text,
+                tailored_resume=generated["tailored_resume"],
+                evidence_map=evidence_map,
+                change_log=generated.get("change_log") or [],
+                inferred=inferred,
+                job_requirements=requirements,
+                use_cache=use_cache,
+                # Deterministic claim validation only — LLM assist consumed stage
+                # queues and could reintroduce unsupported claims.
+                run_llm_assist=False,
+            )
+            cleaned_resume = validation["cleaned_resume"]
+            cleaned_resume["skills"] = dedupe_skills(cleaned_resume.get("skills") or [])
+
+            hard_score = int(original_scoring.get("hard_score_pct") or 0)
+            hard_reqs = list(original_scoring.get("hard_requirements") or [])
+            cleaned_resume["summary"] = cleaned_resume.get("professional_summary") or ""
+            title, summary, _flags = enforce_honest_title_summary(
+                professional_title=str(cleaned_resume.get("professional_title") or ""),
+                summary=str(cleaned_resume.get("summary") or ""),
+                job_title=str(job.get("title") or ""),
+                hard_score_pct=hard_score,
+                hard_requirements=hard_reqs,
+            )
+            if not title:
+                title = build_honest_professional_title(
+                    str(job.get("title") or ""),
+                    hard_reqs,
+                )
+            cleaned_resume["professional_title"] = title
+            cleaned_resume["summary"] = summary
+            cleaned_resume["professional_summary"] = summary
+
+            scope_result = validate_resume_tech_scope(
+                cleaned_resume,
+                facts=[f.to_dict() for f in kb.facts],
+                original_roles=list(resume_facts.get("experience_roles") or []),
+                original_projects=list(resume_facts.get("projects") or []),
+            )
+            cleaned_resume = scope_result["cleaned_resume"]
+            cleaned_resume["summary"] = str(
+                cleaned_resume.get("professional_summary")
+                or cleaned_resume.get("summary")
+                or ""
+            )
+            cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+
+            if scope_result.get("violations"):
+                for v in scope_result["violations"]:
+                    validation.setdefault("warnings", []).append(
+                        {
+                            "statement": v.get("text") or "",
+                            "reason": v.get("reason") or "scope_violation",
+                            "inference_category": "Unsupported",
+                        }
+                    )
+                    rejected = validation.setdefault("rejected_statements", [])
+                    if v.get("text") and v["text"] not in rejected:
+                        rejected.append(v["text"])
+
+            if not str(cleaned_resume.get("professional_summary") or "").strip():
+                restored = _safe_summary_from_strategy(
+                    strategy=strategy,
+                    resume_facts=resume_facts,
+                    resume_text=resume_text,
+                )
+                if restored:
+                    cleaned_resume["professional_summary"] = restored
+                    cleaned_resume["summary"] = restored
+
+            deterministic_log = build_deterministic_change_log(
+                baseline_resume=baseline_resume,
+                final_resume=cleaned_resume,
+                evidence_map=evidence_map,
+            )
+            generated["change_log"] = deterministic_log
+
+            unsupported_count = len(validation.get("rejected_statements") or [])
+            # Rejected statements were already stripped from cleaned_resume —
+            # do not trigger rewrite regeneration solely for cleaned-away claims.
+            quality_report = evaluate_tailoring_quality(
+                tailored_resume=cleaned_resume,
+                baseline_resume=baseline_resume,
+                strategy=strategy,
+                evidence_map=evidence_map,
+                missed_evidence=missed,
+                fact_scores=fact_scores,
+                unsupported_claim_count=0,
+                change_log=deterministic_log,
+            )
+            quality_gates = evaluate_quality_gates(
+                tailored_resume=cleaned_resume,
+                original_resume_text=resume_text,
+                facts=[f.to_dict() for f in kb.facts],
+                change_log=deterministic_log,
+                original_roles=list(resume_facts.get("experience_roles") or []),
+                original_projects=list(resume_facts.get("projects") or []),
+                require_summary=True,
+                rejected_statements=validation.get("rejected_statements") or [],
+            )
+            # Record rejected count for reporting without driving regen loops
+            quality_report["unsupported_claim_count"] = unsupported_count
+            if unsupported_count:
+                quality_report.setdefault("warnings", []).append(
+                    f"{unsupported_count} unsupported claims stripped during validation"
+                )
+
+            hard_gate_failures = [
+                f
+                for f in (quality_gates.get("failures") or [])
+                if any(
+                    str(f).startswith(prefix)
+                    for prefix in (
+                        "unsupported_impact",
+                        "unsupported_entity",
+                        "cross_entry_tech",
+                        "unknown_skill",
+                        "missing_professional_summary",
+                        "raw_llm_reasoning",
+                    )
+                )
+            ]
+            needs_gates = (
+                bool(hard_gate_failures) and regeneration_attempt < max_gate_attempts
+            )
+            if not needs_gates:
                 break
             regeneration_attempt += 1
             logger.info(
-                "intelligent_tailoring: regenerating (attempt %d) depth=%s quality=%s warnings=%s",
+                "intelligent_tailoring: regenerating after gates (attempt %d) "
+                "hard_failures=%s",
                 regeneration_attempt,
-                needs_depth,
-                needs_quality,
-                quality_report.get("warnings"),
+                hard_gate_failures[:5],
             )
-            # On regen, force expand of missed facts into strategy again
             strategy = enrich_strategy_with_missed_evidence(strategy, missed)
 
-        # Optional section regenerate: keep other sections from a prior generation
-        # is handled at the API layer; here regenerate_section just annotates.
         if regenerate_section:
             generated["regenerate_section"] = regenerate_section
 
-        # --- Stage 9: claim validation (mandatory) ---
-        validation = run_claim_validation(
-            original_resume_text=resume_text,
-            tailored_resume=generated["tailored_resume"],
-            evidence_map=evidence_map,
-            change_log=generated.get("change_log") or [],
-            inferred=inferred,
-            job_requirements=requirements,
-            use_cache=use_cache,
-            run_llm_assist=True,
-        )
-        cleaned_resume = validation["cleaned_resume"]
-        # Deduplicate skills after validation
-        cleaned_resume["skills"] = dedupe_skills(cleaned_resume.get("skills") or [])
+        # Hard fail when safety gates still fail after controlled regeneration
+        if not quality_gates.get("passed"):
+            hard_failures = [
+                f
+                for f in (quality_gates.get("failures") or [])
+                if any(
+                    f.startswith(prefix)
+                    for prefix in (
+                        "unsupported_impact",
+                        "unsupported_entity",
+                        "cross_entry_tech",
+                        "unknown_skill",
+                        "missing_professional_summary",
+                        "raw_llm_reasoning",
+                    )
+                )
+            ]
+            if hard_failures:
+                raise IntelligentTailorError(
+                    "Tailoring failed quality gates after regeneration: "
+                    + "; ".join(hard_failures[:8]),
+                    status_code=422,
+                )
 
-        # Honest title/summary enforcement (reuse existing helpers)
-        hard_score = int(original_scoring.get("hard_score_pct") or 0)
-        hard_reqs = list(original_scoring.get("hard_requirements") or [])
-        cleaned_resume["summary"] = cleaned_resume.get("professional_summary") or ""
-        title, summary, _flags = enforce_honest_title_summary(
-            professional_title=str(cleaned_resume.get("professional_title") or ""),
-            summary=str(cleaned_resume.get("summary") or ""),
-            job_title=str(job.get("title") or ""),
-            hard_score_pct=hard_score,
-            hard_requirements=hard_reqs,
-        )
-        if not title:
-            title = build_honest_professional_title(
-                str(job.get("title") or ""),
-                hard_reqs,
+        claim_passed = (
+            bool(quality_gates.get("passed"))
+            and not any(
+                str(w.get("inference_category") or "") == "Unsupported"
+                and "still present" in str(w.get("reason") or "").lower()
+                for w in (validation.get("warnings") or [])
+                if isinstance(w, dict)
             )
-        cleaned_resume["professional_title"] = title
-        cleaned_resume["summary"] = summary
-        cleaned_resume["professional_summary"] = summary
+        )
 
         # --- Stage 10: ATS scoring after tailoring ---
         tailored_scoring = rescore_after_tailoring(
@@ -394,8 +547,8 @@ def run_intelligent_tailoring(
             tailored_score=tailored_score,
             regeneration_attempts=regeneration_attempt,
         )
-        # Enrich report with quality + coverage
         tailoring_report["quality"] = quality_report
+        tailoring_report["quality_gates"] = quality_gates
         tailoring_report["extraction_coverage"] = (
             kb.coverage.to_dict() if kb.coverage else {}
         )
@@ -403,7 +556,6 @@ def run_intelligent_tailoring(
             "additional_count": len(missed.get("additional_relevant_facts_found") or []),
             "uncovered": list(missed.get("facts_still_uncovered") or [])[:10],
         }
-        # Re-score quality with post-claim unsupported count later; provisional now
         if quality_report.get("overall_tailoring_score") is not None:
             tailoring_report["tailoring_score"] = quality_report["overall_tailoring_score"]
             tailoring_report["tailoring_quality"] = (
@@ -436,6 +588,21 @@ def run_intelligent_tailoring(
                 if text not in removed:
                     removed.append(text)
 
+        logger.info(
+            "intelligent_tailoring: stage=assembled facts=%s coverage=%.2f "
+            "summary_len=%s projects=%s skills=%s change_log=%s scope_violations=%s "
+            "gates_passed=%s rejected=%s",
+            len(kb.facts),
+            float((kb.coverage.extraction_coverage_score if kb.coverage else 0) or 0),
+            len(str(cleaned_resume.get("professional_summary") or "")),
+            len(cleaned_resume.get("projects") or []),
+            len(cleaned_resume.get("skills") or []),
+            len(deterministic_log),
+            len(scope_result.get("violations") or []),
+            quality_gates.get("passed"),
+            len(validation.get("rejected_statements") or []),
+        )
+
         result_payload = {
             "tailored_resume": cleaned_resume,
             "matched_requirements": matched,
@@ -444,9 +611,7 @@ def run_intelligent_tailoring(
             or [i.to_dict() for i in inferred],
             "removed_or_deprioritized_content": removed,
             "ats_keywords_added": list(generated.get("ats_keywords_added") or []),
-            "change_log": validation.get("change_log")
-            or generated.get("change_log")
-            or [],
+            "change_log": deterministic_log,
             "validation_warnings": validation.get("warnings") or [],
             "original_match_score": original_score,
             "tailored_match_score": tailored_score,
@@ -462,8 +627,9 @@ def run_intelligent_tailoring(
             "resume_hash": content_hash(resume_text),
             "from_cache": False,
             "pipeline_version": PIPELINE_VERSION,
-            "claim_validator_passed": True,
+            "claim_validator_passed": claim_passed,
             "rejected_statements": validation.get("rejected_statements") or [],
+            "quality_gates": quality_gates,
             "tailoring_strategy": strategy,
             "content_scores": content_scores,
             "tailoring_report": tailoring_report,
@@ -487,8 +653,9 @@ def run_intelligent_tailoring(
         result_payload["jd_snapshot"] = jd_snapshot
         result_payload["jd_snapshot_hash"] = content_hash(jd_snapshot)
         result_payload["resume_hash"] = content_hash(resume_text)
-        result_payload["claim_validator_passed"] = True
+        result_payload["claim_validator_passed"] = claim_passed
         result_payload["rejected_statements"] = validation.get("rejected_statements") or []
+        result_payload["quality_gates"] = quality_gates
         result_payload["pipeline_version"] = PIPELINE_VERSION
         result_payload["tailoring_strategy"] = strategy
         result_payload["tailoring_report"] = tailoring_report
@@ -501,6 +668,9 @@ def run_intelligent_tailoring(
         result_payload["knowledge_base_summary"] = result_payload.get(
             "knowledge_base_summary"
         )
+        # Preserve structured change_log fields after schema round-trip
+        result_payload["change_log"] = deterministic_log
+
 
     except SchemaValidationError as exc:
         raise IntelligentTailorError(
@@ -553,25 +723,109 @@ def _inject_missed_facts(
         if not text or text.lower() in existing_bullets:
             continue
         section = str(item.get("source_section") or "")
+        entry_id = str(item.get("source_entry_id") or "")
         fact = kb.fact_by_id(str(item.get("fact_id") or ""))
-        if section == "projects" and projects:
-            projects[0].setdefault("bullets", []).append(text)
-        elif roles:
-            # Prefer matching organization entry
-            placed = False
-            if fact and fact.organization:
+        if fact and not entry_id:
+            entry_id = str(getattr(fact, "source_entry_id", "") or "")
+            section = section or str(getattr(fact, "source_section", "") or "")
+
+        placed = False
+        if entry_id.startswith("project_") or section == "projects":
+            # Prefer exact source_entry_id index
+            idx = None
+            if entry_id.startswith("project_"):
+                try:
+                    idx = int(entry_id.split("_", 1)[1])
+                except (TypeError, ValueError, IndexError):
+                    idx = None
+            if idx is not None and 0 <= idx < len(projects):
+                projects[idx].setdefault("bullets", []).append(text)
+                placed = True
+            elif projects and fact and getattr(fact, "organization", None):
+                for p in projects:
+                    if str(p.get("name") or "") == fact.organization:
+                        p.setdefault("bullets", []).append(text)
+                        placed = True
+                        break
+        if not placed and (entry_id.startswith("role_") or section in ("experience", "roles")):
+            idx = None
+            if entry_id.startswith("role_"):
+                try:
+                    idx = int(entry_id.split("_", 1)[1])
+                except (TypeError, ValueError, IndexError):
+                    idx = None
+            if idx is not None and 0 <= idx < len(roles):
+                roles[idx].setdefault("bullets", []).append(text)
+                placed = True
+            elif roles and fact and getattr(fact, "organization", None):
                 for r in roles:
                     if str(r.get("company") or "") == fact.organization:
                         r.setdefault("bullets", []).append(text)
                         placed = True
                         break
-            if not placed:
-                roles[0].setdefault("bullets", []).append(text)
+        if not placed:
+            # Do not dump into projects[0]/roles[0] — skip rather than leak across entries
+            logger.info(
+                "intelligent_tailoring: skipped missed fact without matching entry id=%s",
+                entry_id or item.get("fact_id"),
+            )
+            continue
         existing_bullets.add(text.lower())
 
     facts["experience_roles"] = roles
     facts["projects"] = projects
     return facts
+
+
+def _safe_summary_from_strategy(
+    *,
+    strategy: dict[str, Any],
+    resume_facts: dict[str, Any],
+    resume_text: str,
+) -> str:
+    """Build a short factual summary from evidenced skills — never invent impact."""
+    from intelligent_tailoring.scope_validator import has_unsupported_impact
+
+    emphasize = [
+        str(s).strip()
+        for s in (strategy.get("skills_to_emphasize") or [])[:6]
+        if str(s).strip()
+    ]
+    if not emphasize:
+        skills = resume_facts.get("skills") or {}
+        if isinstance(skills, dict):
+            for key in ("frameworks", "languages", "cloud", "other"):
+                emphasize.extend(str(x) for x in (skills.get(key) or [])[:2])
+        elif isinstance(skills, list):
+            emphasize = [str(s) for s in skills[:5]]
+    source_l = resume_text.lower()
+    evidenced = [s for s in emphasize if s.lower() in source_l]
+    if not evidenced:
+        # Fall back to any short skill tokens present in the resume facts list
+        skills = resume_facts.get("skills") or []
+        if isinstance(skills, list):
+            evidenced = [str(s) for s in skills[:4] if str(s).strip()]
+        elif isinstance(skills, dict):
+            for key in ("frameworks", "languages", "cloud", "other"):
+                evidenced.extend(str(x) for x in (skills.get(key) or [])[:2])
+            evidenced = evidenced[:5]
+    evidenced = evidenced[:5]
+    if not evidenced:
+        return ""
+    title = str(
+        strategy.get("target_title")
+        or strategy.get("honest_title")
+        or strategy.get("job_family")
+        or ""
+    ).strip()
+    # Avoid starting with a Capitalized adjective that entity checks may flag
+    if title:
+        summary = f"Candidate for {title} roles with experience in {', '.join(evidenced)}."
+    else:
+        summary = f"Candidate with experience in {', '.join(evidenced)}."
+    if has_unsupported_impact(summary, resume_text):
+        return ""
+    return summary
 
 
 def _ensure_legacy_fields(
@@ -833,7 +1087,7 @@ def regenerate_section(
         "tailored_cv": tailored_resume_to_legacy_cv(cleaned),
         "change_log": validation.get("change_log") or fresh.get("change_log"),
         "validation_warnings": validation.get("warnings") or [],
-        "claim_validator_passed": True,
+        "claim_validator_passed": not bool(validation.get("rejected_statements")),
         "regenerated_section": section_key,
         "from_cache": False,
     }

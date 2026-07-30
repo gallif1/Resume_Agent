@@ -371,6 +371,27 @@ def build_knowledge_base(
                 extraction_method="profile",
             )
         )
+        # Explicit technology bindings for this project only
+        for tech in proj.get("technologies") or proj.get("tech") or []:
+            text = str(tech).strip()
+            if not text:
+                continue
+            order += 1
+            facts.append(
+                ResumeFact(
+                    id=_fact_id("proj_tech", entry_id, text),
+                    fact_type="technology",
+                    normalized_value=text.lower(),
+                    original_text=text,
+                    source_section="projects",
+                    source_entry_id=entry_id,
+                    source_order=order,
+                    context=name,
+                    explicit_skills=[text],
+                    confidence=1.0,
+                    extraction_method="profile",
+                )
+            )
         for b_idx, bullet in enumerate(proj.get("bullets") or []):
             text = str(bullet).strip()
             if not text:
@@ -655,11 +676,19 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
                 "name": f.original_text.split(":")[0].strip(),
                 "description": ":".join(f.original_text.split(":")[1:]).strip(),
                 "bullets": projects_map.get(f.source_entry_id, {}).get("bullets") or [],
+                "technologies": projects_map.get(f.source_entry_id, {}).get("technologies")
+                or [],
             }
+        elif f.source_section == "projects" and f.fact_type == "technology":
+            entry = projects_map.setdefault(
+                f.source_entry_id,
+                {"name": f.context or "", "description": "", "bullets": [], "technologies": []},
+            )
+            entry.setdefault("technologies", []).append(f.original_text)
         elif f.source_section == "projects" and f.fact_type != "project":
             entry = projects_map.setdefault(
                 f.source_entry_id,
-                {"name": f.context or "", "description": "", "bullets": []},
+                {"name": f.context or "", "description": "", "bullets": [], "technologies": []},
             )
             entry["bullets"].append(f.original_text)
         elif f.fact_type == "education":

@@ -2335,8 +2335,13 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 280px;
+  max-height: min(55vh, 420px);
   overflow-y: auto;
+  overflow-x: hidden;
+  direction: rtl;
+  text-align: right;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .tailored-truthfulness {
@@ -2356,14 +2361,77 @@ code {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 4px;
+  flex-wrap: wrap;
 }
 
 .tailored-change-list,
 .tailored-review-section ul {
   margin: 0;
-  padding-inline-start: 1.1rem;
-  font-size: 0.85rem;
-  color: var(--text-muted);
+  padding-inline-start: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tailored-change-item,
+.tailored-change-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.tailored-change-card-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.tailored-change-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.tailored-change-category {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.tailored-change-type {
+  opacity: 0.85;
+}
+
+.tailored-change-original,
+.tailored-change-new {
+  margin: 0 0 4px;
+  line-height: 1.45;
+}
+
+.tailored-change-new {
+  color: var(--text);
+}
+
+@media (max-width: 640px) {
+  .tailored-review-panel {
+    max-height: min(50vh, 360px);
+    padding: 10px;
+  }
+
+  .tailored-change-card {
+    padding: 8px 10px;
+  }
 }
 
 .tailored-change-item {
@@ -2372,14 +2440,6 @@ code {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
-}
-
-.tailored-change-category {
-  display: inline-block;
-  margin-inline-end: 6px;
-  font-size: 0.75rem;
-  color: var(--accent);
-  font-weight: 600;
 }
 
 .tailored-warnings {

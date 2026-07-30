@@ -154,11 +154,21 @@ class SkillOntology:
             # Prefer highest confidence.
             best = max(rels, key=lambda r: r.confidence)
             return best.target
-        # Substring scan for longer phrases.
+        # Prefer word-boundary / exact match; avoid "java" matching inside "javascript".
         key = _norm(term)
         best: OntologyRelation | None = None
         for source_key, rels in self._index.items():
-            if source_key in key or key in source_key:
+            if len(source_key) < 3:
+                continue
+            if key == source_key:
+                candidate = max(rels, key=lambda r: r.confidence)
+                return candidate.target
+            # Allow substring only when the shorter token is a full word boundary
+            # of the longer one (not a prefix inside a compound like java⊂javascript).
+            if len(source_key) >= 4 and (
+                re.search(rf"(^|[^a-z0-9]){re.escape(source_key)}([^a-z0-9]|$)", key)
+                or re.search(rf"(^|[^a-z0-9]){re.escape(key)}([^a-z0-9]|$)", source_key)
+            ):
                 candidate = max(rels, key=lambda r: r.confidence)
                 if best is None or candidate.confidence > best.confidence:
                     best = candidate
