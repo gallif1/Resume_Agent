@@ -194,12 +194,23 @@ Return STRICT JSON only:
     "education": [],
     "certifications": []
   },
-  "change_log": [...],
+  "change_log": [
+    {
+      "original_text": "original bullet or empty for new summary",
+      "new_text": "rewritten text",
+      "reason": "why this change supports the target job",
+      "supporting_evidence": "exact resume evidence",
+      "related_job_requirement": "requirement from JD",
+      "inference_category": "Explicit",
+      "confidence_score": 1.0
+    }
+  ],
   "matched_requirements": [],
   "missing_requirements": [],
   "removed_or_deprioritized_content": [],
   "ats_keywords_added": []
 }
+Every change_log entry MUST be a JSON object (never a string). Include all keys shown above.
 Output JSON only.
 """
 

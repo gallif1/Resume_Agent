@@ -255,6 +255,40 @@ def test_claim_validator_rejects_unsupported_skill_and_bullet():
     assert result.cleaned_resume.skills.count("SalesforceApexNeverSeen") == 0
 
 
+def test_sanitize_change_log_raw_handles_strings_and_partial_objects():
+    from intelligent_tailoring.schemas import sanitize_change_log_raw, validate_change_log_item
+
+    raw = [
+        "Added AWS keyword to summary",
+        {
+            "before": "Built APIs",
+            "after": "Built REST APIs in FastAPI",
+            "reasoning": "JD alignment",
+            "evidence": "Built APIs",
+            "requirement": "REST APIs",
+        },
+        None,
+        42,
+    ]
+    cleaned = sanitize_change_log_raw(raw)
+    assert len(cleaned) == 2
+    assert cleaned[0]["new_text"] == "Added AWS keyword to summary"
+    assert cleaned[1]["original_text"] == "Built APIs"
+    assert cleaned[1]["new_text"] == "Built REST APIs in FastAPI"
+    for i, item in enumerate(cleaned):
+        validate_change_log_item(item, index=i)
+
+
+def test_sanitize_change_log_nested_dict():
+    from intelligent_tailoring.schemas import sanitize_change_log_raw
+
+    cleaned = sanitize_change_log_raw(
+        {"changes": [{"new_text": "summary rewrite", "reason": "focus"}]}
+    )
+    assert len(cleaned) == 1
+    assert cleaned[0]["new_text"] == "summary rewrite"
+
+
 def test_claim_validator_drops_weakly_inferred_change_log_entries():
     result = validate_claims(
         original_resume_text="Handled invoices and scheduling at RetailCo.",
