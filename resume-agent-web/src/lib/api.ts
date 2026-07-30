@@ -400,6 +400,31 @@ export interface TailoredCvResponse {
   claim_validator_passed?: boolean;
   pipeline_version?: string | null;
   truthfulness_statement?: string | null;
+  quality_report?: {
+    overall_tailoring_score?: number;
+    job_requirement_coverage?: number;
+    high_value_fact_utilization?: number;
+    summary_specificity?: number;
+    warnings?: string[];
+    regeneration_required?: boolean;
+  } | null;
+  extraction_coverage?: {
+    extraction_coverage_score?: number;
+    extracted_fact_count?: number;
+    source_fact_count?: number;
+    parsing_warnings?: string[];
+    fallback_applied?: boolean;
+  } | null;
+  missed_evidence_report?: {
+    additional_relevant_facts_found?: Array<{ text?: string; requirement?: string }>;
+    facts_still_uncovered?: string[];
+  } | null;
+  knowledge_base_summary?: {
+    fact_count?: number;
+    content_hash?: string;
+    coverage?: Record<string, unknown>;
+  } | null;
+  tailoring_report?: Record<string, unknown> | null;
 }
 
 export interface RequirementAssessment {

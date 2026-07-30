@@ -1,19 +1,19 @@
 """Intelligent Resume Tailoring — staged pipeline orchestrator.
 
-Stages (in order):
-1. Resume extraction (deterministic, reuses existing parser/profile)
+Universal, profession-agnostic evidence-based flow:
+1. Resume Knowledge Base (atomic facts + coverage validation)
 2. Job requirement extraction (LLM)
-3. Skill/terminology normalization (ontology, deterministic)
-4. Semantic inference (ontology + LLM, Strongly Inferred only)
-5. Evidence mapping (deterministic)
-6. Requirement ranking (deterministic)
-7. Content triage (LLM)
-8. Resume generation (LLM)
-9. Claim validation (LLM assist + deterministic enforcement) — ALWAYS runs
-10. ATS/relevance scoring (deterministic rubric)
-11. Assemble structured result + change report
+3. Skill/terminology normalization (ontology)
+4. Semantic inference (ontology + LLM)
+5. Evidence mapping
+6. Requirement ranking
+7. Content triage
+8. Strategy → score → missed-evidence → rebuild → rewrite → quality gate
+9. Claim validation (ALWAYS)
+10. ATS scoring + quality / tailoring reports
 
 No tailored resume is returned without passing through the claim validator.
+Hard-coded tech job titles are soft signals only — strategy is evidence-driven.
 """
 
 from __future__ import annotations
@@ -28,6 +28,11 @@ from intelligent_tailoring.cache import (
     content_hash,
     read_tailoring_cache,
     write_tailoring_cache,
+)
+from intelligent_tailoring.knowledge_base import (
+    build_knowledge_base,
+    knowledge_base_to_resume_facts,
+    score_facts_for_job,
 )
 from intelligent_tailoring.ontology import dedupe_skills, get_ontology
 from intelligent_tailoring.schemas import (
@@ -51,6 +56,14 @@ from intelligent_tailoring.stages.normalization import normalize_terms
 from intelligent_tailoring.stages.requirement_ranking import rank_requirements
 from intelligent_tailoring.stages.resume_extraction import extract_structured_resume
 from intelligent_tailoring.services.job_analyzer import analyze_job
+from intelligent_tailoring.services.missed_evidence import (
+    enrich_strategy_with_missed_evidence,
+    find_missed_evidence,
+)
+from intelligent_tailoring.services.quality import (
+    evaluate_tailoring_quality,
+    should_regenerate_for_quality,
+)
 from intelligent_tailoring.services.resume_analyzer import (
     analyze_resume,
     resume_facts_to_baseline_resume,
@@ -115,10 +128,24 @@ def run_intelligent_tailoring(
             status_code=503,
         )
 
-    # --- Stage 1: resume extraction ---
-    resume_facts = extract_structured_resume(cv_profile, source_documents)
-    display_skills = list(resume_facts.get("skills") or [])
-    if resume_facts.get("sparse"):
+    # --- Stage 1: Resume Knowledge Base (atomic facts + coverage) ---
+    kb = build_knowledge_base(
+        cv_profile,
+        source_documents,
+        target_output_language=language,
+    )
+    resume_facts = knowledge_base_to_resume_facts(kb)
+    # Merge with classic extraction for any fields KB missed
+    classic = extract_structured_resume(cv_profile, source_documents)
+    if not resume_facts.get("experience_roles") and classic.get("experience_roles"):
+        resume_facts["experience_roles"] = classic["experience_roles"]
+    if not resume_facts.get("projects") and classic.get("projects"):
+        resume_facts["projects"] = classic["projects"]
+    display_skills = list(resume_facts.get("display_skills") or resume_facts.get("skills") or [])
+
+    if resume_facts.get("sparse") or (
+        kb.coverage and kb.coverage.extracted_fact_count == 0 and classic.get("sparse")
+    ):
         raise IntelligentTailorError(
             "Resume text is too short or sparse to extract meaningful structured data",
             status_code=400,
@@ -137,17 +164,19 @@ def run_intelligent_tailoring(
         )
 
     output_language = detect_language(
-        resume_facts.get("raw_text") or "",
+        kb.raw_text or resume_facts.get("raw_text") or "",
         jd_snapshot,
-        preferred=language,
+        preferred=language or kb.target_output_language,
     )
+    kb.target_output_language = output_language
 
-    resume_text = str(resume_facts.get("raw_text") or "")
+    # Prefer cased KB text for claim validation / caching
+    resume_text = str(kb.raw_text or resume_facts.get("raw_text") or "")
 
-    # Pipeline-level cache keyed on (resume version, JD snapshot)
+    # Pipeline-level cache keyed on (resume version, JD snapshot, kb hash)
     if use_cache and not regenerate_section:
         cached = read_tailoring_cache(
-            resume_text=resume_text,
+            resume_text=f"{kb.content_hash}|{resume_text}",
             jd_text=jd_snapshot,
             language=output_language,
         )
@@ -216,26 +245,40 @@ def run_intelligent_tailoring(
             use_cache=use_cache,
         )
 
-        # --- Deep tailoring: strategy → score → rebuild → rewrite → validate ---
+        # --- Deep tailoring: strategy → score → missed evidence → rebuild → rewrite → quality ---
         job_analysis = analyze_job(
             job,
             use_cache=use_cache,
             jd_snapshot=jd_snapshot,
             requirements=requirements,
         )
+        fact_scores = score_facts_for_job(kb, job_requirements=requirements)
         strategy = build_tailoring_strategy(
             job_analysis=job_analysis,
             resume_facts=resume_facts,
             evidence_map=evidence_map,
             ranked_requirements=ranked,
             language=output_language,
+            fact_scores=fact_scores,
         )
+        missed = find_missed_evidence(
+            kb=kb,
+            job_requirements=requirements,
+            evidence_map=evidence_map,
+            fact_scores=fact_scores,
+        )
+        strategy = enrich_strategy_with_missed_evidence(strategy, missed)
+
+        # Promote overlooked fact bullets into experience/projects when missing
+        resume_facts = _inject_missed_facts(resume_facts, kb, missed)
+
         content_scores = score_resume_content(
             resume_facts=resume_facts,
             strategy=strategy,
             job_analysis=job_analysis,
             evidence_map=evidence_map,
         )
+        content_scores["fact_scores"] = fact_scores
         rebuilt = rebuild_resume_structure(
             resume_facts=resume_facts,
             scores=content_scores,
@@ -245,6 +288,7 @@ def run_intelligent_tailoring(
 
         generated: dict[str, Any] = {}
         validation_depth: dict[str, Any] = {}
+        quality_report: dict[str, Any] = {}
         regeneration_attempt = 0
         while True:
             generated = rewrite_resume_with_strategy(
@@ -265,14 +309,32 @@ def run_intelligent_tailoring(
                 baseline_resume=baseline_resume,
                 strategy=strategy,
             )
-            if not should_regenerate(validation_depth, regeneration_attempt):
+            quality_report = evaluate_tailoring_quality(
+                tailored_resume=generated["tailored_resume"],
+                baseline_resume=baseline_resume,
+                strategy=strategy,
+                evidence_map=evidence_map,
+                missed_evidence=missed,
+                fact_scores=fact_scores,
+                unsupported_claim_count=0,
+                change_log=generated.get("change_log") or [],
+            )
+            needs_depth = should_regenerate(validation_depth, regeneration_attempt)
+            needs_quality = should_regenerate_for_quality(
+                quality_report, regeneration_attempt
+            )
+            if not needs_depth and not needs_quality:
                 break
             regeneration_attempt += 1
             logger.info(
-                "intelligent_tailoring: similarity %.2f > threshold — regenerating (attempt %d)",
-                validation_depth.get("overall_similarity") or 0,
+                "intelligent_tailoring: regenerating (attempt %d) depth=%s quality=%s warnings=%s",
                 regeneration_attempt,
+                needs_depth,
+                needs_quality,
+                quality_report.get("warnings"),
             )
+            # On regen, force expand of missed facts into strategy again
+            strategy = enrich_strategy_with_missed_evidence(strategy, missed)
 
         # Optional section regenerate: keep other sections from a prior generation
         # is handled at the API layer; here regenerate_section just annotates.
@@ -332,6 +394,27 @@ def run_intelligent_tailoring(
             tailored_score=tailored_score,
             regeneration_attempts=regeneration_attempt,
         )
+        # Enrich report with quality + coverage
+        tailoring_report["quality"] = quality_report
+        tailoring_report["extraction_coverage"] = (
+            kb.coverage.to_dict() if kb.coverage else {}
+        )
+        tailoring_report["missed_evidence"] = {
+            "additional_count": len(missed.get("additional_relevant_facts_found") or []),
+            "uncovered": list(missed.get("facts_still_uncovered") or [])[:10],
+        }
+        # Re-score quality with post-claim unsupported count later; provisional now
+        if quality_report.get("overall_tailoring_score") is not None:
+            tailoring_report["tailoring_score"] = quality_report["overall_tailoring_score"]
+            tailoring_report["tailoring_quality"] = (
+                "excellent"
+                if quality_report["overall_tailoring_score"] >= 80
+                else "good"
+                if quality_report["overall_tailoring_score"] >= 65
+                else "moderate"
+                if quality_report["overall_tailoring_score"] >= 50
+                else "weak"
+            )
 
         matched = generated.get("matched_requirements") or [
             e["requirement"]
@@ -385,6 +468,16 @@ def run_intelligent_tailoring(
             "content_scores": content_scores,
             "tailoring_report": tailoring_report,
             "tailoring_validation": validation_depth,
+            "knowledge_base_summary": {
+                "fact_count": len(kb.facts),
+                "content_hash": kb.content_hash,
+                "parser_version": kb.parser_version,
+                "coverage": kb.coverage.to_dict() if kb.coverage else {},
+                "source_language": kb.source_language,
+            },
+            "missed_evidence_report": missed,
+            "quality_report": quality_report,
+            "extraction_coverage": kb.coverage.to_dict() if kb.coverage else {},
         }
 
         # Strict schema validation of the assembled result
@@ -400,6 +493,14 @@ def run_intelligent_tailoring(
         result_payload["tailoring_strategy"] = strategy
         result_payload["tailoring_report"] = tailoring_report
         result_payload["tailoring_validation"] = validation_depth
+        result_payload["quality_report"] = quality_report
+        result_payload["missed_evidence_report"] = missed
+        result_payload["extraction_coverage"] = (
+            kb.coverage.to_dict() if kb.coverage else {}
+        )
+        result_payload["knowledge_base_summary"] = result_payload.get(
+            "knowledge_base_summary"
+        )
 
     except SchemaValidationError as exc:
         raise IntelligentTailorError(
@@ -418,12 +519,59 @@ def run_intelligent_tailoring(
     if use_cache:
         write_tailoring_cache(
             legacy,
-            resume_text=resume_text,
+            resume_text=f"{kb.content_hash}|{resume_text}",
             jd_text=jd_snapshot,
             language=output_language,
         )
 
     return legacy
+
+
+def _inject_missed_facts(
+    resume_facts: dict[str, Any],
+    kb: Any,
+    missed: dict[str, Any],
+) -> dict[str, Any]:
+    """Ensure overlooked KB facts appear in experience/projects for generation."""
+    extra = missed.get("additional_relevant_facts_found") or []
+    if not extra:
+        return resume_facts
+    facts = dict(resume_facts)
+    roles = [dict(r) for r in (facts.get("experience_roles") or []) if isinstance(r, dict)]
+    projects = [dict(p) for p in (facts.get("projects") or []) if isinstance(p, dict)]
+
+    existing_bullets = set()
+    for r in roles:
+        for b in r.get("bullets") or []:
+            existing_bullets.add(str(b).strip().lower())
+    for p in projects:
+        for b in p.get("bullets") or []:
+            existing_bullets.add(str(b).strip().lower())
+
+    for item in extra:
+        text = str(item.get("text") or "").strip()
+        if not text or text.lower() in existing_bullets:
+            continue
+        section = str(item.get("source_section") or "")
+        fact = kb.fact_by_id(str(item.get("fact_id") or ""))
+        if section == "projects" and projects:
+            projects[0].setdefault("bullets", []).append(text)
+        elif roles:
+            # Prefer matching organization entry
+            placed = False
+            if fact and fact.organization:
+                for r in roles:
+                    if str(r.get("company") or "") == fact.organization:
+                        r.setdefault("bullets", []).append(text)
+                        placed = True
+                        break
+            if not placed:
+                roles[0].setdefault("bullets", []).append(text)
+        existing_bullets.add(text.lower())
+
+    facts["experience_roles"] = roles
+    facts["projects"] = projects
+    return facts
 
 
 def _ensure_legacy_fields(

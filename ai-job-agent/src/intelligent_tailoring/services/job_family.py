@@ -1,215 +1,67 @@
-"""Job-family detection and per-family emphasis rules for deep tailoring."""
+"""Universal job-profile detection — profession-agnostic emphasis.
+
+Tech families (backend/frontend/…) remain as optional soft signals for tests,
+but scoring and strategy are driven by extracted job requirements and
+competency clusters — not hard-coded title templates.
+"""
 
 from __future__ import annotations
 
 import re
 from typing import Any
 
+# Soft signals only — never the sole driver of generation.
 JOB_FAMILIES = (
     "backend",
     "frontend",
     "devops",
     "qa",
     "support",
+    "sales",
+    "marketing",
+    "finance",
+    "operations",
+    "administration",
+    "education",
+    "healthcare",
+    "customer_service",
+    "hr",
+    "legal",
+    "logistics",
+    "manufacturing",
+    "hospitality",
+    "retail",
+    "construction",
+    "design",
+    "management",
+    "public_sector",
     "general",
 )
 
 _FAMILY_PATTERNS: dict[str, list[str]] = {
-    "backend": [
-        r"backend",
-        r"back-end",
-        r"server side",
-        r"api developer",
-        r"microservice",
-        r"fastapi",
-        r"django",
-        r"spring boot",
-        r"node\.?js backend",
-    ],
-    "frontend": [
-        r"frontend",
-        r"front-end",
-        r"front end",
-        r"ui developer",
-        r"react developer",
-        r"angular",
-        r"client-side",
-        r"web developer",
-    ],
-    "devops": [
-        r"devops",
-        r"dev ops",
-        r"sre",
-        r"site reliability",
-        r"infrastructure",
-        r"platform engineer",
-        r"cloud engineer",
-        r"ci/?cd",
-        r"kubernetes",
-    ],
-    "qa": [
-        r"\bqa\b",
-        r"quality assurance",
-        r"test engineer",
-        r"software tester",
-        r"automation tester",
-        r"selenium",
-    ],
-    "support": [
-        r"technical support",
-        r"it support",
-        r"help ?desk",
-        r"customer support",
-        r"support engineer",
-        r"service desk",
-    ],
-}
-
-# Keyword bonuses applied when scoring resume content for a job family.
-_EMPHASIS_KEYWORDS: dict[str, dict[str, int]] = {
-    "backend": {
-        "rest": 28,
-        "api": 28,
-        "fastapi": 32,
-        "postgresql": 30,
-        "sql": 26,
-        "database": 24,
-        "backend": 22,
-        "server": 18,
-        "websocket": 22,
-        "validation": 16,
-        "concurrency": 18,
-        "performance": 16,
-        "architecture": 18,
-        "business logic": 20,
-        "sqlalchemy": 22,
-        "laravel": 18,
-        "node.js": 14,
-    },
-    "frontend": {
-        "react": 32,
-        "angular": 30,
-        "react native": 28,
-        "ui": 24,
-        "ux": 20,
-        "html": 22,
-        "css": 22,
-        "responsive": 22,
-        "client": 20,
-        "frontend": 22,
-        "expo": 18,
-        "component": 18,
-        "interface": 16,
-        "javascript": 18,
-        "typescript": 18,
-    },
-    "devops": {
-        "aws": 32,
-        "deploy": 28,
-        "deployment": 28,
-        "ci/cd": 30,
-        "cicd": 30,
-        "infrastructure": 28,
-        "monitor": 26,
-        "monitoring": 26,
-        "logging": 24,
-        "automation": 22,
-        "git": 20,
-        "cloud": 26,
-        "server": 20,
-        "health": 18,
-        "docker": 24,
-        "kubernetes": 24,
-        "threadpool": 16,
-    },
-    "qa": {
-        "test": 28,
-        "testing": 28,
-        "debug": 30,
-        "debugging": 30,
-        "troubleshoot": 28,
-        "validation": 26,
-        "bug": 26,
-        "reproduce": 24,
-        "documentation": 20,
-        "reliability": 22,
-        "quality": 24,
-        "regression": 22,
-        "verify": 20,
-    },
-    "support": {
-        "customer": 28,
-        "support": 28,
-        "troubleshoot": 30,
-        "investigate": 26,
-        "root cause": 28,
-        "logs": 24,
-        "ticket": 22,
-        "issue": 22,
-        "problem solving": 24,
-        "collaboration": 20,
-        "cross-functional": 22,
-        "erp": 18,
-        "communication": 20,
-    },
-}
-
-_DEPRIORITIZE_KEYWORDS: dict[str, list[str]] = {
-    "backend": ["html", "css", "react native", "expo", "ui design"],
-    "frontend": ["sqlalchemy", "database design", "microservice"],
-    "devops": ["react", "angular", "ui", "css"],
-    "qa": ["marketing", "sales"],
-    "support": ["machine learning", "generative ai"],
-}
-
-_SKILL_CATEGORY_ORDER: dict[str, list[str]] = {
-    "backend": [
-        "Languages & Frameworks",
-        "APIs & Backend",
-        "Databases",
-        "Cloud & DevOps",
-        "Tools",
-        "Other",
-    ],
-    "frontend": [
-        "Frontend Frameworks",
-        "UI & Styling",
-        "Languages",
-        "API Integration",
-        "Tools",
-        "Other",
-    ],
-    "devops": [
-        "Cloud & Infrastructure",
-        "CI/CD & Automation",
-        "Monitoring & Logging",
-        "Languages",
-        "Databases",
-        "Other",
-    ],
-    "qa": [
-        "Testing & Quality",
-        "Debugging & Analysis",
-        "Languages",
-        "Tools",
-        "Other",
-    ],
-    "support": [
-        "Support & Troubleshooting",
-        "Communication",
-        "Systems & Networking",
-        "Tools",
-        "Other",
-    ],
-    "general": ["Skills", "Tools", "Other"],
-}
-
-_PROJECT_PRIORITY_HINTS: dict[str, list[str]] = {
-    "backend": ["restaurant", "api", "backend", "fastapi", "erp"],
-    "frontend": ["restaurant", "react", "ui", "app", "expo"],
-    "devops": ["server monitor", "monitor", "threadpool", "deployment"],
-    "qa": ["server monitor", "debug", "test"],
-    "support": ["erp", "support", "troubleshoot"],
+    "backend": [r"backend", r"back-end", r"api developer", r"server.?side"],
+    "frontend": [r"frontend", r"front-end", r"ui developer", r"react developer"],
+    "devops": [r"devops", r"sre", r"site reliability", r"platform engineer"],
+    "qa": [r"\bqa\b", r"quality assurance", r"test engineer"],
+    "support": [r"technical support", r"it support", r"help ?desk", r"support engineer"],
+    "sales": [r"\bsales\b", r"account executive", r"business development", r"account manager"],
+    "marketing": [r"marketing", r"brand manager", r"content strategist", r"growth"],
+    "finance": [r"financ", r"accountant", r"bookkeeper", r"controller", r"treasury"],
+    "operations": [r"operations", r"ops manager", r"process owner"],
+    "administration": [r"administrator", r"office manager", r"executive assistant", r"secretary"],
+    "education": [r"teacher", r"tutor", r"instructor", r"educator", r"lecturer", r"מורה"],
+    "healthcare": [r"nurse", r"clinic", r"healthcare", r"medical admin", r"patient"],
+    "customer_service": [r"customer service", r"customer success", r"client relations"],
+    "hr": [r"human resources", r"\bhr\b", r"recruiter", r"people operations"],
+    "legal": [r"paralegal", r"legal assistant", r"attorney", r"counsel"],
+    "logistics": [r"logistics", r"supply chain", r"warehouse", r"dispatcher"],
+    "manufacturing": [r"manufactur", r"production", r"factory", r"machinist"],
+    "hospitality": [r"hotel", r"hospitality", r"restaurant manager", r"front desk"],
+    "retail": [r"retail", r"store manager", r"cashier", r"merchandis"],
+    "construction": [r"construction", r"carpenter", r"electrician", r"plumber", r"foreman"],
+    "design": [r"graphic design", r"ux designer", r"ui designer", r"art director"],
+    "management": [r"manager", r"director", r"team lead", r"supervisor"],
+    "public_sector": [r"municipal", r"government", r"public sector", r"civil service"],
 }
 
 
@@ -217,7 +69,7 @@ def detect_job_family(
     job_title: str,
     requirements: dict[str, Any] | None = None,
 ) -> str:
-    """Rule-based job family from title + extracted requirements."""
+    """Soft family label from title + requirements — falls back to general."""
     blob_parts = [job_title or ""]
     if requirements:
         for key in (
@@ -232,57 +84,163 @@ def detect_job_family(
             if isinstance(vals, list):
                 blob_parts.extend(str(v) for v in vals)
     blob = " ".join(blob_parts).lower()
+    title_lower = (job_title or "").lower()
 
     scores: dict[str, int] = {fam: 0 for fam in JOB_FAMILIES if fam != "general"}
     for family, patterns in _FAMILY_PATTERNS.items():
         for pat in patterns:
-            if re.search(pat, blob, re.I):
-                scores[family] += 3
-    for family, keywords in _EMPHASIS_KEYWORDS.items():
-        for kw, weight in keywords.items():
-            if kw in blob:
-                scores[family] += min(weight // 4, 8)
-
-    best = max(scores.items(), key=lambda x: x[1])
-    if best[1] < 3:
-        return "general"
-    # Secondary check: title often decisive
-    title_lower = (job_title or "").lower()
-    for family, patterns in _FAMILY_PATTERNS.items():
-        for pat in patterns:
             if re.search(pat, title_lower, re.I):
-                scores[family] += 5
+                scores[family] += 6
+            elif re.search(pat, blob, re.I):
+                scores[family] += 2
+
     best = max(scores.items(), key=lambda x: x[1])
     return best[0] if best[1] >= 3 else "general"
 
 
+def detect_industry(job_title: str, requirements: dict[str, Any] | None = None) -> str:
+    """Map family soft-signal to a broader industry label."""
+    family = detect_job_family(job_title, requirements)
+    tech = {"backend", "frontend", "devops", "qa", "support"}
+    if family in tech:
+        return "technology"
+    if family == "general":
+        return "general"
+    return family
+
+
+def emphasis_keywords_from_requirements(
+    requirements: dict[str, Any] | None = None,
+    *,
+    job_family: str = "general",
+) -> dict[str, int]:
+    """Build emphasis weights from JD terms — universal, not hard-coded tech lists."""
+    weights: dict[str, int] = {}
+    if not requirements:
+        return weights
+
+    def _add(terms: list[Any], base: int) -> None:
+        for t in terms:
+            key = str(t).strip().lower()
+            if len(key) < 2:
+                continue
+            # Prefer multi-word phrases and distinctive tokens
+            weights[key] = max(weights.get(key, 0), base)
+            for token in re.findall(r"[a-z0-9\u0590-\u05ff]{3,}", key):
+                weights[token] = max(weights.get(token, 0), max(12, base - 8))
+
+    _add(list(requirements.get("hard_requirements") or []), 32)
+    _add(list(requirements.get("required_skills") or []), 30)
+    _add(list(requirements.get("responsibilities") or []), 24)
+    _add(list(requirements.get("tools_technologies") or []), 26)
+    _add(list(requirements.get("ats_keywords") or []), 22)
+    _add(list(requirements.get("soft_requirements") or []), 18)
+    _add(list(requirements.get("preferred_skills") or []), 16)
+    _add(list(requirements.get("soft_skills") or []), 14)
+    _add(list(requirements.get("industry_terminology") or []), 20)
+
+    # Soft family boost retained only as a light prior for known tech families
+    soft_prior = _SOFT_FAMILY_PRIOR.get(job_family) or {}
+    for k, v in soft_prior.items():
+        weights[k] = max(weights.get(k, 0), v)
+    return weights
+
+
+# Light priors only — never sole source of emphasis.
+_SOFT_FAMILY_PRIOR: dict[str, dict[str, int]] = {
+    "backend": {"api": 10, "database": 10, "backend": 8},
+    "frontend": {"ui": 10, "react": 10, "frontend": 8},
+    "devops": {"aws": 10, "deploy": 10, "ci/cd": 8},
+    "qa": {"test": 10, "debug": 10, "quality": 8},
+    "support": {"troubleshoot": 10, "customer": 10, "ticket": 8},
+    "sales": {"sales": 10, "pipeline": 8, "quota": 8},
+    "marketing": {"campaign": 10, "content": 8, "brand": 8},
+    "finance": {"invoice": 8, "budget": 10, "reconcile": 8},
+    "operations": {"schedule": 8, "inventory": 8, "process": 10},
+    "education": {"teach": 10, "lesson": 8, "student": 8},
+    "healthcare": {"patient": 10, "clinical": 8, "appointment": 8},
+    "customer_service": {"customer": 10, "complaint": 8, "service": 8},
+}
+
+
 def emphasis_keywords(job_family: str) -> dict[str, int]:
-    return dict(_EMPHASIS_KEYWORDS.get(job_family) or _EMPHASIS_KEYWORDS["backend"])
+    """Backward-compatible helper — prefer emphasis_keywords_from_requirements."""
+    return dict(_SOFT_FAMILY_PRIOR.get(job_family) or {})
+
+
+def deprioritize_keywords_from_requirements(
+    requirements: dict[str, Any] | None,
+    resume_skills: list[str],
+) -> list[str]:
+    """Deprioritize resume skills that do not appear in JD terms."""
+    if not requirements:
+        return []
+    jd_blob = " ".join(
+        str(x)
+        for key in (
+            "required_skills",
+            "preferred_skills",
+            "tools_technologies",
+            "responsibilities",
+            "ats_keywords",
+            "hard_requirements",
+        )
+        for x in (requirements.get(key) or [])
+    ).lower()
+    deprioritize: list[str] = []
+    for skill in resume_skills:
+        s = str(skill).strip().lower()
+        if len(s) < 3:
+            continue
+        # Keep if mentioned in JD
+        if s in jd_blob or any(tok in jd_blob for tok in s.split() if len(tok) > 3):
+            continue
+        deprioritize.append(str(skill).strip())
+    return deprioritize[:12]
 
 
 def deprioritize_keywords(job_family: str) -> list[str]:
-    return list(_DEPRIORITIZE_KEYWORDS.get(job_family) or [])
+    """Legacy stub — empty by default to avoid tech-biased hiding."""
+    return []
 
 
 def skill_category_order(job_family: str) -> list[str]:
-    return list(_SKILL_CATEGORY_ORDER.get(job_family) or _SKILL_CATEGORY_ORDER["general"])
+    """Generic category order; strategy builder may override from JD."""
+    orders = {
+        "sales": ["Sales & CRM", "Communication", "Tools", "Other"],
+        "marketing": ["Marketing", "Content & Campaigns", "Tools", "Other"],
+        "finance": ["Finance & Accounting", "Tools", "Other"],
+        "operations": ["Operations", "Tools", "Other"],
+        "education": ["Teaching & Instruction", "Subject Knowledge", "Tools", "Other"],
+        "healthcare": ["Healthcare Administration", "Compliance", "Tools", "Other"],
+        "customer_service": ["Customer Service", "Communication", "Tools", "Other"],
+        "backend": ["Languages & Frameworks", "APIs & Backend", "Databases", "Tools", "Other"],
+        "frontend": ["Frontend Frameworks", "UI & Styling", "Languages", "Tools", "Other"],
+        "devops": ["Cloud & Infrastructure", "CI/CD & Automation", "Languages", "Other"],
+        "qa": ["Testing & Quality", "Debugging & Analysis", "Tools", "Other"],
+        "support": ["Support & Troubleshooting", "Communication", "Tools", "Other"],
+    }
+    return list(orders.get(job_family) or ["Core Competencies", "Tools", "Other"])
 
 
 def project_priority_hints(job_family: str) -> list[str]:
-    return list(_PROJECT_PRIORITY_HINTS.get(job_family) or [])
+    """Soft project-name hints — empty for most professions (evidence-driven instead)."""
+    return list(
+        {
+            "devops": ["monitor", "infra", "deploy"],
+            "frontend": ["app", "ui", "mobile"],
+            "backend": ["api", "backend", "service"],
+            "marketing": ["campaign", "brand"],
+            "education": ["curriculum", "course"],
+        }.get(job_family)
+        or []
+    )
 
 
 def infer_primary_role(job_family: str, job_title: str) -> str:
     if job_title.strip():
         return job_title.strip()
-    return {
-        "backend": "Backend Engineer",
-        "frontend": "Frontend Developer",
-        "devops": "DevOps Engineer",
-        "qa": "QA Engineer",
-        "support": "Technical Support Specialist",
-        "general": "Software Engineer",
-    }.get(job_family, "Software Engineer")
+    return job_family.replace("_", " ").title() if job_family != "general" else "Professional"
 
 
 def infer_secondary_role(job_family: str) -> str:
@@ -292,5 +250,23 @@ def infer_secondary_role(job_family: str) -> str:
         "devops": "Infrastructure & deployment",
         "qa": "Quality assurance & testing",
         "support": "Technical troubleshooting & customer issues",
-        "general": "Software development",
-    }.get(job_family, "Software development")
+        "sales": "Customer acquisition & relationship management",
+        "marketing": "Campaign execution & audience engagement",
+        "finance": "Financial accuracy & reporting",
+        "operations": "Process ownership & coordination",
+        "education": "Instruction & knowledge transfer",
+        "healthcare": "Patient/client administration & documentation",
+        "customer_service": "Issue resolution & customer care",
+        "administration": "Office coordination & administrative support",
+        "hr": "People operations & onboarding",
+        "legal": "Document review & compliance support",
+        "logistics": "Logistics & supply-chain coordination",
+        "manufacturing": "Production & quality operations",
+        "hospitality": "Guest service operations",
+        "retail": "Retail operations & customer service",
+        "construction": "Site operations & skilled trade work",
+        "design": "Visual communication & design execution",
+        "management": "Team leadership & operational oversight",
+        "public_sector": "Public service & case administration",
+        "general": "Professional contribution aligned to the role",
+    }.get(job_family, "Professional contribution aligned to the role")

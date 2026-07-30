@@ -102,13 +102,16 @@ SALES_JD = {
 
 
 def _stage_sequence(*responses: dict[str, Any]):
-    """Return a side_effect that yields each response then repeats the last."""
+    """Return a side_effect that yields each response then replays generation-shaped ones."""
     queue = list(responses)
 
     def _call(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        if not queue:
-            return responses[-1]
-        return queue.pop(0)
+        if queue:
+            return queue.pop(0)
+        for r in reversed(responses):
+            if isinstance(r, dict) and "tailored_resume" in r:
+                return r
+        return responses[-1] if responses else {}
 
     return _call
 
