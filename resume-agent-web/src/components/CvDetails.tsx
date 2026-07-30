@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { ArrowRight, Loader2, RefreshCw, Search } from "lucide-react";
 import {
+  applyTailoredChangeDecisions,
   applyToJob,
+  downloadTailoredCvDocx,
   downloadTailoredCvPdf,
   DuplicateApplicationError,
   getCvMatches,
@@ -11,6 +13,7 @@ import {
   getJobMatchStatus,
   getJobApplication,
   parseScanSummary,
+  regenerateTailoredSection,
   scanStreamUrl,
   tailorCvForJob,
   tailorWorkspaceJob,
@@ -773,6 +776,69 @@ export default function CvDetails({
     }
   };
 
+  const handleDownloadTailoredDocx = async () => {
+    if (!tailoredCv) return;
+    setPdfDownloading(true);
+    setError(null);
+    try {
+      await downloadTailoredCvDocx(cvId, tailoredCv.job_id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בהורדת DOCX");
+    } finally {
+      setPdfDownloading(false);
+    }
+  };
+
+  const handleAcceptAllChanges = async () => {
+    if (!tailoredCv?.change_log?.length) return;
+    setError(null);
+    try {
+      const decisions = tailoredCv.change_log.map((_, index) => ({
+        index,
+        accepted: true,
+      }));
+      const result = await applyTailoredChangeDecisions(
+        cvId,
+        tailoredCv.job_id,
+        decisions
+      );
+      setTailoredCv(result);
+      setInfoMessage("כל השינויים אושרו");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה באישור שינויים");
+    }
+  };
+
+  const handleRejectChange = async (index: number) => {
+    if (!tailoredCv?.change_log?.length) return;
+    setError(null);
+    try {
+      const result = await applyTailoredChangeDecisions(cvId, tailoredCv.job_id, [
+        { index, accepted: false },
+      ]);
+      setTailoredCv(result);
+      setInfoMessage("השינוי נדחה והנוסח המקורי שוחזר");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בדחיית שינוי");
+    }
+  };
+
+  const handleRegenerateSection = async (section: string) => {
+    if (!tailoredCv) return;
+    setError(null);
+    try {
+      const result = await regenerateTailoredSection(
+        cvId,
+        tailoredCv.job_id,
+        section
+      );
+      setTailoredCv(result);
+      setInfoMessage(`הקטע ${section} נוצר מחדש ועבר בקרת טענות`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה ביצירת קטע מחדש");
+    }
+  };
+
   const handleRegenerateOptimize = async () => {
     if (!tailoredCv || maxMatchReached || regenerating) return;
 
@@ -1377,6 +1443,123 @@ export default function CvDetails({
                 {infoMessage}
               </p>
             )}
+            <div className="tailored-review-panel" dir="rtl">
+              <p className="tailored-cv-meta tailored-truthfulness">
+                {tailoredCv.truthfulness_statement ||
+                  "לא נוספה שום חוויה שאינה מגובה בקורות החיים המקוריים. רק טענות Explicit / Strongly Inferred עברו את בודק הטענות."}
+              </p>
+              {(tailoredCv.change_log?.length ?? 0) > 0 && (
+                <div className="tailored-review-section">
+                  <div className="tailored-review-section-header">
+                    <strong>שינויים חשובים</strong>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={handleAcceptAllChanges}
+                      disabled={isGenerating}
+                    >
+                      אשר הכל
+                    </button>
+                  </div>
+                  <ul className="tailored-change-list">
+                    {tailoredCv.change_log!.slice(0, 12).map((item, index) => (
+                      <li key={`change-${index}`} className="tailored-change-item">
+                        <div>
+                          <span className="tailored-change-category">
+                            {item.inference_category || "Explicit"}
+                          </span>
+                          {item.new_text || item.reason || "שינוי"}
+                          {item.reason ? (
+                            <span className="cv-meta"> — {item.reason}</span>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => handleRejectChange(index)}
+                          disabled={isGenerating || item.accepted === false}
+                        >
+                          {item.accepted === false ? "נדחה" : "דחה / שחזר מקורי"}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(tailoredCv.inferred_competencies?.length ?? 0) > 0 && (
+                <div className="tailored-review-section">
+                  <strong>כישורים שהוסקו בביטחון</strong>
+                  <ul>
+                    {tailoredCv.inferred_competencies!.slice(0, 8).map((item, i) => (
+                      <li key={`inf-${i}`}>
+                        {item.statement}
+                        {item.supporting_evidence ? (
+                          <span className="cv-meta">
+                            {" "}
+                            (ראיה: {item.supporting_evidence})
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(tailoredCv.removed_or_deprioritized_content?.length ?? 0) > 0 && (
+                <div className="tailored-review-section">
+                  <strong>תוכן שהוסר / הורד בעדיפות</strong>
+                  <ul>
+                    {tailoredCv.removed_or_deprioritized_content!
+                      .slice(0, 6)
+                      .map((item, i) => (
+                        <li key={`rm-${i}`}>{item}</li>
+                      ))}
+                  </ul>
+                </div>
+              )}
+              {(tailoredCv.missing_requirements?.length ?? 0) > 0 && (
+                <div className="tailored-review-section">
+                  <strong>דרישות משרה חסרות</strong>
+                  <p className="cv-meta">
+                    {tailoredCv.missing_requirements!.slice(0, 8).join(" · ")}
+                  </p>
+                </div>
+              )}
+              {(tailoredCv.validation_warnings?.length ?? 0) > 0 && (
+                <div className="tailored-review-section tailored-warnings">
+                  <strong>אזהרות ביטחון נמוך</strong>
+                  <ul>
+                    {tailoredCv.validation_warnings!.slice(0, 6).map((w, i) => (
+                      <li key={`warn-${i}`}>
+                        {w.statement}
+                        {w.reason ? ` — ${w.reason}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="tailored-review-section tailored-section-regen">
+                <strong>צור מחדש קטע</strong>
+                <div className="modal-actions modal-actions-improve">
+                  {(
+                    [
+                      ["professional_summary", "תקציר"],
+                      ["skills", "כישורים"],
+                      ["experience", "ניסיון"],
+                    ] as const
+                  ).map(([section, label]) => (
+                    <button
+                      key={section}
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => handleRegenerateSection(section)}
+                      disabled={isGenerating}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
             {isGenerating && (
               <div
                 className="cv-generating-feedback"
@@ -1554,6 +1737,18 @@ export default function CvDetails({
                   </svg>
                 </span>
                 {pdfDownloading ? "מכין PDF..." : "הורד כ-PDF"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={handleDownloadTailoredDocx}
+                disabled={
+                  pdfDownloading ||
+                  regenerating ||
+                  tailoringId === tailoredCv.job_id
+                }
+              >
+                הורד DOCX
               </button>
             </div>
           </div>

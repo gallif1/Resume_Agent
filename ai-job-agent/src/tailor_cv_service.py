@@ -34,20 +34,23 @@ from db import (
     get_latest_cv_tailor_version,
     list_cv_tailor_versions,
     record_cv_tailor_version,
+    save_tailored_resume_report,
 )
 from match_scoring import score_label_for
-from match_tailor_prompt import MATCH_TAILOR_PROMPT_VERSION
-from match_tailor_service import (
-    MatchTailorError,
-    evaluate_candidate_for_job,
+from intelligent_tailoring import (
+    PIPELINE_VERSION as INTELLIGENT_PIPELINE_VERSION,
+    IntelligentTailorError,
+    run_intelligent_tailoring,
 )
+from match_tailor_service import MatchTailorError
 
 NO_IMPROVEMENT_MESSAGE = "לא הצלחתי לייצר גרסה יותר טובה"
 
 # Stamped into every saved draft so drafts written by an older pipeline are
 # regenerated instead of being served with their stale scores. The marker lives
 # only on disk — it is stripped before the document reaches the API or the PDF.
-TAILOR_PIPELINE_VERSION = f"match_tailor_{MATCH_TAILOR_PROMPT_VERSION}"
+# Intelligent Resume Tailoring supersedes the single mega-prompt match_tailor path.
+TAILOR_PIPELINE_VERSION = INTELLIGENT_PIPELINE_VERSION
 _PIPELINE_MARKER_RE = re.compile(r"^<!--\s*tailor-pipeline:\s*(\S+)\s*-->\s*\n?")
 
 HR_SPLIT_RE = re.compile(r"\n---\s*\n", re.MULTILINE)
@@ -377,7 +380,12 @@ def _gap_skill_labels(entries: list[Any] | None) -> list[str]:
     """Strip ``skill — reason`` gap entries down to skill names for UI/DB lists."""
     labels: list[str] = []
     for item in entries or []:
-        label = str(item).split(" — ", 1)[0].strip() or str(item)
+        if isinstance(item, dict):
+            label = str(
+                item.get("skill") or item.get("name") or item.get("requirement") or ""
+            ).strip()
+        else:
+            label = str(item).split(" — ", 1)[0].strip() or str(item)
         if label and label not in labels:
             labels.append(label)
     return labels
@@ -419,6 +427,21 @@ def matcher_feedback_from_report(report: dict[str, Any]) -> dict[str, Any]:
 
 def _document_changes(report: dict[str, Any]) -> list[str]:
     """The "פירוט שינויים" bullets, derived from the evaluation itself."""
+    # Prefer structured change_log from Intelligent Resume Tailoring when present.
+    structured: list[str] = []
+    for item in report.get("change_log") or []:
+        if not isinstance(item, dict):
+            continue
+        new_text = str(item.get("new_text") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        category = str(item.get("inference_category") or "").strip()
+        if new_text and reason:
+            structured.append(f"[{category or 'Explicit'}] {reason}: {new_text}")
+        elif new_text:
+            structured.append(new_text)
+    if structured:
+        return structured[:12]
+
     extraction = report.get("requirement_extraction") or {}
     hard = extraction.get("hard_requirements") or []
     soft = extraction.get("soft_requirements") or []
@@ -495,13 +518,21 @@ def build_tailor_document(
         score_notes=score_notes,
     )
 
+    honesty_note = (
+        "לא נוספה שום חוויה או טכנולוגיה שאינה מגובה בקורות החיים המקוריים "
+        "(רק Explicit / Strongly Inferred עברו את בודק הטענות)."
+    )
+    caveats = _document_caveats(report)
+    if honesty_note not in caveats:
+        caveats.insert(0, honesty_note)
+
     return {
         "markdown": markdown.strip(),
         "cv_markdown": cv_markdown.strip(),
         "changes_breakdown": changes,
         "estimated_ats_score": score,
         "highlights": _string_list(report.get("key_matching_points")),
-        "caveats": _document_caveats(report),
+        "caveats": caveats,
         # Structured evaluation carried through to the API for transparency.
         "realistic_match_score": score,
         "requirement_extraction": report.get("requirement_extraction"),
@@ -513,6 +544,25 @@ def build_tailor_document(
         "score_validation": report.get("score_validation"),
         "recommendation": report.get("recommendation"),
         "tailored_cv": report.get("tailored_cv"),
+        # Intelligent Resume Tailoring structured report fields
+        "tailored_resume": report.get("tailored_resume") or report.get("tailored_cv"),
+        "matched_requirements": list(report.get("matched_requirements") or []),
+        "missing_requirements": list(report.get("missing_requirements") or []),
+        "inferred_competencies": list(report.get("inferred_competencies") or []),
+        "removed_or_deprioritized_content": list(
+            report.get("removed_or_deprioritized_content") or []
+        ),
+        "ats_keywords_added": list(report.get("ats_keywords_added") or []),
+        "change_log": list(report.get("change_log") or []),
+        "validation_warnings": list(report.get("validation_warnings") or []),
+        "original_match_score": report.get("original_match_score"),
+        "tailored_match_score": report.get("tailored_match_score") or score,
+        "evidence_map": list(report.get("evidence_map") or []),
+        "language": report.get("language"),
+        "claim_validator_passed": bool(report.get("claim_validator_passed", True)),
+        "jd_snapshot_hash": report.get("jd_snapshot_hash"),
+        "resume_hash": report.get("resume_hash"),
+        "pipeline_version": report.get("pipeline_version") or TAILOR_PIPELINE_VERSION,
     }
 
 
@@ -892,20 +942,28 @@ def _evaluate(
     cv_profile: dict[str, Any],
     user_id: str | None,
     use_cache: bool,
+    language: str | None = None,
 ) -> dict[str, Any]:
-    """Run the honest match + tailor engine over all of the candidate's sources."""
+    """Run Intelligent Resume Tailoring over all of the candidate's sources.
+
+    Always goes through the staged pipeline's claim validator — there is no
+    alternate generation path that skips validation.
+    """
     sources = gather_original_source_cvs(
         cv_id, user_id=user_id, cv_profile=cv_profile
     )
     try:
-        return evaluate_candidate_for_job(
+        return run_intelligent_tailoring(
             cv_profile=cv_profile,
             job=job,
             use_cache=use_cache,
             source_documents=sources,
+            language=language,
         )
-    except MatchTailorError as exc:
-        raise TailorCvError(exc.message, status_code=exc.status_code) from exc
+    except (IntelligentTailorError, MatchTailorError) as exc:
+        message = getattr(exc, "message", str(exc))
+        status = getattr(exc, "status_code", 502)
+        raise TailorCvError(message, status_code=status) from exc
 
 
 def evaluate_job_for_cv(
@@ -966,11 +1024,12 @@ def _record_version(
     score_after: int,
     path: Path,
     db_path: Path | None,
+    report: dict[str, Any] | None = None,
 ) -> int | None:
     if db_path is None:
         return None
     try:
-        return record_cv_tailor_version(
+        version_id = record_cv_tailor_version(
             cv_id,
             job_id,
             score_before=int(score_before if score_before is not None else score_after),
@@ -980,6 +1039,19 @@ def _record_version(
         )
     except Exception:  # noqa: BLE001 — version history must not fail a good tailor
         return None
+    if report and version_id is not None:
+        try:
+            save_tailored_resume_report(
+                cv_id=cv_id,
+                job_id=job_id,
+                report=report,
+                version_id=version_id,
+                jd_snapshot_text=str(report.get("jd_snapshot") or "") or None,
+                db_path=db_path,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return version_id
 
 
 def _regenerate_tailored_cv(
@@ -1068,6 +1140,7 @@ def _regenerate_tailored_cv(
         score_after=new_score,
         path=path,
         db_path=db_path,
+        report=report,
     )
     _publish_score(
         _match_scope_id(cv_id, user_id),
@@ -1172,6 +1245,7 @@ def tailor_cv_for_job(
         score_after=score,
         path=path,
         db_path=db_path,
+        report=report,
     )
     _publish_score(
         _match_scope_id(cv_id, user_id),

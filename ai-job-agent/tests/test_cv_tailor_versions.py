@@ -190,6 +190,53 @@ def test_tailor_cv_records_a_version_and_publishes_the_honest_score(
     monkeypatch.setattr(match_tailor_service, "call_openai_json", _fake_openai)
     monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
 
+    def _fake_pipeline(**kwargs):
+        raw = _fake_openai("", "")
+        from match_tailor_service import normalize_match_tailor_result
+        from intelligent_tailor_fixtures import intelligent_report
+
+        normalized = normalize_match_tailor_result(
+            raw,
+            job_title=str((kwargs.get("job") or {}).get("title") or "Backend Engineer"),
+            source_resume_text=str(
+                ((kwargs.get("cv_profile") or {}).get("raw_text") or "")
+            ),
+        )
+        report = intelligent_report(
+            score=int(normalized["scoring"]["realistic_match_score"]),
+            summary=str(normalized["tailored_cv"].get("summary") or ""),
+            skills=list(normalized["tailored_cv"].get("skills") or []),
+            experience=list(normalized["tailored_cv"].get("experience") or []),
+        )
+        report["scoring"] = normalized["scoring"]
+        report["score_validation"] = normalized["score_validation"]
+        report["requirement_extraction"] = normalized["requirement_extraction"]
+        report["key_matching_points"] = normalized["key_matching_points"]
+        report["missing_critical_skills"] = normalized["missing_critical_skills"]
+        report["transferable_skills_framing"] = normalized[
+            "transferable_skills_framing"
+        ]
+        report["tailored_cv"] = normalized["tailored_cv"]
+        report["tailored_resume"] = {
+            "professional_title": normalized["tailored_cv"].get("professional_title")
+            or "",
+            "professional_summary": normalized["tailored_cv"].get("summary") or "",
+            "summary": normalized["tailored_cv"].get("summary") or "",
+            "skills": normalized["tailored_cv"].get("skills") or [],
+            "experience": normalized["tailored_cv"].get("experience") or [],
+            "projects": normalized["tailored_cv"].get("projects") or [],
+            "education": normalized["tailored_cv"].get("education") or [],
+            "certifications": [],
+        }
+        report["recommendation"] = normalized["recommendation"]
+        report["realistic_match_score"] = normalized["scoring"]["realistic_match_score"]
+        report["tailored_match_score"] = normalized["scoring"]["realistic_match_score"]
+        report["original_match_score"] = normalized["scoring"]["realistic_match_score"]
+        report["claim_validator_passed"] = True
+        return report
+
+    monkeypatch.setattr(svc, "run_intelligent_tailoring", _fake_pipeline)
+
     job = db.get_job_by_id(job_id, db_path=db_path)
     result = svc.tailor_cv_for_job(
         cv_id,

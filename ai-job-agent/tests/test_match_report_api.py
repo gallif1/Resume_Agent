@@ -10,8 +10,9 @@ import api_server
 import config
 import cv_service
 import db
-import match_tailor_service
 import pytest
+import tailor_cv_service
+from intelligent_tailor_fixtures import intelligent_report
 
 
 @pytest.fixture
@@ -30,63 +31,71 @@ def report_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_path: Path):
     return {"db_path": db_path, "cvs_dir": cvs_dir}
 
 
-def _openai_response() -> dict[str, Any]:
-    """A model response that inflates the score against a Salesforce role."""
-    return {
-        "requirement_extraction": {
-            "hard_requirements": [
-                {
-                    "requirement": "Salesforce Apex development",
-                    "candidate_status": "MISSING",
-                    "evidence_or_gap": "No Salesforce work on the resume",
-                },
-                {
-                    "requirement": "Python scripting",
-                    "candidate_status": "MATCH",
-                    "evidence_or_gap": "Python backend services",
-                },
-            ],
-            "soft_requirements": [
-                {
-                    "requirement": "AWS familiarity",
-                    "candidate_status": "MATCH",
-                    "evidence_or_gap": "AWS Lambda automation",
-                }
-            ],
-        },
-        "scoring": {
-            "hard_score_pct": 50,
-            "soft_score_pct": 100,
-            "hard_cap_applied": False,
-            "realistic_match_score": 83,
-            "score_rationale": "Strong Python overlap.",
-        },
-        "key_matching_points": ["Python", "AWS"],
-        "missing_critical_skills": [],
-        "transferable_skills_framing": [
+def _salesforce_capped_report() -> dict[str, Any]:
+    """Honest pipeline result for a Salesforce role with a missing core hard req."""
+    report = intelligent_report(
+        score=40,
+        original_score=40,
+        summary="Backend engineer focused on Python automation.",
+        skills=["Python", "AWS"],
+        hard_statuses=("MISSING", "MATCH"),
+        missing=["Salesforce Apex development"],
+        experience=[
             {
-                "gap": "Salesforce Apex",
-                "how_to_honestly_frame_existing_experience": (
-                    "Python and AWS automation transfers to custom business logic."
-                ),
+                "company": "Acme",
+                "title": "Backend Developer",
+                "dates": "2023-2025",
+                "bullets": ["Built Python services."],
             }
         ],
-        "tailored_cv": {
-            "summary": "Backend engineer focused on Python automation.",
-            "skills": ["Python", "AWS"],
-            "experience": [
-                {
-                    "company": "Acme",
-                    "title": "Backend Developer",
-                    "dates": "2023-2025",
-                    "bullets": ["Built Python services."],
-                }
-            ],
-            "projects": [],
-            "education": [],
-        },
-        "recommendation": "STRONG_APPLY",
+    )
+    report["requirement_extraction"] = {
+        "hard_requirements": [
+            {
+                "requirement": "Salesforce Apex development",
+                "candidate_status": "MISSING",
+                "evidence_or_gap": "No Salesforce work on the resume",
+            },
+            {
+                "requirement": "Python scripting",
+                "candidate_status": "MATCH",
+                "evidence_or_gap": "Python backend services",
+            },
+        ],
+        "soft_requirements": [
+            {
+                "requirement": "AWS familiarity",
+                "candidate_status": "MATCH",
+                "evidence_or_gap": "AWS Lambda automation",
+            }
+        ],
     }
+    report["scoring"] = {
+        "hard_score_pct": 50,
+        "soft_score_pct": 100,
+        "hard_cap_applied": True,
+        "realistic_match_score": 40,
+        "score_rationale": "Core Salesforce requirement missing — hard cap applied.",
+    }
+    report["score_validation"] = {
+        "model_reported_score": 83,
+        "recomputed_composite_score": 62,
+        "score_overridden": True,
+        "cap": 40,
+        "dropped_unsupported_skills": [],
+        "claim_validator_passed": True,
+    }
+    report["missing_critical_skills"] = [
+        {
+            "skill": "Salesforce Apex development",
+            "reason": "No Salesforce work on the resume",
+        }
+    ]
+    report["missing_requirements"] = ["Salesforce Apex development"]
+    report["recommendation"] = "STRETCH_APPLY_LOW_ODDS"
+    report["realistic_match_score"] = 40
+    report["tailored_match_score"] = 40
+    return report
 
 
 def test_workspace_match_report_caps_an_inflated_score(
@@ -121,11 +130,10 @@ def test_workspace_match_report_caps_an_inflated_score(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
     monkeypatch.setattr(
-        match_tailor_service,
-        "call_openai_json",
-        lambda *a, **kw: _openai_response(),
+        tailor_cv_service,
+        "run_intelligent_tailoring",
+        lambda **_kwargs: _salesforce_capped_report(),
     )
     real_get_cv = db.get_cv
     monkeypatch.setattr(
@@ -154,7 +162,8 @@ def test_workspace_match_report_caps_an_inflated_score(
     assert body["score_validation"]["model_reported_score"] == 83
     assert body["recommendation"] != "STRONG_APPLY"
     assert any(
-        "salesforce" in skill.lower() for skill in body["missing_critical_skills"]
+        "salesforce" in str(skill).lower()
+        for skill in body["missing_critical_skills"]
     )
     assert body["requirement_extraction"]["hard_requirements"][0]["evidence_or_gap"]
 
@@ -181,7 +190,15 @@ def test_match_report_returns_503_without_an_api_key(
         json.dumps({"raw_text": "Python developer"}), encoding="utf-8"
     )
 
-    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: False)
+    from intelligent_tailoring import IntelligentTailorError
+
+    def _raise(**_kwargs):
+        raise IntelligentTailorError(
+            "OPENAI_API_KEY is not configured — cannot evaluate this job",
+            status_code=503,
+        )
+
+    monkeypatch.setattr(tailor_cv_service, "run_intelligent_tailoring", _raise)
 
     from conftest import authed_client
 

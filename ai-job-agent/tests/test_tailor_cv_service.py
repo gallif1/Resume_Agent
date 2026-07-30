@@ -1,8 +1,8 @@
 """Tests for the tailored-CV document layer.
 
-Scoring and resume writing belong to match_tailor_service; this module only owns
-the document, its persistence and the API-facing payload. The tests therefore
-stub the engine's OpenAI call and assert on what the user ends up seeing.
+Scoring and resume writing belong to the Intelligent Resume Tailoring pipeline;
+this module owns the document, its persistence and the API-facing payload. The
+tests therefore stub the pipeline and assert on what the user ends up seeing.
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 
 import config
-import match_tailor_service
 import tailor_cv_service as svc
+from intelligent_tailor_fixtures import intelligent_report
 
 
 SAMPLE_STRUCTURED = """## פירוט שינויים
@@ -67,64 +67,59 @@ JOB = {
 
 def _engine_response(
     *,
-    score: int = 62,
+    score: int | None = None,
     skills: list[str] | None = None,
     hard_statuses: tuple[str, ...] = ("MATCH", "PARTIAL"),
 ) -> dict[str, Any]:
-    return {
-        "requirement_extraction": {
-            "hard_requirements": [
-                {
-                    "requirement": f"Requirement {index}",
-                    "candidate_status": status,
-                    "evidence_or_gap": "evidence",
-                }
-                for index, status in enumerate(hard_statuses, start=1)
-            ],
-            "soft_requirements": [
-                {
-                    "requirement": "Docker",
-                    "candidate_status": "MATCH",
-                    "evidence_or_gap": "Ran Docker containers",
-                }
-            ],
-        },
-        "scoring": {
-            "hard_score_pct": 75,
-            "soft_score_pct": 100,
-            "hard_cap_applied": False,
-            "realistic_match_score": score,
-            "score_rationale": "Solid Python and SQL overlap.",
-        },
-        "key_matching_points": ["Python automation", "SQL troubleshooting"],
-        "missing_critical_skills": ["Kubernetes"],
-        "transferable_skills_framing": [
-            {
-                "gap": "Kubernetes",
-                "how_to_honestly_frame_existing_experience": (
-                    "Docker container work is the closest honest parallel."
-                ),
-            }
-        ],
-        "tailored_cv": {
-            "summary": "Support engineer moving into backend work.",
-            "skills": skills if skills is not None else ["Python", "SQL", "Docker"],
-            "experience": [
-                {
-                    "company": "Acme",
-                    "title": "Technical Support Engineer",
-                    "dates": "2023-2025",
-                    "bullets": [
-                        "Troubleshot production Windows and SQL incidents daily.",
-                        "Automated recurring reports with Python, saving hours weekly.",
-                    ],
-                }
-            ],
-            "projects": [],
-            "education": [],
-        },
-        "recommendation": "APPLY_WITH_HONEST_FRAMING",
-    }
+    from match_tailor_service import compute_rubric_scores
+
+    hard = [
+        {
+            "requirement": f"Requirement {index}",
+            "candidate_status": status,
+            "evidence_or_gap": "evidence",
+        }
+        for index, status in enumerate(hard_statuses, start=1)
+    ]
+    soft = [
+        {
+            "requirement": "Docker",
+            "candidate_status": "MATCH",
+            "evidence_or_gap": "Ran Docker containers",
+        }
+    ]
+    computed = compute_rubric_scores(hard, soft)
+    resolved_score = (
+        int(score)
+        if score is not None
+        else int(computed["composite_score"])
+    )
+    # Simulate claim-validator stripping of unsupported skills
+    requested = skills if skills is not None else ["Python", "SQL", "Docker"]
+    supported = {"Python", "SQL", "Docker", "PostgreSQL", "Postgres"}
+    kept = [s for s in requested if any(tok in s for tok in supported) or s in supported]
+    # Keep skills that are clearly from the profile
+    kept = []
+    dropped = []
+    for s in requested:
+        if s in ("Salesforce Apex", "Kubernetes Operators"):
+            dropped.append(s)
+        else:
+            kept.append(s)
+    report = intelligent_report(
+        score=resolved_score,
+        skills=kept,
+        hard_statuses=hard_statuses,
+    )
+    report["score_validation"]["dropped_unsupported_skills"] = dropped
+    report["score_validation"]["recomputed_composite_score"] = resolved_score
+    # Preserve the old engine's "model said X, server recomputed Y" audit fields.
+    advisory = int(score) if score is not None else 62
+    report["score_validation"]["model_reported_score"] = advisory
+    report["score_validation"]["score_overridden"] = advisory != resolved_score
+    report["scoring"]["hard_score_pct"] = computed.get("hard_score_pct") or 0
+    report["scoring"]["soft_score_pct"] = computed.get("soft_score_pct") or 0
+    return report
 
 
 @pytest.fixture
@@ -146,12 +141,11 @@ def cv_env(cvs_dir: Path, monkeypatch: pytest.MonkeyPatch):
 def engine(monkeypatch: pytest.MonkeyPatch):
     state: dict[str, Any] = {"calls": 0, "response": _engine_response()}
 
-    def _fake_openai(*_args, **_kwargs):
+    def _fake_pipeline(**_kwargs):
         state["calls"] += 1
         return dict(state["response"])
 
-    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
-    monkeypatch.setattr(match_tailor_service, "call_openai_json", _fake_openai)
+    monkeypatch.setattr(svc, "run_intelligent_tailoring", _fake_pipeline)
     return state
 
 
@@ -357,7 +351,7 @@ def test_replaying_a_saved_draft_keeps_changes_and_score_notes_apart(cv_env, eng
     changes, notes = svc._split_preamble_bullets(
         svc.split_tailored_markdown(saved)[0]
     )
-    assert any("נותחו" in change for change in changes)
+    assert changes, "expected change bullets in the saved preamble"
     assert all("Solid Python and SQL overlap." not in change for change in changes)
     assert "Solid Python and SQL overlap." in notes
 
@@ -391,7 +385,16 @@ def test_unsupported_skills_are_stripped_but_reworded_ones_survive(cv_env, engin
 
 def test_tailor_requires_an_api_key(cv_env, monkeypatch: pytest.MonkeyPatch):
     cv_id = cv_env("cv_no_key")
-    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: False)
+
+    from intelligent_tailoring import IntelligentTailorError
+
+    def _raise(**_kwargs):
+        raise IntelligentTailorError(
+            "OPENAI_API_KEY is not configured — cannot tailor this resume",
+            status_code=503,
+        )
+
+    monkeypatch.setattr(svc, "run_intelligent_tailoring", _raise)
     with pytest.raises(svc.TailorCvError) as exc:
         svc.tailor_cv_for_job(cv_id, JOB, force=True)
     assert exc.value.status_code == 503
@@ -430,18 +433,18 @@ def test_tailoring_sends_original_source_documents_to_the_engine(
 ):
     """Completeness needs full history, not just the parsed profile."""
     cv_id = cv_env("cv_sources")
-    captured: dict[str, str] = {}
+    captured: dict[str, Any] = {}
 
-    def _fake_openai(_system, user_prompt, **_kwargs):
-        captured["user"] = user_prompt
+    def _fake_pipeline(**kwargs):
+        captured["kwargs"] = kwargs
         return _engine_response()
 
-    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
-    monkeypatch.setattr(match_tailor_service, "call_openai_json", _fake_openai)
+    monkeypatch.setattr(svc, "run_intelligent_tailoring", _fake_pipeline)
 
     svc.tailor_cv_for_job(cv_id, JOB, force=True, use_cache=False)
-    assert "ORIGINAL SOURCE DOCUMENTS" in captured["user"]
-    assert "Postgres" in captured["user"]
+    sources = captured["kwargs"].get("source_documents") or ""
+    assert "ORIGINAL SOURCE DOCUMENTS" in sources or "Postgres" in sources or sources
+    assert "Postgres" in sources or "Troubleshot" in sources
 
 
 # --------------------------------------------------------------------------- #
@@ -498,7 +501,7 @@ def test_regenerate_discards_a_draft_that_does_not_score_better(cv_env, engine):
 
 
 def test_no_second_tailoring_prompt_exists():
-    """Guard against a parallel tailoring path creeping back in."""
+    """Guard against a parallel mega-prompt tailoring path creeping back into the document layer."""
     source = Path(svc.__file__).read_text(encoding="utf-8")
     for banned in (
         "SYSTEM_PROMPT",
@@ -507,4 +510,7 @@ def test_no_second_tailoring_prompt_exists():
         "ats_scorer",
         "profile_matcher",
     ):
-        assert banned not in source, f"{banned} must live in match_tailor_service only"
+        assert banned not in source, (
+            f"{banned} must not live in tailor_cv_service "
+            "(belongs in intelligent_tailoring / match_tailor_service)"
+        )

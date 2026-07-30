@@ -2326,6 +2326,66 @@ code {
   line-height: 1.45;
 }
 
+.tailored-review-panel {
+  margin: 8px 0 12px;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.tailored-truthfulness {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.tailored-review-section strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.9rem;
+}
+
+.tailored-review-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.tailored-change-list,
+.tailored-review-section ul {
+  margin: 0;
+  padding-inline-start: 1.1rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.tailored-change-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tailored-change-category {
+  display: inline-block;
+  margin-inline-end: 6px;
+  font-size: 0.75rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tailored-warnings {
+  color: var(--warning);
+}
+
 .tailored-cv-caveats {
   color: var(--warning);
 }
