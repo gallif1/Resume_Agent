@@ -373,16 +373,22 @@ def report_match_score(report: dict[str, Any]) -> int:
     return int((report.get("scoring") or {}).get("realistic_match_score") or 0)
 
 
+def _gap_skill_labels(entries: list[Any] | None) -> list[str]:
+    """Strip ``skill — reason`` gap entries down to skill names for UI/DB lists."""
+    labels: list[str] = []
+    for item in entries or []:
+        label = str(item).split(" — ", 1)[0].strip() or str(item)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
 def matcher_feedback_from_report(report: dict[str, Any]) -> dict[str, Any]:
     """Project the honest report onto the feedback snapshot the UI already reads."""
     scoring = report.get("scoring") or {}
     validation = report.get("score_validation") or {}
     score = report_match_score(report)
-    missing_raw = list(report.get("missing_critical_skills") or [])
-    # Gap entries may be "skill — reason"; keyword/UI lists want the skill name.
-    missing = [
-        str(item).split(" — ", 1)[0].strip() or str(item) for item in missing_raw
-    ]
+    missing = _gap_skill_labels(report.get("missing_critical_skills"))
     rationale = str(scoring.get("score_rationale") or "").strip()
     return {
         "match_score": score,
@@ -433,10 +439,8 @@ def _document_changes(report: dict[str, Any]) -> list[str]:
 
 def _document_caveats(report: dict[str, Any]) -> list[str]:
     caveats: list[str] = []
-    for skill in (report.get("missing_critical_skills") or [])[:8]:
-        # Entries may be "skill — reason" after deeper gap analysis.
-        label = str(skill).split(" — ", 1)[0].strip() or str(skill)
-        caveats.append(f"לא נטען ניסיון ב-{label} — הפער נשאר גלוי")
+    for skill in _gap_skill_labels(report.get("missing_critical_skills"))[:8]:
+        caveats.append(f"לא נטען ניסיון ב-{skill} — הפער נשאר גלוי")
     dropped = (report.get("score_validation") or {}).get(
         "dropped_unsupported_skills"
     ) or []
@@ -866,7 +870,9 @@ def _publish_score(
                 list(report.get("key_matching_points") or []) if report else None
             ),
             missing_skills=(
-                list(report.get("missing_critical_skills") or []) if report else None
+                _gap_skill_labels(report.get("missing_critical_skills"))
+                if report
+                else None
             ),
             db_path=db_path,
         )
