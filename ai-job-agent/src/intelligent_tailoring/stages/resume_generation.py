@@ -14,6 +14,7 @@ from intelligent_tailoring.schemas import (
     PIPELINE_VERSION,
     InferredCompetency,
     SchemaValidationError,
+    sanitize_change_log_raw,
     validate_change_log_item,
     validate_tailored_resume,
 )
@@ -24,8 +25,7 @@ def _validate(data: dict[str, Any]) -> None:
     if "tailored_resume" not in data:
         raise SchemaValidationError("missing tailored_resume")
     validate_tailored_resume(data["tailored_resume"])
-    if "change_log" not in data or not isinstance(data["change_log"], list):
-        raise SchemaValidationError("change_log must be a list")
+    data["change_log"] = sanitize_change_log_raw(data.get("change_log"))
     for i, item in enumerate(data["change_log"]):
         validate_change_log_item(item, index=i)
 
@@ -63,6 +63,7 @@ def generate_tailored_resume(
         ),
     )
     resume = validate_tailored_resume(raw["tailored_resume"])
+    raw["change_log"] = sanitize_change_log_raw(raw.get("change_log"))
     change_log = [
         validate_change_log_item(item, index=i).to_dict()
         for i, item in enumerate(raw.get("change_log") or [])

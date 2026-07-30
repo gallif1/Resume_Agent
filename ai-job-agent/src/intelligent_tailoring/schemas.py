@@ -198,6 +198,80 @@ def normalize_inference_category(value: Any) -> str:
     return "Unsupported"
 
 
+def sanitize_change_log_raw(raw_log: Any) -> list[dict[str, Any]]:
+    """Normalize LLM change_log output before strict schema validation.
+
+    Models sometimes return strings, partial objects, or omit keys. Salvage what
+    we can and drop unusable entries instead of failing the entire tailoring run.
+    """
+    if raw_log is None:
+        return []
+    if isinstance(raw_log, dict):
+        # Some models nest under "changes" or "entries"
+        nested = raw_log.get("changes") or raw_log.get("entries") or raw_log.get("items")
+        if isinstance(nested, list):
+            raw_log = nested
+        else:
+            return []
+    if not isinstance(raw_log, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in raw_log:
+        if isinstance(item, dict):
+            entry = _normalize_change_log_dict(item)
+        elif isinstance(item, str) and item.strip():
+            entry = _normalize_change_log_dict(
+                {
+                    "original_text": "",
+                    "new_text": item.strip(),
+                    "reason": "Tailoring change (auto-normalized from string entry)",
+                }
+            )
+        else:
+            continue
+
+        category = normalize_inference_category(entry.get("inference_category"))
+        if category == "Strongly Inferred":
+            if not str(entry.get("supporting_evidence") or "").strip():
+                entry["inference_category"] = "Explicit"
+            elif not str(entry.get("reason") or "").strip():
+                entry["reason"] = "Strongly inferred competency from resume evidence"
+        if category in ("Weakly Inferred", "Unsupported"):
+            # Keep in log for audit but mark category Explicit if it would fail resume inclusion
+            entry["inference_category"] = "Explicit"
+        normalized.append(entry)
+    return normalized
+
+
+def _normalize_change_log_dict(item: dict[str, Any]) -> dict[str, Any]:
+    reason = str(item.get("reason") or item.get("reasoning") or "").strip()
+    related = str(
+        item.get("related_job_requirement")
+        or item.get("related_requirement")
+        or item.get("requirement")
+        or ""
+    ).strip()
+    confidence_raw = item.get("confidence_score", item.get("confidence", 1.0))
+    try:
+        confidence = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence = 1.0
+
+    return {
+        "original_text": str(item.get("original_text") or item.get("before") or ""),
+        "new_text": str(item.get("new_text") or item.get("after") or item.get("text") or ""),
+        "reason": reason,
+        "supporting_evidence": str(
+            item.get("supporting_evidence") or item.get("evidence") or ""
+        ),
+        "related_job_requirement": related,
+        "inference_category": str(item.get("inference_category") or "Explicit"),
+        "confidence_score": max(0.0, min(1.0, confidence)),
+        "accepted": item.get("accepted"),
+    }
+
+
 def validate_change_log_item(item: Any, *, index: int = 0) -> ChangeLogItem:
     if not isinstance(item, dict):
         raise SchemaValidationError(f"change_log[{index}] must be an object")
