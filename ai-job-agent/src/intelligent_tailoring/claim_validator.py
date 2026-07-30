@@ -38,6 +38,12 @@ _STOP = frozenset(
         "experience", "experienced", "responsible", "worked", "work", "working",
         "helped", "help", "including", "include", "included", "team", "project",
         "role", "skills", "skill", "years", "year", "strong", "knowledge",
+        "professional", "dedicated", "motivated", "results", "driven", "proven",
+        "building", "built", "developing", "developed", "creating", "created",
+        "supporting", "supported", "implementing", "implemented", "providing",
+        "provided", "managing", "managed", "leading", "tools", "technologies",
+        "backend", "frontend", "fullstack", "full", "stack", "cloud", "data",
+        "candidate", "candidates", "roles", "applications", "services",
         "ניסיון", "עבודה", "אחריות", "צוות", "פרויקט", "תפקיד",
     }
 )
@@ -70,16 +76,23 @@ def _tokens(text: str) -> set[str]:
 
 
 def _entity_tokens(text: str) -> set[str]:
-    """Tokens that look like proper nouns / tech / employers (stricter)."""
+    """Tokens that look like proper nouns / tech / employers (stricter).
+
+    Sentence-start capitalization of ordinary English verbs/nouns is ignored.
+    We only keep ALLCAPS acronyms, CamelCase products, and tech-like tokens.
+    """
     tokens = set()
     for raw in re.findall(
-        r"\b[A-Z][a-zA-Z0-9+#.]{1,}\b|\b(?:[A-Z]{2,}[a-z0-9+]*)\b|[a-z0-9]*[#++][a-z0-9]*",
+        r"\b(?:[A-Z]{2,}[a-z0-9+]*)\b|"  # AWS, PostgreSQL-ish acronyms
+        r"\b[A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9+#.]*\b|"  # CamelCase / FastAPI
+        r"\b[a-z0-9]*[#++][a-z0-9]*\b|"  # C++, C#
+        r"\b(?:[A-Z][a-z]+(?:\.[A-Za-z]+)+)\b",  # Node.js style
         text or "",
     ):
         low = raw.lower()
         if low not in _STOP and len(low) > 1:
             tokens.add(low)
-    # Also keep hebrew multi-char tokens that appear capitalized contextually — keep all he tokens length>=3
+    # Hebrew multi-char tokens length>=3 kept as soft entities
     for he in re.findall(r"[\u0590-\u05FF]{3,}", text or ""):
         tokens.add(he.lower())
     return tokens
@@ -104,45 +117,55 @@ def statement_supported_by_evidence(
     if not statement:
         return True, "empty"
 
-    # Path 2: approved strongly-inferred competencies
+    # Hard checks FIRST — evidence-map / inference paths must never bypass them.
+    from intelligent_tailoring.scope_validator import has_unsupported_impact
+
+    if has_unsupported_impact(statement, source_text):
+        return False, "unsupported_impact_claim"
+
+    evidence = SourceEvidence.build(source_text)
+    if not evidence:
+        return False, "empty_source_resume"
+
+    novel_entities = _entity_tokens(statement) - _entity_tokens(source_text)
+    suspicious = {
+        e
+        for e in novel_entities
+        if e not in _STOP and len(e) > 2 and not skill_supported_by_source(e, source_text)
+    }
+    if suspicious:
+        still = {e for e in suspicious if not evidence.has_word(e)}
+        if still:
+            return False, f"unsupported_entities:{', '.join(sorted(still)[:5])}"
+
+    # Path 2: approved strongly-inferred competencies (exact / contained statement only)
     stmt_l = statement.lower()
     for inf in strongly_inferred or []:
         if not inf.statement:
             continue
         if stmt_l == inf.statement.lower() or inf.statement.lower() in stmt_l:
             if inf.inference_category == "Strongly Inferred" and inf.supporting_evidence:
+                # Supporting evidence itself must appear in the source resume.
+                if not skill_supported_by_source(
+                    inf.supporting_evidence[:80], source_text
+                ) and not (
+                    _tokens(inf.supporting_evidence) & _tokens(source_text)
+                ):
+                    continue
                 return True, f"strongly_inferred:{inf.ontology_rule_id or 'manual'}"
 
-    # Path 3: evidence map
+    # Path 3: evidence map — require category + evidence, still subject to hard checks above
     for entry in evidence_map or []:
         generated = str(entry.get("generated_statement") or entry.get("statement") or "")
         category = normalize_inference_category(entry.get("inference_category"))
-        evidence = str(entry.get("supporting_evidence") or entry.get("resume_evidence") or "")
+        map_evidence = str(
+            entry.get("supporting_evidence") or entry.get("resume_evidence") or ""
+        )
         if not generated:
             continue
         if generated.lower() in stmt_l or stmt_l in generated.lower():
-            if category in ALLOWED_INFERENCE_IN_RESUME and evidence.strip():
+            if category in ALLOWED_INFERENCE_IN_RESUME and map_evidence.strip():
                 return True, f"evidence_map:{category}"
-
-    # Path 1: explicit support via source text
-    evidence = SourceEvidence.build(source_text)
-    if not evidence:
-        return False, "empty_source_resume"
-
-    # Employer / tech entity check: any ALLCAPS/CamelCase novel entity must appear in source.
-    novel_entities = _entity_tokens(statement) - _entity_tokens(source_text)
-    # Filter entities that are common English verbs capitalized at sentence start.
-    suspicious = {
-        e
-        for e in novel_entities
-        if e not in _STOP and len(e) > 2 and not skill_supported_by_source(e, source_text)
-    }
-    # Only flag if it looks like a proper noun / product (has uppercase origin in statement)
-    if suspicious:
-        # Re-check: if the suspicious token appears in source (case-insensitive word), allow.
-        still = {e for e in suspicious if not evidence.has_word(e)}
-        if still and len(still) >= 2:
-            return False, f"unsupported_entities:{', '.join(sorted(still)[:5])}"
 
     stmt_tokens = _tokens(statement)
     if not stmt_tokens:
@@ -155,14 +178,22 @@ def statement_supported_by_evidence(
         # Ontology-backed short competency phrases may appear only via inferred list;
         # without that, reject.
         overlap = sum(1 for t in stmt_tokens if evidence.has_word(t))
-        if overlap / max(len(stmt_tokens), 1) >= 0.6:
+        if overlap / max(len(stmt_tokens), 1) >= 0.5:
             return True, "token_overlap"
+        # Allow rephrasing when the majority of content tokens appear in source
+        source_tokens = _tokens(source_text)
+        shared = stmt_tokens & source_tokens
+        if len(shared) >= 2 and len(shared) / max(len(stmt_tokens), 1) >= 0.4:
+            return True, f"rephrased_overlap:{len(shared)}"
         return False, "unsupported_skill_or_claim"
 
     source_tokens = _tokens(source_text)
     overlap = len(stmt_tokens & source_tokens) / max(len(stmt_tokens), 1)
     if overlap >= min_token_overlap:
         return True, f"token_overlap:{overlap:.2f}"
+    # Rephrased bullets often introduce synonyms; require enough shared content nouns
+    if len(stmt_tokens & source_tokens) >= 2 and overlap >= max(0.28, min_token_overlap - 0.15):
+        return True, f"rephrased_overlap:{overlap:.2f}"
     return False, f"insufficient_overlap:{overlap:.2f}"
 
 

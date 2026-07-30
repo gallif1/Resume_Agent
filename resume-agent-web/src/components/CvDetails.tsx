@@ -1500,14 +1500,58 @@ export default function CvDetails({
                   </div>
                   <ul className="tailored-change-list">
                     {tailoredCv.change_log!.slice(0, 12).map((item, index) => (
-                      <li key={`change-${index}`} className="tailored-change-item">
-                        <div>
-                          <span className="tailored-change-category">
-                            {item.inference_category || "Explicit"}
-                          </span>
-                          {item.new_text || item.reason || "שינוי"}
-                          {item.reason ? (
-                            <span className="cv-meta"> — {item.reason}</span>
+                      <li key={`change-${index}`} className="tailored-change-card">
+                        <div className="tailored-change-card-body">
+                          <div className="tailored-change-tags">
+                            {item.section ? (
+                              <span className="tailored-change-category">{item.section}</span>
+                            ) : null}
+                            {item.change_type ? (
+                              <span className="tailored-change-category tailored-change-type">
+                                {item.change_type}
+                              </span>
+                            ) : null}
+                            <span className="tailored-change-category">
+                              {item.inference_category || item.evidence_type || "Explicit"}
+                            </span>
+                          </div>
+                          {item.original_text ? (
+                            <p
+                              className="tailored-change-original cv-meta"
+                              dir="auto"
+                              lang={/[A-Za-z]/.test(item.original_text) ? "en" : undefined}
+                            >
+                              מקור: {item.original_text}
+                            </p>
+                          ) : null}
+                          {item.new_text ? (
+                            <p
+                              className="tailored-change-new"
+                              dir="auto"
+                              lang={/[A-Za-z]/.test(item.new_text) ? "en" : undefined}
+                            >
+                              {item.new_text}
+                            </p>
+                          ) : (
+                            <p className="tailored-change-new cv-meta">
+                              {item.reason || "הוסר / הורד בעדיפות"}
+                            </p>
+                          )}
+                          {item.reason && item.new_text ? (
+                            <p className="cv-meta" dir="auto">
+                              סיבה: {item.reason}
+                            </p>
+                          ) : null}
+                          {item.supporting_evidence ? (
+                            <p
+                              className="cv-meta"
+                              dir="auto"
+                              lang={
+                                /[A-Za-z]/.test(item.supporting_evidence) ? "en" : undefined
+                              }
+                            >
+                              ראיה: {item.supporting_evidence}
+                            </p>
                           ) : null}
                         </div>
                         <button

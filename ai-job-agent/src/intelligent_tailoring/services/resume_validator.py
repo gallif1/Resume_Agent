@@ -7,7 +7,7 @@ from typing import Any
 from intelligent_tailoring.services.similarity import compare_resumes
 
 MAX_SIMILARITY_THRESHOLD = 0.80
-MAX_REGENERATION_ATTEMPTS = 2
+MAX_REGENERATION_ATTEMPTS = 1
 
 
 def validate_tailoring_depth(

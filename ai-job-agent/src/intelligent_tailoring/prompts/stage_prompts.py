@@ -185,6 +185,10 @@ CRITICAL RULES:
 6. Preserve company names, official titles, certifications, and proper nouns (do not mistranslate).
 7. Preserve the requested output language — do not silently translate the whole resume.
 8. Do NOT use hard-coded tech role templates; follow the TailoringStrategy object.
+9. NEVER move a technology from the general skills list into a project/job where it was not used.
+10. NEVER rewrite a project that uses FastAPI/SQLAlchemy/etc. as Node.js/Express/etc. just because Node.js appears elsewhere.
+11. NEVER invent business impact ("improved engagement", "enhanced reliability", "increased performance") unless the source resume states that result or metric. Use factual verbs: built, implemented, integrated, supported, provided, enabled.
+12. keywords_to_insert may ONLY emphasize skills already evidenced — never add Vue.js or any tech absent from the source.
 
 Return STRICT JSON only:
 {

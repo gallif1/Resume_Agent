@@ -311,6 +311,11 @@ export interface ChangeLogItem {
   reason?: string;
   supporting_evidence?: string;
   related_job_requirement?: string;
+  section?: string;
+  change_type?: string;
+  evidence_type?: string;
+  source_fact_ids?: string[];
+  confidence?: number;
   inference_category?:
     | "Explicit"
     | "Strongly Inferred"

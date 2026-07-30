@@ -32,7 +32,7 @@ JSON_RETRY_NOTE = (
     "Return ONLY the JSON object, nothing else."
 )
 
-PIPELINE_VERSION = "intelligent_tailor_v3"
+PIPELINE_VERSION = "intelligent_tailor_v4"
 
 
 @dataclass
@@ -45,9 +45,18 @@ class ChangeLogItem:
     inference_category: str = "Explicit"
     confidence_score: float = 1.0
     accepted: bool | None = None  # None = pending user review
+    section: str = ""
+    change_type: str = ""
+    source_fact_ids: list[str] = field(default_factory=list)
+    evidence_type: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if not data.get("evidence_type"):
+            data["evidence_type"] = data.get("inference_category") or "Explicit"
+        if data.get("confidence_score") is not None:
+            data["confidence"] = data["confidence_score"]
+        return data
 
 
 @dataclass
@@ -232,14 +241,16 @@ def sanitize_change_log_raw(raw_log: Any) -> list[dict[str, Any]]:
             continue
 
         category = normalize_inference_category(entry.get("inference_category"))
+        entry["inference_category"] = category
         if category == "Strongly Inferred":
             if not str(entry.get("supporting_evidence") or "").strip():
-                entry["inference_category"] = "Explicit"
+                # Downgrade — do not invent Explicit cover for weak evidence
+                entry["inference_category"] = "Unsupported"
+                entry["accepted"] = False
             elif not str(entry.get("reason") or "").strip():
                 entry["reason"] = "Strongly inferred competency from resume evidence"
         if category in ("Weakly Inferred", "Unsupported"):
-            # Keep in log for audit but mark category Explicit if it would fail resume inclusion
-            entry["inference_category"] = "Explicit"
+            entry["accepted"] = False
         normalized.append(entry)
     return normalized
 
@@ -257,6 +268,9 @@ def _normalize_change_log_dict(item: dict[str, Any]) -> dict[str, Any]:
         confidence = float(confidence_raw)
     except (TypeError, ValueError):
         confidence = 1.0
+    fact_ids = item.get("source_fact_ids") or []
+    if not isinstance(fact_ids, list):
+        fact_ids = []
 
     return {
         "original_text": str(item.get("original_text") or item.get("before") or ""),
@@ -269,6 +283,12 @@ def _normalize_change_log_dict(item: dict[str, Any]) -> dict[str, Any]:
         "inference_category": str(item.get("inference_category") or "Explicit"),
         "confidence_score": max(0.0, min(1.0, confidence)),
         "accepted": item.get("accepted"),
+        "section": str(item.get("section") or ""),
+        "change_type": str(item.get("change_type") or ""),
+        "source_fact_ids": [str(x) for x in fact_ids if str(x).strip()],
+        "evidence_type": str(
+            item.get("evidence_type") or item.get("inference_category") or "Explicit"
+        ),
     }
 
 
@@ -291,6 +311,9 @@ def validate_change_log_item(item: Any, *, index: int = 0) -> ChangeLogItem:
             raise SchemaValidationError(
                 f"change_log[{index}] Strongly Inferred requires reason/reasoning"
             )
+    fact_ids = item.get("source_fact_ids") or []
+    if not isinstance(fact_ids, list):
+        fact_ids = []
     return ChangeLogItem(
         original_text=str(item.get("original_text") or ""),
         new_text=str(item.get("new_text") or ""),
@@ -300,6 +323,12 @@ def validate_change_log_item(item: Any, *, index: int = 0) -> ChangeLogItem:
         inference_category=category,
         confidence_score=confidence,
         accepted=item.get("accepted"),
+        section=str(item.get("section") or ""),
+        change_type=str(item.get("change_type") or ""),
+        source_fact_ids=[str(x) for x in fact_ids if str(x).strip()],
+        evidence_type=str(
+            item.get("evidence_type") or category or "Explicit"
+        ),
     )
 
 
@@ -455,6 +484,9 @@ def tailored_resume_to_legacy_cv(resume: TailoredResume | dict[str, Any]) -> dic
     return {
         "professional_title": str(data.get("professional_title") or "").strip(),
         "summary": str(
+            data.get("professional_summary") or data.get("summary") or ""
+        ).strip(),
+        "professional_summary": str(
             data.get("professional_summary") or data.get("summary") or ""
         ).strip(),
         "skills": list(data.get("skills") or []),

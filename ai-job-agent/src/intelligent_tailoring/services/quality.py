@@ -219,7 +219,7 @@ def _mostly_title_change(
     return exp_sim > 0.92 and skills_sim > 0.92
 
 
-def should_regenerate_for_quality(report: dict[str, Any], attempt: int, max_attempts: int = 2) -> bool:
+def should_regenerate_for_quality(report: dict[str, Any], attempt: int, max_attempts: int = 1) -> bool:
     if attempt >= max_attempts:
         return False
     return bool(report.get("regeneration_required"))

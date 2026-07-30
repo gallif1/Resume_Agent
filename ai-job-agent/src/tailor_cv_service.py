@@ -263,7 +263,9 @@ def render_tailored_cv_markdown(
     if target_role:
         lines += ["", f"Target Role: {target_role}"]
 
-    summary = str(cv.get("summary") or "").strip()
+    summary = str(
+        cv.get("professional_summary") or cv.get("summary") or ""
+    ).strip()
     if summary:
         lines += ["", "## Professional Summary", "", summary]
 
@@ -301,6 +303,9 @@ def render_tailored_cv_markdown(
             if bullets:
                 lines.append("")
                 lines += [f"- {bullet}" for bullet in bullets]
+            techs = _string_list(entry.get("technologies"), max_items=20)
+            if techs:
+                lines += ["", f"Technologies: {', '.join(techs)}"]
 
     skills = _string_list(cv.get("skills"), max_items=40)
     if skills:
@@ -321,6 +326,16 @@ def render_tailored_cv_markdown(
             meta = _entry_meta_line(institution if degree else "", dates)
             if meta:
                 lines += ["", meta]
+
+    certifications = list(cv.get("certifications") or [])
+    if certifications:
+        lines += ["", "## Certifications", ""]
+        for cert in certifications:
+            text = (
+                str(cert.get("name") if isinstance(cert, dict) else cert).strip()
+            )
+            if text:
+                lines.append(f"- {text}")
 
     return "\n".join(lines).strip() + "\n"
 
@@ -426,38 +441,34 @@ def matcher_feedback_from_report(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _document_changes(report: dict[str, Any]) -> list[str]:
-    """The "פירוט שינויים" bullets, derived from the evaluation itself."""
-    # Prefer structured change_log from Intelligent Resume Tailoring when present.
+    """Short Hebrew UI bullets for the markdown preamble — NOT raw LLM text.
+
+    Full structured change_log is returned separately in the API for the review panel.
+    """
     structured: list[str] = []
     for item in report.get("change_log") or []:
         if not isinstance(item, dict):
             continue
-        new_text = str(item.get("new_text") or "").strip()
+        section = str(item.get("section") or "").strip()
+        change_type = str(item.get("change_type") or "").strip()
         reason = str(item.get("reason") or "").strip()
-        category = str(item.get("inference_category") or "").strip()
-        if new_text and reason:
-            structured.append(f"[{category or 'Explicit'}] {reason}: {new_text}")
-        elif new_text:
-            structured.append(new_text)
+        new_text = str(item.get("new_text") or "").strip()
+        # Keep preamble concise — one line per change, truncated
+        label = section or change_type or "שינוי"
+        snippet = (new_text or reason)[:120]
+        if snippet:
+            structured.append(f"{label}: {snippet}")
+        if len(structured) >= 8:
+            break
     if structured:
-        return structured[:12]
+        return structured
 
     extraction = report.get("requirement_extraction") or {}
     hard = extraction.get("hard_requirements") or []
     soft = extraction.get("soft_requirements") or []
-    changes = [
+    return [
         f"נותחו {len(hard)} דרישות חובה ו-{len(soft)} דרישות מועדפות מתוך תיאור המשרה.",
     ]
-    for point in (report.get("key_matching_points") or [])[:6]:
-        changes.append(f"הודגשה התאמה אמיתית: {point}")
-    for item in (report.get("transferable_skills_framing") or [])[:4]:
-        gap = str(item.get("gap") or "").strip()
-        framing = str(
-            item.get("how_to_honestly_frame_existing_experience") or ""
-        ).strip()
-        if gap and framing:
-            changes.append(f"מיסגור כנה של הפער ב{gap}: {framing}")
-    return changes
 
 
 def _document_caveats(report: dict[str, Any]) -> list[str]:
@@ -563,6 +574,11 @@ def build_tailor_document(
         "jd_snapshot_hash": report.get("jd_snapshot_hash"),
         "resume_hash": report.get("resume_hash"),
         "pipeline_version": report.get("pipeline_version") or TAILOR_PIPELINE_VERSION,
+        "quality_gates": report.get("quality_gates") or {},
+        "quality_report": report.get("quality_report") or {},
+        "extraction_coverage": report.get("extraction_coverage") or {},
+        "tailoring_report": report.get("tailoring_report") or {},
+        "rejected_statements": list(report.get("rejected_statements") or []),
     }
 
 
@@ -748,6 +764,43 @@ def _read_saved_draft(cv_id: str, job_id: int) -> tuple[str | None, str | None]:
         text = text[marker.end() :]
     text = text.strip()
     return (text or None), version
+
+
+def assert_safe_to_export(report: dict[str, Any] | None) -> None:
+    """Block PDF/DOCX/markdown export when hard quality gates failed."""
+    from intelligent_tailoring.quality_gates import should_block_export
+
+    report = report or {}
+    gates = report.get("quality_gates")
+    if gates is None:
+        # Legacy drafts without gate metadata — allow, but require claim flag if present
+        if report.get("claim_validator_passed") is False:
+            raise TailorCvError(
+                "לא ניתן לייצא — בודק הטענות נכשל. יש לייצר מחדש.",
+                status_code=422,
+            )
+        return
+    if should_block_export(gates):
+        hard = [
+            f
+            for f in (gates.get("failures") or [])
+            if any(
+                str(f).startswith(p)
+                for p in (
+                    "unsupported_impact",
+                    "unsupported_entity",
+                    "cross_entry_tech",
+                    "unknown_skill",
+                    "missing_professional_summary",
+                    "raw_llm_reasoning",
+                )
+            )
+        ]
+        if hard:
+            raise TailorCvError(
+                "לא ניתן לייצא — שערי איכות נכשלו: " + "; ".join(hard[:5]),
+                status_code=422,
+            )
 
 
 def load_saved_tailored_cv(cv_id: str, job_id: int) -> str | None:
@@ -1184,10 +1237,9 @@ def tailor_cv_for_job(
 ) -> dict[str, Any]:
     """Generate (or load) the tailored CV for one job.
 
-    Everything the user sees — the score, the gaps, the resume body — comes from
-    :func:`match_tailor_service.evaluate_candidate_for_job`. Drafts saved by an
-    older pipeline are regenerated rather than replayed, so a stale inflated
-    score cannot survive a deploy.
+    Production path: ``run_intelligent_tailoring`` via ``_evaluate``.
+    Drafts saved by an older pipeline are regenerated rather than replayed.
+    ``force=True`` always bypasses disk AND LLM caches.
     """
     if regenerate:
         return _regenerate_tailored_cv(
@@ -1195,6 +1247,9 @@ def tailor_cv_for_job(
         )
 
     job_id = int(job["id"])
+
+    # Force regenerate must never reuse caches.
+    effective_cache = bool(use_cache) and not force
 
     if not force and saved_draft_is_current(cv_id, job_id):
         cached = load_saved_tailored_cv(cv_id, job_id)
@@ -1224,7 +1279,7 @@ def tailor_cv_for_job(
         job,
         cv_profile=cv_profile,
         user_id=user_id,
-        use_cache=use_cache,
+        use_cache=effective_cache,
     )
     score = report_match_score(report)
     score_before = latest_score if latest_score is not None else score
@@ -1237,6 +1292,7 @@ def tailor_cv_for_job(
         score_before=score_before,
         initial_match_score=initial,
     )
+    assert_safe_to_export({**report, **document})
     path = save_tailored_cv(cv_id, job_id, document["markdown"])
     version_id = _record_version(
         cv_id,

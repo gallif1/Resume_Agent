@@ -106,6 +106,7 @@ from site_auth import import_linkedin_storage_state, linkedin_storage_state_path
 from site_credentials import public_site_credentials, update_site_credentials
 from tailor_cv_service import (
     TailorCvError,
+    assert_safe_to_export,
     evaluate_job_for_cv,
     extract_cv_markdown_for_copy,
     load_saved_tailored_cv,
@@ -1764,6 +1765,17 @@ def download_tailored_cv_pdf(
             detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
         )
 
+    # Enforce quality gates from the structured report when available
+    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+    try:
+        report_row = db.get_tailored_resume_report(
+            cv_id=cv_id, job_id=job_id, db_path=cv_db
+        )
+        if report_row and isinstance(report_row.get("report"), dict):
+            assert_safe_to_export(report_row["report"])
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
     cv_body = extract_cv_markdown_for_copy(saved)
     try:
         pdf_bytes, filename = generate_tailored_cv_pdf(cv_body)
@@ -1809,6 +1821,12 @@ def download_tailored_cv_docx(
             status_code=404,
             detail="לא נמצא דוח התאמה מובנה לייצוא DOCX — יש לייצר קורות חיים מחדש",
         )
+
+    try:
+        if report_row and isinstance(report_row.get("report"), dict):
+            assert_safe_to_export(report_row["report"])
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     from intelligent_tailoring.docx_export import build_tailored_cv_docx
     from tailor_cv_service import build_resume_header, _load_cv_profile_or_raise
