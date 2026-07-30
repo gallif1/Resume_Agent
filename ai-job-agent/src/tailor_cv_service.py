@@ -252,6 +252,11 @@ def render_tailored_cv_markdown(
         lines.append(f"# {name}")
     if contact_line:
         lines += ["", contact_line]
+    professional_title = str(cv.get("professional_title") or "").strip()
+    # Honest headline for how the candidate presents (may differ from the JD
+    # Target Role when hard coverage is too weak to claim that role directly).
+    if professional_title and professional_title.lower() != (target_role or "").lower():
+        lines += ["", professional_title]
     if target_role:
         lines += ["", f"Target Role: {target_role}"]
 
@@ -373,7 +378,11 @@ def matcher_feedback_from_report(report: dict[str, Any]) -> dict[str, Any]:
     scoring = report.get("scoring") or {}
     validation = report.get("score_validation") or {}
     score = report_match_score(report)
-    missing = list(report.get("missing_critical_skills") or [])
+    missing_raw = list(report.get("missing_critical_skills") or [])
+    # Gap entries may be "skill — reason"; keyword/UI lists want the skill name.
+    missing = [
+        str(item).split(" — ", 1)[0].strip() or str(item) for item in missing_raw
+    ]
     rationale = str(scoring.get("score_rationale") or "").strip()
     return {
         "match_score": score,
@@ -425,7 +434,9 @@ def _document_changes(report: dict[str, Any]) -> list[str]:
 def _document_caveats(report: dict[str, Any]) -> list[str]:
     caveats: list[str] = []
     for skill in (report.get("missing_critical_skills") or [])[:8]:
-        caveats.append(f"לא נטען ניסיון ב-{skill} — הפער נשאר גלוי")
+        # Entries may be "skill — reason" after deeper gap analysis.
+        label = str(skill).split(" — ", 1)[0].strip() or str(skill)
+        caveats.append(f"לא נטען ניסיון ב-{label} — הפער נשאר גלוי")
     dropped = (report.get("score_validation") or {}).get(
         "dropped_unsupported_skills"
     ) or []
