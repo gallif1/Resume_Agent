@@ -1,0 +1,556 @@
+"""Deterministic claim validator for tailored resume statements.
+
+Every generated statement must be traceable to Explicit or Strongly Inferred
+evidence. Weakly Inferred and Unsupported claims are rejected here — after any
+LLM assist — so the model cannot silently invent experience.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Iterable
+
+from intelligent_tailoring.experience_math import (
+    claim_years_supported,
+    estimate_years_from_text,
+    extract_years_claims,
+    years_from_experience_entries,
+)
+from intelligent_tailoring.schemas import (
+    ALLOWED_INFERENCE_IN_RESUME,
+    ChangeLogItem,
+    InferredCompetency,
+    TailoredResume,
+    ValidationWarning,
+    normalize_inference_category,
+)
+from match_tailor_service import SourceEvidence, skill_supported_by_source
+
+_TOKEN_RE = re.compile(r"[a-z0-9#+.]{2,}|[\u0590-\u05FF]{2,}", re.IGNORECASE)
+
+# Words that do not count as entity evidence on their own.
+_STOP = frozenset(
+    {
+        "the", "and", "or", "a", "an", "to", "of", "in", "for", "with", "on", "at",
+        "by", "from", "as", "is", "are", "was", "were", "be", "been", "this", "that",
+        "using", "used", "use", "via", "into", "over", "under", "about", "across",
+        "experience", "experienced", "responsible", "worked", "work", "working",
+        "helped", "help", "including", "include", "included", "team", "project",
+        "role", "skills", "skill", "years", "year", "strong", "knowledge",
+        "ניסיון", "עבודה", "אחריות", "צוות", "פרויקט", "תפקיד",
+    }
+)
+
+
+@dataclass
+class ClaimValidationResult:
+    cleaned_resume: TailoredResume
+    warnings: list[ValidationWarning] = field(default_factory=list)
+    rejected_statements: list[str] = field(default_factory=list)
+    change_log: list[ChangeLogItem] = field(default_factory=list)
+    inferred_competencies: list[InferredCompetency] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cleaned_resume": self.cleaned_resume.to_dict(),
+            "warnings": [w.to_dict() for w in self.warnings],
+            "rejected_statements": list(self.rejected_statements),
+            "change_log": [c.to_dict() for c in self.change_log],
+            "inferred_competencies": [c.to_dict() for c in self.inferred_competencies],
+        }
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t.lower()
+        for t in _TOKEN_RE.findall(text or "")
+        if t.lower() not in _STOP and len(t) > 1
+    }
+
+
+def _entity_tokens(text: str) -> set[str]:
+    """Tokens that look like proper nouns / tech / employers (stricter)."""
+    tokens = set()
+    for raw in re.findall(
+        r"\b[A-Z][a-zA-Z0-9+#.]{1,}\b|\b(?:[A-Z]{2,}[a-z0-9+]*)\b|[a-z0-9]*[#++][a-z0-9]*",
+        text or "",
+    ):
+        low = raw.lower()
+        if low not in _STOP and len(low) > 1:
+            tokens.add(low)
+    # Also keep hebrew multi-char tokens that appear capitalized contextually — keep all he tokens length>=3
+    for he in re.findall(r"[\u0590-\u05FF]{3,}", text or ""):
+        tokens.add(he.lower())
+    return tokens
+
+
+def statement_supported_by_evidence(
+    statement: str,
+    *,
+    source_text: str,
+    evidence_map: Iterable[dict[str, Any]] | None = None,
+    strongly_inferred: Iterable[InferredCompetency] | None = None,
+    min_token_overlap: float = 0.45,
+) -> tuple[bool, str]:
+    """Return (supported?, reason).
+
+    Support paths:
+    1. Explicit — statement tokens appear in source resume
+    2. Strongly Inferred — statement matches an approved inferred competency
+    3. Evidence map entry links the statement to resume evidence
+    """
+    statement = (statement or "").strip()
+    if not statement:
+        return True, "empty"
+
+    # Path 2: approved strongly-inferred competencies
+    stmt_l = statement.lower()
+    for inf in strongly_inferred or []:
+        if not inf.statement:
+            continue
+        if stmt_l == inf.statement.lower() or inf.statement.lower() in stmt_l:
+            if inf.inference_category == "Strongly Inferred" and inf.supporting_evidence:
+                return True, f"strongly_inferred:{inf.ontology_rule_id or 'manual'}"
+
+    # Path 3: evidence map
+    for entry in evidence_map or []:
+        generated = str(entry.get("generated_statement") or entry.get("statement") or "")
+        category = normalize_inference_category(entry.get("inference_category"))
+        evidence = str(entry.get("supporting_evidence") or entry.get("resume_evidence") or "")
+        if not generated:
+            continue
+        if generated.lower() in stmt_l or stmt_l in generated.lower():
+            if category in ALLOWED_INFERENCE_IN_RESUME and evidence.strip():
+                return True, f"evidence_map:{category}"
+
+    # Path 1: explicit support via source text
+    evidence = SourceEvidence.build(source_text)
+    if not evidence:
+        return False, "empty_source_resume"
+
+    # Employer / tech entity check: any ALLCAPS/CamelCase novel entity must appear in source.
+    novel_entities = _entity_tokens(statement) - _entity_tokens(source_text)
+    # Filter entities that are common English verbs capitalized at sentence start.
+    suspicious = {
+        e
+        for e in novel_entities
+        if e not in _STOP and len(e) > 2 and not skill_supported_by_source(e, source_text)
+    }
+    # Only flag if it looks like a proper noun / product (has uppercase origin in statement)
+    if suspicious:
+        # Re-check: if the suspicious token appears in source (case-insensitive word), allow.
+        still = {e for e in suspicious if not evidence.has_word(e)}
+        if still and len(still) >= 2:
+            return False, f"unsupported_entities:{', '.join(sorted(still)[:5])}"
+
+    stmt_tokens = _tokens(statement)
+    if not stmt_tokens:
+        return True, "no_content_tokens"
+
+    # Skill-like short statements
+    if len(stmt_tokens) <= 4:
+        if skill_supported_by_source(statement, source_text):
+            return True, "skill_supported"
+        # Ontology-backed short competency phrases may appear only via inferred list;
+        # without that, reject.
+        overlap = sum(1 for t in stmt_tokens if evidence.has_word(t))
+        if overlap / max(len(stmt_tokens), 1) >= 0.6:
+            return True, "token_overlap"
+        return False, "unsupported_skill_or_claim"
+
+    source_tokens = _tokens(source_text)
+    overlap = len(stmt_tokens & source_tokens) / max(len(stmt_tokens), 1)
+    if overlap >= min_token_overlap:
+        return True, f"token_overlap:{overlap:.2f}"
+    return False, f"insufficient_overlap:{overlap:.2f}"
+
+
+def _filter_bullet_list(
+    bullets: list[Any],
+    *,
+    source_text: str,
+    evidence_map: list[dict[str, Any]],
+    strongly_inferred: list[InferredCompetency],
+    warnings: list[ValidationWarning],
+    rejected: list[str],
+) -> list[str]:
+    kept: list[str] = []
+    for raw in bullets or []:
+        text = str(raw).strip()
+        if not text:
+            continue
+        ok, reason = statement_supported_by_evidence(
+            text,
+            source_text=source_text,
+            evidence_map=evidence_map,
+            strongly_inferred=strongly_inferred,
+        )
+        if ok:
+            kept.append(text)
+        else:
+            rejected.append(text)
+            warnings.append(
+                ValidationWarning(
+                    statement=text,
+                    reason=f"Rejected by claim validator ({reason})",
+                    inference_category="Unsupported",
+                )
+            )
+    return kept
+
+
+def validate_claims(
+    *,
+    original_resume_text: str,
+    tailored_resume: TailoredResume | dict[str, Any],
+    evidence_map: list[dict[str, Any]] | None = None,
+    change_log: list[ChangeLogItem] | list[dict[str, Any]] | None = None,
+    inferred_competencies: list[InferredCompetency] | list[dict[str, Any]] | None = None,
+    job_requirements: dict[str, Any] | None = None,  # noqa: ARG001 — reserved for future
+) -> ClaimValidationResult:
+    """Strip unsupported statements from the tailored resume and emit warnings."""
+    if isinstance(tailored_resume, dict):
+        resume = TailoredResume(
+            professional_summary=str(
+                tailored_resume.get("professional_summary")
+                or tailored_resume.get("summary")
+                or ""
+            ),
+            skills=[str(s) for s in (tailored_resume.get("skills") or [])],
+            experience=[
+                e for e in (tailored_resume.get("experience") or []) if isinstance(e, dict)
+            ],
+            projects=[
+                p for p in (tailored_resume.get("projects") or []) if isinstance(p, dict)
+            ],
+            education=[
+                e for e in (tailored_resume.get("education") or []) if isinstance(e, dict)
+            ],
+            certifications=list(tailored_resume.get("certifications") or []),
+            professional_title=str(tailored_resume.get("professional_title") or ""),
+        )
+    else:
+        resume = TailoredResume(
+            professional_summary=tailored_resume.professional_summary,
+            skills=list(tailored_resume.skills),
+            experience=[dict(e) for e in tailored_resume.experience],
+            projects=[dict(p) for p in tailored_resume.projects],
+            education=[dict(e) for e in tailored_resume.education],
+            certifications=list(tailored_resume.certifications),
+            professional_title=tailored_resume.professional_title,
+        )
+
+    evidence_map = list(evidence_map or [])
+    warnings: list[ValidationWarning] = []
+    rejected: list[str] = []
+
+    # Normalize inferred competencies
+    strong: list[InferredCompetency] = []
+    for raw in inferred_competencies or []:
+        if isinstance(raw, InferredCompetency):
+            if raw.inference_category == "Strongly Inferred" and raw.supporting_evidence:
+                strong.append(raw)
+            elif raw.inference_category not in ALLOWED_INFERENCE_IN_RESUME:
+                warnings.append(
+                    ValidationWarning(
+                        statement=raw.statement,
+                        reason="Dropped non-strong inference from competencies list",
+                        inference_category=raw.inference_category,
+                    )
+                )
+            continue
+        if not isinstance(raw, dict):
+            continue
+        cat = normalize_inference_category(
+            raw.get("inference_category") or "Strongly Inferred"
+        )
+        stmt = str(raw.get("statement") or "").strip()
+        evidence = str(raw.get("supporting_evidence") or "").strip()
+        reasoning = str(raw.get("reasoning") or raw.get("reason") or "").strip()
+        if cat != "Strongly Inferred" or not stmt or not evidence:
+            if stmt:
+                warnings.append(
+                    ValidationWarning(
+                        statement=stmt,
+                        reason="Dropped weak/unsupported inferred competency",
+                        inference_category=cat,
+                    )
+                )
+            continue
+        strong.append(
+            InferredCompetency(
+                statement=stmt,
+                supporting_evidence=evidence,
+                reasoning=reasoning or "ontology/inference",
+                confidence_score=float(raw.get("confidence_score") or 0.0),
+                related_requirement=str(
+                    raw.get("related_requirement")
+                    or raw.get("related_job_requirement")
+                    or ""
+                ),
+                ontology_rule_id=str(raw.get("ontology_rule_id") or ""),
+            )
+        )
+
+    # Filter change_log: reject Weakly/Unsupported from acceptance into resume
+    cleaned_log: list[ChangeLogItem] = []
+    for raw in change_log or []:
+        if isinstance(raw, ChangeLogItem):
+            item = raw
+        elif isinstance(raw, dict):
+            item = ChangeLogItem(
+                original_text=str(raw.get("original_text") or ""),
+                new_text=str(raw.get("new_text") or ""),
+                reason=str(raw.get("reason") or ""),
+                supporting_evidence=str(raw.get("supporting_evidence") or ""),
+                related_job_requirement=str(raw.get("related_job_requirement") or ""),
+                inference_category=normalize_inference_category(
+                    raw.get("inference_category")
+                ),
+                confidence_score=float(raw.get("confidence_score") or 0.0),
+                accepted=raw.get("accepted"),
+            )
+        else:
+            continue
+        if item.inference_category not in ALLOWED_INFERENCE_IN_RESUME:
+            if item.new_text:
+                rejected.append(item.new_text)
+                warnings.append(
+                    ValidationWarning(
+                        statement=item.new_text,
+                        reason=(
+                            f"change_log entry marked {item.inference_category}; "
+                            "not applied to tailored resume"
+                        ),
+                        inference_category=item.inference_category,
+                    )
+                )
+            # Keep in log for audit but force accepted=False
+            item.accepted = False
+            cleaned_log.append(item)
+            continue
+        if item.inference_category == "Strongly Inferred" and not item.supporting_evidence:
+            item.inference_category = "Unsupported"
+            item.accepted = False
+            warnings.append(
+                ValidationWarning(
+                    statement=item.new_text,
+                    reason="Strongly Inferred change lacked supporting_evidence",
+                    inference_category="Unsupported",
+                )
+            )
+            cleaned_log.append(item)
+            continue
+        cleaned_log.append(item)
+
+    source = original_resume_text or ""
+    resume_years = years_from_experience_entries(resume.experience)
+    if resume_years is None:
+        resume_years = estimate_years_from_text(source)
+
+    # Summary
+    if resume.professional_summary:
+        ok, reason = statement_supported_by_evidence(
+            resume.professional_summary,
+            source_text=source,
+            evidence_map=evidence_map,
+            strongly_inferred=strong,
+            min_token_overlap=0.35,
+        )
+        # Years claims inside summary
+        for claimed in extract_years_claims(resume.professional_summary):
+            if not claim_years_supported(claimed, resume_years=resume_years):
+                ok = False
+                reason = f"unsupported_years_claim:{claimed}"
+                break
+        if not ok:
+            warnings.append(
+                ValidationWarning(
+                    statement=resume.professional_summary,
+                    reason=f"Summary rejected ({reason})",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(resume.professional_summary)
+            resume.professional_summary = ""
+
+    # Skills — reuse existing unsupported-skill strip semantics
+    cleaned_skills: list[str] = []
+    for skill in resume.skills:
+        text = str(skill).strip()
+        if not text:
+            continue
+        # Grouped "Category: a, b" — validate atoms
+        if ":" in text:
+            category, rest = text.split(":", 1)
+            atoms = [a.strip() for a in rest.split(",") if a.strip()]
+            kept_atoms = []
+            for atom in atoms:
+                if skill_supported_by_source(atom, source) or any(
+                    atom.lower() in inf.statement.lower() for inf in strong
+                ):
+                    kept_atoms.append(atom)
+                else:
+                    # Ontology hedged competencies may be longer phrases
+                    ok, _ = statement_supported_by_evidence(
+                        atom,
+                        source_text=source,
+                        evidence_map=evidence_map,
+                        strongly_inferred=strong,
+                    )
+                    if ok:
+                        kept_atoms.append(atom)
+                    else:
+                        rejected.append(atom)
+                        warnings.append(
+                            ValidationWarning(
+                                statement=atom,
+                                reason="Skill not evidenced in original resume",
+                                inference_category="Unsupported",
+                            )
+                        )
+            if kept_atoms:
+                cleaned_skills.append(f"{category.strip()}: {', '.join(kept_atoms)}")
+            continue
+        if skill_supported_by_source(text, source):
+            cleaned_skills.append(text)
+            continue
+        ok, reason = statement_supported_by_evidence(
+            text,
+            source_text=source,
+            evidence_map=evidence_map,
+            strongly_inferred=strong,
+        )
+        if ok:
+            cleaned_skills.append(text)
+        else:
+            rejected.append(text)
+            warnings.append(
+                ValidationWarning(
+                    statement=text,
+                    reason=f"Skill not evidenced ({reason})",
+                    inference_category="Unsupported",
+                )
+            )
+    resume.skills = cleaned_skills
+
+    # Experience / projects bullets
+    for entry in resume.experience:
+        company = str(entry.get("company") or "").strip()
+        title = str(entry.get("title") or "").strip()
+        for label, value in (("company", company), ("title", title)):
+            if not value:
+                continue
+            # Employers/titles must appear in the original resume.
+            if value.lower() not in source.lower() and not SourceEvidence.build(
+                source
+            ).has_word(value.split()[0] if value.split() else value):
+                # Soft check: if multi-word and no overlap, blank it
+                if not _tokens(value) & _tokens(source):
+                    warnings.append(
+                        ValidationWarning(
+                            statement=value,
+                            reason=f"Experience {label} not found in original resume",
+                            inference_category="Unsupported",
+                        )
+                    )
+                    rejected.append(value)
+                    entry[label] = ""
+        entry["bullets"] = _filter_bullet_list(
+            list(entry.get("bullets") or []),
+            source_text=source,
+            evidence_map=evidence_map,
+            strongly_inferred=strong,
+            warnings=warnings,
+            rejected=rejected,
+        )
+
+    for entry in resume.projects:
+        name = str(entry.get("name") or "").strip()
+        if name and name.lower() not in source.lower():
+            if not (_tokens(name) & _tokens(source)):
+                warnings.append(
+                    ValidationWarning(
+                        statement=name,
+                        reason="Project name not found in original resume",
+                        inference_category="Unsupported",
+                    )
+                )
+                rejected.append(name)
+                entry["name"] = ""
+        desc = str(entry.get("description") or "").strip()
+        if desc:
+            ok, reason = statement_supported_by_evidence(
+                desc,
+                source_text=source,
+                evidence_map=evidence_map,
+                strongly_inferred=strong,
+            )
+            if not ok:
+                warnings.append(
+                    ValidationWarning(
+                        statement=desc,
+                        reason=f"Project description rejected ({reason})",
+                        inference_category="Unsupported",
+                    )
+                )
+                rejected.append(desc)
+                entry["description"] = ""
+        entry["bullets"] = _filter_bullet_list(
+            list(entry.get("bullets") or []),
+            source_text=source,
+            evidence_map=evidence_map,
+            strongly_inferred=strong,
+            warnings=warnings,
+            rejected=rejected,
+        )
+
+    # Education / certifications — names must exist in source
+    cleaned_edu: list[dict[str, Any]] = []
+    for entry in resume.education:
+        institution = str(entry.get("institution") or "").strip()
+        degree = str(entry.get("degree") or "").strip()
+        blob = f"{institution} {degree}".strip()
+        if blob and blob.lower() not in source.lower():
+            if not (_tokens(blob) & _tokens(source)):
+                warnings.append(
+                    ValidationWarning(
+                        statement=blob,
+                        reason="Education entry not found in original resume",
+                        inference_category="Unsupported",
+                    )
+                )
+                rejected.append(blob)
+                continue
+        cleaned_edu.append(entry)
+    resume.education = cleaned_edu
+
+    cleaned_certs: list[Any] = []
+    for cert in resume.certifications:
+        text = cert if isinstance(cert, str) else str(
+            (cert or {}).get("name") or (cert or {}).get("title") or cert
+        )
+        text = str(text).strip()
+        if not text:
+            continue
+        if text.lower() in source.lower() or (_tokens(text) & _tokens(source)):
+            cleaned_certs.append(cert)
+        else:
+            warnings.append(
+                ValidationWarning(
+                    statement=text,
+                    reason="Certification not found in original resume",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(text)
+    resume.certifications = cleaned_certs
+
+    return ClaimValidationResult(
+        cleaned_resume=resume,
+        warnings=warnings,
+        rejected_statements=rejected,
+        change_log=cleaned_log,
+        inferred_competencies=strong,
+    )

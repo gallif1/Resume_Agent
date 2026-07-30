@@ -34,6 +34,11 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
            (?regenerate=true deep-scans original CVs + ATS gaps; score-guarded)
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf  download tailored CV as PDF
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-docx download tailored CV as DOCX
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/versions      list tailored versions + reports
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/report        fetch structured change report
+    POST   /cvs/{cv_id}/jobs/{job_id}/tailored-cv/changes      accept/reject individual changes
+    POST   /cvs/{cv_id}/jobs/{job_id}/tailored-cv/regenerate-section  regenerate one section
     POST   /cvs/{cv_id}/jobs/{job_id}/apply          start automated job application
     GET    /cvs/{cv_id}/job-applications/{id}        application attempt details + log
     GET    /cvs/{cv_id}/jobs/{job_id}/application-status  latest application status
@@ -57,6 +62,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -1593,6 +1599,30 @@ def _tailored_cv_response(
         "transferable_skills_framing": result.get("transferable_skills_framing") or [],
         "score_validation": result.get("score_validation"),
         "recommendation": result.get("recommendation"),
+        # Intelligent Resume Tailoring structured report
+        "tailored_resume": result.get("tailored_resume") or result.get("tailored_cv"),
+        "matched_requirements": result.get("matched_requirements") or [],
+        "missing_requirements": result.get("missing_requirements") or [],
+        "inferred_competencies": result.get("inferred_competencies") or [],
+        "removed_or_deprioritized_content": result.get(
+            "removed_or_deprioritized_content"
+        )
+        or [],
+        "ats_keywords_added": result.get("ats_keywords_added") or [],
+        "change_log": result.get("change_log") or [],
+        "validation_warnings": result.get("validation_warnings") or [],
+        "original_match_score": result.get("original_match_score"),
+        "tailored_match_score": result.get("tailored_match_score")
+        or result.get("score_after")
+        or result.get("estimated_ats_score"),
+        "evidence_map": result.get("evidence_map") or [],
+        "language": result.get("language"),
+        "claim_validator_passed": bool(result.get("claim_validator_passed", True)),
+        "pipeline_version": result.get("pipeline_version"),
+        "truthfulness_statement": (
+            "No unsupported experience was added. Only Explicit and Strongly "
+            "Inferred statements passed the claim validator."
+        ),
     }
 
 
@@ -1741,6 +1771,284 @@ def download_tailored_cv_pdf(
         "Cache-Control": "no-store",
     }
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-docx")
+def download_tailored_cv_docx(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Export the approved tailored CV as an ATS-friendly DOCX (no tables/graphics)."""
+    db.ensure_multi_cv_storage()
+    if cv_id != db.WORKSPACE_CV_ID:
+        _require_owned_cv(cv_id, user)
+
+    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+    db.init_db(cv_db)
+    report_row = db.get_tailored_resume_report(
+        cv_id=cv_id, job_id=job_id, db_path=cv_db
+    )
+    tailored_cv: dict[str, Any] = {}
+    if report_row and isinstance(report_row.get("report"), dict):
+        tailored_cv = (
+            report_row["report"].get("tailored_resume")
+            or report_row["report"].get("tailored_cv")
+            or {}
+        )
+
+    if not tailored_cv:
+        # Fall back to regenerating structure is not available — require a report.
+        raise HTTPException(
+            status_code=404,
+            detail="לא נמצא דוח התאמה מובנה לייצוא DOCX — יש לייצר קורות חיים מחדש",
+        )
+
+    from intelligent_tailoring.docx_export import build_tailored_cv_docx
+    from tailor_cv_service import build_resume_header, _load_cv_profile_or_raise
+
+    job = db.get_job_by_id(job_id, db_path=cv_db) or {
+        "title": report_row.get("report", {}).get("job_title"),
+        "company": None,
+    }
+    try:
+        profile = _load_cv_profile_or_raise(cv_id, user_id=user["id"])
+    except TailorCvError:
+        profile = {}
+    name, contact_line, target_role = build_resume_header(profile, job)
+    docx_bytes = build_tailored_cv_docx(
+        tailored_cv,
+        name=name,
+        contact_line=contact_line,
+        target_role=target_role,
+    )
+    safe_title = re.sub(r"[^\w\-]+", "_", str(job.get("title") or "CV"))[:40]
+    filename = f"CV_Tailored_{safe_title}.docx"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    return Response(
+        content=docx_bytes,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        headers=headers,
+    )
+
+
+class ChangeDecisionsRequest(BaseModel):
+    decisions: list[dict[str, Any]]
+
+
+class RegenerateSectionRequest(BaseModel):
+    section: str
+    force: bool = True
+    language: str | None = None
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/versions")
+def list_tailored_versions(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
+    """List tailored resume versions + report ids for a resume/job pair."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    versions = db.list_cv_tailor_versions(cv_id, job_id, db_path=cv_db)
+    reports = db.list_tailored_resume_reports(cv_id, job_id, db_path=cv_db)
+    return {"versions": versions, "reports": reports}
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/report")
+def get_tailored_report(
+    cv_id: str,
+    job_id: int,
+    version_id: int | None = None,
+    report_id: int | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Fetch a specific tailored resume version and its structured change report."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    row = db.get_tailored_resume_report(
+        cv_id=cv_id,
+        job_id=job_id,
+        version_id=version_id,
+        report_id=report_id,
+        db_path=cv_db,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="דוח התאמה לא נמצא")
+    return {
+        "cv_id": cv_id,
+        "job_id": job_id,
+        "report_id": row.get("id"),
+        "version_id": row.get("version_id"),
+        "language": row.get("language"),
+        "jd_snapshot_hash": row.get("jd_snapshot_hash"),
+        "resume_hash": row.get("resume_hash"),
+        "created_at": row.get("created_at"),
+        "change_decisions": row.get("change_decisions") or [],
+        "report": row.get("report") or {},
+        "truthfulness_statement": (
+            "No unsupported experience was added. Only Explicit and Strongly "
+            "Inferred statements passed the claim validator."
+        ),
+    }
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/changes")
+def apply_tailored_changes(
+    cv_id: str,
+    job_id: int,
+    req: ChangeDecisionsRequest,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Accept or reject individual change_log items; keep the document consistent."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    row = db.get_tailored_resume_report(cv_id=cv_id, job_id=job_id, db_path=cv_db)
+    if row is None or not row.get("report"):
+        raise HTTPException(status_code=404, detail="דוח התאמה לא נמצא")
+
+    from intelligent_tailoring.pipeline import apply_change_decisions
+    from tailor_cv_service import (
+        build_tailor_document,
+        save_tailored_cv,
+        _load_cv_profile_or_raise,
+    )
+
+    updated_report = apply_change_decisions(row["report"], req.decisions)
+    job = db.get_job_by_id(job_id, db_path=cv_db) or {"id": job_id, "title": "", "company": ""}
+    try:
+        profile = _load_cv_profile_or_raise(cv_id, user_id=user["id"])
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    document = build_tailor_document(
+        updated_report, cv_profile=profile, job=job
+    )
+    path = save_tailored_cv(cv_id, job_id, document["markdown"])
+    db.update_tailored_report_decisions(
+        int(row["id"]),
+        cv_id=cv_id,
+        report=updated_report,
+        change_decisions=req.decisions,
+        db_path=cv_db,
+    )
+    relative_path = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
+    return _tailored_cv_response(
+        cv_id=cv_id,
+        job_id=job_id,
+        job=job,
+        result={
+            **document,
+            **updated_report,
+            "from_cache": False,
+            "saved_path": str(path),
+            "version_id": row.get("version_id"),
+        },
+        relative_path=relative_path,
+    )
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/regenerate-section")
+def regenerate_tailored_section(
+    cv_id: str,
+    job_id: int,
+    req: RegenerateSectionRequest,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Regenerate one resume section; result always re-passes the claim validator."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None:
+        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+
+    from intelligent_tailoring.pipeline import regenerate_section
+    from tailor_cv_service import (
+        build_tailor_document,
+        gather_original_source_cvs,
+        save_tailored_cv,
+        _load_cv_profile_or_raise,
+        report_match_score,
+        _record_version,
+        _publish_score,
+        _match_scope_id,
+    )
+
+    try:
+        profile = _load_cv_profile_or_raise(cv_id, user_id=user["id"])
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    previous = db.get_tailored_resume_report(cv_id=cv_id, job_id=job_id, db_path=cv_db)
+    sources = gather_original_source_cvs(cv_id, user_id=user["id"], cv_profile=profile)
+    try:
+        report = regenerate_section(
+            cv_profile=profile,
+            job=job,
+            section=req.section,
+            previous_result=(previous or {}).get("report"),
+            use_cache=False,
+            source_documents=sources,
+            language=req.language,
+        )
+    except Exception as exc:  # noqa: BLE001
+        from intelligent_tailoring import IntelligentTailorError
+
+        if isinstance(exc, (IntelligentTailorError, TailorCvError)):
+            raise HTTPException(
+                status_code=getattr(exc, "status_code", 502),
+                detail=getattr(exc, "message", str(exc)),
+            ) from exc
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    score = report_match_score(report)
+    document = build_tailor_document(report, cv_profile=profile, job=job)
+    path = save_tailored_cv(cv_id, job_id, document["markdown"])
+    version_id = _record_version(
+        cv_id,
+        job_id,
+        score_before=score,
+        score_after=score,
+        path=path,
+        db_path=cv_db,
+        report=report,
+    )
+    _publish_score(
+        _match_scope_id(cv_id, user["id"]),
+        job_id,
+        score=score,
+        report=report,
+        db_path=cv_db,
+    )
+    relative_path = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
+    return _tailored_cv_response(
+        cv_id=cv_id,
+        job_id=job_id,
+        job=job,
+        result={
+            **document,
+            **report,
+            "from_cache": False,
+            "saved_path": str(path),
+            "version_id": version_id,
+            "regenerated": True,
+        },
+        relative_path=relative_path,
+    )
 
 
 @app.patch("/jobs/matches/{match_id}/status")

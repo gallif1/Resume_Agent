@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "description": "Configurable skill/competency ontology for Intelligent Resume Tailoring. Add mappings here without changing generation logic.",
+  "relation_types": [
+    "tool_to_competency",
+    "task_to_transferable_skill",
+    "technology_to_concept",
+    "responsibility_to_job_function",
+    "activity_to_demonstrated_experience",
+    "terminology_equivalence"
+  ],
+  "relationships": [
+    {
+      "id": "java-oop",
+      "source": ["Java", "C++", "C#", "Kotlin", "Swift"],
+      "target": "object-oriented programming",
+      "relation": "technology_to_concept",
+      "confidence": 0.92,
+      "hedged_statement": {
+        "en": "Experience applying object-oriented programming principles",
+        "he": "ניסיון ביישום עקרונות תכנות מונחה עצמים"
+      }
+    },
+    {
+      "id": "rest-backend",
+      "source": ["REST API", "REST APIs", "built REST APIs", "RESTful"],
+      "target": "backend development",
+      "relation": "activity_to_demonstrated_experience",
+      "confidence": 0.9,
+      "also_implies": ["API design", "client-server communication", "HTTP-based systems"],
+      "hedged_statement": {
+        "en": "Experience building and integrating HTTP-based backend APIs",
+        "he": "ניסיון בבניית ואינטגרציית ממשקי Backend מבוססי HTTP"
+      }
+    },
+    {
+      "id": "sql-rdbms",
+      "source": ["PostgreSQL", "MySQL", "SQL Server", "Oracle", "SQLite"],
+      "target": "relational database and SQL experience",
+      "relation": "tool_to_competency",
+      "confidence": 0.93,
+      "hedged_statement": {
+        "en": "Experience working with relational databases and SQL",
+        "he": "ניסיון בעבודה עם מסדי נתונים יחסיים ו-SQL"
+      }
+    },
+    {
+      "id": "aws-ec2-cloud",
+      "source": ["AWS EC2", "EC2", "deployed to AWS"],
+      "target": "cloud deployment",
+      "relation": "activity_to_demonstrated_experience",
+      "confidence": 0.85,
+      "also_implies": ["basic cloud infrastructure experience"],
+      "hedged_statement": {
+        "en": "Experience with cloud deployment and basic cloud infrastructure",
+        "he": "ניסיון בפריסה בענן ובתשתיות ענן בסיסיות"
+      }
+    },
+    {
+      "id": "support-troubleshooting",
+      "source": [
+        "handled customer issues",
+        "investigated logs",
+        "reproduced bugs",
+        "worked with developers",
+        "customer tickets",
+        "production incidents"
+      ],
+      "target": "technical troubleshooting",
+      "relation": "task_to_transferable_skill",
+      "confidence": 0.88,
+      "also_implies": [
+        "root-cause analysis",
+        "production support",
+        "cross-functional collaboration"
+      ],
+      "hedged_statement": {
+        "en": "Experience with technical troubleshooting, root-cause analysis, and cross-functional collaboration",
+        "he": "ניסיון בפתרון תקלות טכניות, ניתוח שורש שורש, ושיתוף פעולה חוצה צוותים"
+      }
+    },
+    {
+      "id": "excel-reporting",
+      "source": ["Excel reporting", "Excel reports", "pivot tables", "spreadsheet reports", "Excel"],
+      "target": "data analysis and reporting",
+      "relation": "tool_to_competency",
+      "confidence": 0.86,
+      "hedged_statement": {
+        "en": "Experience with data analysis and reporting using spreadsheets",
+        "he": "ניסיון בניתוח נתונים ודיווח באמצעות גיליונות אלקטרוניים"
+      }
+    },
+    {
+      "id": "complaints-conflict",
+      "source": ["handling complaints", "customer complaints", "resolved complaints"],
+      "target": "conflict resolution",
+      "relation": "task_to_transferable_skill",
+      "confidence": 0.87,
+      "also_implies": ["customer service"],
+      "hedged_statement": {
+        "en": "Experience in conflict resolution and customer service",
+        "he": "ניסיון בפתרון קונפליקטים ושירות לקוחות"
+      }
+    },
+    {
+      "id": "scheduling-workforce",
+      "source": ["scheduling staff", "staff schedules", "shift scheduling", "roster"],
+      "target": "workforce coordination",
+      "relation": "responsibility_to_job_function",
+      "confidence": 0.88,
+      "hedged_statement": {
+        "en": "Experience coordinating workforce schedules and staffing",
+        "he": "ניסיון בתיאום לוחות זמנים וכוח אדם"
+      }
+    },
+    {
+      "id": "stock-inventory",
+      "source": ["managing stock", "stock management", "inventory", "warehouse stock"],
+      "target": "inventory management",
+      "relation": "responsibility_to_job_function",
+      "confidence": 0.9,
+      "hedged_statement": {
+        "en": "Experience with inventory management",
+        "he": "ניסיון בניהול מלאי"
+      }
+    },
+    {
+      "id": "invoices-billing",
+      "source": ["preparing invoices", "invoicing", "issued invoices"],
+      "target": "billing and administrative operations",
+      "relation": "task_to_transferable_skill",
+      "confidence": 0.89,
+      "hedged_statement": {
+        "en": "Experience with billing and administrative operations",
+        "he": "ניסיון בתפעול חיובים ומשימות אדמיניסטרטיביות"
+      }
+    },
+    {
+      "id": "training-onboarding",
+      "source": ["training employees", "trained new hires", "employee training"],
+      "target": "onboarding and knowledge transfer",
+      "relation": "responsibility_to_job_function",
+      "confidence": 0.88,
+      "hedged_statement": {
+        "en": "Experience with employee onboarding and knowledge transfer",
+        "he": "ניסיון בקליטת עובדים והעברת ידע"
+      }
+    },
+    {
+      "id": "debug-rca",
+      "source": ["debugging failures", "debugged", "debug", "troubleshooting failures"],
+      "target": "troubleshooting and root-cause analysis",
+      "relation": "task_to_transferable_skill",
+      "confidence": 0.9,
+      "hedged_statement": {
+        "en": "Experience troubleshooting failures and performing root-cause analysis",
+        "he": "ניסיון באבחון תקלות וניתוח שורש שורש"
+      }
+    },
+    {
+      "id": "docs-techwriting",
+      "source": ["writing documentation", "technical documentation", "wrote docs", "runbooks"],
+      "target": "technical writing and knowledge management",
+      "relation": "activity_to_demonstrated_experience",
+      "confidence": 0.87,
+      "hedged_statement": {
+        "en": "Experience with technical writing and knowledge management",
+        "he": "ניסיון בכתיבה טכנית וניהול ידע"
+      }
+    },
+    {
+      "id": "social-campaigns",
+      "source": [
+        "managing social campaigns",
+        "social media campaigns",
+        "paid social",
+        "Facebook ads",
+        "Instagram campaigns"
+      ],
+      "target": "digital marketing and campaign management",
+      "relation": "responsibility_to_job_function",
+      "confidence": 0.9,
+      "hedged_statement": {
+        "en": "Experience with digital marketing and campaign management",
+        "he": "ניסיון בשיווק דיגיטלי וניהול קמפיינים"
+      }
+    },
+    {
+      "id": "schedules-ops",
+      "source": [
+        "managed schedules",
+        "managed customers",
+        "managed inventory",
+        "managed budgets",
+        "managed reports",
+        "managed operations"
+      ],
+      "target": "operations coordination",
+      "relation": "responsibility_to_job_function",
+      "confidence": 0.84,
+      "also_implies": ["organizational skills", "process ownership"],
+      "hedged_statement": {
+        "en": "Experience coordinating day-to-day operations and administrative workflows",
+        "he": "ניסיון בתיאום תפעול יומיומי ותהליכים אדמיניסטרטיביים"
+      }
+    },
+    {
+      "id": "python-scripting",
+      "source": ["Python", "Python scripting", "automation scripts"],
+      "target": "scripting and automation",
+      "relation": "tool_to_competency",
+      "confidence": 0.88,
+      "hedged_statement": {
+        "en": "Experience with scripting and process automation",
+        "he": "ניסיון בתסריטים ואוטומציה של תהליכים"
+      }
+    },
+    {
+      "id": "sales-crm",
+      "source": ["Salesforce", "HubSpot", "CRM", "pipeline management"],
+      "target": "CRM and sales pipeline management",
+      "relation": "tool_to_competency",
+      "confidence": 0.9,
+      "hedged_statement": {
+        "en": "Experience managing customer relationships and sales pipelines in a CRM",
+        "he": "ניסיון בניהול קשרי לקוחות וצינור מכירות במערכת CRM"
+      }
+    },
+    {
+      "id": "budget-finance",
+      "source": ["budget management", "managed budgets", "P&L", "forecasting"],
+      "target": "financial planning and budget oversight",
+      "relation": "responsibility_to_job_function",
+      "confidence": 0.88,
+      "hedged_statement": {
+        "en": "Experience with budget oversight and financial planning support",
+        "he": "ניסיון בפיקוח תקציבי ותמיכה בתכנון פיננסי"
+      }
+    },
+    {
+      "id": "he-en-support",
+      "source": ["תמיכה טכנית", "שירות לקוחות", "טיפול בפניות"],
+      "target": "customer support",
+      "relation": "terminology_equivalence",
+      "confidence": 0.9,
+      "hedged_statement": {
+        "en": "Customer support and service experience",
+        "he": "ניסיון בתמיכה ושירות לקוחות"
+      }
+    },
+    {
+      "id": "he-en-sales",
+      "source": ["מכירות", "פיתוח עסקי", "closing deals"],
+      "target": "sales and business development",
+      "relation": "terminology_equivalence",
+      "confidence": 0.9,
+      "hedged_statement": {
+        "en": "Sales and business development experience",
+        "he": "ניסיון במכירות ופיתוח עסקי"
+      }
+    }
+  ]
+}

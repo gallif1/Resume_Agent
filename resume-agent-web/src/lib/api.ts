@@ -305,6 +305,38 @@ export interface MatcherFeedbackSnapshot {
   mandatory_failed?: boolean;
 }
 
+export interface ChangeLogItem {
+  original_text?: string;
+  new_text?: string;
+  reason?: string;
+  supporting_evidence?: string;
+  related_job_requirement?: string;
+  inference_category?:
+    | "Explicit"
+    | "Strongly Inferred"
+    | "Weakly Inferred"
+    | "Unsupported"
+    | string;
+  confidence_score?: number;
+  accepted?: boolean | null;
+}
+
+export interface InferredCompetency {
+  statement: string;
+  supporting_evidence?: string;
+  reasoning?: string;
+  confidence_score?: number;
+  related_requirement?: string;
+  ontology_rule_id?: string;
+  inference_category?: string;
+}
+
+export interface ValidationWarningItem {
+  statement: string;
+  reason?: string;
+  inference_category?: string;
+}
+
 export interface TailoredCvResponse {
   cv_id: string;
   job_id: number;
@@ -353,6 +385,21 @@ export interface TailoredCvResponse {
     dropped_unsupported_skills?: string[];
   } | null;
   recommendation?: string | null;
+  /** Intelligent Resume Tailoring structured report fields */
+  tailored_resume?: Record<string, unknown> | null;
+  matched_requirements?: string[];
+  missing_requirements?: string[];
+  inferred_competencies?: InferredCompetency[];
+  removed_or_deprioritized_content?: string[];
+  ats_keywords_added?: string[];
+  change_log?: ChangeLogItem[];
+  validation_warnings?: ValidationWarningItem[];
+  original_match_score?: number | null;
+  tailored_match_score?: number | null;
+  language?: string | null;
+  claim_validator_passed?: boolean;
+  pipeline_version?: string | null;
+  truthfulness_statement?: string | null;
 }
 
 export interface RequirementAssessment {
@@ -762,6 +809,71 @@ export async function downloadTailoredCvPdf(
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/** Download the approved tailored CV as an ATS-friendly DOCX. */
+export async function downloadTailoredCvDocx(
+  cvId: string,
+  jobId: number
+): Promise<void> {
+  const res = await fetch(
+    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-docx`,
+    { headers: authHeaders() }
+  );
+  if (res.status === 401) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
+  }
+  if (!res.ok) {
+    let detail = `שגיאה ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body?.detail) detail = body.detail;
+    } catch {
+      /* keep generic */
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const filename =
+    filenameFromContentDisposition(res.headers.get("Content-Disposition")) ||
+    "CV_Tailored.docx";
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+export function applyTailoredChangeDecisions(
+  cvId: string,
+  jobId: number,
+  decisions: { index: number; accepted: boolean }[]
+): Promise<TailoredCvResponse> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/changes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decisions }),
+  });
+}
+
+export function regenerateTailoredSection(
+  cvId: string,
+  jobId: number,
+  section: string,
+  options?: { language?: string }
+): Promise<TailoredCvResponse> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/regenerate-section`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      section,
+      force: true,
+      language: options?.language ?? null,
+    }),
+  });
 }
 
 export class DuplicateApplicationError extends Error {

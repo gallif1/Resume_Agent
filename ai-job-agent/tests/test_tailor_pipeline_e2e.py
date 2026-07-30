@@ -171,13 +171,80 @@ def _inflated_salesforce_response() -> dict[str, Any]:
 def _patch_engine(monkeypatch: pytest.MonkeyPatch, response: dict[str, Any]) -> dict:
     calls: dict[str, Any] = {"count": 0, "prompts": []}
 
-    def _fake_openai(system_prompt, user_prompt, **_kwargs):
+    def _fake_pipeline(**kwargs):
         calls["count"] += 1
-        calls["prompts"].append((system_prompt, user_prompt))
-        return dict(response)
+        calls["prompts"].append(kwargs)
+        # Convert legacy match_tailor-shaped response into intelligent pipeline dual schema
+        # when callers still pass the old shape.
+        if "tailored_resume" in response and "claim_validator_passed" in response:
+            return dict(response)
+        from intelligent_tailor_fixtures import intelligent_report
 
-    monkeypatch.setattr(match_tailor_service, "is_ai_available", lambda: True)
-    monkeypatch.setattr(match_tailor_service, "call_openai_json", _fake_openai)
+        tailored = response.get("tailored_cv") or {}
+        scoring = response.get("scoring") or {}
+        score = int(scoring.get("realistic_match_score") or 50)
+        # Prefer server-side capped score when hard_cap markers present in validation
+        report = intelligent_report(
+            score=score,
+            summary=str(tailored.get("summary") or ""),
+            skills=list(tailored.get("skills") or []),
+            experience=list(tailored.get("experience") or []),
+        )
+        report["requirement_extraction"] = response.get("requirement_extraction")
+        report["scoring"] = dict(scoring)
+        report["key_matching_points"] = list(response.get("key_matching_points") or [])
+        report["missing_critical_skills"] = response.get("missing_critical_skills") or []
+        report["transferable_skills_framing"] = response.get(
+            "transferable_skills_framing"
+        ) or []
+        report["tailored_cv"] = tailored
+        report["tailored_resume"] = {
+            "professional_title": tailored.get("professional_title") or "",
+            "professional_summary": tailored.get("summary") or "",
+            "summary": tailored.get("summary") or "",
+            "skills": tailored.get("skills") or [],
+            "experience": tailored.get("experience") or [],
+            "projects": tailored.get("projects") or [],
+            "education": tailored.get("education") or [],
+            "certifications": tailored.get("certifications") or [],
+        }
+        report["recommendation"] = response.get("recommendation")
+        # Recompute honesty like the old engine would for Salesforce fixtures
+        from match_tailor_service import normalize_match_tailor_result
+
+        # Use normalize on the raw response for authentic hard-cap behaviour
+        normalized = normalize_match_tailor_result(
+            response,
+            job_title=str((kwargs.get("job") or {}).get("title") or ""),
+            source_resume_text=str(
+                ((kwargs.get("cv_profile") or {}).get("raw_text") or "")
+            ),
+        )
+        report["scoring"] = normalized["scoring"]
+        report["score_validation"] = normalized["score_validation"]
+        report["recommendation"] = normalized["recommendation"]
+        report["realistic_match_score"] = normalized["scoring"]["realistic_match_score"]
+        report["tailored_match_score"] = normalized["scoring"]["realistic_match_score"]
+        report["original_match_score"] = normalized["scoring"]["realistic_match_score"]
+        report["tailored_cv"] = normalized["tailored_cv"]
+        report["tailored_resume"] = {
+            **report["tailored_resume"],
+            **{
+                "professional_title": normalized["tailored_cv"].get("professional_title")
+                or "",
+                "professional_summary": normalized["tailored_cv"].get("summary") or "",
+                "summary": normalized["tailored_cv"].get("summary") or "",
+                "skills": normalized["tailored_cv"].get("skills") or [],
+                "experience": normalized["tailored_cv"].get("experience") or [],
+            },
+        }
+        report["missing_critical_skills"] = normalized["missing_critical_skills"]
+        report["requirement_extraction"] = normalized["requirement_extraction"]
+        report["key_matching_points"] = normalized["key_matching_points"]
+        report["claim_validator_passed"] = True
+        return report
+
+    monkeypatch.setattr(tailor_cv_service, "run_intelligent_tailoring", _fake_pipeline)
     return calls
 
 
