@@ -653,7 +653,10 @@ def build_honest_professional_title(
     job_title: str,
     hard_requirements: list[dict[str, str]],
 ) -> str:
-    """Fallback title when the model overclaims a role the hard score does not support."""
+    """Fallback title when the model overclaims a role the hard score does not support.
+
+    Profession-agnostic: never defaults to a tech title like \"Software Engineer\".
+    """
     matched = [
         r["requirement"]
         for r in hard_requirements
@@ -675,14 +678,17 @@ def build_honest_professional_title(
             highlight = " ".join(words[:3]).title()
             break
 
-    core = core_title_tokens(job_title)
-    pursuing = " ".join(t.title() for t in core[:2]) if core else (job_title or "the role").strip()
-
+    base = (job_title or "").strip() or "Professional"
+    # When this fallback is used, hard coverage is weak — do not claim the JD
+    # title verbatim. Prefer evidenced skills, else a soft "pursuing" framing.
     if highlight:
-        return f"Software Engineer with {highlight} Experience"
-    if pursuing:
-        return f"Software Engineer pursuing {pursuing}"
-    return "Software Engineer"
+        return f"Professional with {highlight} experience"
+    core = core_title_tokens(job_title)
+    pursuing = " ".join(t.title() for t in core[:2]) if core else base
+    # Avoid echoing the full overclaimed title when we only have the title itself.
+    if pursuing and pursuing.lower() != base.lower():
+        return f"Professional pursuing {pursuing}"
+    return "Professional"
 
 
 def enforce_honest_title_summary(

@@ -415,7 +415,14 @@ def _stage_sequence_for_family(family: str):
     triage = {"triage": [], "section_order": []}
     generation = _family_generation(family)
     claim_llm = {"validation_warnings": []}
-    return [requirements, inference, triage, generation, claim_llm]
+    queue = [requirements, inference, triage, generation, claim_llm]
+
+    def _side_effect(*_a: Any, **_k: Any) -> dict[str, Any]:
+        if queue:
+            return queue.pop(0)
+        return generation
+
+    return _side_effect
 
 
 @pytest.fixture(autouse=True)

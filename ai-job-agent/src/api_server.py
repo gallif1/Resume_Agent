@@ -1623,6 +1623,12 @@ def _tailored_cv_response(
             "No unsupported experience was added. Only Explicit and Strongly "
             "Inferred statements passed the claim validator."
         ),
+        "quality_report": result.get("quality_report") or {},
+        "extraction_coverage": result.get("extraction_coverage") or {},
+        "missed_evidence_report": result.get("missed_evidence_report") or {},
+        "knowledge_base_summary": result.get("knowledge_base_summary") or {},
+        "tailoring_report": result.get("tailoring_report") or {},
+        "tailoring_strategy": result.get("tailoring_strategy") or {},
     }
 
 
@@ -1900,6 +1906,75 @@ def get_tailored_report(
             "No unsupported experience was added. Only Explicit and Strongly "
             "Inferred statements passed the claim validator."
         ),
+    }
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/evidence")
+def get_tailored_evidence(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Return evidence map, missed-evidence, and quality report for the latest tailor."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    row = db.get_tailored_resume_report(cv_id=cv_id, job_id=job_id, db_path=cv_db)
+    if row is None or not row.get("report"):
+        raise HTTPException(status_code=404, detail="דוח התאמה לא נמצא")
+    report = row.get("report") or {}
+    return {
+        "cv_id": cv_id,
+        "job_id": job_id,
+        "report_id": row.get("id"),
+        "evidence_map": report.get("evidence_map") or [],
+        "missed_evidence_report": report.get("missed_evidence_report") or {},
+        "quality_report": report.get("quality_report") or {},
+        "extraction_coverage": report.get("extraction_coverage") or {},
+        "knowledge_base_summary": report.get("knowledge_base_summary") or {},
+        "inferred_competencies": report.get("inferred_competencies") or [],
+        "truthfulness_statement": (
+            "No unsupported experience was added. Only Explicit and Strongly "
+            "Inferred statements passed the claim validator."
+        ),
+    }
+
+
+@app.post("/cvs/{cv_id}/analyze-knowledge-base")
+def analyze_resume_knowledge_base(
+    cv_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Build/return the Resume Knowledge Base for a CV without generating a tailored resume."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    from intelligent_tailoring.knowledge_base import build_knowledge_base
+    from tailor_cv_service import TailorCvError, _load_cv_profile_or_raise, gather_original_source_cvs
+
+    try:
+        profile = _load_cv_profile_or_raise(cv_id, user_id=user["id"])
+        sources = gather_original_source_cvs(cv_id, user_id=user["id"])
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except Exception as exc:  # noqa: BLE001
+        sources = ""
+        logger.warning("analyze-knowledge-base: source gather failed: %s", exc)
+
+    kb = build_knowledge_base(profile, sources or None)
+    payload = kb.to_dict()
+    # Keep response bounded for API clients
+    facts = payload.get("facts") or []
+    return {
+        "cv_id": cv_id,
+        "fact_count": len(facts),
+        "coverage": payload.get("coverage") or {},
+        "source_language": payload.get("source_language"),
+        "parser_version": payload.get("parser_version"),
+        "kb_version": payload.get("kb_version"),
+        "content_hash": payload.get("content_hash"),
+        "facts": facts[:200],
+        "candidate_identity": payload.get("candidate_identity") or {},
     }
 
 

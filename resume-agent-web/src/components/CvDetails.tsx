@@ -1448,6 +1448,43 @@ export default function CvDetails({
                 {tailoredCv.truthfulness_statement ||
                   "לא נוספה שום חוויה שאינה מגובה בקורות החיים המקוריים. רק טענות Explicit / Strongly Inferred עברו את בודק הטענות."}
               </p>
+              {(tailoredCv.quality_report?.overall_tailoring_score != null ||
+                tailoredCv.extraction_coverage?.extraction_coverage_score != null) && (
+                <div className="tailored-review-section">
+                  <strong>איכות התאמה וכיסוי מקור</strong>
+                  <p className="cv-meta">
+                    {tailoredCv.quality_report?.overall_tailoring_score != null && (
+                      <>
+                        ציון התאמה: {tailoredCv.quality_report.overall_tailoring_score}
+                        {" · "}
+                      </>
+                    )}
+                    {tailoredCv.extraction_coverage?.extracted_fact_count != null && (
+                      <>
+                        עובדות שחולצו: {tailoredCv.extraction_coverage.extracted_fact_count}
+                        {tailoredCv.extraction_coverage.extraction_coverage_score != null && (
+                          <>
+                            {" "}
+                            (כיסוי{" "}
+                            {Math.round(
+                              (tailoredCv.extraction_coverage.extraction_coverage_score || 0) *
+                                100
+                            )}
+                            %)
+                          </>
+                        )}
+                      </>
+                    )}
+                  </p>
+                  {(tailoredCv.quality_report?.warnings?.length ?? 0) > 0 && (
+                    <ul>
+                      {tailoredCv.quality_report!.warnings!.slice(0, 4).map((w, i) => (
+                        <li key={`qw-${i}`}>{w}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
               {(tailoredCv.change_log?.length ?? 0) > 0 && (
                 <div className="tailored-review-section">
                   <div className="tailored-review-section-header">
