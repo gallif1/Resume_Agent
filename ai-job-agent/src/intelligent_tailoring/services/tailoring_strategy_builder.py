@@ -119,6 +119,21 @@ def build_tailoring_strategy(
 
     section_order = _section_order(job_family, fact_scores)
 
+    from intelligent_tailoring.services.evidence_amplifier import build_highlight_plan
+    from intelligent_tailoring.skill_taxonomy import category_order_for_role
+
+    highlight_plan = build_highlight_plan(
+        evidence_map=evidence_map,
+        skills_to_emphasize=skills_to_emphasize,
+    )
+    # Prefer taxonomy-aligned category order, boosted by emphasize terms
+    cat_order = category_order_for_role(
+        job_family, emphasize=skills_to_emphasize
+    ) or skill_category_order(job_family)
+
+    # Experience order: roles whose bullets overlap emphasize terms first
+    experience_order = _experience_order(resume_facts, skills_to_emphasize)
+
     return {
         "target_positioning": value_prop,
         "target_job_family": job_family,
@@ -140,6 +155,7 @@ def build_tailoring_strategy(
         "summary_focus": summary_focus,
         "experience_focus": experience_focus,
         "experience_priorities": facts_to_expand[:15],
+        "experience_order": experience_order,
         "project_priorities": project_priority,
         "project_priority": project_priority,
         "education_priorities": [
@@ -152,14 +168,18 @@ def build_tailoring_strategy(
         "facts_to_condense": facts_to_condense[:20],
         "facts_to_omit": facts_to_omit[:20],
         "section_order": section_order,
-        "tone": "professional, specific, evidence-based",
+        "tone": "professional, specific, evidence-based, human",
         "output_language": language,
         "preferred_language": language,
-        "skill_category_order": skill_category_order(job_family),
+        "skill_category_order": cat_order,
         "primary_role": job_analysis.get("primary_role") or "",
         "secondary_role": job_analysis.get("secondary_role") or "",
         "seniority": job_analysis.get("seniority") or "",
         "emphasis_keywords": emphasis,
+        "highlight_plan": highlight_plan,
+        "must_highlight_in_summary": list(highlight_plan.get("must_highlight") or [])[:8],
+        "propagate_terms": list(highlight_plan.get("propagate_terms") or [])[:16],
+        "requirement_support": list(highlight_plan.get("requirement_support") or []),
         "risk_warnings": [
             f"Missing hard requirement: {m}" for m in missing_reqs[:5]
         ],
@@ -207,9 +227,32 @@ def _summary_focus(
     focus_bits = ", ".join(top) if top else "relevant professional experience"
     industry_bit = f" in {industry}" if industry and industry != "general" else ""
     return (
-        f"Position the candidate for {role}{industry_bit}, emphasizing: {focus_bits}. "
-        f"Write a specific summary grounded only in evidenced strengths."
+        f"Explain why this candidate fits {role}{industry_bit}. "
+        f"Lead with specialization and business value; weave in evidenced strengths "
+        f"({focus_bits}). Do not merely list tools. Sound like a human resume writer."
     )
+
+
+def _experience_order(
+    resume_facts: dict[str, Any],
+    emphasize: list[str],
+) -> list[str]:
+    """Order experience entries by overlap with emphasized terms."""
+    roles = resume_facts.get("experience_roles") or resume_facts.get("experience") or []
+    scored: list[tuple[int, str]] = []
+    emp = [str(e).lower() for e in emphasize if e]
+    for role in roles:
+        if not isinstance(role, dict):
+            continue
+        label = str(role.get("company") or role.get("title") or "").strip()
+        blob = " ".join(
+            [str(role.get("title") or ""), str(role.get("company") or "")]
+            + [str(b) for b in (role.get("bullets") or [])]
+        ).lower()
+        score = sum(3 for e in emp if e and e in blob)
+        scored.append((score, label))
+    scored.sort(key=lambda x: -x[0])
+    return [label for _, label in scored if label]
 
 
 def _experience_focus(job_analysis: dict[str, Any], matched_reqs: list[str]) -> str:

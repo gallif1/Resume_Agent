@@ -125,6 +125,8 @@ def write_human_resume(
     knowledge_base: Any = None,
     output_language: str = "en",
     review_feedback: dict[str, Any] | None = None,
+    hiring_manager_feedback: dict[str, Any] | None = None,
+    quality_score: dict[str, Any] | None = None,
     sections: list[str] | None = None,
     use_cache: bool = True,
     allow_llm: bool = True,
@@ -138,6 +140,7 @@ def write_human_resume(
     mode = "deterministic"
     writing_notes: list[str] = ["deterministic_polish"]
     llm_error: str | None = None
+    has_feedback = bool(review_feedback or hiring_manager_feedback or quality_score)
 
     if allow_llm and is_ai_available():
         try:
@@ -158,16 +161,38 @@ def write_human_resume(
                         if review_feedback
                         else None
                     ),
+                    hiring_manager_feedback_json=(
+                        json.dumps(hiring_manager_feedback, ensure_ascii=False, indent=2)[
+                            :4000
+                        ]
+                        if hiring_manager_feedback
+                        else None
+                    ),
+                    quality_score_json=(
+                        json.dumps(
+                            {
+                                "overall_score": (quality_score or {}).get("overall_score"),
+                                "weak_sections": (quality_score or {}).get("weak_sections"),
+                                "dimensions": (quality_score or {}).get("dimensions"),
+                                "notes": (quality_score or {}).get("notes"),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )[:3500]
+                        if quality_score
+                        else None
+                    ),
                     sections=sections,
                 ),
                 validate=_validate_writer_payload,
-                use_cache=use_cache and not review_feedback,
+                use_cache=use_cache and not has_feedback,
                 cache_namespace=f"{PIPELINE_VERSION}_human_writer",
                 cache_payload=(
                     f"{output_language}|{json.dumps(working, sort_keys=True)[:2500]}|"
-                    f"{','.join(sections or [])}|{(review_feedback or {}).get('summary_feedback', '')}"
+                    f"{','.join(sections or [])}|{(review_feedback or {}).get('summary_feedback', '')}|"
+                    f"{(hiring_manager_feedback or {}).get('actionable_feedback', [])[:2]}"
                 ),
-                temperature=0.35,
+                temperature=0.4,
             )
             polished = validate_tailored_resume(raw["tailored_resume"]).to_dict()
             polished = _merge_partial_sections(working, polished, sections)

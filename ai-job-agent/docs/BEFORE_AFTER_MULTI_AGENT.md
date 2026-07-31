@@ -40,6 +40,17 @@ Same candidate pipeline, different jobs:
 
 Result: genuinely different strategies, evidence coverage, and feedback — without profession-specific hardcoding.
 
+## Quality upgrades (`multi_agent_v1_1`)
+
+Writing quality is improved **inside** the existing agents/pipeline (no new agents):
+
+- Natural summary builder (no “Professional with Knowledge…” filler)
+- Evidence amplifier (inventory + thin project expansion + skill propagation)
+- Role-dynamic skills category ordering
+- Stronger Human Writer / Recruiter prompts + tougher heuristic review
+- Hiring Manager challenges feed back into a refine writing pass
+- Internal Resume Quality Score drives weak-section regeneration
+
 ## Acceptance criteria mapping
 
 1. Different jobs → different resumes — strategy + evidence + company influence

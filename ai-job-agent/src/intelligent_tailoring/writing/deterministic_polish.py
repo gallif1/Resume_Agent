@@ -228,10 +228,14 @@ def _summary_from_evidence(resume: dict[str, Any]) -> str:
             evidence = _upgrade_bullet(bullets[0]).rstrip(".")
             company = str(entry.get("company") or "").strip()
             role = str(entry.get("title") or title).strip()
-            who = role or title or "Professional"
+            who = role or title or "Contributor"
             where = f" at {company}" if company else ""
             focus = f" specializing in {skill_phrase}" if skill_phrase else ""
-            sentence1 = f"{who}{where}{focus}."
+            # Avoid banned "Professional with..." patterns
+            if who.lower() == "professional" and skill_phrase:
+                sentence1 = f"Contributor specializing in {skill_phrase}."
+            else:
+                sentence1 = f"{who}{where}{focus}."
             sentence2 = f"{evidence}."
             return _clean_whitespace(f"{sentence1} {sentence2}")
     for entry in resume.get("projects") or []:
@@ -240,13 +244,17 @@ def _summary_from_evidence(resume: dict[str, Any]) -> str:
         desc = str(entry.get("description") or "").strip()
         name = str(entry.get("name") or "").strip()
         if desc or name:
-            who = title or "Professional"
-            focus = f" with experience in {skill_phrase}" if skill_phrase else ""
+            who = title or "Contributor"
+            if who.lower() == "professional":
+                who = "Contributor"
+            focus = f" specializing in {skill_phrase}" if skill_phrase else ""
             detail = desc or name
             return _clean_whitespace(f"{who}{focus}. {detail}.")
-    who = title or "Professional"
+    who = title or "Contributor"
+    if who.lower() == "professional":
+        who = "Contributor"
     if skill_phrase:
-        return f"{who} with experience in {skill_phrase}."
+        return f"{who} specializing in {skill_phrase}."
     return who + "."
 
 
