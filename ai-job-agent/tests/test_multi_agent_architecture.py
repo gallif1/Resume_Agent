@@ -221,7 +221,7 @@ def test_build_agent_instances_are_independently_callable():
 
 
 def test_pipeline_version_is_multi_agent():
-    assert PIPELINE_VERSION == "multi_agent_v1"
+    assert PIPELINE_VERSION.startswith("multi_agent_v1")
 
 
 # ---------------------------------------------------------------------------

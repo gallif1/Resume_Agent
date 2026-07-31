@@ -63,10 +63,52 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
 
     human = int(ai.get("human_score") or style["dimensions"].get("ai_likeness") or 0)
     interview = int(style.get("overall_score") or 0)
+    summary = str(
+        resume.get("professional_summary") or resume.get("summary") or ""
+    ).lower()
+    if any(
+        p in summary
+        for p in (
+            "professional with",
+            "strong understanding",
+            "passionate about",
+            "highly motivated",
+            "proven track record",
+        )
+    ):
+        issues.append(
+            {
+                "section": "summary",
+                "problem": "Summary uses generic AI filler phrasing",
+                "guidance": (
+                    "Rewrite the summary to sound like a human resume writer. "
+                    "Explain role fit with evidenced strengths — no clichés."
+                ),
+            }
+        )
+        sections.update({"summary"})
+    # Thin projects → request regeneration
+    for entry in resume.get("projects") or []:
+        if not isinstance(entry, dict):
+            continue
+        bullets = [b for b in (entry.get("bullets") or []) if str(b).strip()]
+        if 0 < len(bullets) < 2 or any(len(str(b).split()) < 6 for b in bullets):
+            issues.append(
+                {
+                    "section": "projects",
+                    "problem": "Project bullets are too thin or generic",
+                    "guidance": (
+                        "Expand project bullets using only existing project facts "
+                        "to show technical value and design decisions."
+                    ),
+                }
+            )
+            sections.update({"projects"})
+            break
     approved = (
         not issues
-        and human >= 70
-        and interview >= 70
+        and human >= 75
+        and interview >= 75
         and bool(grammar.get("passed"))
         and bool(style.get("passed"))
         and bool(ai.get("passed"))

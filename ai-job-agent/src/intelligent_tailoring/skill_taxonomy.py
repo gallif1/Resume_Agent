@@ -140,10 +140,118 @@ def _split_skill_atoms(skill_line: str) -> list[str]:
     return [a.strip() for a in text.split(",") if a.strip()]
 
 
+def category_order_for_role(
+    job_family: str | None = None,
+    *,
+    emphasize: list[str] | None = None,
+) -> list[str]:
+    """Dynamic category order for the target role — profession-aware.
+
+    Uses canonical taxonomy names so rebuilder + normalize_skill_lines agree.
+    """
+    family = (job_family or "general").strip().lower()
+    presets: dict[str, list[str]] = {
+        "backend": [
+            "Backend", "Languages", "Databases", "Cloud & DevOps", "AI & Data",
+            "Frontend", "Testing", "Tools & Version Control",
+        ],
+        "frontend": [
+            "Frontend", "Languages", "Backend", "Testing", "Cloud & DevOps",
+            "Tools & Version Control", "Databases",
+        ],
+        "devops": [
+            "Cloud & DevOps", "Languages", "Backend", "Databases", "Testing",
+            "Tools & Version Control", "Frontend",
+        ],
+        "qa": [
+            "Testing", "Languages", "Backend", "Frontend", "Tools & Version Control",
+            "Cloud & DevOps", "Databases",
+        ],
+        "support": [
+            "Tools & Version Control", "Cloud & DevOps", "Backend", "Databases",
+            "Communication", "Customer Service", "Languages",
+        ],
+        "data": [
+            "AI & Data", "Languages", "Databases", "Cloud & DevOps", "Backend",
+            "Tools & Version Control",
+        ],
+        "sales": [
+            "Sales", "Communication", "Customer Service", "Leadership",
+            "Administration", "Tools & Version Control",
+        ],
+        "marketing": [
+            "Communication", "Sales", "AI & Data", "Tools & Version Control",
+            "Frontend", "Leadership",
+        ],
+        "finance": [
+            "Finance", "Administration", "AI & Data", "Tools & Version Control",
+            "Communication", "Leadership",
+        ],
+        "healthcare": [
+            "Healthcare Systems", "Customer Service", "Communication",
+            "Administration", "Leadership", "Certifications",
+        ],
+        "education": [
+            "Communication", "Leadership", "Administration", "Customer Service",
+            "Tools & Version Control", "Certifications",
+        ],
+        "hospitality": [
+            "Customer Service", "Communication", "Leadership", "Operations",
+            "Administration",
+        ],
+        "operations": [
+            "Operations", "Leadership", "Administration", "Communication",
+            "Tools & Version Control",
+        ],
+        "customer_service": [
+            "Customer Service", "Communication", "Sales", "Administration",
+            "Leadership",
+        ],
+        "hr": [
+            "Communication", "Leadership", "Administration", "Customer Service",
+            "Certifications",
+        ],
+        "legal": [
+            "Administration", "Communication", "Certifications", "Leadership",
+        ],
+        "manufacturing": [
+            "Operations", "Equipment", "Leadership", "Administration",
+            "Communication",
+        ],
+        "construction": [
+            "Equipment", "Operations", "Leadership", "Certifications",
+            "Communication",
+        ],
+        "retail": [
+            "Sales", "Customer Service", "Operations", "Communication",
+            "Leadership",
+        ],
+    }
+    base = list(SOFTWARE_TAXONOMY.keys()) + list(UNIVERSAL_TAXONOMY.keys()) + [OTHER]
+    preferred = presets.get(family, [])
+    order = [c for c in preferred if c in base or c == OTHER]
+    for cat in base:
+        if cat not in order:
+            order.append(cat)
+
+    # Boost categories that contain emphasized skills to the front
+    if emphasize:
+        boost: list[str] = []
+        for skill in emphasize:
+            cat = categorize_skill(str(skill))
+            if cat not in boost:
+                boost.append(cat)
+        if boost:
+            order = [c for c in boost if c in order] + [c for c in order if c not in boost]
+    return order
+
+
 def normalize_skill_lines(
     skills: list[str],
     *,
     emphasize: list[str] | None = None,
+    job_family: str | None = None,
+    category_order: list[str] | None = None,
 ) -> list[str]:
     """Rebuild skill lines with deterministic categories.
 
@@ -152,10 +260,9 @@ def normalize_skill_lines(
     ordered first so different target jobs produce different skill rankings.
     """
     buckets: dict[str, list[str]] = {}
-    order: list[str] = (
-        list(SOFTWARE_TAXONOMY.keys())
-        + list(UNIVERSAL_TAXONOMY.keys())
-        + [OTHER]
+    order: list[str] = list(
+        category_order
+        or category_order_for_role(job_family, emphasize=emphasize)
     )
     for cat in order:
         buckets[cat] = []

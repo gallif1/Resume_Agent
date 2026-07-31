@@ -18,11 +18,14 @@ AI_CLICHE_PHRASES: tuple[str, ...] = (
     "dynamic professional",
     "experienced professional",
     "professional with experience",
+    "professional with knowledge",
     "professional with a strong",
+    "professional with hands-on",
     "strong understanding of",
     "strong understanding",
     "in-depth knowledge of",
     "extensive experience in",
+    "knowledge of",
     "leveraged my skills",
     "utilized my expertise",
     "spearheaded initiatives",
@@ -75,6 +78,8 @@ AI_CLICHE_PHRASES: tuple[str, ...] = (
     "dedicated professional",
     "compassionate healthcare professional",
     "organized administrative professional",
+    "applies these skills across",
+    "delivery-focused projects",
 )
 
 # Soft openings that become robotic when overused as bullet starts.

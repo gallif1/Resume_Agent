@@ -366,6 +366,30 @@ def run_intelligent_tailoring_agents(
         # Promote overlooked fact bullets into experience/projects when missing
         resume_facts = _inject_missed_facts(resume_facts, kb, missed)
 
+        # Maximize evidence utilization before content scoring / rewrite
+        from intelligent_tailoring.services.evidence_amplifier import (
+            apply_evidence_amplification,
+        )
+
+        resume_facts, evidence_enrichment = apply_evidence_amplification(
+            resume_facts=resume_facts,
+            evidence_map=evidence_map,
+            strategy=strategy,
+            kb=kb,
+            resume_text=resume_text,
+        )
+        strategy.update(
+            {
+                "evidence_inventory": evidence_enrichment.get("evidence_inventory"),
+                "highlight_plan": evidence_enrichment.get("highlight_plan"),
+                "must_highlight_in_summary": evidence_enrichment.get(
+                    "must_highlight_in_summary"
+                ),
+                "propagate_terms": evidence_enrichment.get("propagate_terms"),
+            }
+        )
+        strategy_obj.legacy_strategy = strategy
+
         content_scores = score_resume_content(
             resume_facts=resume_facts,
             strategy=strategy,
@@ -583,7 +607,13 @@ def run_intelligent_tailoring_agents(
             # Deterministic skill categories (override LLM / family heuristics)
             cleaned_resume["skills"] = normalize_skill_lines(
                 list(cleaned_resume.get("skills") or []),
-                emphasize=list(strategy.get("skills_to_emphasize") or []),
+                emphasize=list(
+                    strategy.get("propagate_terms")
+                    or strategy.get("skills_to_emphasize")
+                    or []
+                ),
+                job_family=str(strategy.get("job_family") or ""),
+                category_order=list(strategy.get("skill_category_order") or []),
             )
 
             linguistic = validate_resume_linguistics(cleaned_resume)
@@ -717,6 +747,8 @@ def run_intelligent_tailoring_agents(
             output_language=output_language,
             use_cache=use_cache,
             allow_llm=True,
+            highlight_plan=strategy.get("highlight_plan"),
+            evidence_inventory=strategy.get("evidence_inventory"),
         )
         polished = writing_stage.get("tailored_resume") or cleaned_resume
         if not writing_stage.get("facts_unchanged", True):
@@ -732,7 +764,7 @@ def run_intelligent_tailoring_agents(
         )
         cleaned_resume["professional_summary"] = cleaned_resume["summary"]
 
-        # Agents 9–10 — structured reviews only (do not mutate resume facts)
+        # Agents 9–10 — structured reviews; HM challenges can trigger one refine pass
         strategy_obj.legacy_strategy = strategy
         recruiter_result = SeniorRecruiterReviewAgent().run(
             RecruiterReviewInput(
@@ -763,6 +795,73 @@ def run_intelligent_tailoring_agents(
             {"agent_id": hm_result.agent_id, "metrics": hm_result.metrics}
         )
 
+        # Hiring Manager feedback loop → writer (wording/emphasis only)
+        hm_dict = hiring_manager_obj.to_dict()
+        quality_score = writing_stage.get("quality_score") or {}
+        needs_hm_refine = (
+            int(hm_dict.get("overall_fit") or 0) < 70
+            or int(quality_score.get("overall_score") or 100) < 72
+            or bool(hm_dict.get("weakest_sections"))
+            or bool(hm_dict.get("actionable_feedback"))
+        ) and (
+            not recruiter_review_obj.approved
+            or int(hm_dict.get("overall_fit") or 0) < 75
+            or int(quality_score.get("overall_score") or 100) < 72
+        )
+        if needs_hm_refine:
+            logger.info(
+                "intelligent_tailoring: HM/quality refine pass overall_fit=%s quality=%s weak=%s",
+                hm_dict.get("overall_fit"),
+                quality_score.get("overall_score"),
+                hm_dict.get("weakest_sections"),
+            )
+            refine_stage = run_human_writing_stage(
+                validated_resume=cleaned_resume,
+                strategy=strategy,
+                knowledge_base=kb,
+                output_language=output_language,
+                use_cache=False,
+                allow_llm=True,
+                hiring_manager_feedback=hm_dict,
+                highlight_plan=strategy.get("highlight_plan"),
+                evidence_inventory=strategy.get("evidence_inventory"),
+                max_review_cycles=2,
+            )
+            if refine_stage.get("facts_unchanged", True) and refine_stage.get(
+                "tailored_resume"
+            ):
+                cleaned_resume = refine_stage["tailored_resume"]
+                cleaned_resume["summary"] = str(
+                    cleaned_resume.get("professional_summary")
+                    or cleaned_resume.get("summary")
+                    or ""
+                )
+                cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+                writing_stage = {
+                    **writing_stage,
+                    **refine_stage,
+                    "hm_refine_pass": True,
+                    "prior_quality_score": quality_score,
+                }
+                # Re-score HM after refine (feedback only; still no fact invention)
+                hm_result = HiringManagerSimulationAgent().run(
+                    HiringManagerInput(
+                        resume=cleaned_resume,
+                        job_profile=job_profile_obj,
+                        company_profile=company_profile_obj,
+                        evidence_map=evidence_map_obj,
+                        strategy=strategy_obj,
+                    ),
+                    AgentContext(use_cache=False, language=output_language),
+                )
+                hiring_manager_obj = hm_result.output
+                agent_trace.append(
+                    {
+                        "agent_id": hm_result.agent_id,
+                        "metrics": {**hm_result.metrics, "pass": "post_refine"},
+                    }
+                )
+
         # Rebuild deterministic change log against the polished wording
         deterministic_log = build_deterministic_change_log(
             baseline_resume=baseline_resume,
@@ -779,6 +878,12 @@ def run_intelligent_tailoring_agents(
             "grammar_score": (writing_stage.get("grammar") or {}).get("score"),
             "style_score": (writing_stage.get("style") or {}).get("overall_score"),
             "ai_risk": (writing_stage.get("ai_detector") or {}).get("ai_risk"),
+            "resume_quality_score": (writing_stage.get("quality_score") or {}).get(
+                "overall_score"
+            ),
+            "quality_dimensions": (writing_stage.get("quality_score") or {}).get(
+                "dimensions"
+            ),
             "failures": list(writing_stage.get("quality_gate_failures") or []),
         }
         if writing_stage.get("quality_gate_failures"):
@@ -944,9 +1049,12 @@ def run_intelligent_tailoring_agents(
                 },
                 "ai_detector": writing_stage.get("ai_detector"),
                 "ats_validation": writing_stage.get("ats_validation"),
+                "quality_score": writing_stage.get("quality_score"),
+                "hm_refine_pass": bool(writing_stage.get("hm_refine_pass")),
                 "quality_gate_failures": writing_stage.get("quality_gate_failures")
                 or [],
             },
+            "resume_quality_score": writing_stage.get("quality_score"),
             "job_profile": {
                 k: v
                 for k, v in job_profile_obj.to_dict().items()
@@ -963,7 +1071,7 @@ def run_intelligent_tailoring_agents(
             "claim_decisions": validation.get("decisions") or [],
             "agent_trace": agent_trace,
             "agent_timings_ms": agent_timings_ms,
-            "architecture": "multi_agent_v1",
+            "architecture": "multi_agent_v1_1",
         }
 
         # Strict schema validation of the assembled result
@@ -1006,7 +1114,9 @@ def run_intelligent_tailoring_agents(
         result_payload["claim_decisions"] = validation.get("decisions") or []
         result_payload["agent_trace"] = agent_trace
         result_payload["agent_timings_ms"] = agent_timings_ms
-        result_payload["architecture"] = "multi_agent_v1"
+        result_payload["architecture"] = "multi_agent_v1_1"
+        result_payload["resume_quality_score"] = writing_stage.get("quality_score")
+        result_payload["writing_report"] = result_payload.get("writing_report")
         # Preserve structured change_log fields after schema round-trip
         result_payload["change_log"] = deterministic_log
 
