@@ -218,7 +218,7 @@ def run_intelligent_tailoring_agents(
 
     ontology = get_ontology()
     agent_trace: list[dict[str, Any]] = []
-    agent_timings_ms: dict[str, int] = dict(knowledge_result.metrics)
+    agent_timings_ms: dict[str, int] = {}
     agent_trace.append(
         {
             "agent_id": knowledge_result.agent_id,
