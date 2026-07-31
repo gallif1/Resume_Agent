@@ -152,7 +152,7 @@ body {{
 }}
 {section_css}
 .resume-entry {{
-    margin: 0 0 2.8mm 0;
+    margin: 0 0 3.2mm 0;
     page-break-inside: avoid;
     break-inside: avoid;
 }}
@@ -161,12 +161,12 @@ body {{
     justify-content: space-between;
     align-items: baseline;
     gap: 5mm;
-    margin-bottom: 0.4mm;
+    margin-bottom: 0.6mm;
 }}
 .title-main {{
     font-weight: 700;
     color: {heading};
-    font-size: 10.2pt;
+    font-size: 10.35pt;
 }}
 .title-sub {{
     font-weight: 500;
@@ -182,11 +182,11 @@ body {{
     flex-shrink: 0;
 }}
 ul {{
-    margin: 0.8mm 0 1.5mm 0;
-    padding-left: 4.5mm;
+    margin: 1mm 0 1.8mm 0;
+    padding-left: 4.8mm;
 }}
 li {{
-    margin-bottom: 1mm;
+    margin-bottom: 1.15mm;
     color: {text};
     text-align: left;
 }}
@@ -198,11 +198,11 @@ li::marker {{
     color: {muted};
 }}
 .skills-container {{
-    margin-top: 1mm;
-    line-height: 1.45;
+    margin-top: 1.2mm;
+    line-height: 1.5;
 }}
 .skills-line {{
-    margin-bottom: 1mm;
+    margin-bottom: 1.15mm;
     font-size: {body_size};
     color: {text};
 }}
@@ -211,9 +211,10 @@ li::marker {{
     color: {heading};
 }}
 .summary-text {{
-    margin: 0 0 1.8mm 0;
+    margin: 0 0 2.2mm 0;
     color: {text};
     max-width: 100%;
+    line-height: 1.48;
 }}
 """
     return ResumeTheme(
@@ -234,9 +235,11 @@ _THEMES: dict[str, ResumeTheme] = {
         rule="#d1d5db",
         section_bg="#f3f4f6",
         section_style="bar",
-        name_size="21pt",
+        name_size="21.5pt",
         name_weight="700",
-        margin="13mm 15mm 13mm 15mm",
+        margin="14mm 16mm 14mm 16mm",
+        body_size="10pt",
+        line_height="1.45",
         header_align="left",
     ),
     "professional": _theme(
@@ -247,12 +250,14 @@ _THEMES: dict[str, ResumeTheme] = {
         text="#1e293b",
         muted="#475569",
         heading="#0f172a",
-        accent="#1e40af",
+        accent="#1e3a8a",
         rule="#cbd5e1",
         section_bg="transparent",
         section_style="rule",
-        name_size="20pt",
-        margin="14mm 16mm 14mm 16mm",
+        name_size="20.5pt",
+        margin="15mm 17mm 15mm 17mm",
+        body_size="10.1pt",
+        line_height="1.46",
         header_align="left",
     ),
     "executive": _theme(
@@ -267,12 +272,12 @@ _THEMES: dict[str, ResumeTheme] = {
         rule="#a8a29e",
         section_bg="transparent",
         section_style="underline",
-        name_size="22pt",
-        name_tracking="0.6px",
-        section_tracking="1.2px",
-        margin="16mm 18mm 16mm 18mm",
-        body_size="10.2pt",
-        line_height="1.48",
+        name_size="22.5pt",
+        name_tracking="0.7px",
+        section_tracking="1.4px",
+        margin="17mm 19mm 17mm 19mm",
+        body_size="10.3pt",
+        line_height="1.5",
         header_align="left",
     ),
     "minimal": _theme(
@@ -287,11 +292,13 @@ _THEMES: dict[str, ResumeTheme] = {
         rule="#e5e5e5",
         section_bg="transparent",
         section_style="rule",
-        name_size="19pt",
+        name_size="19.5pt",
         name_weight="600",
         section_transform="none",
-        section_tracking="0.3px",
-        margin="15mm 17mm 15mm 17mm",
+        section_tracking="0.35px",
+        margin="16mm 18mm 16mm 18mm",
+        body_size="10.1pt",
+        line_height="1.5",
         header_align="left",
     ),
     "classic": ResumeTheme(

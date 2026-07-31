@@ -1,21 +1,22 @@
-"""Intelligent Resume Tailoring — staged pipeline orchestrator.
+"""Intelligent Resume Tailoring — multi-agent pipeline orchestrator.
 
-Universal, profession-agnostic evidence-based flow:
-1. Resume Knowledge Base (atomic facts + coverage validation)
-2. Job requirement extraction (LLM)
-3. Skill/terminology normalization (ontology)
-4. Semantic inference (ontology + LLM)
-5. Evidence mapping
-6. Requirement ranking
-7. Content triage
-8. Strategy → score → missed-evidence → rebuild → rewrite → quality gate
-9. Claim validation (ALWAYS)
-10. Human Resume Writer → Senior Recruiter Review → Grammar/Style/ATS writing gates
-11. ATS scoring + quality / tailoring reports
+Universal, profession-agnostic evidence-based multi-agent flow:
+1. Resume Knowledge Agent — canonical facts only
+2. Job Intelligence Agent — structured JobProfile
+3. Company Intelligence Agent — CompanyProfile (no fabrication)
+4. Normalization + semantic inference (tools)
+5. Evidence Mapping Agent — requirement→evidence with wording constraints
+6. Requirement ranking + content triage (tools)
+7. Resume Strategy Agent — full strategy before writing
+8. Resume Tailoring Agent — content selection only
+9. Claim Validation Agent — sentence-level Accept/Rewrite/Regenerate/Reject
+10. Human Resume Writer → Senior Recruiter Review → writing gates
+11. Hiring Manager Simulation — actionable feedback only
+12. ATS scoring + quality reports + optional Quality Intelligence
 
 No tailored resume is returned without passing through the claim validator.
 The Human Resume Writer polishes wording only — facts stay immutable.
-Hard-coded tech job titles are soft signals only — strategy is evidence-driven.
+Each agent has one responsibility; inter-agent data is structured objects.
 """
 
 from __future__ import annotations
@@ -31,16 +32,33 @@ from intelligent_tailoring.cache import (
     read_tailoring_cache,
     write_tailoring_cache,
 )
-from intelligent_tailoring.knowledge_base import (
-    build_knowledge_base,
-    knowledge_base_to_resume_facts,
-    score_facts_for_job,
+from intelligent_tailoring.agents.base import AgentContext
+from intelligent_tailoring.agents.claim_validation_agent import ClaimValidationAgent
+from intelligent_tailoring.agents.company_intelligence_agent import (
+    CompanyIntelligenceAgent,
 )
+from intelligent_tailoring.agents.hiring_manager_agent import (
+    HiringManagerSimulationAgent,
+)
+from intelligent_tailoring.agents.job_intelligence_agent import JobIntelligenceAgent
+from intelligent_tailoring.agents.orchestrator import attach_quality_intelligence
+from intelligent_tailoring.agents.resume_tailoring_agent import ResumeTailoringAgent
+from intelligent_tailoring.agents.schemas import (
+    ClaimValidationInput,
+    CompanyIntelligenceInput,
+    HiringManagerInput,
+    JobIntelligenceInput,
+    RecruiterReviewInput,
+    TailoringAgentInput,
+)
+from intelligent_tailoring.agents.senior_recruiter_agent import (
+    SeniorRecruiterReviewAgent,
+)
+from intelligent_tailoring.knowledge_base import score_facts_for_job
 from intelligent_tailoring.ontology import dedupe_skills, get_ontology
 from intelligent_tailoring.schemas import (
     PIPELINE_VERSION,
     SchemaValidationError,
-    TailoringResult,
     tailored_resume_to_legacy_cv,
     validate_tailoring_result,
 )
@@ -50,10 +68,6 @@ from intelligent_tailoring.stages.ats_scoring import (
 )
 from intelligent_tailoring.stages.claim_validation import run_claim_validation
 from intelligent_tailoring.stages.content_triage import run_content_triage
-from intelligent_tailoring.stages.evidence_mapping import build_evidence_map
-from intelligent_tailoring.stages.job_requirement_extraction import (
-    extract_job_requirements,
-)
 from intelligent_tailoring.stages.normalization import normalize_terms
 from intelligent_tailoring.stages.requirement_ranking import rank_requirements
 from intelligent_tailoring.stages.resume_extraction import extract_structured_resume
@@ -66,19 +80,14 @@ from intelligent_tailoring.services.quality import (
     evaluate_tailoring_quality,
     should_regenerate_for_quality,
 )
-from intelligent_tailoring.services.resume_analyzer import (
-    analyze_resume,
-    resume_facts_to_baseline_resume,
-)
+from intelligent_tailoring.services.resume_analyzer import resume_facts_to_baseline_resume
 from intelligent_tailoring.services.resume_rebuilder import rebuild_resume_structure
-from intelligent_tailoring.services.resume_rewriter import rewrite_resume_with_strategy
 from intelligent_tailoring.services.resume_scorer import score_resume_content
 from intelligent_tailoring.services.resume_validator import (
     should_regenerate,
     validate_tailoring_depth,
 )
 from intelligent_tailoring.services.tailoring_reporter import build_tailoring_report
-from intelligent_tailoring.services.tailoring_strategy_builder import build_tailoring_strategy
 from intelligent_tailoring.stages.semantic_inference import run_semantic_inference
 from intelligent_tailoring.writing.writing_pipeline import run_human_writing_stage
 from match_tailor_service import (
@@ -120,49 +129,72 @@ def run_intelligent_tailoring(
     language: str | None = None,
     regenerate_section: str | None = None,
 ) -> dict[str, Any]:
-    """Run the full staged pipeline and return a dual-schema result.
+    """Run the multi-agent pipeline and return a dual-schema result.
 
-    Returns both the new TailoringResult fields and the legacy match_tailor
-    keys so ``tailor_cv_service`` / existing UI keep working.
+    Returns both TailoringResult fields and legacy match_tailor keys so
+    ``tailor_cv_service`` / existing UI keep working.
     """
+    return run_intelligent_tailoring_agents(
+        cv_profile=cv_profile,
+        job=job,
+        use_cache=use_cache,
+        source_documents=source_documents,
+        language=language,
+        regenerate_section=regenerate_section,
+    )
+
+
+def run_intelligent_tailoring_agents(
+    *,
+    cv_profile: dict[str, Any],
+    job: dict[str, Any],
+    use_cache: bool = True,
+    source_documents: str | None = None,
+    language: str | None = None,
+    regenerate_section: str | None = None,
+) -> dict[str, Any]:
+    """Production multi-agent implementation."""
     if not is_ai_available():
         raise IntelligentTailorError(
             "OPENAI_API_KEY is not configured — cannot tailor this resume",
             status_code=503,
         )
 
-    # --- Stage 1: Resume Knowledge Base (atomic facts + coverage) ---
-    kb = build_knowledge_base(
-        cv_profile,
-        source_documents,
-        target_output_language=language,
-    )
-    resume_facts = knowledge_base_to_resume_facts(kb)
-    # Merge with classic extraction for any fields KB missed
-    classic = extract_structured_resume(cv_profile, source_documents)
-    if not resume_facts.get("experience_roles") and classic.get("experience_roles"):
-        resume_facts["experience_roles"] = classic["experience_roles"]
-    if not resume_facts.get("projects") and classic.get("projects"):
-        resume_facts["projects"] = classic["projects"]
-    display_skills = list(resume_facts.get("display_skills") or resume_facts.get("skills") or [])
-
-    if resume_facts.get("sparse") or (
-        kb.coverage and kb.coverage.extracted_fact_count == 0 and classic.get("sparse")
-    ):
-        raise IntelligentTailorError(
-            "Resume text is too short or sparse to extract meaningful structured data",
-            status_code=400,
-        )
-
     # JD snapshot (exact text used at generation time)
     from match_tailor_service import build_job_payload
     from job_analyzer import parse_stored_job_profile
 
-    job_profile = parse_stored_job_profile(job.get("job_profile"))
-    jd_snapshot = build_job_payload(job, job_profile)
+    stored_job_profile = parse_stored_job_profile(job.get("job_profile"))
+    jd_snapshot = build_job_payload(job, stored_job_profile)
     if len((jd_snapshot or "").strip()) < 40:
         raise IntelligentTailorError(
             "Job description is too short or sparse to extract meaningful requirements",
+            status_code=400,
+        )
+
+    # --- Agents 1–5: knowledge, job, company, evidence, strategy (initial) ---
+    # Knowledge runs first for language detection / cache keys.
+    from intelligent_tailoring.agents.resume_knowledge_agent import ResumeKnowledgeAgent
+    from intelligent_tailoring.agents.schemas import ResumeKnowledgeInput
+
+    knowledge_result = ResumeKnowledgeAgent().run(
+        ResumeKnowledgeInput(
+            cv_profile=cv_profile,
+            source_documents=source_documents,
+            target_output_language=language,
+        ),
+        AgentContext(use_cache=use_cache, language=language or "en"),
+    )
+    knowledge = knowledge_result.output
+    kb = knowledge.knowledge_base
+    resume_facts = dict(knowledge.resume_facts)
+    display_skills = list(
+        resume_facts.get("display_skills") or resume_facts.get("skills") or []
+    )
+
+    if "resume_sparse" in knowledge_result.warnings or resume_facts.get("sparse"):
+        raise IntelligentTailorError(
+            "Resume text is too short or sparse to extract meaningful structured data",
             status_code=400,
         )
 
@@ -172,11 +204,8 @@ def run_intelligent_tailoring(
         preferred=language or kb.target_output_language,
     )
     kb.target_output_language = output_language
-
-    # Prefer cased KB text for claim validation / caching
     resume_text = str(kb.raw_text or resume_facts.get("raw_text") or "")
 
-    # Pipeline-level cache keyed on (resume version, JD snapshot, kb hash)
     if use_cache and not regenerate_section:
         cached = read_tailoring_cache(
             resume_text=f"{kb.content_hash}|{resume_text}",
@@ -188,14 +217,43 @@ def run_intelligent_tailoring(
             return _ensure_legacy_fields(cached, job=job, cv_profile=cv_profile)
 
     ontology = get_ontology()
+    agent_trace: list[dict[str, Any]] = []
+    agent_timings_ms: dict[str, int] = dict(knowledge_result.metrics)
+    agent_trace.append(
+        {
+            "agent_id": knowledge_result.agent_id,
+            "metrics": knowledge_result.metrics,
+            "warnings": knowledge_result.warnings,
+        }
+    )
 
     try:
-        # --- Stage 2: job requirement extraction ---
-        requirements = extract_job_requirements(
-            job, use_cache=use_cache, jd_snapshot=jd_snapshot
+        # Agent 2 — Job Intelligence
+        job_intel = JobIntelligenceAgent().run(
+            JobIntelligenceInput(job=job, jd_snapshot=jd_snapshot),
+            AgentContext(use_cache=use_cache, language=output_language),
+        )
+        job_profile_obj = job_intel.output
+        agent_trace.append(
+            {"agent_id": job_intel.agent_id, "metrics": job_intel.metrics}
         )
 
-        # Language mismatch: preserve selected output language (do not silently translate)
+        # Agent 3 — Company Intelligence (no fabrication)
+        company_intel = CompanyIntelligenceAgent().run(
+            CompanyIntelligenceInput(
+                job=job,
+                job_profile=job_profile_obj,
+                jd_snapshot=jd_snapshot,
+            ),
+            AgentContext(use_cache=use_cache, language=output_language),
+        )
+        company_profile_obj = company_intel.output
+        agent_trace.append(
+            {"agent_id": company_intel.agent_id, "metrics": company_intel.metrics}
+        )
+
+        requirements = job_profile_obj.to_legacy_requirements()
+
         jd_language = str(requirements.get("language") or output_language)
         if jd_language != output_language:
             logger.info(
@@ -205,7 +263,7 @@ def run_intelligent_tailoring(
                 output_language,
             )
 
-        # --- Stage 3: normalization ---
+        # Normalization (deterministic tool)
         normalized = normalize_terms(requirements, resume_facts, ontology=ontology)
         requirements = normalized["requirements"]
         resume_facts = {
@@ -213,8 +271,10 @@ def run_intelligent_tailoring(
             "skills": normalized["resume_skills"],
             "display_skills": display_skills,
         }
+        # Keep job profile raw requirements in sync after normalization
+        job_profile_obj.raw_requirements = requirements
 
-        # --- Stage 4: semantic inference ---
+        # Semantic inference (tool) then Evidence Mapping Agent
         inferred = run_semantic_inference(
             resume_facts=resume_facts,
             requirements=requirements,
@@ -222,25 +282,36 @@ def run_intelligent_tailoring(
             use_cache=use_cache,
             ontology=ontology,
         )
+        from intelligent_tailoring.agents.evidence_mapping_agent import (
+            EvidenceMappingAgent,
+        )
+        from intelligent_tailoring.agents.schemas import EvidenceMappingInput
 
-        # --- Stage 5: evidence mapping ---
-        evidence_map = build_evidence_map(
-            resume_facts=resume_facts,
-            requirements=requirements,
-            inferred=inferred,
-            ontology=ontology,
+        evidence_agent_result = EvidenceMappingAgent().run(
+            EvidenceMappingInput(
+                resume_facts=resume_facts,
+                job_profile=job_profile_obj,
+                inferred=inferred,
+                knowledge_base=kb,
+            ),
+            AgentContext(use_cache=use_cache, language=output_language),
+        )
+        evidence_map_obj = evidence_agent_result.output
+        evidence_map = evidence_map_obj.to_legacy_list()
+        agent_trace.append(
+            {
+                "agent_id": evidence_agent_result.agent_id,
+                "metrics": evidence_agent_result.metrics,
+            }
         )
 
-        # --- Stage 6: requirement ranking ---
+        # Requirement ranking + content triage (tools)
         ranked = rank_requirements(requirements, evidence_map)
-
-        # Original (pre-tailor) match score from evidence map
         original_scoring = score_from_evidence_map(
             evidence_map, job_title=str(job.get("title") or "")
         )
         original_score = int(original_scoring["realistic_match_score"])
 
-        # --- Stage 7: content triage ---
         triage = run_content_triage(
             resume_facts=resume_facts,
             ranked_requirements=ranked,
@@ -248,7 +319,6 @@ def run_intelligent_tailoring(
             use_cache=use_cache,
         )
 
-        # --- Deep tailoring: strategy → score → missed evidence → rebuild → rewrite → quality ---
         job_analysis = analyze_job(
             job,
             use_cache=use_cache,
@@ -256,14 +326,34 @@ def run_intelligent_tailoring(
             requirements=requirements,
         )
         fact_scores = score_facts_for_job(kb, job_requirements=requirements)
-        strategy = build_tailoring_strategy(
-            job_analysis=job_analysis,
-            resume_facts=resume_facts,
-            evidence_map=evidence_map,
-            ranked_requirements=ranked,
-            language=output_language,
-            fact_scores=fact_scores,
+
+        from intelligent_tailoring.agents.resume_strategy_agent import (
+            ResumeStrategyAgent,
         )
+        from intelligent_tailoring.agents.schemas import ResumeStrategyInput
+
+        strategy_result = ResumeStrategyAgent().run(
+            ResumeStrategyInput(
+                job_profile=job_profile_obj,
+                company_profile=company_profile_obj,
+                evidence_map=evidence_map_obj,
+                resume_facts=resume_facts,
+                ranked_requirements=ranked,
+                fact_scores=fact_scores,
+                job_analysis=job_analysis,
+                language=output_language,
+            ),
+            AgentContext(use_cache=use_cache, language=output_language),
+        )
+        strategy_obj = strategy_result.output
+        strategy = strategy_obj.to_legacy()
+        agent_trace.append(
+            {
+                "agent_id": strategy_result.agent_id,
+                "metrics": strategy_result.metrics,
+            }
+        )
+
         missed = find_missed_evidence(
             kb=kb,
             job_requirements=requirements,
@@ -271,6 +361,7 @@ def run_intelligent_tailoring(
             fact_scores=fact_scores,
         )
         strategy = enrich_strategy_with_missed_evidence(strategy, missed)
+        strategy_obj.legacy_strategy = strategy
 
         # Promote overlooked fact bullets into experience/projects when missing
         resume_facts = _inject_missed_facts(resume_facts, kb, missed)
@@ -312,20 +403,39 @@ def run_intelligent_tailoring(
         from intelligent_tailoring.quality_gates import evaluate_quality_gates
 
         previous_generated: dict[str, Any] | None = None
+        tailoring_agent = ResumeTailoringAgent()
+        claim_agent = ClaimValidationAgent()
         while True:
             try:
-                generated = rewrite_resume_with_strategy(
-                    resume_facts=resume_facts,
-                    rebuilt_resume=rebuilt,
-                    strategy=strategy,
-                    scores=content_scores,
-                    ranked_requirements=ranked,
-                    inferred=inferred,
-                    evidence_map=evidence_map,
-                    triage=triage,
-                    language=output_language,
-                    use_cache=use_cache,
-                    regeneration_attempt=regeneration_attempt,
+                # Agent 6 — content selection (never invents facts / wording polish)
+                knowledge.resume_facts = resume_facts
+                strategy_obj.legacy_strategy = strategy
+                tailor_result = tailoring_agent.run(
+                    TailoringAgentInput(
+                        knowledge=knowledge,
+                        job_profile=job_profile_obj,
+                        company_profile=company_profile_obj,
+                        evidence_map=evidence_map_obj,
+                        strategy=strategy_obj,
+                        ranked_requirements=ranked,
+                        inferred=inferred,
+                        triage=triage,
+                        rebuilt_resume=rebuilt,
+                        content_scores=content_scores,
+                        language=output_language,
+                        regeneration_attempt=regeneration_attempt,
+                    ),
+                    AgentContext(use_cache=use_cache, language=output_language),
+                )
+                structure = tailor_result.output
+                generated = dict(structure.raw_generation or {})
+                generated["tailored_resume"] = structure.as_resume_dict()
+                generated["matched_requirements"] = structure.matched_requirements
+                generated["missing_requirements"] = structure.missing_requirements
+                generated["change_log"] = structure.change_log
+                generated["ats_keywords_added"] = structure.ats_keywords_added
+                generated["removed_or_deprioritized_content"] = (
+                    structure.removed_or_deprioritized_content
                 )
             except SchemaValidationError:
                 # Controlled regen failed — keep the last valid rewrite if any.
@@ -376,19 +486,26 @@ def run_intelligent_tailoring(
                     strategy = enrich_strategy_with_missed_evidence(strategy, missed)
                     continue
 
-            # Claim + scope validation after rewrite settles
-            validation = run_claim_validation(
-                original_resume_text=resume_text,
-                tailored_resume=generated["tailored_resume"],
-                evidence_map=evidence_map,
-                change_log=generated.get("change_log") or [],
-                inferred=inferred,
-                job_requirements=requirements,
-                use_cache=use_cache,
-                # Deterministic claim validation only — LLM assist consumed stage
-                # queues and could reintroduce unsupported claims.
-                run_llm_assist=False,
+            # Agent 7 — Claim validation (sentence-level)
+            claim_result = claim_agent.run(
+                ClaimValidationInput(
+                    original_resume_text=resume_text,
+                    tailored_resume=generated["tailored_resume"],
+                    evidence_map=evidence_map_obj,
+                    change_log=generated.get("change_log") or [],
+                    inferred=inferred,
+                    job_profile=job_profile_obj,
+                ),
+                AgentContext(use_cache=use_cache, language=output_language),
             )
+            validation = {
+                "cleaned_resume": claim_result.output.cleaned_resume,
+                "warnings": claim_result.output.warnings,
+                "rejected_statements": claim_result.output.rejected_statements,
+                "inferred_competencies": claim_result.output.inferred_competencies,
+                "passed": claim_result.output.passed,
+                "decisions": [d.to_dict() for d in claim_result.output.decisions],
+            }
             cleaned_resume = validation["cleaned_resume"]
             cleaned_resume["skills"] = dedupe_skills(cleaned_resume.get("skills") or [])
 
@@ -591,7 +708,7 @@ def run_intelligent_tailoring(
             )
         )
 
-        # --- Stage 10: Human Resume Writer + Senior Recruiter Review ---
+        # --- Agents 8–9: Human Resume Writer + Senior Recruiter Review ---
         # Isolated from tailoring: polishes wording only; facts stay locked.
         writing_stage = run_human_writing_stage(
             validated_resume=cleaned_resume,
@@ -614,6 +731,37 @@ def run_intelligent_tailoring(
             or ""
         )
         cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+
+        # Agents 9–10 — structured reviews only (do not mutate resume facts)
+        strategy_obj.legacy_strategy = strategy
+        recruiter_result = SeniorRecruiterReviewAgent().run(
+            RecruiterReviewInput(
+                resume=cleaned_resume, output_language=output_language
+            ),
+            AgentContext(use_cache=use_cache, language=output_language),
+        )
+        recruiter_review_obj = recruiter_result.output
+        agent_trace.append(
+            {
+                "agent_id": recruiter_result.agent_id,
+                "metrics": recruiter_result.metrics,
+            }
+        )
+
+        hm_result = HiringManagerSimulationAgent().run(
+            HiringManagerInput(
+                resume=cleaned_resume,
+                job_profile=job_profile_obj,
+                company_profile=company_profile_obj,
+                evidence_map=evidence_map_obj,
+                strategy=strategy_obj,
+            ),
+            AgentContext(use_cache=use_cache, language=output_language),
+        )
+        hiring_manager_obj = hm_result.output
+        agent_trace.append(
+            {"agent_id": hm_result.agent_id, "metrics": hm_result.metrics}
+        )
 
         # Rebuild deterministic change log against the polished wording
         deterministic_log = build_deterministic_change_log(
@@ -799,6 +947,23 @@ def run_intelligent_tailoring(
                 "quality_gate_failures": writing_stage.get("quality_gate_failures")
                 or [],
             },
+            "job_profile": {
+                k: v
+                for k, v in job_profile_obj.to_dict().items()
+                if k not in ("jd_text", "raw_requirements")
+            },
+            "company_profile": company_profile_obj.to_dict(),
+            "resume_strategy": {
+                k: v
+                for k, v in strategy_obj.to_dict().items()
+                if k != "legacy_strategy"
+            },
+            "recruiter_review": recruiter_review_obj.to_dict(),
+            "hiring_manager_feedback": hiring_manager_obj.to_dict(),
+            "claim_decisions": validation.get("decisions") or [],
+            "agent_trace": agent_trace,
+            "agent_timings_ms": agent_timings_ms,
+            "architecture": "multi_agent_v1",
         }
 
         # Strict schema validation of the assembled result
@@ -824,9 +989,35 @@ def run_intelligent_tailoring(
             "knowledge_base_summary"
         )
         result_payload["writing_report"] = result_payload.get("writing_report")
+        # Preserve multi-agent audit fields after schema round-trip
+        result_payload["job_profile"] = {
+            k: v
+            for k, v in job_profile_obj.to_dict().items()
+            if k not in ("jd_text", "raw_requirements")
+        }
+        result_payload["company_profile"] = company_profile_obj.to_dict()
+        result_payload["resume_strategy"] = {
+            k: v
+            for k, v in strategy_obj.to_dict().items()
+            if k != "legacy_strategy"
+        }
+        result_payload["recruiter_review"] = recruiter_review_obj.to_dict()
+        result_payload["hiring_manager_feedback"] = hiring_manager_obj.to_dict()
+        result_payload["claim_decisions"] = validation.get("decisions") or []
+        result_payload["agent_trace"] = agent_trace
+        result_payload["agent_timings_ms"] = agent_timings_ms
+        result_payload["architecture"] = "multi_agent_v1"
         # Preserve structured change_log fields after schema round-trip
         result_payload["change_log"] = deterministic_log
 
+        attach_quality_intelligence(
+            result=result_payload,
+            job_profile=job_profile_obj,
+            recruiter=recruiter_review_obj,
+            hiring_manager=hiring_manager_obj,
+            strategy=strategy_obj,
+            agent_timings_ms=agent_timings_ms,
+        )
 
     except SchemaValidationError as exc:
         raise IntelligentTailorError(
