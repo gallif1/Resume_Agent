@@ -467,6 +467,24 @@ def _stage_sequence(*responses: dict[str, Any]):
     queue = list(responses)
 
     def _call(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        namespace = str(_kwargs.get("cache_namespace") or "")
+        if "human_writer" in namespace:
+            for r in reversed(responses):
+                if isinstance(r, dict) and "tailored_resume" in r:
+                    return {
+                        "tailored_resume": r["tailored_resume"],
+                        "writing_notes": ["test_stub"],
+                        "sections_rewritten": ["summary", "experience", "projects"],
+                    }
+        if "recruiter_review" in namespace:
+            return {
+                "approved": True,
+                "human_believability": 85,
+                "interview_quality": 84,
+                "issues": [],
+                "sections_to_regenerate": [],
+                "summary_feedback": "Professionally written.",
+            }
         if len(queue) > 1:
             return queue.pop(0)
         return responses[-1] if responses else {}

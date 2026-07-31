@@ -101,11 +101,50 @@ SALES_JD = {
 }
 
 
+def _writer_passthrough_from(responses: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> dict[str, Any]:
+    for r in reversed(list(responses)):
+        if isinstance(r, dict) and "tailored_resume" in r:
+            return {
+                "tailored_resume": r["tailored_resume"],
+                "writing_notes": ["test_stub_passthrough"],
+                "sections_rewritten": ["summary", "experience", "projects"],
+            }
+    return {
+        "tailored_resume": {
+            "professional_title": "",
+            "professional_summary": "Professional with relevant experience.",
+            "skills": [],
+            "experience": [],
+            "projects": [],
+            "education": [],
+            "certifications": [],
+        },
+        "writing_notes": ["test_stub_empty"],
+        "sections_rewritten": ["summary"],
+    }
+
+
+def _recruiter_approve() -> dict[str, Any]:
+    return {
+        "approved": True,
+        "human_believability": 88,
+        "interview_quality": 86,
+        "issues": [],
+        "sections_to_regenerate": [],
+        "summary_feedback": "Reads as a professionally written human resume.",
+    }
+
+
 def _stage_sequence(*responses: dict[str, Any]):
     """Return a side_effect that yields each response then replays generation-shaped ones."""
     queue = list(responses)
 
     def _call(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        namespace = str(_kwargs.get("cache_namespace") or "")
+        if "human_writer" in namespace:
+            return _writer_passthrough_from(responses)
+        if "recruiter_review" in namespace:
+            return _recruiter_approve()
         if queue:
             return queue.pop(0)
         for r in reversed(responses):
@@ -484,10 +523,16 @@ def test_pipeline_cache_reuses_result(monkeypatch: pytest.MonkeyPatch, tmp_path)
 
     def counting_call(*_args: Any, **kwargs: Any) -> dict[str, Any]:
         calls["n"] += 1
-        # Drain through software responses cyclically
+        namespace = str(kwargs.get("cache_namespace") or "")
         seq = _software_stage_responses()
-        # Map by call count within a pipeline run (5 LLM stages)
-        idx = (calls["n"] - 1) % len(seq)
+        if "human_writer" in namespace:
+            return _writer_passthrough_from(seq)
+        if "recruiter_review" in namespace:
+            return _recruiter_approve()
+        # Map by call count within a pipeline run (core LLM stages)
+        core_calls = calls["n"]
+        # Count only non-writing namespaces toward the core sequence index
+        idx = (core_calls - 1) % len(seq)
         return seq[idx]
 
     with patch(
@@ -509,10 +554,12 @@ def test_pipeline_cache_reuses_result(monkeypatch: pytest.MonkeyPatch, tmp_path)
 
 
 def test_no_generation_path_skips_claim_validator():
-    """Guard: pipeline module always invokes claim validation stage."""
+    """Guard: pipeline module always invokes claim validation + human writer."""
     import inspect
     import intelligent_tailoring.pipeline as pipeline_mod
 
     source = inspect.getsource(pipeline_mod.run_intelligent_tailoring)
     assert "run_claim_validation" in source
     assert "claim_validator_passed" in source
+    assert "run_human_writing_stage" in source
+    assert "writing_report" in source

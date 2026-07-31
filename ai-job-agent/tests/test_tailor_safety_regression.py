@@ -10,6 +10,7 @@ Reproduces the Full Stack failure mode:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
@@ -226,6 +227,43 @@ def _stage_side_effect():
     ]
 
     def _call(*_a, **_k):
+        namespace = str(_k.get("cache_namespace") or "")
+        if "human_writer" in namespace:
+            # Writing stage must not reintroduce stripped claims; return a
+            # fact-safe polish shaped like the generation minus known fabrications.
+            safe = json.loads(json.dumps(gen["tailored_resume"]))
+            summary = str(safe.get("professional_summary") or "")
+            summary = summary.replace("Vue.js", "").replace("  ", " ").strip()
+            safe["professional_summary"] = summary
+            safe["summary"] = summary
+            for entry in safe.get("experience") or []:
+                entry["bullets"] = [
+                    b
+                    for b in (entry.get("bullets") or [])
+                    if "Vue.js" not in b and "improving user engagement" not in b
+                ]
+            for entry in safe.get("projects") or []:
+                entry["bullets"] = [
+                    b
+                    for b in (entry.get("bullets") or [])
+                    if "Node.js" not in b and "enhancing system reliability" not in b
+                ]
+                if "CRM" in str(entry.get("description") or ""):
+                    entry["description"] = "Personal finance tracker built with FastAPI."
+            return {
+                "tailored_resume": safe,
+                "writing_notes": ["test_safe_polish"],
+                "sections_rewritten": ["summary", "experience", "projects"],
+            }
+        if "recruiter_review" in namespace:
+            return {
+                "approved": True,
+                "human_believability": 82,
+                "interview_quality": 80,
+                "issues": [],
+                "sections_to_regenerate": [],
+                "summary_feedback": "Professionally written.",
+            }
         if queue:
             return queue.pop(0)
         return gen
