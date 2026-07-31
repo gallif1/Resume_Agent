@@ -46,7 +46,9 @@ ai-job-agent/src/BUILD_REVISION
 ai-job-agent/data/cvs/
 ai-job-agent/data/ai_cache/
 ai-job-agent/data/browser_profile/
+ai-job-agent/data/quality_intelligence/
 **/ai_cache/
+**/quality_intelligence/
 *.db
 *.db-shm
 *.db-wal
