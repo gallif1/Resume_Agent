@@ -77,9 +77,12 @@ def rewrite_resume_with_strategy(
     resume = validate_tailored_resume(raw["tailored_resume"])
     resume_dict = resume.to_dict()
 
-    # Preserve deterministic reordering from rebuilder when LLM omits it
-    if rebuilt_resume.get("skills"):
-        resume_dict["skills"] = rebuilt_resume["skills"]
+    # Keep LLM skill selection when present — overwriting with the rebuilder
+    # list erased job-specific emphasis (always the same source skill set).
+    # Fall back to the rebuilt grouping only when the model omitted skills.
+    if not (resume_dict.get("skills") or []):
+        if rebuilt_resume.get("skills"):
+            resume_dict["skills"] = rebuilt_resume["skills"]
     if rebuilt_resume.get("experience"):
         # Merge: keep LLM bullet text but enforce score-based order per role
         _merge_experience_order(resume_dict, rebuilt_resume)

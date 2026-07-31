@@ -129,6 +129,10 @@ def evaluate_quality_gates(
         # Category labels like "Tools:" must not be treated as novel entities.
         if section == "skills":
             continue
+        # Summaries are validated by summary_builder / linguistic integrity —
+        # entity token checks falsely flag role words (e.g. DevOps) from titles.
+        if section == "summary":
+            continue
         ok, reason = statement_supported_by_evidence(
             text,
             source_text=source,

@@ -301,20 +301,32 @@ def run_intelligent_tailoring(
         from intelligent_tailoring.change_log import build_deterministic_change_log
         from intelligent_tailoring.quality_gates import evaluate_quality_gates
 
+        previous_generated: dict[str, Any] | None = None
         while True:
-            generated = rewrite_resume_with_strategy(
-                resume_facts=resume_facts,
-                rebuilt_resume=rebuilt,
-                strategy=strategy,
-                scores=content_scores,
-                ranked_requirements=ranked,
-                inferred=inferred,
-                evidence_map=evidence_map,
-                triage=triage,
-                language=output_language,
-                use_cache=use_cache,
-                regeneration_attempt=regeneration_attempt,
-            )
+            try:
+                generated = rewrite_resume_with_strategy(
+                    resume_facts=resume_facts,
+                    rebuilt_resume=rebuilt,
+                    strategy=strategy,
+                    scores=content_scores,
+                    ranked_requirements=ranked,
+                    inferred=inferred,
+                    evidence_map=evidence_map,
+                    triage=triage,
+                    language=output_language,
+                    use_cache=use_cache,
+                    regeneration_attempt=regeneration_attempt,
+                )
+            except SchemaValidationError:
+                # Controlled regen failed — keep the last valid rewrite if any.
+                if previous_generated is not None and regeneration_attempt > 0:
+                    logger.warning(
+                        "intelligent_tailoring: regen rewrite failed; keeping prior generation"
+                    )
+                    generated = previous_generated
+                    break
+                raise
+            previous_generated = generated
             validation_depth = validate_tailoring_depth(
                 tailored_resume=generated["tailored_resume"],
                 baseline_resume=baseline_resume,
@@ -416,15 +428,47 @@ def run_intelligent_tailoring(
                     if v.get("text") and v["text"] not in rejected:
                         rejected.append(v["text"])
 
-            if not str(cleaned_resume.get("professional_summary") or "").strip():
-                restored = _safe_summary_from_strategy(
-                    strategy=strategy,
-                    resume_facts=resume_facts,
-                    resume_text=resume_text,
+            from intelligent_tailoring.summary_builder import build_professional_summary
+            from intelligent_tailoring.linguistic_integrity import (
+                validate_resume_linguistics,
+            )
+            from intelligent_tailoring.skill_taxonomy import normalize_skill_lines
+
+            # Structured summary — never keep corrupted keyword-soup text
+            summary_result = build_professional_summary(
+                strategy=strategy,
+                resume_facts=resume_facts,
+                resume_text=resume_text,
+                output_language=output_language,
+                existing_summary=str(
+                    cleaned_resume.get("professional_summary")
+                    or cleaned_resume.get("summary")
+                    or ""
+                ),
+            )
+            if summary_result.get("summary"):
+                cleaned_resume["professional_summary"] = summary_result["summary"]
+                cleaned_resume["summary"] = summary_result["summary"]
+            else:
+                cleaned_resume["professional_summary"] = ""
+                cleaned_resume["summary"] = ""
+
+            # Deterministic skill categories (override LLM / family heuristics)
+            cleaned_resume["skills"] = normalize_skill_lines(
+                list(cleaned_resume.get("skills") or []),
+                emphasize=list(strategy.get("skills_to_emphasize") or []),
+            )
+
+            linguistic = validate_resume_linguistics(cleaned_resume)
+            if linguistic.get("regeneration_required"):
+                validation.setdefault("warnings", []).append(
+                    {
+                        "statement": ",".join(linguistic.get("invalid_claim_ids") or [])[:200],
+                        "reason": "linguistic_integrity:"
+                        + ",".join((linguistic.get("detected_patterns") or [])[:6]),
+                        "inference_category": "Unsupported",
+                    }
                 )
-                if restored:
-                    cleaned_resume["professional_summary"] = restored
-                    cleaned_resume["summary"] = restored
 
             deterministic_log = build_deterministic_change_log(
                 baseline_resume=baseline_resume,
@@ -456,6 +500,13 @@ def run_intelligent_tailoring(
                 require_summary=True,
                 rejected_statements=validation.get("rejected_statements") or [],
             )
+            quality_gates["linguistic_integrity"] = linguistic
+            if not linguistic.get("passed"):
+                quality_gates["passed"] = False
+                for pattern in linguistic.get("detected_patterns") or []:
+                    failure = f"linguistic_integrity:{pattern}"
+                    if failure not in quality_gates.setdefault("failures", []):
+                        quality_gates["failures"].append(failure)
             # Record rejected count for reporting without driving regen loops
             quality_report["unsupported_claim_count"] = unsupported_count
             if unsupported_count:
@@ -475,6 +526,7 @@ def run_intelligent_tailoring(
                         "unknown_skill",
                         "missing_professional_summary",
                         "raw_llm_reasoning",
+                        "linguistic_integrity",
                     )
                 )
             ]
@@ -495,29 +547,29 @@ def run_intelligent_tailoring(
         if regenerate_section:
             generated["regenerate_section"] = regenerate_section
 
-        # Hard fail when safety gates still fail after controlled regeneration
-        if not quality_gates.get("passed"):
-            hard_failures = [
-                f
-                for f in (quality_gates.get("failures") or [])
-                if any(
-                    f.startswith(prefix)
-                    for prefix in (
-                        "unsupported_impact",
-                        "unsupported_entity",
-                        "cross_entry_tech",
-                        "unknown_skill",
-                        "missing_professional_summary",
-                        "raw_llm_reasoning",
-                    )
+        # Hard fail when safety / linguistic gates still fail after regeneration
+        hard_failures = [
+            f
+            for f in (quality_gates.get("failures") or [])
+            if any(
+                str(f).startswith(prefix)
+                for prefix in (
+                    "unsupported_impact",
+                    "unsupported_entity",
+                    "cross_entry_tech",
+                    "unknown_skill",
+                    "missing_professional_summary",
+                    "raw_llm_reasoning",
+                    "linguistic_integrity",
                 )
-            ]
-            if hard_failures:
-                raise IntelligentTailorError(
-                    "Tailoring failed quality gates after regeneration: "
-                    + "; ".join(hard_failures[:8]),
-                    status_code=422,
-                )
+            )
+        ]
+        if hard_failures:
+            raise IntelligentTailorError(
+                "Tailoring failed quality gates after regeneration: "
+                + "; ".join(hard_failures[:8]),
+                status_code=422,
+            )
 
         claim_passed = (
             bool(quality_gates.get("passed"))

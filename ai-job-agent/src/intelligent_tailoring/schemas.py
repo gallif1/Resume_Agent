@@ -32,7 +32,7 @@ JSON_RETRY_NOTE = (
     "Return ONLY the JSON object, nothing else."
 )
 
-PIPELINE_VERSION = "intelligent_tailor_v4"
+PIPELINE_VERSION = "intelligent_tailor_v5"
 
 
 @dataclass
