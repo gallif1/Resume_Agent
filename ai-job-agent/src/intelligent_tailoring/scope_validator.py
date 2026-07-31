@@ -220,18 +220,16 @@ def strip_leaked_tech_from_bullet(
     *,
     replacement_tech: str | None = None,
 ) -> str:
-    """Remove or replace leaked technology mentions from a bullet."""
-    text = bullet
-    for tech in sorted(leaked, key=len, reverse=True):
-        pattern = re.compile(re.escape(tech), re.I)
-        if replacement_tech:
-            text = pattern.sub(replacement_tech, text)
-        else:
-            text = pattern.sub("", text)
-    text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+,", ",", text)
-    text = re.sub(r",\s*,", ",", text)
-    return text.strip(" ,;-")
+    """DEPRECATED — token-level deletion corrupts grammar.
+
+    Kept as a no-op wrapper that returns the original text unchanged so any
+    residual callers cannot produce ``using and .`` fragments. Use
+    :func:`intelligent_tailoring.safe_claim_rewriter.rebuild_claim_from_facts`
+    instead.
+    """
+    # Intentionally ignore leaked/replacement — never mutate substrings.
+    _ = leaked, replacement_tech
+    return (bullet or "").strip()
 
 
 def _resolve_project_entry_id(
@@ -286,19 +284,30 @@ def validate_resume_tech_scope(
     original_roles: list[dict[str, Any]] | None = None,
     original_projects: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Validate all experience/project bullets for tech scope + impact.
+    """Validate experience/project claims at complete-sentence level.
 
-    Returns cleaned resume + violations list.
+    Never deletes individual tokens from a sentence. Unsupported claims are
+    safely rewritten from source facts or rejected entirely.
     """
+    from intelligent_tailoring.safe_claim_rewriter import (
+        rebuild_claim_from_facts,
+        rewrite_skill_line,
+    )
+    from intelligent_tailoring.skill_taxonomy import normalize_skill_lines
+
     resume = {
         **tailored_resume,
-        "experience": [dict(e) for e in (tailored_resume.get("experience") or []) if isinstance(e, dict)],
-        "projects": [dict(p) for p in (tailored_resume.get("projects") or []) if isinstance(p, dict)],
+        "experience": [
+            dict(e) for e in (tailored_resume.get("experience") or []) if isinstance(e, dict)
+        ],
+        "projects": [
+            dict(p) for p in (tailored_resume.get("projects") or []) if isinstance(p, dict)
+        ],
         "skills": list(tailored_resume.get("skills") or []),
     }
     violations: list[dict[str, str]] = []
+    claim_results: list[dict[str, Any]] = []
 
-    # Build original entry text lookup by approximate index / name
     orig_roles = list(original_roles or [])
     orig_projects = list(original_projects or [])
 
@@ -311,44 +320,56 @@ def validate_resume_tech_scope(
                 orig = orole
                 entry_id = f"role_{o_idx}"
                 break
+        orig_bullets = [str(b).strip() for b in (orig.get("bullets") or []) if str(b).strip()]
         entry_text = " ".join(
             [
                 str(orig.get("company") or entry.get("company") or ""),
                 str(orig.get("title") or entry.get("title") or ""),
-                " ".join(str(b) for b in (orig.get("bullets") or [])),
+                " ".join(orig_bullets),
             ]
         )
         cleaned_bullets: list[str] = []
-        for bullet in entry.get("bullets") or []:
+        for b_idx, bullet in enumerate(entry.get("bullets") or []):
             text = str(bullet).strip()
             if not text:
                 continue
-            ok, reason, leaked = validate_bullet_tech_scope(
-                text,
+            claim = rebuild_claim_from_facts(
+                original_claim=text,
                 source_entry_id=entry_id,
                 facts=facts,
                 entry_source_text=entry_text,
+                original_bullets=orig_bullets,
+                section="experience",
+                claim_id=f"experience_{idx}_b{b_idx}",
             )
-            if not ok:
-                violations.append({"section": "experience", "text": text, "reason": reason})
-                # Strip leaked tech only — never invent a replacement technology
-                text = strip_leaked_tech_from_bullet(text, leaked, replacement_tech=None)
-                if not text:
-                    continue
-                ok2, _, leaked2 = validate_bullet_tech_scope(
-                    text,
-                    source_entry_id=entry_id,
-                    facts=facts,
-                    entry_source_text=entry_text,
-                )
-                if not ok2 and leaked2:
-                    continue  # drop bullet if still contaminated
-            if has_unsupported_impact(text, entry_text):
+            claim_results.append(claim.to_dict())
+            if claim.validation_status == "rejected":
                 violations.append(
-                    {"section": "experience", "text": text, "reason": "unsupported_impact"}
+                    {
+                        "section": "experience",
+                        "text": text,
+                        "reason": ",".join(claim.validation_errors) or "rejected",
+                    }
                 )
-                text = neutralize_unsupported_impact(text)
-            cleaned_bullets.append(text)
+                continue
+            if claim.validation_status == "safely_rewritten":
+                violations.append(
+                    {
+                        "section": "experience",
+                        "text": text,
+                        "reason": f"safely_rewritten:{claim.repair_method}",
+                    }
+                )
+            cleaned_bullets.append(claim.final_text)
+        if not cleaned_bullets and orig_bullets:
+            cleaned_bullets = orig_bullets[:6]
+            violations.append(
+                {
+                    "section": "experience",
+                    "text": company or entry_id,
+                    "reason": "restored_source_bullets_after_unsafe_generation",
+                }
+            )
         entry["bullets"] = cleaned_bullets
         entry["source_entry_id"] = entry_id
 
@@ -356,90 +377,93 @@ def validate_resume_tech_scope(
         entry_id, orig, entry_text = _resolve_project_entry_id(
             proj, idx, orig_projects, facts
         )
-        # Also bind technologies field as facts for this entry
         for tech in orig.get("technologies") or []:
             entry_text += f" {tech}"
+        orig_bullets = [str(b).strip() for b in (orig.get("bullets") or []) if str(b).strip()]
 
         cleaned_bullets = []
-        for bullet in proj.get("bullets") or []:
+        for b_idx, bullet in enumerate(proj.get("bullets") or []):
             text = str(bullet).strip()
             if not text:
                 continue
-            ok, reason, leaked = validate_bullet_tech_scope(
-                text,
+            claim = rebuild_claim_from_facts(
+                original_claim=text,
                 source_entry_id=entry_id,
                 facts=facts,
                 entry_source_text=entry_text,
+                original_bullets=orig_bullets,
+                section="projects",
+                claim_id=f"projects_{idx}_b{b_idx}",
             )
-            if not ok:
-                violations.append({"section": "projects", "text": text, "reason": reason})
-                text = strip_leaked_tech_from_bullet(text, leaked, replacement_tech=None)
-                if not text:
-                    continue
-                # Re-check
-                ok2, _, leaked2 = validate_bullet_tech_scope(
-                    text,
-                    source_entry_id=entry_id,
-                    facts=facts,
-                    entry_source_text=entry_text,
-                )
-                if not ok2 and leaked2:
-                    continue
-            if has_unsupported_impact(text, entry_text):
-                violations.append(
-                    {"section": "projects", "text": text, "reason": "unsupported_impact"}
-                )
-                text = neutralize_unsupported_impact(text)
-            cleaned_bullets.append(text)
-
-        # Description scope check
-        desc = str(proj.get("description") or "").strip()
-        if desc:
-            ok, reason, leaked = validate_bullet_tech_scope(
-                desc,
-                source_entry_id=entry_id,
-                facts=facts,
-                entry_source_text=entry_text,
-            )
-            if not ok:
-                violations.append({"section": "projects", "text": desc, "reason": reason})
-                desc = strip_leaked_tech_from_bullet(desc, leaked, replacement_tech=None)
-                ok2, _, leaked2 = validate_bullet_tech_scope(
-                    desc,
-                    source_entry_id=entry_id,
-                    facts=facts,
-                    entry_source_text=entry_text,
-                )
-                if not ok2 and leaked2:
-                    desc = ""
-            if desc and has_unsupported_impact(desc, entry_text):
-                desc = neutralize_unsupported_impact(desc)
-            proj["description"] = desc
-        proj["bullets"] = cleaned_bullets
-        project_name = str(proj.get("name") or orig.get("name") or entry_id)
-        # If validation wiped every bullet, restore original evidenced bullets
-        if not cleaned_bullets:
-            restored = [
-                str(b).strip()
-                for b in (orig.get("bullets") or [])
-                if str(b).strip()
-            ]
-            if restored:
-                proj["bullets"] = restored[:6]
+            claim_results.append(claim.to_dict())
+            if claim.validation_status == "rejected":
                 violations.append(
                     {
                         "section": "projects",
-                        "text": project_name,
-                        "reason": "restored_source_bullets_after_unsafe_generation",
+                        "text": text,
+                        "reason": ",".join(claim.validation_errors) or "rejected",
                     }
                 )
-        # Restore description from source when wiped
+                continue
+            if claim.validation_status == "safely_rewritten":
+                violations.append(
+                    {
+                        "section": "projects",
+                        "text": text,
+                        "reason": f"safely_rewritten:{claim.repair_method}",
+                    }
+                )
+            cleaned_bullets.append(claim.final_text)
+
+        desc = str(proj.get("description") or "").strip()
+        if desc:
+            claim = rebuild_claim_from_facts(
+                original_claim=desc,
+                source_entry_id=entry_id,
+                facts=facts,
+                entry_source_text=entry_text,
+                original_bullets=orig_bullets
+                + ([str(orig.get("description") or "")] if orig.get("description") else []),
+                section="projects",
+                claim_id=f"projects_{idx}_desc",
+            )
+            claim_results.append(claim.to_dict())
+            if claim.validation_status == "rejected":
+                violations.append(
+                    {
+                        "section": "projects",
+                        "text": desc,
+                        "reason": ",".join(claim.validation_errors) or "rejected",
+                    }
+                )
+                src_desc = str(orig.get("description") or "").strip()
+                proj["description"] = src_desc
+            else:
+                if claim.validation_status == "safely_rewritten":
+                    violations.append(
+                        {
+                            "section": "projects",
+                            "text": desc,
+                            "reason": f"safely_rewritten:{claim.repair_method}",
+                        }
+                    )
+                proj["description"] = claim.final_text
+
+        if not cleaned_bullets and orig_bullets:
+            cleaned_bullets = orig_bullets[:6]
+            violations.append(
+                {
+                    "section": "projects",
+                    "text": str(proj.get("name") or entry_id),
+                    "reason": "restored_source_bullets_after_unsafe_generation",
+                }
+            )
         if not str(proj.get("description") or "").strip():
             src_desc = str(orig.get("description") or "").strip()
-            if src_desc and not has_unsupported_impact(src_desc, entry_text):
+            if src_desc:
                 proj["description"] = src_desc
+        proj["bullets"] = cleaned_bullets
         proj["source_entry_id"] = entry_id
-        # Technologies list: keep only those bound to this entry
         bound = technologies_bound_to_entry(facts, entry_id) | extract_tech_mentions(entry_text)
         if not proj.get("technologies") and orig.get("technologies"):
             proj["technologies"] = list(orig.get("technologies") or [])
@@ -459,82 +483,61 @@ def validate_resume_tech_scope(
                     )
             proj["technologies"] = kept_techs
 
-    # Skills: drop any skill not evidenced anywhere in facts / source
+    # Skills: drop whole unsupported atoms — never leave empty category slots
     all_source_tech = set()
     for f in facts or []:
         data = f if isinstance(f, dict) else (f.to_dict() if hasattr(f, "to_dict") else {})
         all_source_tech |= extract_tech_mentions(str(data.get("original_text") or ""))
-    # Also keep non-tech skill strings that appear as fact original_text
-    fact_texts = {
-        _norm(str((f if isinstance(f, dict) else f.to_dict()).get("original_text") or ""))
-        for f in (facts or [])
-    }
+        for skill in data.get("explicit_skills") or []:
+            all_source_tech |= extract_tech_mentions(str(skill))
+
     cleaned_skills = []
     for skill in resume.get("skills") or []:
-        raw = str(skill)
-        techs = extract_tech_mentions(raw)
-        if not techs:
-            # Non-tech skill line — keep if text appears in facts or is short category
-            cleaned_skills.append(raw)
-            continue
-        leaked_in_line = set()
-        kept_techs = set()
-        for t in techs:
-            evidenced = t in all_source_tech or any(
-                t in s or s in t for s in all_source_tech if len(s) >= 3
-            )
-            if evidenced:
-                kept_techs.add(t)
-            else:
-                leaked_in_line.add(t)
-        if leaked_in_line:
+        rewritten, rejected = rewrite_skill_line(str(skill), allowed_techs=all_source_tech)
+        for r in rejected:
             violations.append(
-                {
-                    "section": "skills",
-                    "text": raw,
-                    "reason": f"novel_skill:{','.join(sorted(leaked_in_line))}",
-                }
+                {"section": "skills", "text": r, "reason": "novel_skill"}
             )
-            raw = strip_leaked_tech_from_bullet(raw, leaked_in_line)
-            # Clean empty category leftovers like "Frontend: ,"
-            raw = re.sub(r":\s*,", ":", raw)
-            raw = re.sub(r",\s*$", "", raw)
-            raw = re.sub(r":\s*$", "", raw).strip(" ,;-")
-            if not raw or not extract_tech_mentions(raw):
-                # If only category label remains without tech, drop
-                if ":" in raw and not extract_tech_mentions(raw):
-                    continue
-                if not raw:
-                    continue
-        if not kept_techs and techs:
-            continue
-        cleaned_skills.append(raw)
-    resume["skills"] = cleaned_skills
+        if rewritten:
+            cleaned_skills.append(rewritten)
+    # Deterministic category normalization
+    resume["skills"] = normalize_skill_lines(cleaned_skills)
 
-    # Summary impact / novel tech
+    # Summary: never token-strip. Blank invalid summaries for the structured builder.
     summary = str(resume.get("professional_summary") or resume.get("summary") or "")
     full_source = " ".join(
         str((f if isinstance(f, dict) else f.to_dict()).get("original_text") or "")
         for f in (facts or [])
     )
-    if summary and has_unsupported_impact(summary, full_source):
-        violations.append({"section": "summary", "text": summary, "reason": "unsupported_impact"})
-        summary = neutralize_unsupported_impact(summary)
-    # Novel tech in summary
-    ok, reason, leaked = validate_bullet_tech_scope(
-        summary,
-        source_entry_id="",  # empty → only general+all facts via entry_source_text
-        facts=facts,
-        entry_source_text=full_source,
-    )
-    if not ok:
-        violations.append({"section": "summary", "text": summary, "reason": reason})
-        summary = strip_leaked_tech_from_bullet(summary, leaked)
+    if summary:
+        ok, reason, leaked = validate_bullet_tech_scope(
+            summary,
+            source_entry_id="",
+            facts=facts,
+            entry_source_text=full_source,
+        )
+        if (not ok and leaked) or has_unsupported_impact(summary, full_source):
+            violations.append(
+                {
+                    "section": "summary",
+                    "text": summary,
+                    "reason": reason if not ok else "unsupported_impact",
+                }
+            )
+            summary = ""  # force structured rebuild upstream
     resume["professional_summary"] = summary
     resume["summary"] = summary
 
     return {
         "cleaned_resume": resume,
         "violations": violations,
-        "passed": len(violations) == 0,
+        "claim_results": claim_results,
+        "passed": not any(
+            v.get("reason", "").startswith("cross_entry")
+            or v.get("reason", "").startswith("novel")
+            or "unsupported" in (v.get("reason") or "")
+            for v in violations
+            if "safely_rewritten" not in (v.get("reason") or "")
+            and "restored_source" not in (v.get("reason") or "")
+        ),
     }

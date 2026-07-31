@@ -125,15 +125,15 @@ def evaluate_tailoring_quality(
     regeneration_required = False
 
     if high_value and high_value_fact_utilization < 0.25:
+        # Warn only — forcing rewrite regen for utilization caused mock/LLM
+        # exhaustion and is better handled by missed-evidence injection.
         warnings.append("Important high-value source evidence was under-utilized")
-        regeneration_required = True
     # Missed evidence is injected into strategy before rewrite — warn but do not
     # auto-regen solely on count (avoids loops when facts were already promoted).
     if len(additional) >= 8:
         warnings.append(
             f"{len(additional)} overlooked relevant facts remain after promotion"
         )
-        regeneration_required = True
     if generic_content_score >= 0.66 and (not summary or len(summary.split()) < 18):
         warnings.append("Summary is generic or too short for the target role")
         regeneration_required = True

@@ -79,45 +79,11 @@ def _group_skills(
 
 
 def _categorize_skill(low: str, job_family: str) -> str:
-    if any(k in low for k in ("react", "angular", "expo", "ui", "css", "html")):
-        return {
-            "backend": "Tools",
-            "frontend": "Frontend Frameworks",
-            "devops": "Other",
-            "qa": "Tools",
-            "support": "Tools",
-        }.get(job_family, "Frontend Frameworks")
-    if any(k in low for k in ("fastapi", "api", "laravel", "node")):
-        return {
-            "backend": "APIs & Backend",
-            "frontend": "API Integration",
-            "devops": "Languages",
-            "qa": "Languages",
-            "support": "Systems & Networking",
-        }.get(job_family, "APIs & Backend")
-    if any(k in low for k in ("postgres", "sql", "mongo", "database")):
-        return {
-            "backend": "Databases",
-            "frontend": "Tools",
-            "devops": "Databases",
-            "qa": "Tools",
-            "support": "Systems & Networking",
-        }.get(job_family, "Databases")
-    if any(k in low for k in ("aws", "ci/cd", "git", "cloud", "deploy")):
-        return {
-            "backend": "Cloud & DevOps",
-            "frontend": "Tools",
-            "devops": "Cloud & Infrastructure",
-            "qa": "Tools",
-            "support": "Tools",
-        }.get(job_family, "Cloud & DevOps")
-    if any(k in low for k in ("test", "debug", "quality")):
-        return "Testing & Quality" if job_family == "qa" else "Tools"
-    if any(k in low for k in ("support", "troubleshoot", "customer", "erp")):
-        return "Support & Troubleshooting" if job_family == "support" else "Tools"
-    if any(k in low for k in ("python", "javascript", "typescript")):
-        return "Languages"
-    return "Other"
+    """Deterministic taxonomy — job_family no longer misclassifies skills."""
+    _ = job_family
+    from intelligent_tailoring.skill_taxonomy import categorize_skill
+
+    return categorize_skill(low)
 
 
 def rebuild_resume_structure(
