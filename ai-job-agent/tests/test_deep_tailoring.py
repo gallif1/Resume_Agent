@@ -418,6 +418,22 @@ def _stage_sequence_for_family(family: str):
     queue = [requirements, inference, triage, generation, claim_llm]
 
     def _side_effect(*_a: Any, **_k: Any) -> dict[str, Any]:
+        namespace = str(_k.get("cache_namespace") or "")
+        if "human_writer" in namespace:
+            return {
+                "tailored_resume": generation["tailored_resume"],
+                "writing_notes": ["test_stub"],
+                "sections_rewritten": ["summary", "experience", "projects"],
+            }
+        if "recruiter_review" in namespace:
+            return {
+                "approved": True,
+                "human_believability": 85,
+                "interview_quality": 84,
+                "issues": [],
+                "sections_to_regenerate": [],
+                "summary_feedback": "Professionally written.",
+            }
         if queue:
             return queue.pop(0)
         return generation

@@ -794,6 +794,9 @@ def assert_safe_to_export(report: dict[str, Any] | None) -> None:
                     "missing_professional_summary",
                     "raw_llm_reasoning",
                     "linguistic_integrity",
+                    "writing_quality:facts_changed",
+                    "writing_quality:grammar:",
+                    "writing_quality:ats:",
                 )
             )
         ]

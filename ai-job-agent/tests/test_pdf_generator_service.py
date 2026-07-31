@@ -59,13 +59,22 @@ def test_markdown_to_html_has_resume_structure():
     assert "Technical Support Engineer" in html_doc
     assert "Acme Corp" in html_doc
     assert "2020" in html_doc
+    # Default theme is modern ATS
+    assert 'name="resume-theme" content="modern_ats"' in html_doc
+    assert "#0f766e" in html_doc
+    assert "Source Sans" in html_doc
+    # Dates are on the same flex row as titles — not dump-style separate blocks only.
+    assert 'class="meta-right"' in html_doc
+    assert "<ul>" in html_doc and "<li>" in html_doc
+
+
+def test_classic_theme_preserves_legacy_stylesheet():
+    html_doc = pdf.markdown_to_resume_html(SAMPLE_CV, theme="classic")
     assert "#1d4ed8" in html_doc
     assert "margin: 10mm 12mm 10mm 12mm" in html_doc
     assert "background-color: #f1f5f9" in html_doc
     assert "border-left: 3px solid #1d4ed8" in html_doc
-    # Dates are on the same flex row as titles — not dump-style separate blocks only.
-    assert 'class="meta-right"' in html_doc
-    assert "<ul>" in html_doc and "<li>" in html_doc
+    assert 'name="resume-theme" content="classic"' in html_doc
 
 
 def test_skills_lines_bold_category():
@@ -306,12 +315,31 @@ Languages: Python, SQL
 
 def test_one_page_css_contract():
     html_doc = pdf.markdown_to_resume_html(SAMPLE_CV)
-    assert "margin: 10mm 12mm 10mm 12mm" in html_doc
-    assert "line-height: 1.35" in html_doc
-    assert "font-size: 9.5pt" in html_doc
-    assert "background-color: #f1f5f9" in html_doc
-    assert "border-left: 3px solid #1d4ed8" in html_doc
+    assert "margin: 13mm 15mm 13mm 15mm" in html_doc
+    assert "line-height: 1.42" in html_doc
+    assert "font-size: 10pt" in html_doc
+    assert "#0f766e" in html_doc
     assert 'class="skills-container"' in html_doc
+
+
+def test_theme_catalog_and_content_stability():
+    themes = pdf.ModernPdfRenderer().list_themes()
+    ids = {t["id"] for t in themes}
+    assert ids == {"modern_ats", "professional", "executive", "minimal", "classic"}
+    bodies = []
+    for theme_id in ids:
+        html_doc = pdf.markdown_to_resume_html(SAMPLE_CV, theme=theme_id)
+        assert "Gal Lifshitz" in html_doc
+        assert "Acme Corp" in html_doc
+        stripped = re.sub(r"<style>.*?</style>", "", html_doc, flags=re.S)
+        stripped = re.sub(
+            r'<meta name="resume-theme" content="[^"]+"/>',
+            "",
+            stripped,
+        )
+        bodies.append(stripped)
+    # Content body identical across themes; only CSS/presentation changes.
+    assert len(set(bodies)) == 1
 
 
 def test_bold_tech_keywords_preserved_in_html():

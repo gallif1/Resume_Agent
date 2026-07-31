@@ -8,9 +8,17 @@ from dataclasses import dataclass, field
 
 from playwright.sync_api import sync_playwright
 
+from intelligent_tailoring.themes.modern_template_manager import (
+    DEFAULT_THEME,
+    ModernTemplateManager,
+    resolve_theme,
+)
+
 # Margins come from @page CSS; Playwright gets zero so CSS owns the page box.
 PDF_MARGIN = {"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"}
 DEFAULT_PDF_FILENAME = "Gal_Lifshitz_CV_Tailored.pdf"
+DEFAULT_RESUME_THEME = DEFAULT_THEME
+_TEMPLATE_MANAGER = ModernTemplateManager()
 
 NAME_FROM_H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
 CONTACT_HINT_RE = re.compile(
@@ -99,133 +107,13 @@ MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 MD_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__")
 MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)|(?<!_)_(?!_)(.+?)(?<!_)_(?!_)")
 
-RESUME_CSS = """
-@page {
-    size: A4;
-    margin: 10mm 12mm 10mm 12mm;
-}
-* {
-    box-sizing: border-box;
-}
-body {
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: #1e293b;
-    line-height: 1.35;
-    font-size: 9.5pt;
-    margin: 0;
-    padding: 0;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-}
-.header {
-    text-align: center;
-    margin-bottom: 3mm;
-    border-bottom: 2px solid #0f172a;
-    padding-bottom: 2mm;
-}
-.header h1 {
-    font-size: 22pt;
-    font-weight: 800;
-    color: #0f172a;
-    margin: 0 0 1mm 0;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.contact-info {
-    font-size: 9pt;
-    color: #475569;
-    font-weight: 500;
-    margin-bottom: 0;
-}
-.contact-info a {
-    color: #475569;
-    text-decoration: none;
-}
-.target-role {
-    font-size: 11pt;
-    font-weight: 700;
-    color: #1d4ed8;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin: 1mm 0 0 0;
-}
-h2.section-title {
-    font-size: 11pt;
-    font-weight: 700;
-    color: #0f172a;
-    background-color: #f1f5f9;
-    padding: 1mm 2mm;
-    text-transform: uppercase;
-    margin: 3mm 0 1.5mm 0;
-    letter-spacing: 0.5px;
-    border-left: 3px solid #1d4ed8;
-    page-break-after: avoid;
-    break-after: avoid;
-}
-.resume-entry {
-    margin: 0 0 2mm 0;
-    page-break-inside: avoid;
-    break-inside: avoid;
-}
-.resume-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 4mm;
-    margin-bottom: 0.2mm;
-}
-.title-main {
-    font-weight: 700;
-    color: #0f172a;
-    font-size: 10pt;
-}
-.title-sub {
-    font-weight: 600;
-    color: #475569;
-    font-style: italic;
-}
-.meta-right {
-    font-size: 9pt;
-    color: #64748b;
-    font-weight: 500;
-    text-align: right;
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-ul {
-    margin: 0.5mm 0 2mm 0;
-    padding-left: 4mm;
-}
-li {
-    margin-bottom: 0.7mm;
-    color: #334155;
-    text-align: left;
-}
-li strong {
-    color: #0f172a;
-    font-weight: 700;
-}
-li::marker {
-    color: #64748b;
-}
-.skills-container {
-    margin-top: 1mm;
-    line-height: 1.4;
-}
-.skills-line {
-    margin-bottom: 0.8mm;
-    font-size: 9.5pt;
-    color: #334155;
-}
-.skills-category {
-    font-weight: 700;
-    color: #0f172a;
-}
-.summary-text {
-    margin: 0 0 1.5mm 0;
-    color: #334155;
-}
-"""
+def resume_css_for_theme(theme: str | None = None) -> str:
+    """Return ATS-safe print CSS for the selected theme."""
+    return resolve_theme(theme).css
+
+
+# Backward-compatible alias — classic theme matches the historical stylesheet.
+RESUME_CSS = resume_css_for_theme("classic")
 
 
 class PdfGeneratorError(RuntimeError):
@@ -761,8 +649,13 @@ def _render_section(section: ResumeSection) -> str:
     return "\n".join(chunks)
 
 
-def parsed_resume_to_html(resume: ParsedResume) -> str:
+def parsed_resume_to_html(
+    resume: ParsedResume,
+    *,
+    theme: str | None = None,
+) -> str:
     """Render a ParsedResume into the Playwright print HTML document."""
+    css = resume_css_for_theme(theme)
     body_parts: list[str] = ['<div class="resume">']
 
     header_parts = ['<div class="header">']
@@ -789,24 +682,27 @@ def parsed_resume_to_html(resume: ParsedResume) -> str:
     body_parts.append("</div>")
     body = "\n".join(body_parts)
     title = resume.name or "CV"
+    theme_id = resolve_theme(theme).id
 
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
         "<head>\n"
         '<meta charset="UTF-8"/>\n'
+        f'<meta name="resume-theme" content="{html.escape(theme_id)}"/>\n'
         f"<title>{html.escape(title)}</title>\n"
-        f"<style>{RESUME_CSS}</style>\n"
+        f"<style>{css}</style>\n"
         "</head>\n"
         f"<body>\n{body}\n</body>\n"
         "</html>\n"
     )
 
 
-def _generic_markdown_html(markdown: str) -> str:
+def _generic_markdown_html(markdown: str, *, theme: str | None = None) -> str:
     """Fallback HTML when structured parsing cannot find resume sections."""
     import markdown as md_lib
 
+    css = resume_css_for_theme(theme)
     body = md_lib.markdown(
         markdown,
         extensions=["extra", "sane_lists"],
@@ -818,16 +714,14 @@ def _generic_markdown_html(markdown: str) -> str:
         "<head>\n"
         '<meta charset="UTF-8"/>\n'
         "<title>CV</title>\n"
-        f"<style>{RESUME_CSS}"
-        "h1{font-size:22pt;font-weight:800;color:#0f172a;text-align:center;"
-        "text-transform:uppercase;margin:0 0 1mm 0;letter-spacing:0.5px;}"
-        "h2{font-size:11pt;font-weight:700;color:#0f172a;background-color:#f1f5f9;"
-        "padding:1mm 2mm;text-transform:uppercase;margin:3mm 0 1.5mm 0;"
-        "letter-spacing:0.5px;border-left:3px solid #1d4ed8;}"
-        "h3{font-size:10pt;font-weight:700;color:#0f172a;margin:2mm 0 0.5mm 0;}"
-        "p{margin:0 0 1.5mm 0;color:#334155;}"
+        f"<style>{css}"
+        "h1{font-size:22pt;font-weight:700;margin:0 0 1mm 0;letter-spacing:0.2px;}"
+        "h2{font-size:11pt;font-weight:700;margin:3mm 0 1.5mm 0;"
+        "letter-spacing:0.5px;text-transform:uppercase;}"
+        "h3{font-size:10pt;font-weight:700;margin:2mm 0 0.5mm 0;}"
+        "p{margin:0 0 1.5mm 0;}"
         "ul{margin:0.5mm 0 2mm 0;padding-left:4mm;}"
-        "li{margin-bottom:0.5mm;color:#334155;}"
+        "li{margin-bottom:0.5mm;}"
         "</style>\n"
         "</head>\n"
         f'<body>\n<div class="resume">\n{body}\n</div>\n</body>\n'
@@ -835,7 +729,7 @@ def _generic_markdown_html(markdown: str) -> str:
     )
 
 
-def markdown_to_resume_html(markdown: str) -> str:
+def markdown_to_resume_html(markdown: str, *, theme: str | None = None) -> str:
     """Convert CV Markdown into a structured HTML document with print CSS."""
     raw = (markdown or "").strip()
     if not raw:
@@ -848,14 +742,14 @@ def markdown_to_resume_html(markdown: str) -> str:
     # Structured parse sometimes keeps only the header when the LLM omitted ##
     # headings — fall back to generic Markdown rendering so the PDF is not blank.
     if parsed.name and not _resume_has_body(parsed):
-        return _generic_markdown_html(raw)
+        return _generic_markdown_html(raw, theme=theme)
 
-    return parsed_resume_to_html(parsed)
+    return parsed_resume_to_html(parsed, theme=theme)
 
 
-def render_markdown_to_pdf(markdown: str) -> bytes:
+def render_markdown_to_pdf(markdown: str, *, theme: str | None = None) -> bytes:
     """Render Markdown to an A4 PDF buffer using headless Chromium."""
-    document = markdown_to_resume_html(markdown)
+    document = markdown_to_resume_html(markdown, theme=theme)
     try:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(
@@ -891,7 +785,31 @@ def render_markdown_to_pdf(markdown: str) -> bytes:
     return pdf_bytes
 
 
-def generate_tailored_cv_pdf(markdown: str) -> tuple[bytes, str]:
+def generate_tailored_cv_pdf(
+    markdown: str,
+    *,
+    theme: str | None = None,
+) -> tuple[bytes, str]:
     """Return (pdf_bytes, download_filename) for a tailored CV body."""
-    pdf_bytes = render_markdown_to_pdf(markdown)
+    pdf_bytes = render_markdown_to_pdf(markdown, theme=theme)
     return pdf_bytes, pdf_filename_for_markdown(markdown)
+
+
+class ModernPdfRenderer:
+    """Modern multi-theme PDF renderer (ATS-safe, single-column)."""
+
+    def __init__(self, theme: str | None = None):
+        self.theme = theme or DEFAULT_RESUME_THEME
+        self.templates = _TEMPLATE_MANAGER
+
+    def render_html(self, markdown: str, *, theme: str | None = None) -> str:
+        return markdown_to_resume_html(markdown, theme=theme or self.theme)
+
+    def render_pdf(self, markdown: str, *, theme: str | None = None) -> bytes:
+        return render_markdown_to_pdf(markdown, theme=theme or self.theme)
+
+    def render(self, markdown: str, *, theme: str | None = None) -> tuple[bytes, str]:
+        return generate_tailored_cv_pdf(markdown, theme=theme or self.theme)
+
+    def list_themes(self) -> list[dict[str, str]]:
+        return self.templates.list()

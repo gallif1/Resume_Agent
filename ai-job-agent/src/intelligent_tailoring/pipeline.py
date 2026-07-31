@@ -10,9 +10,11 @@ Universal, profession-agnostic evidence-based flow:
 7. Content triage
 8. Strategy → score → missed-evidence → rebuild → rewrite → quality gate
 9. Claim validation (ALWAYS)
-10. ATS scoring + quality / tailoring reports
+10. Human Resume Writer → Senior Recruiter Review → Grammar/Style/ATS writing gates
+11. ATS scoring + quality / tailoring reports
 
 No tailored resume is returned without passing through the claim validator.
+The Human Resume Writer polishes wording only — facts stay immutable.
 Hard-coded tech job titles are soft signals only — strategy is evidence-driven.
 """
 
@@ -78,6 +80,7 @@ from intelligent_tailoring.services.resume_validator import (
 from intelligent_tailoring.services.tailoring_reporter import build_tailoring_report
 from intelligent_tailoring.services.tailoring_strategy_builder import build_tailoring_strategy
 from intelligent_tailoring.stages.semantic_inference import run_semantic_inference
+from intelligent_tailoring.writing.writing_pipeline import run_human_writing_stage
 from match_tailor_service import (
     MatchTailorError,
     align_recommendation,
@@ -294,6 +297,13 @@ def run_intelligent_tailoring(
         scope_result: dict[str, Any] = {"violations": [], "passed": True}
         deterministic_log: list[dict[str, Any]] = []
         quality_gates: dict[str, Any] = {"passed": True, "failures": []}
+        writing_stage: dict[str, Any] = {
+            "passed": True,
+            "export_ready": True,
+            "facts_unchanged": True,
+            "review_cycles": 0,
+            "quality_gate_failures": [],
+        }
         regeneration_attempt = 0
         max_gate_attempts = 1
 
@@ -581,7 +591,77 @@ def run_intelligent_tailoring(
             )
         )
 
-        # --- Stage 10: ATS scoring after tailoring ---
+        # --- Stage 10: Human Resume Writer + Senior Recruiter Review ---
+        # Isolated from tailoring: polishes wording only; facts stay locked.
+        writing_stage = run_human_writing_stage(
+            validated_resume=cleaned_resume,
+            strategy=strategy,
+            knowledge_base=kb,
+            output_language=output_language,
+            use_cache=use_cache,
+            allow_llm=True,
+        )
+        polished = writing_stage.get("tailored_resume") or cleaned_resume
+        if not writing_stage.get("facts_unchanged", True):
+            logger.warning(
+                "human_writing: fact lock failed — keeping claim-validated resume"
+            )
+            polished = cleaned_resume
+        cleaned_resume = polished
+        cleaned_resume["summary"] = str(
+            cleaned_resume.get("professional_summary")
+            or cleaned_resume.get("summary")
+            or ""
+        )
+        cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+
+        # Rebuild deterministic change log against the polished wording
+        deterministic_log = build_deterministic_change_log(
+            baseline_resume=baseline_resume,
+            final_resume=cleaned_resume,
+            evidence_map=evidence_map,
+        )
+        generated["change_log"] = deterministic_log
+
+        quality_gates["writing_quality"] = {
+            "passed": bool(writing_stage.get("passed")),
+            "export_ready": bool(writing_stage.get("export_ready")),
+            "facts_unchanged": bool(writing_stage.get("facts_unchanged")),
+            "review_cycles": writing_stage.get("review_cycles"),
+            "grammar_score": (writing_stage.get("grammar") or {}).get("score"),
+            "style_score": (writing_stage.get("style") or {}).get("overall_score"),
+            "ai_risk": (writing_stage.get("ai_detector") or {}).get("ai_risk"),
+            "failures": list(writing_stage.get("quality_gate_failures") or []),
+        }
+        if writing_stage.get("quality_gate_failures"):
+            for failure in writing_stage["quality_gate_failures"]:
+                key = f"writing_quality:{failure}"
+                if key not in quality_gates.setdefault("failures", []):
+                    quality_gates["failures"].append(key)
+            # Hard-block only on factual drift or severe grammar/ATS layout issues
+            severe = [
+                f
+                for f in writing_stage["quality_gate_failures"]
+                if str(f).startswith(("facts_changed", "grammar:", "ats:"))
+            ]
+            if severe:
+                quality_gates["passed"] = False
+
+        writing_hard_failures = [
+            f
+            for f in (quality_gates.get("failures") or [])
+            if str(f).startswith("writing_quality:facts_changed")
+            or str(f).startswith("writing_quality:grammar:")
+            or str(f).startswith("writing_quality:ats:")
+        ]
+        if writing_hard_failures:
+            raise IntelligentTailorError(
+                "Tailoring failed human writing quality gates: "
+                + "; ".join(writing_hard_failures[:8]),
+                status_code=422,
+            )
+
+        # --- Stage 11: ATS scoring after writing polish ---
         tailored_scoring = rescore_after_tailoring(
             evidence_map=evidence_map,
             tailored_resume=cleaned_resume,
@@ -696,6 +776,29 @@ def run_intelligent_tailoring(
             "missed_evidence_report": missed,
             "quality_report": quality_report,
             "extraction_coverage": kb.coverage.to_dict() if kb.coverage else {},
+            "writing_report": {
+                "stage": "human_resume_writer",
+                "passed": bool(writing_stage.get("passed")),
+                "export_ready": bool(writing_stage.get("export_ready")),
+                "facts_unchanged": bool(writing_stage.get("facts_unchanged")),
+                "review_cycles": writing_stage.get("review_cycles"),
+                "writer_mode": (writing_stage.get("writer") or {}).get("mode"),
+                "grammar": writing_stage.get("grammar"),
+                "style": {
+                    "passed": (writing_stage.get("style") or {}).get("passed"),
+                    "overall_score": (writing_stage.get("style") or {}).get(
+                        "overall_score"
+                    ),
+                    "dimensions": (writing_stage.get("style") or {}).get("dimensions"),
+                    "weak_dimensions": (writing_stage.get("style") or {}).get(
+                        "weak_dimensions"
+                    ),
+                },
+                "ai_detector": writing_stage.get("ai_detector"),
+                "ats_validation": writing_stage.get("ats_validation"),
+                "quality_gate_failures": writing_stage.get("quality_gate_failures")
+                or [],
+            },
         }
 
         # Strict schema validation of the assembled result
@@ -720,6 +823,7 @@ def run_intelligent_tailoring(
         result_payload["knowledge_base_summary"] = result_payload.get(
             "knowledge_base_summary"
         )
+        result_payload["writing_report"] = result_payload.get("writing_report")
         # Preserve structured change_log fields after schema round-trip
         result_payload["change_log"] = deterministic_log
 

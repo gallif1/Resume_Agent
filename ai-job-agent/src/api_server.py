@@ -92,6 +92,7 @@ from build_info import build_info
 from collection_report import parse_agent_line
 from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
 from job_boards import list_job_boards, normalize_job_board_ids
+from intelligent_tailoring.themes.modern_template_manager import list_themes
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
 from scan_control import (
     begin_scan,
@@ -1741,10 +1742,18 @@ def match_report_endpoint(
     return _build_match_report(cv_id=cv_id, job=job, force=bool(req and req.force))
 
 
+@app.get("/resume-themes")
+def get_resume_themes(user: dict = Depends(auth.get_current_user)):
+    """List ATS-safe resume PDF themes (presentation only; content unchanged)."""
+    del user
+    return {"themes": list_themes(), "default": "modern_ats"}
+
+
 @app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf")
 def download_tailored_cv_pdf(
     cv_id: str,
     job_id: int,
+    theme: str | None = None,
     user: dict = Depends(auth.get_current_user),
 ):
     """Render the saved tailored CV Markdown to a professionally styled A4 PDF."""
@@ -1778,7 +1787,7 @@ def download_tailored_cv_pdf(
 
     cv_body = extract_cv_markdown_for_copy(saved)
     try:
-        pdf_bytes, filename = generate_tailored_cv_pdf(cv_body)
+        pdf_bytes, filename = generate_tailored_cv_pdf(cv_body, theme=theme)
     except PdfGeneratorError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
