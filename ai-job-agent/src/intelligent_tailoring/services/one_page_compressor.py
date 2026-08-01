@@ -246,6 +246,9 @@ def compress_resume_to_one_page(
         # Prefer strongest evidence order for interview probability
         kept = scored[:limit]
         entry["bullets"] = kept
+        # Never keep title-only experience shells on the page
+        if not kept:
+            continue
         total_bullets += len(kept)
         compressed_roles.append(entry)
     out["experience"] = compressed_roles
@@ -255,7 +258,7 @@ def compress_resume_to_one_page(
     ranked_projects = _rank_entries(projects, emphasize, name_keys=("name",))
     compressed_projects: list[dict[str, Any]] = []
     for project in ranked_projects[:max_projects]:
-        if total_bullets >= max_total:
+        if total_bullets >= max_total and compressed_projects:
             break
         entry = dict(project)
         raw_bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
@@ -268,22 +271,30 @@ def compress_resume_to_one_page(
             reverse=True,
         )
         room = max(0, max_total - total_bullets)
-        kept = scored[: min(bullets_proj, room)]
+        # Always keep at least 1 project bullet when evidence exists, even near budget
+        keep_n = min(bullets_proj, room if room > 0 else 1)
+        kept = scored[:keep_n] if scored else []
         entry["bullets"] = kept
         desc = str(entry.get("description") or "").strip()
         if desc and len(desc.split()) > 28:
             entry["description"] = _trim_words(desc, 28)
+            desc = entry["description"]
         # Drop stub description if bullets already cover it
-        if entry.get("description") and kept:
-            if _norm(str(entry["description"]))[:40] in _norm(kept[0]):
+        if desc and kept:
+            if _norm(desc)[:40] in _norm(kept[0]):
                 entry["description"] = ""
-        total_bullets += len(kept)
+                desc = ""
+        # Never keep title-only project shells
+        if not kept and not desc:
+            continue
+        total_bullets += len(kept) + (1 if desc else 0)
         compressed_projects.append(entry)
     out["projects"] = compressed_projects
 
-    # Skills — keep role-ordered lines, cap count
+    # Skills — keep role-ordered lines, cap count (but not below 3 lines when available)
     skills = [str(s).strip() for s in (out.get("skills") or []) if str(s).strip()]
-    out["skills"] = skills[:max_skills]
+    keep_skills = max(max_skills, 3) if len(skills) >= 3 else max_skills
+    out["skills"] = skills[:keep_skills]
 
     # Education / certs — keep but don't explode
     education = [e for e in (out.get("education") or []) if isinstance(e, dict)]

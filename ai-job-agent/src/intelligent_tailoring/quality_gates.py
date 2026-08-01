@@ -127,6 +127,12 @@ def evaluate_quality_gates(
     if require_summary and not summary:
         failures.append("missing_professional_summary")
 
+    # Completeness / empty-shell gates (preview warnings + download blockers via severity)
+    from intelligent_tailoring.canonical_resume import completeness_failures
+
+    for fail in completeness_failures(resume):
+        failures.append(fail)
+
     # Re-check every visible claim for impact + novel entities
     unsupported = 0
     for section, text in _iter_claim_texts(resume):

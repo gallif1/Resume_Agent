@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from intelligent_tailoring.canonical_resume import normalize_project_list
+
 
 def _sort_by_score(items: list[Any], scores: list[dict[str, Any]], key_field: str) -> list[Any]:
     score_map: dict[str, int] = {}
@@ -97,7 +99,7 @@ def rebuild_resume_structure(
     category_order = list(strategy.get("skill_category_order") or ["Skills", "Other"])
 
     roles = deepcopy(resume_facts.get("experience_roles") or [])
-    projects = deepcopy(resume_facts.get("projects") or [])
+    projects = normalize_project_list(deepcopy(resume_facts.get("projects") or []))
     skills = [str(s) for s in (resume_facts.get("display_skills") or resume_facts.get("skills") or [])]
 
     bullet_scores = scores.get("experience_bullets") or []
@@ -141,19 +143,31 @@ def rebuild_resume_structure(
                 "company": str(r.get("company") or ""),
                 "title": str(r.get("title") or ""),
                 "dates": str(r.get("dates") or ""),
-                "bullets": list(r.get("bullets") or []),
+                "bullets": [
+                    str(b).strip() for b in (r.get("bullets") or []) if str(b).strip()
+                ],
             }
             for r in roles
             if isinstance(r, dict)
+            and [
+                str(b).strip() for b in (r.get("bullets") or []) if str(b).strip()
+            ]
         ],
         "projects": [
             {
                 "name": str(p.get("name") or ""),
                 "description": str(p.get("description") or ""),
-                "bullets": list(p.get("bullets") or []),
+                "bullets": [
+                    str(b).strip() for b in (p.get("bullets") or []) if str(b).strip()
+                ],
+                "technologies": list(p.get("technologies") or []),
             }
             for p in projects
             if isinstance(p, dict)
+            and (
+                str(p.get("description") or "").strip()
+                or [str(b).strip() for b in (p.get("bullets") or []) if str(b).strip()]
+            )
         ],
         "education": list(resume_facts.get("education") or []),
         "certifications": list(resume_facts.get("certifications") or []),

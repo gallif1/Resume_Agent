@@ -20,7 +20,7 @@ def test_agent2_prompt_forbids_triage_only_payload():
     assert "Do NOT return a triage" in AGENT_2_SYSTEM or "do not emit triage" in AGENT_2_SYSTEM.lower()
     # Competing triage JSON schema must not remain as an allowed final output
     assert '"triage":' not in AGENT_2_SYSTEM
-    assert MERGED_AGENT_2_PROMPT_VERSION.startswith("merged_strategy_v2")
+    assert MERGED_AGENT_2_PROMPT_VERSION.startswith("merged_strategy_v")
     assert merged_prompt_contains_legacy_rules()["content_triage"]
     assert merged_prompt_contains_legacy_rules()["deep_tailor"]
 

@@ -268,10 +268,72 @@ def _safe_role_label(role: str, resume_text: str) -> str:
     return role
 
 
+_ROLE_SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
+    frozenset(
+        {
+            "frontend engineer",
+            "frontend developer",
+            "front-end engineer",
+            "front-end developer",
+            "front end engineer",
+            "front end developer",
+        }
+    ),
+    frozenset(
+        {
+            "backend engineer",
+            "backend developer",
+            "back-end engineer",
+            "back-end developer",
+            "back end engineer",
+            "back end developer",
+        }
+    ),
+    frozenset(
+        {
+            "software engineer",
+            "software developer",
+            "full stack engineer",
+            "full-stack engineer",
+            "fullstack engineer",
+            "full stack developer",
+            "full-stack developer",
+        }
+    ),
+)
+
+
+def _collapse_role_synonyms(text: str) -> str:
+    """Prevent 'Frontend Engineer Frontend Developer' style concatenations."""
+    out = re.sub(r"\s+", " ", (text or "").strip())
+    for group in _ROLE_SYNONYM_GROUPS:
+        # Prefer developer/engineer label that appears first as canonical
+        preferred = None
+        for label in (
+            "Frontend developer",
+            "Backend developer",
+            "Software developer",
+            "Frontend engineer",
+            "Backend engineer",
+            "Software engineer",
+        ):
+            if label.lower() in group:
+                preferred = label
+                break
+        if not preferred:
+            preferred = next(iter(group)).title()
+        # Match two adjacent synonyms from the same group
+        alts = "|".join(re.escape(x) for x in sorted(group, key=len, reverse=True))
+        pattern = re.compile(rf"\b({alts})\s+({alts})\b", flags=re.I)
+        out = pattern.sub(preferred, out)
+    return out.strip()
+
+
 def _natural_role_phrase(role: str, family: str) -> str:
-    role = (role or "").strip()
+    role = _collapse_role_synonyms(role or "").strip()
+    # If multiple role tokens remain, keep the first noun phrase only
+    role = re.split(r"\s*/\s*|\s+\|\s+", role)[0].strip()
     if role:
-        # Prefer lowercase profession noun after article logic handled by caller
         return role
     mapping = {
         "backend": "Backend developer",
@@ -294,9 +356,17 @@ def _natural_role_phrase(role: str, family: str) -> str:
 
 def _lead_sentence(role_phrase: str, comps: list[str], family: str) -> str:
     """Natural opening that never uses banned 'Professional with Knowledge...' forms."""
-    joined = _join(comps[:4]) if comps else ""
+    # Competencies must not repeat the role title
+    role_low = (role_phrase or "").strip().lower()
+    filtered = [
+        c
+        for c in comps
+        if c.strip().lower() not in role_low
+        and c.strip().lower() not in {"frontend", "backend", "engineer", "developer"}
+    ]
+    joined = _join(filtered[:4]) if filtered else ""
     family = (family or "").lower()
-    role = (role_phrase or "Contributor").strip()
+    role = _collapse_role_synonyms(role_phrase or "Contributor").strip()
     if role.lower() == "professional":
         role = "Contributor"
 
@@ -418,6 +488,7 @@ def _cleanup_summary_text(text: str) -> str:
     cleaned = re.sub(r"\bon\s*\.", ".", cleaned)
     cleaned = re.sub(r"\busing\s*\.", ".", cleaned)
     cleaned = re.sub(r"^(contributor|professional)\s+with\s+with\b", r"\1 with", cleaned, flags=re.I)
+    cleaned = _collapse_role_synonyms(cleaned)
     return cleaned.strip()
 
 
@@ -450,6 +521,15 @@ def summary_passes_checks(summary: str, *, resume_text: str) -> tuple[bool, list
         errors.append("duplicate_sentence")
     if has_repeated_ngram(text, n=3):
         errors.append("repeated_ngram")
+    if re.search(
+        r"\b(frontend engineer)\s+(frontend developer)\b"
+        r"|\b(frontend developer)\s+(frontend engineer)\b"
+        r"|\b(backend engineer)\s+(backend developer)\b"
+        r"|\b(software engineer)\s+(software developer)\b",
+        text,
+        flags=re.I,
+    ):
+        errors.append("duplicate_title_phrase")
     errors.extend(detect_broken_patterns(text))
     words = text.split()
     if len(words) < 18:
@@ -478,7 +558,7 @@ def build_professional_summary(
     existing_summary: str = "",
 ) -> dict[str, Any]:
     """Return a validated summary, preferring a clean existing one when possible."""
-    existing = (existing_summary or "").strip()
+    existing = _cleanup_summary_text(existing_summary or "")
     if existing:
         ok, errs = summary_passes_checks(existing, resume_text=resume_text)
         if ok:

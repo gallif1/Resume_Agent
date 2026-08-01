@@ -222,16 +222,40 @@ def rewrite_resume_with_strategy(
 
 
 def _merge_experience_order(tailored: dict[str, Any], rebuilt: dict[str, Any]) -> None:
-    rebuilt_exp = rebuilt.get("experience") or []
-    tailored_exp = tailored.get("experience") or []
+    rebuilt_exp = [e for e in (rebuilt.get("experience") or []) if isinstance(e, dict)]
+    tailored_exp = [e for e in (tailored.get("experience") or []) if isinstance(e, dict)]
     if not rebuilt_exp:
         return
-    # Reorder tailored bullets to match rebuilt order using text matching
-    for rb, tb in zip(rebuilt_exp, tailored_exp):
-        if not isinstance(rb, dict) or not isinstance(tb, dict):
-            continue
-        rb_bullets = [str(b) for b in (rb.get("bullets") or [])]
-        tb_bullets = [str(b) for b in (tb.get("bullets") or [])]
+    # If the model dropped experience entirely, restore rebuilt structure.
+    if not tailored_exp:
+        tailored["experience"] = rebuilt_exp
+        return
+
+    # Prefer preserving complete entries: zip by index, then append unmatched rebuilt.
+    merged: list[dict[str, Any]] = []
+    used_rebuilt: set[int] = set()
+    for idx, tb in enumerate(tailored_exp):
+        rb = rebuilt_exp[idx] if idx < len(rebuilt_exp) else None
+        if rb is None:
+            # Try name match
+            title = str(tb.get("title") or "").strip().lower()
+            company = str(tb.get("company") or "").strip().lower()
+            for j, candidate in enumerate(rebuilt_exp):
+                if j in used_rebuilt:
+                    continue
+                if title and title == str(candidate.get("title") or "").strip().lower():
+                    rb = candidate
+                    used_rebuilt.add(j)
+                    break
+                if company and company == str(candidate.get("company") or "").strip().lower():
+                    rb = candidate
+                    used_rebuilt.add(j)
+                    break
+        else:
+            used_rebuilt.add(idx)
+
+        rb_bullets = [str(b).strip() for b in ((rb or {}).get("bullets") or []) if str(b).strip()]
+        tb_bullets = [str(b).strip() for b in (tb.get("bullets") or []) if str(b).strip()]
         ordered: list[str] = []
         used: set[int] = set()
         for rb_text in rb_bullets:
@@ -246,29 +270,96 @@ def _merge_experience_order(tailored: dict[str, Any], rebuilt: dict[str, Any]) -
         for i, tb_text in enumerate(tb_bullets):
             if i not in used:
                 ordered.append(tb_text)
-        tb["bullets"] = ordered if ordered else tb_bullets
+        # Preservation-first: never keep an included role with empty bullets
+        # when the rebuilt source still has verified bullets.
+        if ordered:
+            bullets = ordered
+        elif tb_bullets:
+            bullets = tb_bullets
+        else:
+            bullets = rb_bullets
+        if not bullets:
+            continue
+        entry = dict(tb)
+        if rb:
+            entry.setdefault("company", rb.get("company") or entry.get("company"))
+            entry.setdefault("title", rb.get("title") or entry.get("title"))
+            entry.setdefault("dates", rb.get("dates") or entry.get("dates"))
+        entry["bullets"] = bullets
+        merged.append(entry)
+
+    # Append rebuilt roles the model omitted entirely (still with bullets).
+    for j, rb in enumerate(rebuilt_exp):
+        if j in used_rebuilt:
+            continue
+        rb_bullets = [str(b).strip() for b in (rb.get("bullets") or []) if str(b).strip()]
+        if rb_bullets:
+            merged.append({**rb, "bullets": rb_bullets})
+    tailored["experience"] = merged
 
 
 def _merge_project_order(tailored: dict[str, Any], rebuilt: dict[str, Any]) -> None:
-    rebuilt_names = [
-        str(p.get("name") or "").lower()
-        for p in (rebuilt.get("projects") or [])
-        if isinstance(p, dict)
-    ]
-    tailored_projects = tailored.get("projects") or []
-    if not rebuilt_names or not tailored_projects:
-        tailored["projects"] = rebuilt.get("projects") or tailored_projects
+    rebuilt_projects = [p for p in (rebuilt.get("projects") or []) if isinstance(p, dict)]
+    tailored_projects = [p for p in (tailored.get("projects") or []) if isinstance(p, dict)]
+    if not rebuilt_projects:
         return
+    if not tailored_projects:
+        tailored["projects"] = rebuilt_projects
+        return
+
+    rebuilt_names = [
+        str(p.get("name") or "").lower() for p in rebuilt_projects
+    ]
     by_name = {
         str(p.get("name") or "").lower(): p
         for p in tailored_projects
-        if isinstance(p, dict)
+        if str(p.get("name") or "").strip()
     }
-    ordered = []
-    for name in rebuilt_names:
-        if name in by_name:
-            ordered.append(by_name[name])
+    ordered: list[dict[str, Any]] = []
+    used: set[str] = set()
+    for name, rb in zip(rebuilt_names, rebuilt_projects):
+        tb = by_name.get(name)
+        if tb is None:
+            # Soft name match
+            for key, candidate in by_name.items():
+                if key in used:
+                    continue
+                if name and key and (name in key or key in name):
+                    tb = candidate
+                    name = key
+                    break
+        if tb is None:
+            rb_bullets = [str(b).strip() for b in (rb.get("bullets") or []) if str(b).strip()]
+            desc = str(rb.get("description") or "").strip()
+            if rb_bullets or desc:
+                ordered.append(rb)
+            continue
+        used.add(name)
+        entry = dict(tb)
+        tb_bullets = [str(b).strip() for b in (tb.get("bullets") or []) if str(b).strip()]
+        rb_bullets = [str(b).strip() for b in (rb.get("bullets") or []) if str(b).strip()]
+        if not tb_bullets and rb_bullets:
+            entry["bullets"] = rb_bullets
+        else:
+            entry["bullets"] = tb_bullets
+        if not str(entry.get("description") or "").strip():
+            entry["description"] = str(rb.get("description") or "").strip()
+        if not entry.get("technologies") and rb.get("technologies"):
+            entry["technologies"] = list(rb.get("technologies") or [])
+        # Drop title-only shells
+        if not entry.get("bullets") and not str(entry.get("description") or "").strip():
+            if rb_bullets or str(rb.get("description") or "").strip():
+                entry["bullets"] = rb_bullets
+                entry["description"] = str(rb.get("description") or "").strip()
+            else:
+                continue
+        ordered.append(entry)
     for p in tailored_projects:
-        if p not in ordered:
+        key = str(p.get("name") or "").lower()
+        if key in used:
+            continue
+        bullets = [str(b).strip() for b in (p.get("bullets") or []) if str(b).strip()]
+        desc = str(p.get("description") or "").strip()
+        if bullets or desc:
             ordered.append(p)
     tailored["projects"] = ordered

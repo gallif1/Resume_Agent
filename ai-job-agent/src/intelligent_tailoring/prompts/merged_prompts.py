@@ -22,7 +22,7 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v2"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v3_preserve"
 MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v1"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
@@ -164,18 +164,26 @@ def build_agent_1_user_prompt(
 # return {triage, section_order} instead of tailored_resume.
 _CONTENT_TRIAGE_RULES_ONLY = """
 You are a Principal Recruiter applying content triage WHILE selecting content.
-Optimize for interview probability — not completeness.
+Optimize for interview probability — not empty shells.
 
 For each resume element (summary, skill, experience bullet, project bullet),
 internally decide one action: Preserve | Rewrite | Reorder | Expand | Condense | Remove.
 Do NOT return a triage array. Apply those decisions inside the tailored_resume.
 
 Ask for every line: "Would keeping this help a busy recruiter decide to interview?"
-Prefer five excellent bullets over twelve average ones.
+Prefer fewer COMPLETE entries over many empty headings.
 Remove low-value duty language that does not raise interview probability.
 
-Rules:
+PRESERVATION-FIRST RULES (mandatory):
 - Never invent facts.
+- A selected Experience entry MUST include at least one meaningful bullet.
+- A selected Project MUST include a description OR at least one bullet.
+- Never emit a project as a title-only shell.
+- Never emit an experience role as a title-only shell.
+- If content is too weak to keep bullets, omit the entire entry.
+- Prefer 2 complete projects with bullets over 1 title-only project.
+- Prefer 2 roles with 1–3 bullets each over 3 empty roles.
+- Do not silently drop verified high-value technologies from Skills.
 - Remove content that does not help win an interview for THIS job.
 - Expand only when the original resume already contains supporting detail.
 - Preserve the selected output language.

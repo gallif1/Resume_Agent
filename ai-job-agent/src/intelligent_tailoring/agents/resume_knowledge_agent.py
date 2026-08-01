@@ -41,12 +41,46 @@ class ResumeKnowledgeAgent(Agent[ResumeKnowledgeInput, ResumeKnowledgeOutput]):
         classic = extract_structured_resume(
             payload.cv_profile, payload.source_documents
         )
-        # Merge classic extraction only for structural fields KB may miss —
-        # still facts only, never generated prose.
-        if not resume_facts.get("experience_roles") and classic.get("experience_roles"):
-            resume_facts["experience_roles"] = classic["experience_roles"]
-        if not resume_facts.get("projects") and classic.get("projects"):
-            resume_facts["projects"] = classic["projects"]
+        # Merge classic extraction for structural fields KB may miss —
+        # prefer the richer of the two (more bullets / project content).
+        # Still facts only, never generated prose.
+        def _bullet_total(roles: list) -> int:
+            total = 0
+            for r in roles or []:
+                if isinstance(r, dict):
+                    total += len([b for b in (r.get("bullets") or []) if str(b).strip()])
+            return total
+
+        def _project_total(projects: list) -> int:
+            total = 0
+            for p in projects or []:
+                if isinstance(p, dict):
+                    total += len([b for b in (p.get("bullets") or []) if str(b).strip()])
+                    if str(p.get("description") or "").strip():
+                        total += 1
+            return total
+
+        classic_roles = classic.get("experience_roles") or []
+        kb_roles = resume_facts.get("experience_roles") or []
+        if _bullet_total(classic_roles) > _bullet_total(kb_roles):
+            resume_facts["experience_roles"] = classic_roles
+        elif not kb_roles and classic_roles:
+            resume_facts["experience_roles"] = classic_roles
+
+        classic_projects = classic.get("projects") or []
+        kb_projects = resume_facts.get("projects") or []
+        if _project_total(classic_projects) > _project_total(kb_projects):
+            resume_facts["projects"] = classic_projects
+        elif not kb_projects and classic_projects:
+            resume_facts["projects"] = classic_projects
+
+        if classic.get("skills") and (
+            len(classic.get("skills") or [])
+            > len(resume_facts.get("skills") or [])
+        ):
+            resume_facts["skills"] = list(classic.get("skills") or [])
+            resume_facts["display_skills"] = list(classic.get("skills") or [])
+        resume_facts["extraction_meta"] = classic.get("extraction_meta") or {}
 
         warnings: list[str] = []
         sparse = bool(resume_facts.get("sparse")) or (

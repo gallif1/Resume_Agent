@@ -310,7 +310,9 @@ Languages: Python, SQL
         flags=re.IGNORECASE,
     )
     assert "Backend &amp; Frameworks" in html_doc or "Backend & Frameworks" in html_doc
-    assert "Mobile" in html_doc
+    # Expo / React Native belong under Frontend (not Backend or a Mobile leftover).
+    assert "Frontend" in html_doc
+    assert "Expo" in html_doc
 
 
 def test_one_page_css_contract():
