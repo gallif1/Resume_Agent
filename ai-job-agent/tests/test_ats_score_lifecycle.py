@@ -147,4 +147,4 @@ def test_generation_report_includes_score_breakdown():
     assert report["score_breakdown"]["tailored_score"] == 72
     assert report["score_breakdown"]["original_score"] == 64
     assert report["overall_progress"] == 100
-    assert report["agents_total"] == 4
+    assert report["agents_total"] == 3
