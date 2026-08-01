@@ -797,6 +797,7 @@ def assert_safe_to_export(report: dict[str, Any] | None) -> None:
                     "writing_quality:facts_changed",
                     "writing_quality:grammar:",
                     "writing_quality:ats:",
+                    "page_count:",
                 )
             )
         ]

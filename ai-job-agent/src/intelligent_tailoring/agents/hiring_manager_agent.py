@@ -24,26 +24,61 @@ def _clamp_score(value: float) -> int:
 def _section_scores(resume: dict[str, Any], evidence_map: Any) -> dict[str, int]:
     scores: dict[str, int] = {}
     summary = str(resume.get("professional_summary") or resume.get("summary") or "").strip()
-    scores["summary"] = 75 if 40 <= len(summary.split()) <= 90 else (55 if summary else 20)
+    summary_words = len(summary.split())
+    # Prefer concise one-page summaries (40–60 words)
+    if 35 <= summary_words <= 65:
+        scores["summary"] = 80
+    elif 25 <= summary_words <= 80:
+        scores["summary"] = 65
+    else:
+        scores["summary"] = 45 if summary else 20
+    low_summary = summary.lower()
+    if any(
+        p in low_summary
+        for p in (
+            "professional with",
+            "strong understanding",
+            "passionate about",
+            "highly motivated",
+        )
+    ):
+        scores["summary"] = min(scores["summary"], 40)
 
     experience = resume.get("experience") or []
     bullets = 0
+    tech_in_bullets = 0
     for entry in experience:
         if isinstance(entry, dict):
-            bullets += len(entry.get("bullets") or [])
-    scores["experience"] = _clamp_score(40 + min(bullets, 12) * 4)
+            entry_bullets = list(entry.get("bullets") or [])
+            bullets += len(entry_bullets)
+            techs = [str(t) for t in (entry.get("technologies") or []) if str(t).strip()]
+            if techs and any(
+                t.lower() in str(b).lower() for t in techs for b in entry_bullets
+            ):
+                tech_in_bullets += 1
+    scores["experience"] = _clamp_score(40 + min(bullets, 10) * 4 + tech_in_bullets * 4)
 
     projects = resume.get("projects") or []
     if projects:
-        pbullets = sum(
-            len(p.get("bullets") or []) for p in projects if isinstance(p, dict)
-        )
-        scores["projects"] = _clamp_score(45 + min(pbullets, 8) * 5)
+        pbullets = 0
+        story_signal = 0
+        for p in projects:
+            if not isinstance(p, dict):
+                continue
+            pb = [str(b) for b in (p.get("bullets") or []) if str(b).strip()]
+            pbullets += len(pb)
+            for b in pb:
+                if len(b.split()) >= 10 and any(
+                    w in b.lower()
+                    for w in ("designed", "built", "implemented", "supporting", "using")
+                ):
+                    story_signal += 1
+        scores["projects"] = _clamp_score(40 + min(pbullets, 6) * 6 + min(story_signal, 3) * 5)
     else:
         scores["projects"] = 50  # optional section
 
     skills = resume.get("skills") or []
-    scores["skills"] = _clamp_score(35 + min(len(skills), 12) * 5)
+    scores["skills"] = _clamp_score(35 + min(len(skills), 8) * 6)
 
     # Evidence coverage boosts experience/skills
     mappings = getattr(evidence_map, "mappings", []) or []
@@ -187,7 +222,44 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
                 "I still don't understand why this candidate fits — rewrite the summary "
                 "to sell specialization and evidenced strengths for THIS role."
             )
-        for req in missing_hard[:4]:
+        elif any(
+            p in summary.lower()
+            for p in (
+                "professional with",
+                "strong understanding",
+                "passionate about",
+                "highly motivated",
+            )
+        ):
+            actionable.append(
+                "Summary sounds AI-generated — rewrite into natural recruiter language "
+                "that answers who / why fit / what work, without filler phrases."
+            )
+        # Challenge under-emphasized evidenced technologies
+        for group_name, terms in (
+            ("Cloud", list(job.cloud or [])),
+            ("Database", list(job.databases or [])),
+            ("Framework", list(job.frameworks or [])),
+            ("Technology", list(job.technologies or [])[:6]),
+        ):
+            for term in terms[:2]:
+                t = str(term).strip()
+                if not t or t.lower() not in resume_blob:
+                    continue
+                # Present somewhere but not in experience/projects bullets
+                exp_proj = " ".join(
+                    str(b)
+                    for e in list(resume.get("experience") or [])
+                    + list(resume.get("projects") or [])
+                    if isinstance(e, dict)
+                    for b in (e.get("bullets") or [])
+                ).lower()
+                if t.lower() not in exp_proj:
+                    actionable.append(
+                        f"{group_name} experience ({t}) should be more visible in "
+                        f"Experience/Projects bullets — weave it in only where evidenced."
+                    )
+        for req in missing_hard[:3]:
             actionable.append(
                 f"Required '{req}' is too weak or missing — surface concrete evidence "
                 f"only if it already exists in the resume."
@@ -202,12 +274,17 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
         for section in weakest:
             if section == "projects":
                 actionable.append(
-                    "Key projects look thin — expand bullets using existing project facts "
-                    "to show design decisions and technical value."
+                    "Project bullets should better demonstrate problem solving — "
+                    "rewrite as value stories using existing project facts."
                 )
             elif section == "skills":
                 actionable.append(
                     "Skills ordering does not lead with role-critical competencies — reorder."
+                )
+            elif section == "experience":
+                actionable.append(
+                    "Backend/architecture experience is under-emphasized — lead with "
+                    "the strongest evidenced design and systems work for this role."
                 )
             else:
                 actionable.append(

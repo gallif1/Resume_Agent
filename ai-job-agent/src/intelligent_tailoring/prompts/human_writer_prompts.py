@@ -40,21 +40,28 @@ WRITING PHILOSOPHY:
 - Avoid keyword stuffing and unnatural repetition.
 
 SUMMARY (critical):
-- Rewrite completely into 40–80 words, 2–4 sentences.
-- Answer: Why is this candidate a strong fit for THIS role?
-- Cover: primary specialization, relevant experience, core strengths, business value, learning agility.
-- Do NOT merely list technologies.
-- Sound intentional and confident — never generic.
+- Rewrite completely into 40–58 words, 2–3 sentences (one-page constraint).
+- Immediately communicate value — who they are, why they fit THIS role, what work they've done.
+- Cover: primary specialization, relevant experience, core strengths that matter for the role.
+- Technologies may appear naturally inside complete sentences — never keyword-stuff.
+- Sound like a senior recruiter wrote it — intentional, specific, human.
+
+ONE-PAGE DENSITY:
+- Prefer stronger bullets over more bullets.
+- Remove repetition. Merge near-duplicate ideas.
+- Keep every sentence earning its space.
 
 PROJECTS:
-- If a project is thin, expand bullets using only existing project facts / description details.
-- Prefer value-carrying bullets: design decisions, systems built, problems solved, domain impact.
+- Tell a short story: what was built, why it mattered, how it worked, which technologies, which problems were solved.
+- Prefer value-carrying bullets over activity lists.
 - Example upgrade (facts unchanged): "Created database schema" →
   "Designed relational PostgreSQL schemas supporting validation, request tracking, and scalable backend operations."
   (Only if PostgreSQL / those purposes already exist in the source facts.)
 
 EXPERIENCE:
 - Each bullet communicates value — not duties alone.
+- Weave evidenced technologies into bullets naturally
+  (e.g. "Designed backend services using FastAPI and SQLAlchemy, exposing REST APIs backed by PostgreSQL.")
 - Lead with relevant evidence for the target role.
 
 EVIDENCE REINFORCEMENT:
@@ -71,7 +78,7 @@ Return STRICT JSON only:
 {
   "tailored_resume": {
     "professional_title": "unchanged unless grammar fix only",
-    "professional_summary": "rewritten 40-80 words",
+    "professional_summary": "rewritten 40-58 words",
     "skills": ["same skill atoms; categories may be reordered"],
     "experience": [{"company": "", "title": "", "dates": "", "bullets": []}],
     "projects": [{"name": "", "description": "", "bullets": []}],
@@ -88,16 +95,17 @@ SENIOR_RECRUITER_REVIEW_SYSTEM = """You are a Senior Recruiter at a top company 
 You actively criticize resumes. You do NOT rewrite facts. You do NOT invent content.
 You only judge writing quality, human-likeness, and role-fit signaling.
 
-Challenge the resume honestly:
+Challenge the resume honestly — be tough, not polite:
 1. Would I interview this candidate based on this resume alone?
-2. Does anything sound robotic or AI-generated?
-3. Does every section clearly support the target role positioning?
-4. Does the summary immediately sell the candidate (not just list tools)?
-5. Are important technologies / competencies emphasized enough across sections?
-6. Are important projects strong enough, or are bullets too thin/generic?
-7. Could any bullet better demonstrate value using existing facts?
-8. Is skills ordering aligned with the target role?
-9. Would I believe a premium human resume writer produced this?
+2. Does the Summary immediately communicate value (who / why fit / what work)?
+3. Does anything sound robotic or AI-generated (generic filler, keyword stuffing)?
+4. Are projects convincing stories (built / mattered / how / tech / problems solved)?
+5. Are the strongest qualifications obvious within 10 seconds?
+6. Is anything repetitive or low-value?
+7. Does every bullet add business or technical value?
+8. Are important technologies woven into Experience/Projects (not only Skills)?
+9. Is skills ordering aligned with the target role?
+10. Would I believe a premium human resume writer produced this?
 
 If every answer is YES, approve.
 If any answer is NO, return structured criticism for the resume writer.

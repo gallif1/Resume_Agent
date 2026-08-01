@@ -18,15 +18,16 @@ from intelligent_tailoring.writing.style_validator import evaluate_writing_quali
 DEFAULT_QUALITY_THRESHOLD = 72
 
 _WEIGHTS = {
-    "naturalness": 0.16,
-    "evidence_utilization": 0.14,
-    "job_relevance": 0.16,
-    "ats_optimization": 0.08,
-    "human_writing_quality": 0.16,
+    "naturalness": 0.14,
+    "evidence_utilization": 0.13,
+    "job_relevance": 0.14,
+    "ats_optimization": 0.07,
+    "human_writing_quality": 0.14,
     "technical_clarity": 0.10,
-    "section_balance": 0.08,
+    "section_balance": 0.07,
     "visual_quality": 0.04,
-    "role_differentiation": 0.08,
+    "role_differentiation": 0.07,
+    "one_page_fit": 0.10,
 }
 
 
@@ -187,13 +188,15 @@ def _section_balance(resume: dict[str, Any]) -> tuple[int, list[str]]:
         if isinstance(p, dict)
     )
     score = 70
-    if 35 <= summary_words <= 90:
+    if 35 <= summary_words <= 65:
         score += 15
+    elif 28 <= summary_words <= 80:
+        score += 8
     elif summary_words < 20:
         score -= 20
         notes.append("summary_too_short")
-    elif summary_words > 110:
-        score -= 10
+    elif summary_words > 90:
+        score -= 12
         notes.append("summary_too_long")
     if exp_bullets >= 3:
         score += 8
@@ -282,6 +285,20 @@ def evaluate_resume_quality(
     dims["role_differentiation"], notes["role_differentiation"] = _role_differentiation(
         resume, strategy=strategy
     )
+    from intelligent_tailoring.services.one_page_compressor import estimate_page_pressure
+
+    pressure = estimate_page_pressure(resume)
+    if pressure.get("likely_fits_one_page"):
+        dims["one_page_fit"] = 95 if int(pressure.get("pressure") or 0) <= 4 else 80
+        notes["one_page_fit"] = []
+    else:
+        dims["one_page_fit"] = max(
+            20, 70 - int(pressure.get("pressure") or 0) * 3
+        )
+        notes["one_page_fit"] = [
+            f"pressure:{pressure.get('pressure')}",
+            f"bullets:{pressure.get('bullet_count')}",
+        ]
 
     # Blend external reviewer signals when present
     if recruiter_review:
@@ -319,6 +336,11 @@ def evaluate_resume_quality(
         weak_sections.append("projects")
     if dims["role_differentiation"] < threshold:
         weak_sections.append("skills")
+        if "summary" not in weak_sections:
+            weak_sections.append("summary")
+    if dims.get("one_page_fit", 100) < threshold:
+        weak_sections.append("experience")
+        weak_sections.append("projects")
         if "summary" not in weak_sections:
             weak_sections.append("summary")
 

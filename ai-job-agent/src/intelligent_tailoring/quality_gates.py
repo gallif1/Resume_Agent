@@ -103,6 +103,8 @@ def evaluate_quality_gates(
     original_projects: list[dict[str, Any]] | None = None,
     require_summary: bool = True,
     rejected_statements: list[str] | None = None,
+    require_one_page: bool = False,
+    pdf_bytes: bytes | None = None,
 ) -> dict[str, Any]:
     """Evaluate hard export gates. ``passed`` must be True to export."""
     failures: list[str] = []
@@ -212,6 +214,25 @@ def evaluate_quality_gates(
     if rejected_statements:
         warnings.append(f"{len(rejected_statements)} statements rejected during validation")
 
+    # One-page default — hard gate unless caller disabled it
+    page_meta: dict[str, Any] = {}
+    if require_one_page:
+        from intelligent_tailoring.services.page_count import assert_one_page
+        from intelligent_tailoring.services.one_page_compressor import (
+            estimate_page_pressure,
+        )
+
+        ok_page, page_reason = assert_one_page(
+            pdf_bytes=pdf_bytes, resume=resume, allow_multi_page=False
+        )
+        page_meta = {
+            "ok": ok_page,
+            "reason": page_reason,
+            "pressure": estimate_page_pressure(resume),
+        }
+        if not ok_page:
+            failures.append(page_reason if str(page_reason).startswith("page_count:") else f"page_count:{page_reason}")
+
     # Deduplicate failures
     unique_failures = list(dict.fromkeys(failures))
     passed = len(unique_failures) == 0
@@ -220,7 +241,8 @@ def evaluate_quality_gates(
         "failures": unique_failures,
         "warnings": warnings,
         "unsupported_claim_count": unsupported,
-        "gate_version": "quality_gates_v1",
+        "gate_version": "quality_gates_v2",
+        "one_page": page_meta,
     }
 
 

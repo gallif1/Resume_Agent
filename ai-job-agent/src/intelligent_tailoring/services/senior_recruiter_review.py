@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from ai_client import is_ai_available
@@ -74,6 +75,8 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
             "passionate about",
             "highly motivated",
             "proven track record",
+            "experienced professional",
+            "results-driven",
         )
     ):
         issues.append(
@@ -81,34 +84,85 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
                 "section": "summary",
                 "problem": "Summary uses generic AI filler phrasing",
                 "guidance": (
-                    "Rewrite the summary to sound like a human resume writer. "
-                    "Explain role fit with evidenced strengths — no clichés."
+                    "Rewrite the summary to sound like a senior recruiter wrote it. "
+                    "Answer who this is, why they fit, and what work they've done — no clichés."
                 ),
             }
         )
         sections.update({"summary"})
-    # Thin projects → request regeneration
+    # Summary must communicate value, not just list tools
+    summary_words = len(summary.split())
+    if summary and (
+        summary_words < 28
+        or not re.search(r"[.!?]", summary)
+        or summary.count(",") >= 6 and summary.count(".") <= 1
+    ):
+        issues.append(
+            {
+                "section": "summary",
+                "problem": "Summary does not immediately communicate candidate value",
+                "guidance": (
+                    "Write 2–3 natural sentences that sell specialization and "
+                    "evidenced strengths for this role. Avoid keyword lists."
+                ),
+            }
+        )
+        sections.update({"summary"})
+    # Thin / activity-only projects → request regeneration
     for entry in resume.get("projects") or []:
         if not isinstance(entry, dict):
             continue
         bullets = [b for b in (entry.get("bullets") or []) if str(b).strip()]
-        if 0 < len(bullets) < 2 or any(len(str(b).split()) < 6 for b in bullets):
+        weak = 0 < len(bullets) < 2 or any(len(str(b).split()) < 6 for b in bullets)
+        activity_only = any(
+            re.match(
+                r"^(created|built|implemented|developed)\s+\w+(\s+\w+)?\.?$",
+                str(b).strip(),
+                re.I,
+            )
+            for b in bullets
+        )
+        if weak or activity_only:
             issues.append(
                 {
                     "section": "projects",
-                    "problem": "Project bullets are too thin or generic",
+                    "problem": "Projects are not convincing — bullets lack story/value",
                     "guidance": (
-                        "Expand project bullets using only existing project facts "
-                        "to show technical value and design decisions."
+                        "Rewrite project bullets as short stories: what was built, "
+                        "why it mattered, how it worked, which technologies, which "
+                        "problems were solved — using only existing project facts."
                     ),
                 }
             )
             sections.update({"projects"})
             break
+    # Experience should weave technologies when they appear on the entry
+    for entry in resume.get("experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        techs = [str(t) for t in (entry.get("technologies") or []) if str(t).strip()]
+        bullets = [str(b) for b in (entry.get("bullets") or []) if str(b).strip()]
+        if techs and bullets:
+            mentioned = sum(
+                1 for t in techs if any(t.lower() in b.lower() for b in bullets)
+            )
+            if mentioned == 0:
+                issues.append(
+                    {
+                        "section": "experience",
+                        "problem": "Technologies are siloed in Skills and missing from Experience bullets",
+                        "guidance": (
+                            "Integrate evidenced technologies naturally into experience "
+                            "bullets (e.g. 'using FastAPI and PostgreSQL') without inventing tools."
+                        ),
+                    }
+                )
+                sections.update({"experience"})
+                break
     approved = (
         not issues
-        and human >= 75
-        and interview >= 75
+        and human >= 78
+        and interview >= 78
         and bool(grammar.get("passed"))
         and bool(style.get("passed"))
         and bool(ai.get("passed"))

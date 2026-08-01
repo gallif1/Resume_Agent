@@ -51,6 +51,18 @@ Writing quality is improved **inside** the existing agents/pipeline (no new agen
 - Hiring Manager challenges feed back into a refine writing pass
 - Internal Resume Quality Score drives weak-section regeneration
 
+## Premium one-page writing (`multi_agent_v1_2`)
+
+Same architecture; stronger premium-writer behavior + hard one-page default:
+
+- Concise natural summaries (~58 words) that sell role fit
+- Tech weaver integrates evidenced tools into Experience/Projects
+- Project stub bullets upgraded into value-oriented stories (facts only)
+- One-page compressor ranks relevance, dedupes, caps bullets/roles
+- Page-count gate blocks export when content still overflows
+- Stricter recruiter + hiring-manager critique loops
+- Denser premium ATS themes (readable fonts, balanced whitespace)
+
 ## Acceptance criteria mapping
 
 1. Different jobs → different resumes — strategy + evidence + company influence

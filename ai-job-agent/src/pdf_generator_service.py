@@ -60,8 +60,8 @@ SECTION_TITLE_RE = re.compile(
     r")\s*(?:\*\*|__)?\s*:?\s*$",
     re.IGNORECASE,
 )
-MAX_BULLETS_PER_ENTRY = 4
-MAX_SUMMARY_SENTENCES = 4
+MAX_BULLETS_PER_ENTRY = 3
+MAX_SUMMARY_SENTENCES = 3
 
 # Known tool → preferred skill category (for taxonomy cleanup).
 SKILL_CATEGORY_HINTS: dict[str, str] = {
