@@ -15,6 +15,7 @@ from intelligent_tailoring.experience_math import (
     claim_years_supported,
     estimate_years_from_text,
     extract_years_claims,
+    has_inflated_years_claim,
     years_from_experience_entries,
 )
 from intelligent_tailoring.schemas import (
@@ -28,6 +29,67 @@ from intelligent_tailoring.schemas import (
 from match_tailor_service import SourceEvidence, skill_supported_by_source
 
 _TOKEN_RE = re.compile(r"[a-z0-9#+.]{2,}|[\u0590-\u05FF]{2,}", re.IGNORECASE)
+
+# Hard-reject patterns — regression cases that must never reach export.
+_HARD_REJECT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(
+            r"\bproven\s+ability\s+to\s+lead\s+projects?\s+from\s+inception\s+to\s+"
+            r"(?:deployment|delivery|completion|production)\b",
+            re.I,
+        ),
+        "unsupported_professional_leadership",
+    ),
+    (
+        re.compile(
+            r"\bled\s+projects?\s+from\s+inception\s+to\s+"
+            r"(?:deployment|delivery|completion|production)\b",
+            re.I,
+        ),
+        "unsupported_professional_leadership",
+    ),
+    (
+        re.compile(
+            r"\b(?:over|more\s+than|at\s+least)\s+"
+            r"(?:three|3|four|4|five|5|\d+)\s*\+?\s*years?\s+"
+            r"(?:of\s+)?(?:expertise|experience|professional\s+experience)\b",
+            re.I,
+        ),
+        "inflated_years_phrase",
+    ),
+    (
+        re.compile(
+            r"\b(?:full[\s-]?stack\s+(?:engineer|developer))\s+with\s+"
+            r"(?:over\s+)?(?:three|3|\d+)\s*\+?\s*years?\b",
+            re.I,
+        ),
+        "inflated_years_with_title",
+    ),
+]
+
+# Outcome nouns that require explicit source support (not feature intent).
+_UNSUPPORTED_OUTCOME_NOUNS = re.compile(
+    r"\b("
+    r"customer\s+satisfaction|user\s+engagement|system\s+scalability|"
+    r"system\s+reliability|team\s+workflows?|streamlin(?:e|ed|ing)\s+delivery|"
+    r"production[- ]grade\s+(?:ownership|architecture|applications?)|"
+    r"business\s+impact|revenue\s+growth"
+    r")\b",
+    re.I,
+)
+
+# Strong ownership / seniority verbs that need professional evidence.
+_STRONG_OWNERSHIP_RE = re.compile(
+    r"\b(architected|owned|drove|transformed|spearheaded|"
+    r"extensive\s+experience|deep\s+expertise|expert\s+in)\b",
+    re.I,
+)
+
+# AI coding assistants — only allowed when present in verified candidate data.
+_AI_TOOL_RE = re.compile(
+    r"\b(cursor|chatgpt|claude|github\s*copilot|copilot)\b",
+    re.I,
+)
 
 # Words that do not count as entity evidence on their own.
 _STOP = frozenset(
@@ -98,6 +160,77 @@ def _entity_tokens(text: str) -> set[str]:
     return tokens
 
 
+def hard_reject_claim(
+    statement: str,
+    *,
+    source_text: str,
+    resume_years: float | None = None,
+    professional_years: float | None = None,
+) -> tuple[bool, str]:
+    """Return (reject?, reason) for absolute regression blocks.
+
+    These checks run before any evidence-map / overlap path so later agents
+    cannot resurrect blocked claims via synonym rephrasing alone.
+    """
+    statement = (statement or "").strip()
+    if not statement:
+        return False, ""
+
+    for pattern, reason in _HARD_REJECT_PATTERNS:
+        if pattern.search(statement):
+            # Allow only when the exact leadership phrase already exists in source
+            if reason == "unsupported_professional_leadership":
+                if pattern.search(source_text or ""):
+                    continue
+            if reason.startswith("inflated_years"):
+                inflated, detail = has_inflated_years_claim(
+                    statement,
+                    resume_years=resume_years,
+                    professional_years=professional_years,
+                )
+                if inflated:
+                    return True, detail or reason
+                # Phrase present but years somehow supported — still block
+                # "expertise" inflation when professional years are missing.
+                if professional_years is None or professional_years < 3.0:
+                    return True, reason
+                continue
+            return True, reason
+
+    # Worded/numeric years inflation even without the hard phrase templates
+    inflated, detail = has_inflated_years_claim(
+        statement,
+        resume_years=resume_years,
+        professional_years=professional_years,
+    )
+    if inflated:
+        return True, detail
+
+    # Unsupported business/outcome nouns not grounded in source
+    for match in _UNSUPPORTED_OUTCOME_NOUNS.finditer(statement):
+        phrase = match.group(0).lower()
+        if phrase not in (source_text or "").lower():
+            return True, f"unsupported_outcome:{phrase}"
+
+    # AI assistant tools only when verified in candidate source data
+    for match in _AI_TOOL_RE.finditer(statement):
+        tool = match.group(0).lower().replace(" ", "")
+        src_l = re.sub(r"\s+", "", (source_text or "").lower())
+        # Allow "claude" only as tool mention if present; never inject from JD
+        variants = {
+            "cursor": ("cursor",),
+            "chatgpt": ("chatgpt", "chat gpt"),
+            "claude": ("claude",),
+            "githubcopilot": ("githubcopilot", "copilot"),
+            "copilot": ("copilot", "githubcopilot"),
+        }
+        allowed = variants.get(tool, (tool,))
+        if not any(v.replace(" ", "") in src_l for v in allowed):
+            return True, f"unverified_ai_tool:{match.group(0)}"
+
+    return False, ""
+
+
 def statement_supported_by_evidence(
     statement: str,
     *,
@@ -105,6 +238,9 @@ def statement_supported_by_evidence(
     evidence_map: Iterable[dict[str, Any]] | None = None,
     strongly_inferred: Iterable[InferredCompetency] | None = None,
     min_token_overlap: float = 0.45,
+    resume_years: float | None = None,
+    professional_years: float | None = None,
+    rejected_registry: Any | None = None,
 ) -> tuple[bool, str]:
     """Return (supported?, reason).
 
@@ -117,8 +253,22 @@ def statement_supported_by_evidence(
     if not statement:
         return True, "empty"
 
+    # Previously rejected claims cannot return
+    if rejected_registry is not None and getattr(rejected_registry, "contains", None):
+        if rejected_registry.contains(statement):
+            return False, "previously_rejected_claim"
+
     # Hard checks FIRST — evidence-map / inference paths must never bypass them.
     from intelligent_tailoring.scope_validator import has_unsupported_impact
+
+    reject, reason = hard_reject_claim(
+        statement,
+        source_text=source_text,
+        resume_years=resume_years,
+        professional_years=professional_years,
+    )
+    if reject:
+        return False, reason
 
     if has_unsupported_impact(statement, source_text):
         return False, "unsupported_impact_claim"
@@ -205,6 +355,9 @@ def _filter_bullet_list(
     strongly_inferred: list[InferredCompetency],
     warnings: list[ValidationWarning],
     rejected: list[str],
+    resume_years: float | None = None,
+    professional_years: float | None = None,
+    rejected_registry: Any | None = None,
 ) -> list[str]:
     kept: list[str] = []
     for raw in bullets or []:
@@ -216,11 +369,18 @@ def _filter_bullet_list(
             source_text=source_text,
             evidence_map=evidence_map,
             strongly_inferred=strongly_inferred,
+            resume_years=resume_years,
+            professional_years=professional_years,
+            rejected_registry=rejected_registry,
         )
         if ok:
             kept.append(text)
         else:
             rejected.append(text)
+            if rejected_registry is not None:
+                rejected_registry.add(
+                    text, reason=reason, source_agent="claim_validation"
+                )
             warnings.append(
                 ValidationWarning(
                     statement=text,
@@ -239,6 +399,7 @@ def validate_claims(
     change_log: list[ChangeLogItem] | list[dict[str, Any]] | None = None,
     inferred_competencies: list[InferredCompetency] | list[dict[str, Any]] | None = None,
     job_requirements: dict[str, Any] | None = None,  # noqa: ARG001 — reserved for future
+    rejected_registry: Any | None = None,
 ) -> ClaimValidationResult:
     """Strip unsupported statements from the tailored resume and emit warnings."""
     if isinstance(tailored_resume, dict):
@@ -376,7 +537,9 @@ def validate_claims(
         cleaned_log.append(item)
 
     source = original_resume_text or ""
-    resume_years = years_from_experience_entries(resume.experience)
+    # Professional years = employment entries only (never academic/project span)
+    professional_years = years_from_experience_entries(resume.experience)
+    resume_years = professional_years
     if resume_years is None:
         resume_years = estimate_years_from_text(source)
 
@@ -388,10 +551,15 @@ def validate_claims(
             evidence_map=evidence_map,
             strongly_inferred=strong,
             min_token_overlap=0.35,
+            resume_years=resume_years,
+            professional_years=professional_years,
+            rejected_registry=rejected_registry,
         )
-        # Years claims inside summary
+        # Years claims inside summary — prefer professional employment years
         for claimed in extract_years_claims(resume.professional_summary):
-            if not claim_years_supported(claimed, resume_years=resume_years):
+            if not claim_years_supported(
+                claimed, resume_years=professional_years or resume_years
+            ):
                 ok = False
                 reason = f"unsupported_years_claim:{claimed}"
                 break
@@ -404,6 +572,13 @@ def validate_claims(
                 )
             )
             rejected.append(resume.professional_summary)
+            if rejected_registry is not None:
+                rejected_registry.add(
+                    resume.professional_summary,
+                    reason=reason,
+                    source_agent="claim_validation",
+                    section="summary",
+                )
             resume.professional_summary = ""
 
     # Skills — reuse existing unsupported-skill strip semantics
@@ -495,6 +670,9 @@ def validate_claims(
             strongly_inferred=strong,
             warnings=warnings,
             rejected=rejected,
+            resume_years=resume_years,
+            professional_years=professional_years,
+            rejected_registry=rejected_registry,
         )
 
     for entry in resume.projects:
@@ -517,6 +695,9 @@ def validate_claims(
                 source_text=source,
                 evidence_map=evidence_map,
                 strongly_inferred=strong,
+                resume_years=resume_years,
+                professional_years=professional_years,
+                rejected_registry=rejected_registry,
             )
             if not ok:
                 warnings.append(
@@ -527,7 +708,20 @@ def validate_claims(
                     )
                 )
                 rejected.append(desc)
+                if rejected_registry is not None:
+                    rejected_registry.add(
+                        desc,
+                        reason=reason,
+                        source_agent="claim_validation",
+                        section="projects",
+                    )
                 entry["description"] = ""
+        # Preserve academic context — reject bullets that strip "academic"/"capstone"
+        # when the project name indicates academic work.
+        name_l = name.lower()
+        academic_project = bool(
+            re.search(r"\b(capstone|thesis|academic|פרויקט\s*גמר)\b", name_l)
+        )
         entry["bullets"] = _filter_bullet_list(
             list(entry.get("bullets") or []),
             source_text=source,
@@ -535,7 +729,20 @@ def validate_claims(
             strongly_inferred=strong,
             warnings=warnings,
             rejected=rejected,
+            resume_years=resume_years,
+            professional_years=professional_years,
+            rejected_registry=rejected_registry,
         )
+        if academic_project:
+            # Tag description so later writers keep academic framing
+            if entry.get("description") and "academic" not in str(
+                entry.get("description") or ""
+            ).lower() and "capstone" not in str(
+                entry.get("description") or ""
+            ).lower():
+                entry["context_type"] = "academic"
+            else:
+                entry["context_type"] = "academic"
 
     # Education / certifications — names must exist in source
     cleaned_edu: list[dict[str, Any]] = []

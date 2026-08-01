@@ -58,6 +58,39 @@ class ResumeKnowledgeAgent(Agent[ResumeKnowledgeInput, ResumeKnowledgeOutput]):
             warnings.append("resume_sparse")
 
         coverage = kb.coverage.to_dict() if kb.coverage else {}
+        # Extraction coverage for high-value signals that must not disappear later
+        high_value_signals = (
+            "FastAPI", "SQLAlchemy", "PostgreSQL", "WebSockets", "AWS", "EC2",
+            "RDS", "S3", "CI/CD", "pytest", "integration", "Generative AI",
+            "React", "React Native", "Angular", "HTML", "CSS", "Node.js",
+            "Laravel", "REST", "SQLite", "Firebase", "algorithms",
+            "data structures", "tutoring", "debugging", "Cursor", "ChatGPT",
+            "Claude", "Copilot",
+        )
+        blob = (kb.raw_text or "") + " " + " ".join(
+            f.original_text for f in kb.facts
+        )
+        blob_l = blob.lower()
+        present = [s for s in high_value_signals if s.lower() in blob_l]
+        missing_from_facts: list[str] = []
+        fact_blob = " ".join(f.original_text for f in kb.facts).lower()
+        for signal in present:
+            if signal.lower() not in fact_blob:
+                missing_from_facts.append(signal)
+        coverage["high_value_signals_present"] = present
+        coverage["high_value_signals_missing_from_facts"] = missing_from_facts
+        # Context-type distribution for provenance audits
+        ctx_counts: dict[str, int] = {}
+        for fact in kb.facts:
+            key = str(getattr(fact, "context_type", "") or "other")
+            ctx_counts[key] = ctx_counts.get(key, 0) + 1
+        coverage["context_type_counts"] = ctx_counts
+        if missing_from_facts:
+            warnings.append(
+                "high_value_signals_under_extracted:"
+                + ",".join(missing_from_facts[:8])
+            )
+
         output = ResumeKnowledgeOutput(
             knowledge_base=kb,
             resume_facts=resume_facts,
@@ -76,6 +109,8 @@ class ResumeKnowledgeAgent(Agent[ResumeKnowledgeInput, ResumeKnowledgeOutput]):
                     (kb.coverage.extraction_coverage_score if kb.coverage else 0) or 0
                 ),
                 "sparse": bool(sparse),
+                "high_value_signal_count": len(present),
+                "context_types": len(ctx_counts),
             },
         )
 

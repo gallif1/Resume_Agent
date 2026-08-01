@@ -523,6 +523,19 @@ def run_intelligent_tailoring_agents(
         }
         regeneration_attempt = 0
         max_gate_attempts = 1
+        # Shared RejectedClaims registry — rejected claims cannot return later
+        from intelligent_tailoring.rejected_claims import RejectedClaimsRegistry
+
+        rejected_claims = RejectedClaimsRegistry(max_revision_cycles=3)
+        # Seed with strategy forbidden claims that are full phrases
+        for phrase in strategy.get("forbidden_claims") or []:
+            text = str(phrase).strip()
+            if len(text) >= 12:
+                rejected_claims.add(
+                    text,
+                    reason="strategy_forbidden",
+                    source_agent="resume_strategy",
+                )
 
         from intelligent_tailoring.scope_validator import validate_resume_tech_scope
         from intelligent_tailoring.change_log import build_deterministic_change_log
@@ -637,7 +650,11 @@ def run_intelligent_tailoring_agents(
                     inferred=inferred,
                     job_profile=job_profile_obj,
                 ),
-                AgentContext(use_cache=use_cache, language=output_language),
+                AgentContext(
+                    use_cache=use_cache,
+                    language=output_language,
+                    metadata={"rejected_claims": rejected_claims},
+                ),
             )
             validation = {
                 "cleaned_resume": claim_result.output.cleaned_resume,
@@ -752,8 +769,13 @@ def run_intelligent_tailoring_agents(
             generated["change_log"] = deterministic_log
 
             unsupported_count = len(validation.get("rejected_statements") or [])
-            # Rejected statements were already stripped from cleaned_resume —
-            # do not trigger rewrite regeneration solely for cleaned-away claims.
+            rejected_claims.extend(
+                validation.get("rejected_statements") or [],
+                reason="claim_validation",
+                source_agent="claim_validation",
+            )
+            # Truthfulness uses the real unsupported count; regen is still gated
+            # separately so cleaned-away claims do not force rewrite loops.
             quality_report = evaluate_tailoring_quality(
                 tailored_resume=cleaned_resume,
                 baseline_resume=baseline_resume,
@@ -761,9 +783,11 @@ def run_intelligent_tailoring_agents(
                 evidence_map=evidence_map,
                 missed_evidence=missed,
                 fact_scores=fact_scores,
-                unsupported_claim_count=0,
+                unsupported_claim_count=unsupported_count,
                 change_log=deterministic_log,
             )
+            # Do not regenerate solely because unsupported claims were stripped
+            quality_report["regeneration_required"] = False
             quality_gates = evaluate_quality_gates(
                 tailored_resume=cleaned_resume,
                 original_resume_text=resume_text,
@@ -941,22 +965,27 @@ def run_intelligent_tailoring_agents(
                 "intelligent_tailoring: recruiter refine pass sections=%s",
                 recruiter_review_obj.sections_to_regenerate,
             )
-            recruiter_refine = run_human_writing_stage(
-                validated_resume=cleaned_resume,
-                strategy=strategy,
-                knowledge_base=kb,
-                output_language=output_language,
-                use_cache=False,
-                allow_llm=True,
-                review_feedback=recruiter_dict,
-                highlight_plan=strategy.get("highlight_plan"),
-                evidence_inventory=strategy.get("evidence_inventory"),
-                max_review_cycles=2,
-            )
+            if rejected_claims.begin_revision("recruiter_review"):
+                recruiter_refine = run_human_writing_stage(
+                    validated_resume=rejected_claims.scrub_resume(cleaned_resume),
+                    strategy=strategy,
+                    knowledge_base=kb,
+                    output_language=output_language,
+                    use_cache=False,
+                    allow_llm=True,
+                    review_feedback=recruiter_dict,
+                    highlight_plan=strategy.get("highlight_plan"),
+                    evidence_inventory=strategy.get("evidence_inventory"),
+                    max_review_cycles=3,
+                )
+            else:
+                recruiter_refine = {}
             if recruiter_refine.get("facts_unchanged", True) and recruiter_refine.get(
                 "tailored_resume"
             ):
-                cleaned_resume = recruiter_refine["tailored_resume"]
+                cleaned_resume = rejected_claims.scrub_resume(
+                    recruiter_refine["tailored_resume"]
+                )
                 cleaned_resume["summary"] = str(
                     cleaned_resume.get("professional_summary")
                     or cleaned_resume.get("summary")
@@ -1056,22 +1085,27 @@ def run_intelligent_tailoring_agents(
                 quality_score.get("overall_score"),
                 hm_dict.get("weakest_sections"),
             )
-            refine_stage = run_human_writing_stage(
-                validated_resume=cleaned_resume,
-                strategy=strategy,
-                knowledge_base=kb,
-                output_language=output_language,
-                use_cache=False,
-                allow_llm=True,
-                hiring_manager_feedback=hm_dict,
-                highlight_plan=strategy.get("highlight_plan"),
-                evidence_inventory=strategy.get("evidence_inventory"),
-                max_review_cycles=2,
-            )
+            if rejected_claims.begin_revision("hiring_manager_review"):
+                refine_stage = run_human_writing_stage(
+                    validated_resume=rejected_claims.scrub_resume(cleaned_resume),
+                    strategy=strategy,
+                    knowledge_base=kb,
+                    output_language=output_language,
+                    use_cache=False,
+                    allow_llm=True,
+                    hiring_manager_feedback=hm_dict,
+                    highlight_plan=strategy.get("highlight_plan"),
+                    evidence_inventory=strategy.get("evidence_inventory"),
+                    max_review_cycles=3,
+                )
+            else:
+                refine_stage = {}
             if refine_stage.get("facts_unchanged", True) and refine_stage.get(
                 "tailored_resume"
             ):
-                cleaned_resume = refine_stage["tailored_resume"]
+                cleaned_resume = rejected_claims.scrub_resume(
+                    refine_stage["tailored_resume"]
+                )
                 cleaned_resume["summary"] = str(
                     cleaned_resume.get("professional_summary")
                     or cleaned_resume.get("summary")
@@ -1284,6 +1318,109 @@ def run_intelligent_tailoring_agents(
             )
             generated["change_log"] = deterministic_log
 
+        # Scrub any resurrected rejected claims before final summary
+        cleaned_resume = rejected_claims.scrub_resume(cleaned_resume)
+
+        # Summary is written LAST from the strongest validated evidence present
+        from intelligent_tailoring.summary_builder import build_professional_summary
+        from intelligent_tailoring.professional_narrative import (
+            evaluate_professional_narrative,
+        )
+
+        final_summary = build_professional_summary(
+            strategy=strategy,
+            resume_facts=resume_facts,
+            resume_text=resume_text,
+            output_language=output_language,
+            existing_summary=str(
+                cleaned_resume.get("professional_summary")
+                or cleaned_resume.get("summary")
+                or ""
+            ),
+        )
+        if final_summary.get("summary"):
+            # Never reintroduce a previously rejected summary
+            if not rejected_claims.contains(final_summary["summary"]):
+                cleaned_resume["professional_summary"] = final_summary["summary"]
+                cleaned_resume["summary"] = final_summary["summary"]
+
+        narrative_test = evaluate_professional_narrative(
+            cleaned_resume,
+            strategy=strategy,
+            genuine_gaps=list(
+                strategy.get("genuine_gaps")
+                or getattr(strategy_obj, "genuine_gaps", [])
+                or []
+            ),
+            top_reasons=list(
+                strategy.get("top_reasons_to_interview")
+                or strategy.get("top_interview_reasons")
+                or getattr(strategy_obj, "top_reasons_to_interview", [])
+                or []
+            ),
+        )
+        if (
+            not narrative_test.get("passed")
+            and narrative_test.get("sections_to_regenerate")
+            and rejected_claims.can_revise()
+        ):
+            # Targeted section regen via writer — summary only when unclear
+            rejected_claims.begin_revision("professional_narrative_test")
+            narrative_feedback = {
+                "sections_to_regenerate": narrative_test["sections_to_regenerate"],
+                "summary_feedback": (
+                    "Clarify who the candidate is, what they can do, and why "
+                    "they are relevant — using only validated evidence."
+                ),
+                "would_interview": False,
+                "approved": False,
+            }
+            narrative_refine = run_human_writing_stage(
+                validated_resume=cleaned_resume,
+                strategy=strategy,
+                knowledge_base=kb,
+                output_language=output_language,
+                use_cache=False,
+                allow_llm=True,
+                review_feedback=narrative_feedback,
+                highlight_plan=strategy.get("highlight_plan"),
+                evidence_inventory=strategy.get("evidence_inventory"),
+                max_review_cycles=1,
+            )
+            if narrative_refine.get("facts_unchanged", True) and narrative_refine.get(
+                "tailored_resume"
+            ):
+                cleaned_resume = rejected_claims.scrub_resume(
+                    narrative_refine["tailored_resume"]
+                )
+            # Rebuild summary again after narrative refine
+            final_summary = build_professional_summary(
+                strategy=strategy,
+                resume_facts=resume_facts,
+                resume_text=resume_text,
+                output_language=output_language,
+                existing_summary=str(
+                    cleaned_resume.get("professional_summary")
+                    or cleaned_resume.get("summary")
+                    or ""
+                ),
+            )
+            if final_summary.get("summary") and not rejected_claims.contains(
+                final_summary["summary"]
+            ):
+                cleaned_resume["professional_summary"] = final_summary["summary"]
+                cleaned_resume["summary"] = final_summary["summary"]
+            narrative_test = evaluate_professional_narrative(
+                cleaned_resume,
+                strategy=strategy,
+                genuine_gaps=list(strategy.get("genuine_gaps") or []),
+                top_reasons=list(
+                    strategy.get("top_reasons_to_interview")
+                    or strategy.get("top_interview_reasons")
+                    or []
+                ),
+            )
+
         # Final export gates (includes one-page when required)
         quality_gates = evaluate_quality_gates(
             tailored_resume=cleaned_resume,
@@ -1400,6 +1537,66 @@ def run_intelligent_tailoring_agents(
         )
         tailored_score = int(tailored_scoring["realistic_match_score"])
         score_breakdown = dict(tailored_scoring.get("score_breakdown") or {})
+
+        # FinalScoreBreakdown — always from the final validated resume
+        from intelligent_tailoring.agents.schemas import FinalScoreBreakdown
+
+        genuine_gaps_final = list(
+            strategy.get("genuine_gaps")
+            or getattr(hiring_manager_obj, "genuine_gaps", [])
+            or score_breakdown.get("still_missing")
+            or []
+        )
+        unsupported_final = max(
+            len(validation.get("rejected_statements") or []),
+            rejected_claims.to_dict().get("count", 0),
+        )
+        # Truthfulness: 100 minus penalty per unsupported claim (floor 0)
+        truthfulness = max(0, 100 - unsupported_final * 15)
+        # Seniority fit must NOT be inflated by tailoring polish
+        hm_seniority = int(getattr(hiring_manager_obj, "seniority_fit", 0) or 0)
+        seniority_fit_score = hm_seniority or int(
+            score_breakdown.get("seniority_fit") or 0
+        )
+        # If job expects 3+ years and candidate lacks them, keep the gap visible
+        years_gap = any(
+            re.search(r"\b(3\+|three\s+years?)\b", str(g), re.I)
+            for g in genuine_gaps_final
+        )
+        if years_gap and seniority_fit_score > 55:
+            seniority_fit_score = min(seniority_fit_score, 55)
+
+        writing_quality_score = int(
+            (writing_stage.get("quality_score") or {}).get("overall_score")
+            or score_breakdown.get("role_relevance")
+            or 0
+        )
+        final_score = FinalScoreBreakdown(
+            original_resume_score=float(original_score or 0),
+            tailored_resume_score=float(tailored_score),
+            score_delta=float(tailored_score) - float(original_score or 0),
+            requirement_coverage=float(
+                score_breakdown.get("requirements_coverage") or 0
+            ),
+            evidence_strength=float(score_breakdown.get("evidence_strength") or 0),
+            keyword_alignment=float(
+                score_breakdown.get("ats_keyword_alignment") or 0
+            ),
+            seniority_fit=float(seniority_fit_score),
+            writing_quality=float(writing_quality_score),
+            truthfulness_score=float(truthfulness),
+            one_page_passed=bool(one_page_meta.get("ok", True)),
+            unsupported_claim_count=int(unsupported_final),
+            genuine_gaps=[str(g) for g in genuine_gaps_final[:20]],
+        )
+        score_breakdown.update(final_score.to_dict())
+        score_breakdown["scored_from"] = "final_validated_tailored_resume"
+        score_breakdown["professional_narrative"] = narrative_test
+        score_breakdown["rejected_claims"] = rejected_claims.to_dict()
+        tailored_scoring["score_breakdown"] = score_breakdown
+        quality_report["truthfulness_score"] = truthfulness / 100.0
+        quality_report["unsupported_claim_count"] = unsupported_final
+        quality_report["genuine_gaps"] = list(final_score.genuine_gaps)
 
         tailoring_report = build_tailoring_report(
             strategy=strategy,

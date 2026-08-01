@@ -178,6 +178,101 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
         narrative_themes = [str(t) for t in (legacy.get("narrative_themes") or []) if t]
         professional_story = str(legacy.get("professional_story") or "")
 
+        # Genuine gaps — missing hard requirements / unsupported match types
+        genuine_gaps: list[str] = []
+        for entry in evidence_list:
+            req = str(entry.get("requirement") or "").strip()
+            if not req:
+                continue
+            tier = coverage.get(req, "")
+            match_type = str(entry.get("match_type") or "")
+            status = str(entry.get("candidate_status") or "")
+            if (
+                status == "MISSING"
+                or match_type == "Unsupported"
+                or tier in ("No Evidence", "Unsupported")
+            ):
+                if req not in genuine_gaps:
+                    genuine_gaps.append(req)
+        for gap in legacy.get("genuine_gaps") or []:
+            if gap and str(gap) not in genuine_gaps:
+                genuine_gaps.append(str(gap))
+        genuine_gaps = genuine_gaps[:20]
+
+        # Top reasons to interview — strongest evidenced signals only
+        from intelligent_tailoring.interview_philosophy import (
+            select_top_interview_reasons,
+        )
+
+        top_reasons = list(
+            legacy.get("top_interview_reasons")
+            or legacy.get("top_reasons_to_interview")
+            or select_top_interview_reasons(
+                highlight_plan=legacy.get("highlight_plan"),
+                evidence_map=evidence_list,
+                strategy=legacy,
+            )
+        )[:5]
+
+        professional_narrative = str(
+            legacy.get("professional_narrative") or professional_story or ""
+        )
+        if not professional_narrative and top_reasons:
+            professional_narrative = (
+                "Candidate interview case: "
+                + "; ".join(top_reasons[:3])
+                + (
+                    f". Genuine gaps remain visible: {', '.join(genuine_gaps[:3])}."
+                    if genuine_gaps
+                    else "."
+                )
+            )
+
+        # Always forbid seniority inflation and classic unsupported outcomes
+        for phrase in (
+            "over three years of expertise",
+            "proven ability to lead projects from inception to deployment",
+            "enhancing customer satisfaction",
+            "supporting system scalability",
+            "improving system reliability",
+            "production-grade ownership",
+            "TypeScript",
+        ):
+            # Only forbid TypeScript when it is a genuine gap
+            if phrase == "TypeScript" and not any(
+                "typescript" in g.lower() for g in genuine_gaps
+            ):
+                # Still forbid inventing it when absent from coverage as Explicit
+                has_ts = any(
+                    "typescript" in str(e.get("requirement") or "").lower()
+                    and e.get("candidate_status") in ("MATCH", "PARTIAL")
+                    for e in evidence_list
+                )
+                if has_ts:
+                    continue
+            if phrase not in forbidden:
+                forbidden.append(phrase)
+
+        one_page_budget = dict(legacy.get("one_page_budget") or {})
+        if not one_page_budget:
+            one_page_budget = {
+                "summary_words_max": 70,
+                "summary_words_min": 45,
+                "max_experience_bullets_per_role": 4,
+                "max_project_bullets": 4,
+                "max_projects": 3,
+                "max_skill_categories": 7,
+                "prefer_strong_evidence": True,
+            }
+            legacy["one_page_budget"] = one_page_budget
+
+        # Mirror new fields into legacy bag for downstream consumers
+        legacy["professional_narrative"] = professional_narrative
+        legacy["top_reasons_to_interview"] = top_reasons
+        legacy["top_interview_reasons"] = top_reasons
+        legacy["genuine_gaps"] = genuine_gaps
+        legacy["forbidden_claims"] = forbidden
+
         strategy = ResumeStrategy(
             summary_focus=str(legacy.get("summary_focus") or ""),
             project_order=[str(x) for x in (legacy.get("project_priority") or [])],
@@ -192,7 +287,14 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
             requirement_coverage=coverage,
             company_influenced_priorities=company_priorities,
             narrative_themes=narrative_themes,
-            professional_story=professional_story,
+            professional_story=professional_story or professional_narrative,
+            professional_narrative=professional_narrative,
+            top_reasons_to_interview=top_reasons,
+            facts_to_expand=important,
+            facts_to_condense=low,
+            facts_to_omit=hidden,
+            genuine_gaps=genuine_gaps,
+            one_page_budget=one_page_budget,
             legacy_strategy=legacy,
         )
         return AgentResult(
@@ -205,6 +307,8 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
                 "company_influence_count": len(company_priorities),
                 "coverage_count": len(coverage),
                 "narrative_theme_count": len(narrative_themes),
+                "genuine_gaps_count": len(genuine_gaps),
+                "top_reasons_count": len(top_reasons),
             },
         )
 

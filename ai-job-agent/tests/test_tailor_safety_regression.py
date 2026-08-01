@@ -327,7 +327,7 @@ class TestScopeValidatorUnit:
             source_text="Implemented FastAPI service with ThreadPoolExecutor",
         )
         assert ok is False
-        assert "impact" in reason
+        assert "impact" in reason or "unsupported_outcome" in reason or "unsupported" in reason
 
 
 class TestFullStackRegression:

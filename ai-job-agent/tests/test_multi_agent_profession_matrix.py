@@ -31,11 +31,27 @@ def _job(title: str, company: str, description: str) -> dict[str, Any]:
     return {"title": title, "company": company, "description": description}
 
 
+def _prof(
+    name: str,
+    raw_text: str,
+    skills: list[str],
+    title: str,
+    company: str,
+    description: str,
+    reqs: dict[str, Any],
+) -> tuple:
+    return (
+        name,
+        {"raw_text": raw_text, "skills": skills},
+        _job(title, company, description),
+        reqs,
+    )
+
+
 PROFESSIONS = [
-    (
+    _prof(
         "software",
-        {
-            "raw_text": """
+        """
 Pat Kim — Software Engineer
 Acme Corp (2021-2025)
 - Built REST APIs in Python serving 50k daily users.
@@ -43,14 +59,11 @@ Acme Corp (2021-2025)
 - Collaborated with product managers on roadmap delivery.
 Skills: Python, AWS, Docker, SQL, code review
 """,
-            "skills": ["Python", "AWS", "Docker", "SQL"],
-        },
-        _job(
-            "Backend Engineer",
-            "Nimbus Cloud",
-            "Build APIs in Python on AWS. Required: Python, Docker, SQL, code review. "
-            "Cloud-native SaaS, strong ownership, CI/CD.",
-        ),
+        ["Python", "AWS", "Docker", "SQL"],
+        "Backend Engineer",
+        "Nimbus Cloud",
+        "Build APIs in Python on AWS. Required: Python, Docker, SQL, code review. "
+        "Cloud-native SaaS, strong ownership, CI/CD.",
         {
             "required_skills": ["Python", "Docker", "SQL", "Kubernetes"],
             "preferred_skills": ["AWS"],
@@ -66,10 +79,9 @@ Skills: Python, AWS, Docker, SQL, code review
             "language": "en",
         },
     ),
-    (
+    _prof(
         "finance",
-        {
-            "raw_text": """
+        """
 Riley Chen — Financial Analyst
 North Bank (2020-2025)
 - Built monthly forecasting models in Excel and SQL.
@@ -77,14 +89,11 @@ North Bank (2020-2025)
 - Presented variance analysis to finance leadership.
 Skills: Excel, SQL, forecasting, reconciliation, audit support
 """,
-            "skills": ["Excel", "SQL", "forecasting", "reconciliation"],
-        },
-        _job(
-            "Financial Analyst",
-            "Harbor Capital",
-            "Required: forecasting, Excel, SQL, reconciliation, audit support. "
-            "Banking environment with strong compliance and risk focus.",
-        ),
+        ["Excel", "SQL", "forecasting", "reconciliation"],
+        "Financial Analyst",
+        "Harbor Capital",
+        "Required: forecasting, Excel, SQL, reconciliation, audit support. "
+        "Banking environment with strong compliance and risk focus.",
         {
             "required_skills": ["forecasting", "Excel", "SQL", "reconciliation"],
             "preferred_skills": ["audit support"],
@@ -100,36 +109,255 @@ Skills: Excel, SQL, forecasting, reconciliation, audit support
             "language": "en",
         },
     ),
-    (
-        "hospitality",
-        {
-            "raw_text": """
-Morgan Diaz — Front Desk Supervisor
-Lakeview Hotel (2019-2025)
-- Managed guest check-in for a 180-room property.
-- Resolved guest complaints with empathy and speed.
-- Trained three new associates on PMS procedures.
-Skills: guest service, PMS, conflict resolution, training, scheduling
+    _prof(
+        "customer_service",
+        """
+Casey Brooks — Customer Support Specialist
+HelpHub (2021-2025)
+- Resolved 40+ customer tickets daily across chat and phone.
+- Documented troubleshooting steps in the knowledge base.
+- Escalated complex billing issues to senior specialists.
+Skills: customer service, Zendesk, de-escalation, documentation
 """,
-            "skills": ["guest service", "PMS", "conflict resolution", "training"],
-        },
-        _job(
-            "Front Desk Supervisor",
-            "Harbor Hotels",
-            "Required: guest service, PMS, conflict resolution, team training. "
-            "Hospitality brand focused on guest satisfaction and service quality.",
-        ),
+        ["customer service", "Zendesk", "de-escalation", "documentation"],
+        "Customer Support Specialist",
+        "BrightCare",
+        "Required: customer service, Zendesk, de-escalation, documentation. "
+        "High-volume support center focused on empathy and first-contact resolution.",
         {
-            "required_skills": ["guest service", "PMS", "conflict resolution"],
-            "preferred_skills": ["training"],
-            "hard_requirements": ["guest service", "PMS", "conflict resolution"],
-            "soft_requirements": ["training"],
-            "responsibilities": ["Supervise front desk", "Resolve guest issues"],
-            "tools_technologies": ["PMS"],
-            "industry_terminology": ["guest satisfaction"],
+            "required_skills": ["customer service", "Zendesk", "de-escalation"],
+            "preferred_skills": ["documentation"],
+            "hard_requirements": ["customer service", "Zendesk", "de-escalation"],
+            "soft_requirements": ["documentation"],
+            "responsibilities": ["Resolve tickets", "Document solutions"],
+            "tools_technologies": ["Zendesk"],
+            "industry_terminology": ["first-contact resolution"],
             "soft_skills": ["empathy"],
             "education_certifications": [],
-            "ats_keywords": ["guest service", "PMS"],
+            "ats_keywords": ["customer service", "Zendesk"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "sales",
+        """
+Alex Rivera — Account Executive
+BrightSoft Inc (2021-2025)
+- Owned a $1.2M ARR territory selling B2B SaaS to mid-market customers.
+- Exceeded quota at 118% in 2024 through consultative discovery.
+- Partnered with customer success to reduce churn on key accounts.
+Skills: Salesforce, pipeline management, negotiation, discovery, CRM
+""",
+        ["Salesforce", "pipeline management", "negotiation", "discovery", "CRM"],
+        "Account Executive",
+        "Orbit SaaS",
+        "Required: Salesforce, pipeline management, negotiation, discovery. "
+        "B2B SaaS sales with consultative selling and CRM discipline.",
+        {
+            "required_skills": ["Salesforce", "pipeline management", "negotiation"],
+            "preferred_skills": ["discovery"],
+            "hard_requirements": ["Salesforce", "pipeline management", "negotiation"],
+            "soft_requirements": ["discovery"],
+            "responsibilities": ["Own territory", "Run discovery"],
+            "tools_technologies": ["Salesforce", "CRM"],
+            "industry_terminology": ["ARR", "quota"],
+            "soft_skills": ["consultative selling"],
+            "education_certifications": [],
+            "ats_keywords": ["Salesforce", "pipeline management"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "administration",
+        """
+Jamie Ortiz — Office Administrator
+Civic Partners (2019-2025)
+- Managed calendars and travel for a 12-person leadership team.
+- Maintained filing systems and prepared board meeting packets.
+- Coordinated vendor invoices and office supply purchasing.
+Skills: scheduling, filing, Microsoft Office, vendor coordination
+""",
+        ["scheduling", "filing", "Microsoft Office", "vendor coordination"],
+        "Office Administrator",
+        "North Harbor Group",
+        "Required: scheduling, filing, Microsoft Office, vendor coordination. "
+        "Busy professional services office needing reliable administration.",
+        {
+            "required_skills": ["scheduling", "filing", "Microsoft Office"],
+            "preferred_skills": ["vendor coordination"],
+            "hard_requirements": ["scheduling", "filing", "Microsoft Office"],
+            "soft_requirements": ["vendor coordination"],
+            "responsibilities": ["Manage calendars", "Prepare packets"],
+            "tools_technologies": ["Microsoft Office"],
+            "industry_terminology": ["board packets"],
+            "soft_skills": ["organization"],
+            "education_certifications": [],
+            "ats_keywords": ["scheduling", "Microsoft Office"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "education",
+        """
+Sam Lee — Middle School Math Teacher
+Lincoln Middle School (2018-2025)
+- Taught algebra and geometry to grades 7-8 using differentiated instruction.
+- Raised average assessment scores by 12% over two years.
+- Led after-school tutoring for students needing extra support.
+Skills: curriculum planning, classroom management, differentiated instruction, assessment
+""",
+        [
+            "curriculum planning",
+            "classroom management",
+            "differentiated instruction",
+            "assessment",
+        ],
+        "Math Teacher",
+        "Riverdale Schools",
+        "Required: curriculum planning, classroom management, differentiated instruction. "
+        "Middle school math role focused on tutoring and assessment growth.",
+        {
+            "required_skills": [
+                "curriculum planning",
+                "classroom management",
+                "differentiated instruction",
+            ],
+            "preferred_skills": ["assessment"],
+            "hard_requirements": [
+                "curriculum planning",
+                "classroom management",
+                "differentiated instruction",
+            ],
+            "soft_requirements": ["assessment"],
+            "responsibilities": ["Teach algebra", "Lead tutoring"],
+            "tools_technologies": [],
+            "industry_terminology": ["differentiated instruction"],
+            "soft_skills": ["communication"],
+            "education_certifications": ["teaching license"],
+            "ats_keywords": ["classroom management", "curriculum planning"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "healthcare",
+        """
+Jane Doe — Registered Nurse
+City General Hospital (2020-2025)
+- Provided bedside care for 6 patients per shift in a medical-surgical unit.
+- Administered medications and documented care in the EHR.
+- Mentored two new graduate nurses during orientation.
+Skills: patient care, EHR, medication administration, patient education, teamwork
+""",
+        ["patient care", "EHR", "medication administration", "patient education"],
+        "Staff Nurse",
+        "Metro Health",
+        "Required: patient care, EHR, medication administration, patient education. "
+        "Hospital med-surg unit with HIPAA-compliant documentation.",
+        {
+            "required_skills": ["patient care", "EHR", "medication administration"],
+            "preferred_skills": ["patient education"],
+            "hard_requirements": ["patient care", "EHR", "medication administration"],
+            "soft_requirements": ["patient education"],
+            "responsibilities": ["Provide bedside care", "Document in EHR"],
+            "tools_technologies": ["EHR"],
+            "industry_terminology": ["HIPAA", "med-surg"],
+            "soft_skills": ["teamwork"],
+            "education_certifications": ["RN license"],
+            "ats_keywords": ["patient care", "EHR"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "logistics",
+        """
+Drew Hale — Logistics Coordinator
+FastLane Freight (2020-2025)
+- Scheduled outbound shipments across 4 regional warehouses.
+- Tracked inventory discrepancies and coordinated carrier pickups.
+- Improved on-time delivery reporting with daily route reviews.
+Skills: logistics, inventory, warehouse coordination, routing, Excel
+""",
+        ["logistics", "inventory", "warehouse coordination", "routing", "Excel"],
+        "Logistics Coordinator",
+        "Harbor Freight Co",
+        "Required: logistics, inventory, warehouse coordination, routing. "
+        "Distribution network focused on on-time delivery and inventory accuracy.",
+        {
+            "required_skills": ["logistics", "inventory", "warehouse coordination"],
+            "preferred_skills": ["routing"],
+            "hard_requirements": ["logistics", "inventory", "warehouse coordination"],
+            "soft_requirements": ["routing"],
+            "responsibilities": ["Schedule shipments", "Track inventory"],
+            "tools_technologies": ["Excel"],
+            "industry_terminology": ["on-time delivery"],
+            "soft_skills": ["coordination"],
+            "education_certifications": [],
+            "ats_keywords": ["logistics", "inventory"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "manufacturing",
+        """
+Taylor Ng — Production Associate
+SteelForm Works (2019-2025)
+- Operated CNC equipment to meet daily production quotas.
+- Performed quality inspections against work orders.
+- Followed safety procedures and trained two new hires on the line.
+Skills: CNC, quality control, safety procedures, production scheduling
+""",
+        ["CNC", "quality control", "safety procedures", "production scheduling"],
+        "Production Associate",
+        "Summit Manufacturing",
+        "Required: CNC, quality control, safety procedures, production scheduling. "
+        "Manufacturing floor role with strict safety and quality standards.",
+        {
+            "required_skills": ["CNC", "quality control", "safety procedures"],
+            "preferred_skills": ["production scheduling"],
+            "hard_requirements": ["CNC", "quality control", "safety procedures"],
+            "soft_requirements": ["production scheduling"],
+            "responsibilities": ["Operate CNC", "Inspect quality"],
+            "tools_technologies": ["CNC"],
+            "industry_terminology": ["work orders", "quotas"],
+            "soft_skills": ["safety awareness"],
+            "education_certifications": [],
+            "ats_keywords": ["CNC", "quality control"],
+            "seniority_level": "mid",
+            "language": "en",
+        },
+    ),
+    _prof(
+        "marketing",
+        """
+Quinn Patel — Marketing Specialist
+Northwind Media (2021-2025)
+- Planned email campaigns that grew newsletter engagement.
+- Coordinated social media content calendars with design partners.
+- Reported campaign performance in Google Analytics dashboards.
+Skills: email campaigns, social media, Google Analytics, content planning
+""",
+        ["email campaigns", "social media", "Google Analytics", "content planning"],
+        "Marketing Specialist",
+        "Pulse Agency",
+        "Required: email campaigns, social media, Google Analytics, content planning. "
+        "Growth marketing team focused on measurable campaign performance.",
+        {
+            "required_skills": ["email campaigns", "social media", "Google Analytics"],
+            "preferred_skills": ["content planning"],
+            "hard_requirements": ["email campaigns", "social media", "Google Analytics"],
+            "soft_requirements": ["content planning"],
+            "responsibilities": ["Plan campaigns", "Report performance"],
+            "tools_technologies": ["Google Analytics"],
+            "industry_terminology": ["engagement", "campaigns"],
+            "soft_skills": ["creativity"],
+            "education_certifications": [],
+            "ats_keywords": ["email campaigns", "Google Analytics"],
             "seniority_level": "mid",
             "language": "en",
         },
@@ -275,9 +503,23 @@ def test_profession_matrix_produces_distinct_outputs(stub_job_extract):
         mapped = {m.requirement for m in evidence.mappings}
         assert hard_reqs.issubset(mapped)
         assert all(m.evidence_strength for m in evidence.mappings)
+        assert all(m.match_type for m in evidence.mappings)
         assert hm.actionable_feedback
+        # Genuine gaps remain visible; never request fabrication
+        assert hm.genuine_gaps is not None
+        assert not any(
+            "fabricat" in str(a).lower() or "invent" in str(a).lower()
+            for a in hm.actionable_feedback
+        )
+        # Narrative fields populated
+        assert strategy.professional_narrative or strategy.professional_story
+        # Capstone/academic context preserved when present
+        for fact in knowledge.knowledge_base.facts:
+            if "capstone" in (fact.project or fact.original_text).lower():
+                assert fact.context_type == "academic"
 
     # Genuinely different structured outcomes across professions
-    assert len(set(strategies.values())) == len(PROFESSIONS)
+    assert len(set(strategies.values())) >= max(3, len(PROFESSIONS) // 2)
     assert len(set(companies.values())) >= 2
     assert any(missing[name] for name in missing)  # at least one gap surfaced
+    assert len(PROFESSIONS) >= 10

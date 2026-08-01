@@ -83,6 +83,18 @@ def _bucket_hits(texts: list[str], cues: tuple[str, ...]) -> list[str]:
     return hits
 
 
+# Central themes that raise screening weight / daily-work centrality.
+_SCREENING_CUES = (
+    "typescript", "react", "full stack", "fullstack", "3+", "three year",
+    "api", "testing", "deployment", "monitoring", "ai-assisted", "cursor",
+    "chatgpt", "claude", "copilot", "production", "clean code",
+)
+_SENIORITY_CUES = (
+    "3+", "3 year", "three year", "5+", "5 year", "senior", "lead", "principal",
+    "staff", "architect",
+)
+
+
 def _score_requirement(
     text: str,
     *,
@@ -96,12 +108,38 @@ def _score_requirement(
     importance = (0.85 if required else 0.45) * position
     tokenish = bool(re.search(r"[A-Za-z0-9]{2,}", text))
     confidence = 0.9 if tokenish else 0.55
+    low = text.lower()
+    screening = 0.5
+    if any(c in low for c in _SCREENING_CUES):
+        screening = 0.9 if required else 0.7
+    elif required:
+        screening = 0.75
+    seniority = 0.0
+    if any(c in low for c in _SENIORITY_CUES):
+        seniority = 0.85 if required else 0.55
+    # Evidence expected hint
+    if category in ("frameworks", "cloud", "databases") or any(
+        t in low for t in ("react", "python", "aws", "sql", "api")
+    ):
+        evidence_expected = "project_or_employment_bullet"
+    elif category == "experience" or seniority > 0:
+        evidence_expected = "dated_professional_roles"
+    elif category in ("soft", "communication", "leadership"):
+        evidence_expected = "behavioral_or_activity_evidence"
+    else:
+        evidence_expected = "explicit_skill_or_bullet"
     return ScoredRequirement(
         text=text,
         category=category,
         required_or_preferred="required" if required else "preferred",
         importance_score=round(min(1.0, importance), 3),
         confidence=confidence,
+        id=f"req_{abs(hash(text.lower())) % 10_000_000}",
+        normalized_competency=text.strip(),
+        screening_weight=round(screening, 3),
+        seniority_impact=round(seniority, 3),
+        evidence_expected=evidence_expected,
+        synonyms=[],
     )
 
 
