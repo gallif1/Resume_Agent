@@ -23,8 +23,10 @@ def _map_decision(
     rejected: set[str],
     rewritten: dict[str, str],
     warnings: list[dict[str, Any]],
+    claim_index: int = 0,
 ) -> ClaimValidationItem:
     low = statement.strip().lower()
+    claim_id = f"claim_{claim_index + 1}"
     if statement in rewritten or low in {k.lower() for k in rewritten}:
         new_text = rewritten.get(statement) or next(
             (v for k, v in rewritten.items() if k.lower() == low), ""
@@ -34,6 +36,9 @@ def _map_decision(
             decision="Rewrite from evidence",
             reason="Unsupported phrasing rewritten from evidence",
             rewritten_text=new_text,
+            claim_id=claim_id,
+            status="safely_rewritten",
+            errors=[],
         )
     if statement in rejected or low in {r.lower() for r in rejected}:
         # Check if warning suggests regenerate vs reject
@@ -45,21 +50,33 @@ def _map_decision(
                         statement=statement,
                         decision="Regenerate",
                         reason=reason,
+                        claim_id=claim_id,
+                        status="regeneration_required",
+                        errors=[reason],
                     )
                 return ClaimValidationItem(
                     statement=statement,
                     decision="Reject",
                     reason=reason,
+                    claim_id=claim_id,
+                    status="rejected",
+                    errors=[reason],
                 )
         return ClaimValidationItem(
             statement=statement,
             decision="Reject",
             reason="Unsupported claim",
+            claim_id=claim_id,
+            status="rejected",
+            errors=["Unsupported claim"],
         )
     return ClaimValidationItem(
         statement=statement,
         decision="Accept",
         reason="Supported by evidence",
+        claim_id=claim_id,
+        status="accepted",
+        confidence=0.9,
     )
 
 
@@ -98,6 +115,9 @@ class ClaimValidationAgent(Agent[ClaimValidationInput, ClaimValidationResult]):
             if payload.job_profile
             else {}
         )
+        rejected_registry = None
+        if context.metadata:
+            rejected_registry = context.metadata.get("rejected_claims")
         validation = run_claim_validation(
             original_resume_text=payload.original_resume_text,
             tailored_resume=payload.tailored_resume,
@@ -107,6 +127,7 @@ class ClaimValidationAgent(Agent[ClaimValidationInput, ClaimValidationResult]):
             job_requirements=requirements,
             use_cache=context.use_cache,
             run_llm_assist=False,
+            rejected_registry=rejected_registry,
         )
 
         cleaned = dict(validation.get("cleaned_resume") or {})
@@ -121,13 +142,14 @@ class ClaimValidationAgent(Agent[ClaimValidationInput, ClaimValidationResult]):
 
         rejected_set = set(rejected)
         decisions: list[ClaimValidationItem] = []
-        for statement in _iter_statements(payload.tailored_resume):
+        for idx, statement in enumerate(_iter_statements(payload.tailored_resume)):
             decisions.append(
                 _map_decision(
                     statement=statement,
                     rejected=rejected_set,
                     rewritten=rewritten,
                     warnings=warnings,
+                    claim_index=idx,
                 )
             )
 
@@ -140,6 +162,9 @@ class ClaimValidationAgent(Agent[ClaimValidationInput, ClaimValidationResult]):
                         statement=statement,
                         decision="Reject",
                         reason="Unsupported claim removed at sentence level",
+                        claim_id=f"claim_rej_{len(decisions)+1}",
+                        status="rejected",
+                        errors=["Unsupported claim removed at sentence level"],
                     )
                 )
 

@@ -156,13 +156,69 @@ _YEARS_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
+_WORD_YEARS: dict[str, float] = {
+    "one": 1.0,
+    "two": 2.0,
+    "three": 3.0,
+    "four": 4.0,
+    "five": 5.0,
+    "six": 6.0,
+    "seven": 7.0,
+    "eight": 8.0,
+    "nine": 9.0,
+    "ten": 10.0,
+    "eleven": 11.0,
+    "twelve": 12.0,
+    "fifteen": 15.0,
+    "twenty": 20.0,
+}
+
+_WORD_YEARS_CLAIM_RE = re.compile(
+    r"\b(?:over|more\s+than|at\s+least|nearly|around|approximately|about|"
+    r"with|of)?\s*"
+    r"(" + "|".join(_WORD_YEARS.keys()) + r")"
+    r"\s*\+?\s*(?:years?|yrs?)\b"
+    r"(?:\s+of\s+(?:expertise|experience|professional\s+experience))?",
+    re.IGNORECASE,
+)
+
 
 def extract_years_claims(text: str) -> list[float]:
-    """Pull numeric years-of-experience claims out of generated prose."""
+    """Pull numeric and worded years-of-experience claims out of generated prose.
+
+    Catches both ``3+ years`` and ``over three years of expertise``.
+    """
     claims: list[float] = []
     for match in _YEARS_CLAIM_RE.finditer(text or ""):
         try:
             claims.append(float(match.group(1)))
         except ValueError:
             continue
+    for match in _WORD_YEARS_CLAIM_RE.finditer(text or ""):
+        word = match.group(1).lower()
+        value = _WORD_YEARS.get(word)
+        if value is not None:
+            claims.append(value)
     return claims
+
+
+def has_inflated_years_claim(
+    text: str,
+    *,
+    resume_years: float | None,
+    professional_years: float | None = None,
+    tolerance: float = 0.5,
+) -> tuple[bool, str]:
+    """True when prose claims more years than professional evidence supports.
+
+    Prefer ``professional_years`` (employment only) over total resume span so
+    academic/project dates cannot inflate seniority.
+    """
+    claims = extract_years_claims(text)
+    if not claims:
+        return False, ""
+    baseline = professional_years if professional_years is not None else resume_years
+    for claimed in claims:
+        if not claim_years_supported(claimed, resume_years=baseline, tolerance=tolerance):
+            return True, f"unsupported_years_claim:{claimed}"
+    return False, ""

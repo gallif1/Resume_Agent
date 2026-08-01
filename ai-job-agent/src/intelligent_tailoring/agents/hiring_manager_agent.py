@@ -352,6 +352,57 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
         # Only send weak sections back — dedupe preserve order
         weakest = list(dict.fromkeys(weakest))[:3]
 
+        # Separate candidate fit from resume presentation quality
+        seniority_fit = _clamp_score(
+            # Never inflate seniority from polished writing
+            35 + coverage * 40 + min(explicit, 4) * 5
+        )
+        # Years / seniority gaps from strategy or missing experience expectations
+        genuine_gaps = list(missing_hard[:12])
+        strategy = payload.strategy
+        if strategy is not None:
+            for gap in getattr(strategy, "genuine_gaps", None) or []:
+                if gap and str(gap) not in genuine_gaps:
+                    genuine_gaps.append(str(gap))
+        for exp in list(getattr(job, "experience_expectations", None) or []):
+            exp_l = str(exp).lower()
+            if any(tok in exp_l for tok in ("3+", "3 year", "three year", "senior")):
+                if not any("year" in g.lower() or "senior" in g.lower() for g in genuine_gaps):
+                    # Only list as gap when coverage of experience reqs is weak
+                    if coverage < 0.85:
+                        genuine_gaps.append(str(exp))
+
+        # Underrepresented strengths: evidenced but not visible enough
+        underrepresented: list[str] = []
+        for m in matched_hard:
+            term = m.requirement
+            if term and term.lower() not in resume_blob:
+                underrepresented.append(term)
+            elif term and term.lower() not in summary.lower():
+                # Present somewhere but not in summary — soft underuse
+                if term.lower() in " ".join(
+                    str(b)
+                    for e in list(resume.get("projects") or [])
+                    if isinstance(e, dict)
+                    for b in (e.get("bullets") or [])
+                ).lower():
+                    continue
+                if getattr(m, "match_type", "") in ("Explicit", "Strongly Supported"):
+                    underrepresented.append(term)
+        underrepresented = list(dict.fromkeys(underrepresented))[:8]
+
+        # Never ask to fabricate gaps
+        actionable = [
+            a
+            for a in actionable
+            if "invent" not in a.lower() and "fabricat" not in a.lower()
+        ]
+        for gap in genuine_gaps[:3]:
+            # Explicitly mark gaps as visible — do not hide
+            note = f"Genuine gap remains visible: {gap}."
+            if note not in why_reject:
+                why_reject.append(note)
+
         feedback = HiringManagerFeedback(
             overall_fit=overall,
             technical_fit=technical_fit,
@@ -359,10 +410,18 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
             communication=communication,
             resume_quality=resume_quality,
             evidence_quality=evidence_quality,
+            evidence_confidence=evidence_quality,
+            seniority_fit=seniority_fit,
+            technical_or_domain_fit=technical_fit,
             missing_evidence=missing_hard[:12],
             section_effectiveness=section_effectiveness,
             why_interview=why_interview,
             why_reject=why_reject,
+            reasons_to_interview=list(why_interview),
+            reasons_for_rejection=list(why_reject),
+            genuine_gaps=genuine_gaps[:12],
+            underrepresented_strengths=underrepresented,
+            requested_section_changes=list(weakest),
             strongest_sections=strongest,
             weakest_sections=weakest,
             actionable_feedback=actionable[:8],

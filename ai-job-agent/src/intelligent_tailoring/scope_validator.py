@@ -172,6 +172,16 @@ def validate_bullet_tech_scope(
     return True, "scoped_ok", set()
 
 
+_OUTCOME_NOUNS = re.compile(
+    r"\b("
+    r"customer\s+satisfaction|user\s+engagement|system\s+scalability|"
+    r"system\s+reliability|team\s+workflows?|streamlin(?:e|ed|ing)\s+delivery|"
+    r"production[- ]grade\s+(?:ownership|architecture|applications?)"
+    r")\b",
+    re.I,
+)
+
+
 def has_unsupported_impact(statement: str, source_text: str) -> bool:
     """True when the statement invents quantified/result impact not grounded in source.
 
@@ -179,10 +189,18 @@ def has_unsupported_impact(statement: str, source_text: str) -> bool:
     - Invented metrics (numbers/% in statement but not in source) → unsupported
     - Impact verbs in the statement when the source has no impact verbs → unsupported
     - Impact verbs that already appear in the source are allowed (factual paraphrase)
+    - Unsupported outcome nouns (customer satisfaction, scalability, …) without source → unsupported
     - Bare descriptive bullets without impact verbs → supported
     """
     statement = statement or ""
     src = source_text or ""
+
+    # Outcome nouns require explicit source support even without impact verbs
+    for match in _OUTCOME_NOUNS.finditer(statement):
+        phrase = match.group(0).lower()
+        if phrase not in src.lower():
+            return True
+
     if not _IMPACT_VERBS.search(statement):
         return False
 

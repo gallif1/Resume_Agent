@@ -36,6 +36,7 @@ def run_claim_validation(
     job_requirements: dict[str, Any] | None = None,
     use_cache: bool = True,
     run_llm_assist: bool = True,
+    rejected_registry: Any | None = None,
 ) -> dict[str, Any]:
     """Always enforce deterministically; optionally gather extra LLM warnings first."""
     llm_warnings: list[dict[str, Any]] = []
@@ -44,6 +45,9 @@ def run_claim_validation(
         if isinstance(tailored_resume, TailoredResume)
         else tailored_resume
     )
+    # Strip previously rejected claims before re-validating
+    if rejected_registry is not None and hasattr(rejected_registry, "scrub_resume"):
+        resume_dict = rejected_registry.scrub_resume(resume_dict)
 
     if run_llm_assist:
         try:
@@ -80,6 +84,7 @@ def run_claim_validation(
         change_log=change_log,
         inferred_competencies=inferred,
         job_requirements=job_requirements,
+        rejected_registry=rejected_registry,
     )
 
     # Merge LLM warnings that aren't already present
@@ -113,8 +118,24 @@ def run_claim_validation(
                 # Also strip from cleaned resume if still present
                 _strip_statement_from_resume(result.cleaned_resume, stmt)
                 result.rejected_statements.append(stmt)
+                if rejected_registry is not None:
+                    rejected_registry.add(
+                        stmt,
+                        reason=str(item.get("reason") or "llm_flagged"),
+                        source_agent="claim_validation",
+                    )
 
-    return result.to_dict()
+    if rejected_registry is not None:
+        rejected_registry.extend(
+            result.rejected_statements,
+            reason="claim_validation",
+            source_agent="claim_validation",
+        )
+
+    payload = result.to_dict()
+    if rejected_registry is not None:
+        payload["rejected_claims_registry"] = rejected_registry.to_dict()
+    return payload
 
 
 def _strip_statement_from_resume(resume: TailoredResume, statement: str) -> None:

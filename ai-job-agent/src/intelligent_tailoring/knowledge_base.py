@@ -187,6 +187,55 @@ _ACTIVITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+# Source priority ladder — job descriptions are NEVER a candidate-fact source.
+SOURCE_PRIORITY = {
+    "original_resume": 1,
+    "verified_profile": 2,
+    "user_approved_project": 3,
+    "user_confirmed_experience": 4,
+    "job_description": 99,  # never use for candidate facts
+}
+
+CONTEXT_TYPES = (
+    "professional",
+    "academic",
+    "personal_project",
+    "freelance",
+    "volunteer",
+    "education",
+    "course",
+    "certification",
+    "skill",
+    "summary",
+    "other",
+)
+
+_ACADEMIC_NAME_RE = re.compile(
+    r"\b(capstone|final\s*project|thesis|dissertation|course\s*project|"
+    r"university\s*project|academic|פרויקט\s*גמר|פרויקט\s*סיום)\b",
+    re.I,
+)
+_PERSONAL_NAME_RE = re.compile(
+    r"\b(personal\s*project|side\s*project|hobby|weekend\s*project)\b",
+    re.I,
+)
+_FREELANCE_RE = re.compile(r"\b(freelance|contractor|consulting|self[- ]employed)\b", re.I)
+_VOLUNTEER_RE = re.compile(r"\b(volunteer|volunteering|pro [Bb]ono)\b", re.I)
+
+_ACTION_RE = re.compile(
+    r"\b(built|designed|developed|implemented|created|deployed|integrated|"
+    r"tested|led|managed|owned|configured|automated|debugged|optimized|"
+    r"tutored|taught|supported|troubleshot|monitored|documented|"
+    r"collaborated|architected|wrote|added)\b",
+    re.I,
+)
+_OUTCOME_RE = re.compile(
+    r"\b(result(?:ed|ing)?|achiev(?:ed|ement)|improv(?:ed|ement)|reduc(?:ed|tion)|"
+    r"increas(?:ed|e)|outcome|impact|metric)\b",
+    re.I,
+)
+
+
 @dataclass
 class ResumeFact:
     id: str
@@ -202,6 +251,16 @@ class ResumeFact:
     organization: str = ""
     role: str = ""
     context: str = ""
+    # Structured provenance / scoping (Agent 1 evidence database)
+    context_type: str = "other"
+    project: str = ""
+    technologies: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    objects: list[str] = field(default_factory=list)
+    outcomes: list[str] = field(default_factory=list)
+    metrics: list[str] = field(default_factory=list)
+    dates: dict[str, str] = field(default_factory=dict)
+    source_tier: str = "verified_profile"  # see SOURCE_PRIORITY
     explicit_skills: list[str] = field(default_factory=list)
     implied_competencies: list[str] = field(default_factory=list)
     confidence: float = 1.0
@@ -209,6 +268,84 @@ class ResumeFact:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _infer_context_type(
+    *,
+    source_section: str,
+    name: str = "",
+    text: str = "",
+    organization: str = "",
+) -> str:
+    section = (source_section or "").lower()
+    blob = f"{name} {text} {organization}".strip()
+    if section == "skills":
+        return "skill"
+    if section == "education":
+        return "education"
+    if section == "certifications":
+        return "certification"
+    if section == "summary":
+        return "summary"
+    if section == "experience":
+        if _VOLUNTEER_RE.search(blob):
+            return "volunteer"
+        if _FREELANCE_RE.search(blob):
+            return "freelance"
+        return "professional"
+    if section == "projects":
+        if _ACADEMIC_NAME_RE.search(blob):
+            return "academic"
+        if _PERSONAL_NAME_RE.search(blob):
+            return "personal_project"
+        # Capstone / university naming without the word "project"
+        if re.search(r"\bcapstone\b", blob, re.I):
+            return "academic"
+        return "personal_project"
+    if _ACADEMIC_NAME_RE.search(blob):
+        return "academic"
+    return "other"
+
+
+def _extract_structured_fields(text: str, explicit_tech: list[str] | None = None) -> dict[str, Any]:
+    """Pull technologies/actions/outcomes/metrics from a fact sentence."""
+    techs = list(explicit_tech or [])
+    # Light tech harvest from known patterns (does not invent — only matches text)
+    for match in re.finditer(
+        r"\b(?:FastAPI|SQLAlchemy|PostgreSQL|Postgres|WebSockets?|AWS|EC2|RDS|S3|"
+        r"CI/?CD|pytest|React(?:\s*Native)?|Angular|Node\.?js|Laravel|SQLite|"
+        r"Firebase|Python|TypeScript|JavaScript|MongoDB|Docker|Git|"
+        r"Cursor|ChatGPT|Claude|GitHub\s*Copilot|Generative\s*AI|"
+        r"HTML|CSS|Expo|REST(?:ful)?\s*APIs?)\b",
+        text or "",
+        re.I,
+    ):
+        token = match.group(0)
+        if token not in techs:
+            techs.append(token)
+    actions = [m.group(0).lower() for m in _ACTION_RE.finditer(text or "")]
+    metrics = [m.group(0) for m in _METRIC_RE.finditer(text or "")]
+    outcomes: list[str] = []
+    if _OUTCOME_RE.search(text or "") and metrics:
+        outcomes.append(text.strip()[:160])
+    # Objects: nouns after action verbs (lightweight heuristic)
+    objects: list[str] = []
+    for match in re.finditer(
+        r"\b(?:built|designed|developed|implemented|created|deployed|integrated|"
+        r"tested|configured|automated)\s+([a-z][\w\s-]{2,40}?)(?:\s+using|\s+with|\s+for|[.,;]|$)",
+        text or "",
+        re.I,
+    ):
+        obj = match.group(1).strip(" -")
+        if obj and obj.lower() not in {o.lower() for o in objects}:
+            objects.append(obj)
+    return {
+        "technologies": techs,
+        "actions": actions[:8],
+        "objects": objects[:6],
+        "outcomes": outcomes[:4],
+        "metrics": metrics[:6],
+    }
 
 
 @dataclass
@@ -363,6 +500,7 @@ def build_knowledge_base(
                 if not text:
                     continue
                 order += 1
+                fields = _extract_structured_fields(text, [text])
                 facts.append(
                     ResumeFact(
                         id=_fact_id("skill", cat, text),
@@ -372,6 +510,13 @@ def build_knowledge_base(
                         source_section="skills",
                         source_entry_id=str(cat),
                         source_order=order,
+                        context_type="skill",
+                        technologies=fields["technologies"],
+                        actions=fields["actions"],
+                        objects=fields["objects"],
+                        outcomes=fields["outcomes"],
+                        metrics=fields["metrics"],
+                        source_tier="verified_profile",
                         explicit_skills=[text],
                         confidence=1.0,
                         extraction_method="profile",
@@ -383,6 +528,7 @@ def build_knowledge_base(
             if not text:
                 continue
             order += 1
+            fields = _extract_structured_fields(text, [text])
             facts.append(
                 ResumeFact(
                     id=_fact_id("skill", text),
@@ -391,6 +537,13 @@ def build_knowledge_base(
                     original_text=text,
                     source_section="skills",
                     source_order=order,
+                    context_type="skill",
+                    technologies=fields["technologies"],
+                    actions=fields["actions"],
+                    objects=fields["objects"],
+                    outcomes=fields["outcomes"],
+                    metrics=fields["metrics"],
+                    source_tier="verified_profile",
                     explicit_skills=[text],
                     confidence=1.0,
                     extraction_method="profile",
@@ -406,6 +559,18 @@ def build_knowledge_base(
         dates = str(role.get("dates") or "")
         entry_id = f"role_{role_idx}"
         order += 1
+        role_ctx = _infer_context_type(
+            source_section="experience",
+            name=title,
+            text=f"{company} {title}",
+            organization=company,
+        )
+        start, end = "", ""
+        if dates:
+            # Keep full dates string; structured split is best-effort
+            parts = re.split(r"\s*[-–—to]+\s*", dates, maxsplit=1, flags=re.I)
+            start = parts[0].strip() if parts else dates
+            end = parts[1].strip() if len(parts) > 1 else ""
         facts.append(
             ResumeFact(
                 id=_fact_id("role", company, title, dates),
@@ -416,8 +581,12 @@ def build_knowledge_base(
                 source_entry_id=entry_id,
                 source_order=order,
                 start_date=dates,
+                end_date=end,
                 organization=company,
                 role=title,
+                context_type=role_ctx,
+                dates={"start": start, "end": end, "raw": dates},
+                source_tier="verified_profile",
                 confidence=1.0,
                 extraction_method="profile",
             )
@@ -428,6 +597,7 @@ def build_knowledge_base(
                 continue
             order += 1
             ftype = _classify_activity(text)
+            fields = _extract_structured_fields(text)
             facts.append(
                 ResumeFact(
                     id=_fact_id("bullet", entry_id, str(b_idx), text),
@@ -438,9 +608,19 @@ def build_knowledge_base(
                     source_entry_id=entry_id,
                     source_order=order,
                     start_date=dates,
+                    end_date=end,
                     organization=company,
                     role=title,
                     context=title,
+                    context_type=role_ctx,
+                    technologies=fields["technologies"],
+                    actions=fields["actions"],
+                    objects=fields["objects"],
+                    outcomes=fields["outcomes"],
+                    metrics=fields["metrics"],
+                    dates={"start": start, "end": end, "raw": dates},
+                    source_tier="verified_profile",
+                    explicit_skills=list(fields["technologies"]),
                     confidence=1.0,
                     extraction_method="profile",
                 )
@@ -454,6 +634,16 @@ def build_knowledge_base(
         desc = str(proj.get("description") or "")
         entry_id = f"project_{p_idx}"
         order += 1
+        proj_ctx = _infer_context_type(
+            source_section="projects",
+            name=name,
+            text=f"{name} {desc}",
+        )
+        proj_techs = [
+            str(t).strip()
+            for t in (proj.get("technologies") or proj.get("tech") or [])
+            if str(t).strip()
+        ]
         facts.append(
             ResumeFact(
                 id=_fact_id("project", name, desc),
@@ -463,27 +653,37 @@ def build_knowledge_base(
                 source_section="projects",
                 source_entry_id=entry_id,
                 source_order=order,
+                context_type=proj_ctx,
+                project=name,
+                technologies=list(proj_techs),
+                source_tier=(
+                    "user_approved_project"
+                    if proj.get("user_approved") or proj.get("verified")
+                    else "verified_profile"
+                ),
+                explicit_skills=list(proj_techs),
                 confidence=1.0,
                 extraction_method="profile",
             )
         )
         # Explicit technology bindings for this project only
-        for tech in proj.get("technologies") or proj.get("tech") or []:
-            text = str(tech).strip()
-            if not text:
-                continue
+        for tech in proj_techs:
             order += 1
             facts.append(
                 ResumeFact(
-                    id=_fact_id("proj_tech", entry_id, text),
+                    id=_fact_id("proj_tech", entry_id, tech),
                     fact_type="technology",
-                    normalized_value=text.lower(),
-                    original_text=text,
+                    normalized_value=tech.lower(),
+                    original_text=tech,
                     source_section="projects",
                     source_entry_id=entry_id,
                     source_order=order,
                     context=name,
-                    explicit_skills=[text],
+                    context_type=proj_ctx,
+                    project=name,
+                    technologies=[tech],
+                    source_tier="verified_profile",
+                    explicit_skills=[tech],
                     confidence=1.0,
                     extraction_method="profile",
                 )
@@ -493,6 +693,8 @@ def build_knowledge_base(
             if not text:
                 continue
             order += 1
+            fields = _extract_structured_fields(text, proj_techs)
+            # Project-specific skills only — never promote general skills here
             facts.append(
                 ResumeFact(
                     id=_fact_id("proj_bullet", entry_id, str(b_idx), text),
@@ -503,6 +705,15 @@ def build_knowledge_base(
                     source_entry_id=entry_id,
                     source_order=order,
                     context=name,
+                    context_type=proj_ctx,
+                    project=name,
+                    technologies=fields["technologies"],
+                    actions=fields["actions"],
+                    objects=fields["objects"],
+                    outcomes=fields["outcomes"],
+                    metrics=fields["metrics"],
+                    source_tier="verified_profile",
+                    explicit_skills=list(fields["technologies"]),
                     confidence=1.0,
                     extraction_method="profile",
                 )
@@ -540,6 +751,8 @@ def build_knowledge_base(
                 source_entry_id=edu_id,
                 source_order=order,
                 organization=org,
+                context_type="education",
+                source_tier="verified_profile",
                 confidence=1.0,
                 extraction_method="profile",
             )
@@ -565,6 +778,7 @@ def build_knowledge_base(
                 continue
             seen_soft.add(key)
             order += 1
+            soft_structured = _extract_structured_fields(src)
             facts.append(
                 ResumeFact(
                     id=_fact_id("edu_soft", str(e_idx), activity, src),
@@ -576,6 +790,13 @@ def build_knowledge_base(
                     source_order=order,
                     organization=org,
                     context="education",
+                    context_type="education",
+                    technologies=soft_structured["technologies"],
+                    actions=soft_structured["actions"],
+                    objects=soft_structured["objects"],
+                    outcomes=soft_structured["outcomes"],
+                    metrics=soft_structured["metrics"],
+                    source_tier="verified_profile",
                     confidence=0.85,
                     extraction_method="education_soft_mine",
                     implied_competencies=[
@@ -599,6 +820,8 @@ def build_knowledge_base(
                 source_section="certifications",
                 source_entry_id=f"cert_{c_idx}",
                 source_order=order,
+                context_type="certification",
+                source_tier="verified_profile",
                 confidence=1.0,
                 extraction_method="profile",
             )
@@ -613,6 +836,7 @@ def build_knowledge_base(
     if summary.strip():
         for frag in _split_fragments(summary):
             order += 1
+            fields = _extract_structured_fields(frag)
             facts.append(
                 ResumeFact(
                     id=_fact_id("summary", frag),
@@ -621,6 +845,13 @@ def build_knowledge_base(
                     original_text=frag,
                     source_section="summary",
                     source_order=order,
+                    context_type="summary",
+                    technologies=fields["technologies"],
+                    actions=fields["actions"],
+                    objects=fields["objects"],
+                    outcomes=fields["outcomes"],
+                    metrics=fields["metrics"],
+                    source_tier="original_resume",
                     confidence=0.95,
                     extraction_method="profile",
                 )
@@ -763,6 +994,8 @@ def fallback_extract_missing(
         n = _norm(frag)
         if n in existing_norms or len(frag) < 12:
             continue
+        structured = _extract_structured_fields(frag)
+        ctx = _infer_context_type(source_section="source_fragment", text=frag)
         recovered.append(
             ResumeFact(
                 id=_fact_id("fallback", str(i), frag),
@@ -772,6 +1005,13 @@ def fallback_extract_missing(
                 source_section="source_fragment",
                 source_entry_id=f"fallback_{i}",
                 source_order=10000 + i,
+                context_type=ctx,
+                technologies=structured["technologies"],
+                actions=structured["actions"],
+                objects=structured["objects"],
+                outcomes=structured["outcomes"],
+                metrics=structured["metrics"],
+                source_tier="original_resume",
                 confidence=0.75,
                 extraction_method="fallback",
             )

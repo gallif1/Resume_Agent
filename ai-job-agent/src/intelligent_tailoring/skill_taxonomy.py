@@ -40,10 +40,70 @@ SOFTWARE_TAXONOMY: dict[str, tuple[str, ...]] = {
     "Tools & Version Control": (
         "git", "github", "gitlab", "jira", "postman", "figma",
     ),
+    "AI-Assisted Development": (
+        "cursor", "chatgpt", "claude", "github copilot", "copilot",
+        "ai-assisted development", "ai assisted development",
+        "ai coding tools", "ai pair programming",
+    ),
     "AI & Data": (
         "machine learning", "llm", "llms", "generative ai", "openai",
         "pandas", "numpy", "tensorflow", "pytorch", "data analysis",
     ),
+}
+
+# Bare / generic atoms that must never appear as standalone skill lines.
+_DROP_SKILL_ATOMS = frozenset(
+    {
+        "api",
+        "apis",
+        "web",
+        "software",
+        "programming",
+        "coding",
+        "development",
+        "developer",
+        "engineer",
+        "technology",
+        "technologies",
+        "tools",
+        "other",
+        "relevant",
+        "skills",
+        "framework",
+        "frameworks",
+        "language",
+        "languages",
+        "database",
+        "databases",
+        "cloud",
+        "backend",
+        "frontend",
+        "fullstack",
+        "full stack",
+        "full-stack",
+    }
+)
+
+# Prefer canonical display names when normalizing atoms.
+_DISPLAY_CANONICAL = {
+    "nodejs": "Node.js",
+    "node.js": "Node.js",
+    "postgres": "PostgreSQL",
+    "postgresql": "PostgreSQL",
+    "rest": "REST APIs",
+    "rest api": "REST APIs",
+    "rest apis": "REST APIs",
+    "restful api": "REST APIs",
+    "restful apis": "REST APIs",
+    "websocket": "WebSockets",
+    "websockets": "WebSockets",
+    "ci/cd": "CI/CD",
+    "react native": "React Native",
+    "generative ai": "Generative AI",
+    "github copilot": "GitHub Copilot",
+    "chatgpt": "ChatGPT",
+    "integration testing": "integration testing",
+    "integration tests": "integration testing",
 }
 
 # Non-technical / universal categories.
@@ -108,18 +168,45 @@ def normalize_skill_name(skill: str) -> str:
     return _ALIAS_NORMALIZE.get(low, low)
 
 
+def should_drop_skill_atom(skill: str) -> bool:
+    """True for bare generics that produce noise like ``Other Relevant Skills: api``."""
+    atom = skill.split(":", 1)[-1].strip() if ":" in skill else skill.strip()
+    low = normalize_skill_name(atom)
+    if low in _DROP_SKILL_ATOMS:
+        return True
+    # Single ultra-generic tokens under 4 chars (except known acronyms)
+    if len(low) <= 2 and low not in {"c#", "r", "go", "c++", "js", "ts", "sql"}:
+        return True
+    return False
+
+
+def display_skill_name(skill: str) -> str:
+    atom = skill.split(":", 1)[-1].strip() if ":" in skill else skill.strip()
+    low = normalize_skill_name(atom)
+    if low in _DISPLAY_CANONICAL:
+        return _DISPLAY_CANONICAL[low]
+    # Preserve original casing for multi-word verified skills
+    return atom
+
+
 def categorize_skill(skill: str) -> str:
     """Return the canonical category for a skill atom."""
     # Strip existing category prefixes
     atom = skill.split(":", 1)[-1].strip() if ":" in skill else skill.strip()
     low = normalize_skill_name(atom)
 
-    for category, members in SOFTWARE_TAXONOMY.items():
+    if should_drop_skill_atom(atom):
+        return OTHER
+
+    # Check more specific categories first (AI-Assisted before Tools / AI & Data)
+    ordered_software = list(SOFTWARE_TAXONOMY.items())
+    for category, members in ordered_software:
         for member in members:
             if low == member or low.startswith(member + " ") or member in low.split(", "):
                 return category
-            # Exact-ish containment for multiword
-            if len(member) >= 4 and (low == member or re.search(rf"\b{re.escape(member)}\b", low)):
+            # Exact-ish containment for multiword — avoid matching "api" inside "rest api"
+            # via bare "api" alone (already dropped). Require member length >= 3 with word boundary.
+            if len(member) >= 3 and (low == member or re.search(rf"\b{re.escape(member)}\b", low)):
                 return category
 
     for category, members in UNIVERSAL_TAXONOMY.items():
@@ -152,28 +239,29 @@ def category_order_for_role(
     family = (job_family or "general").strip().lower()
     presets: dict[str, list[str]] = {
         "backend": [
-            "Backend", "Languages", "Databases", "Cloud & DevOps", "AI & Data",
+            "Backend", "Languages", "Databases", "Cloud & DevOps",
+            "AI-Assisted Development", "AI & Data",
             "Frontend", "Testing", "Tools & Version Control",
         ],
         "frontend": [
             "Frontend", "Languages", "Backend", "Testing", "Cloud & DevOps",
-            "Tools & Version Control", "Databases",
+            "AI-Assisted Development", "Tools & Version Control", "Databases",
         ],
         "devops": [
             "Cloud & DevOps", "Languages", "Backend", "Databases", "Testing",
-            "Tools & Version Control", "Frontend",
+            "AI-Assisted Development", "Tools & Version Control", "Frontend",
         ],
         "qa": [
             "Testing", "Languages", "Backend", "Frontend", "Tools & Version Control",
-            "Cloud & DevOps", "Databases",
+            "Cloud & DevOps", "AI-Assisted Development", "Databases",
         ],
         "support": [
             "Tools & Version Control", "Cloud & DevOps", "Backend", "Databases",
             "Communication", "Customer Service", "Languages",
         ],
         "data": [
-            "AI & Data", "Languages", "Databases", "Cloud & DevOps", "Backend",
-            "Tools & Version Control",
+            "AI & Data", "AI-Assisted Development", "Languages", "Databases",
+            "Cloud & DevOps", "Backend", "Tools & Version Control",
         ],
         "sales": [
             "Sales", "Communication", "Customer Service", "Leadership",
@@ -272,12 +360,16 @@ def normalize_skill_lines(
     seen_atoms: set[str] = set()
     for line in skills or []:
         for atom in _split_skill_atoms(str(line)):
+            if should_drop_skill_atom(atom):
+                continue
             key = normalize_skill_name(atom)
             if key in seen_atoms:
                 continue
             seen_atoms.add(key)
             cat = categorize_skill(atom)
-            buckets.setdefault(cat, []).append(atom)
+            if cat == OTHER and should_drop_skill_atom(atom):
+                continue
+            buckets.setdefault(cat, []).append(display_skill_name(atom))
 
     def _atom_rank(atom: str) -> tuple[int, str]:
         key = normalize_skill_name(atom)
@@ -305,12 +397,28 @@ def normalize_skill_lines(
 
     result: list[str] = []
     for cat in ranked_cats:
-        atoms = sorted(buckets.get(cat) or [], key=_atom_rank)
+        if cat == OTHER:
+            # Never emit a category whose only members are generic drop-atoms
+            atoms = [
+                a
+                for a in sorted(buckets.get(cat) or [], key=_atom_rank)
+                if not should_drop_skill_atom(a)
+            ]
+        else:
+            atoms = sorted(buckets.get(cat) or [], key=_atom_rank)
         if atoms:
             result.append(f"{cat}: {', '.join(atoms)}")
     for cat, atoms in buckets.items():
         if cat not in order and atoms:
-            result.append(f"{cat}: {', '.join(sorted(atoms, key=_atom_rank))}")
+            cleaned = [a for a in atoms if not should_drop_skill_atom(a)]
+            if cleaned:
+                result.append(f"{cat}: {', '.join(sorted(cleaned, key=_atom_rank))}")
+    # Final guard: never return "Other Relevant Skills: api" style lines
+    result = [
+        line
+        for line in result
+        if not re.match(rf"^{re.escape(OTHER)}:\s*(api|apis|web)\s*$", line, re.I)
+    ]
     return result
 
 

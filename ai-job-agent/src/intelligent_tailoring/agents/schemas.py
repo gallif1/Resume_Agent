@@ -16,9 +16,39 @@ EvidenceStrength = Literal[
     "No Evidence",
 ]
 
+# Canonical match types required by Agent 4 (Evidence Mapping)
+EvidenceMatchType = Literal[
+    "Explicit",
+    "Strongly Supported",
+    "Transferable",
+    "Weak",
+    "Unsupported",
+]
+
 ClaimDecision = Literal["Accept", "Rewrite from evidence", "Regenerate", "Reject"]
+ClaimStatus = Literal[
+    "accepted",
+    "safely_rewritten",
+    "rejected",
+    "regeneration_required",
+]
 
 UNKNOWN = "Unknown"
+
+# Map legacy strength labels → required EvidenceMatch types
+_STRENGTH_TO_MATCH: dict[str, EvidenceMatchType] = {
+    "Explicit Evidence": "Explicit",
+    "Strong Inference": "Strongly Supported",
+    "Weak Inference": "Transferable",
+    "No Evidence": "Unsupported",
+    "explicit": "Explicit",
+    "strongly inferred": "Strongly Supported",
+    "strong inference": "Strongly Supported",
+    "weakly inferred": "Weak",
+    "weak inference": "Weak",
+    "transferable": "Transferable",
+    "unsupported": "Unsupported",
+}
 
 
 def _clamp01(value: Any, default: float = 0.0) -> float:
@@ -88,6 +118,28 @@ class ResumeKnowledgeOutput:
 
 
 @dataclass
+class JobRequirement:
+    """Canonical requirement unit for Agent 2 — Job Intelligence."""
+
+    id: str
+    text: str
+    normalized_competency: str = ""
+    category: str = "skill"
+    priority: float = 0.5
+    required_or_preferred: str = "required"
+    screening_weight: float = 0.5
+    seniority_impact: float = 0.0
+    evidence_expected: str = ""
+    synonyms: list[str] = field(default_factory=list)
+    explicit_or_inferred: str = "explicit"
+    central_to_daily_work: bool = False
+    hiring_risk_if_missing: str = "medium"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ScoredRequirement:
     text: str
     category: str = "skill"  # skill|responsibility|technology|methodology|soft|education|...
@@ -95,9 +147,30 @@ class ScoredRequirement:
     importance_score: float = 0.5
     confidence: float = 0.5
     industry_terminology: bool = False
+    # Extended fields aligned with JobRequirement
+    id: str = ""
+    normalized_competency: str = ""
+    screening_weight: float = 0.5
+    seniority_impact: float = 0.0
+    evidence_expected: str = ""
+    synonyms: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def to_job_requirement(self) -> JobRequirement:
+        return JobRequirement(
+            id=self.id or f"req_{abs(hash(self.text)) % 10_000_000}",
+            text=self.text,
+            normalized_competency=self.normalized_competency or self.text,
+            category=self.category,
+            priority=self.importance_score,
+            required_or_preferred=self.required_or_preferred,
+            screening_weight=self.screening_weight,
+            seniority_impact=self.seniority_impact,
+            evidence_expected=self.evidence_expected,
+            synonyms=list(self.synonyms),
+        )
 
 
 @dataclass
@@ -271,6 +344,15 @@ class EvidenceMapping:
     inference_category: str = "Unsupported"
     ontology_rule_id: str = ""
     generated_statement: str = ""
+    # Required EvidenceMatch fields
+    requirement_id: str = ""
+    resume_fact_ids: list[str] = field(default_factory=list)
+    match_type: EvidenceMatchType = "Unsupported"
+    scope_valid: bool = True
+    safe_claims: list[str] = field(default_factory=list)
+    unsafe_claims: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+    recommended_sections: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -304,6 +386,14 @@ class EvidenceMap:
                     "source_location": m.source_location,
                     "allowed_wording": list(m.allowed_wording),
                     "forbidden_wording": list(m.forbidden_wording),
+                    "requirement_id": m.requirement_id,
+                    "resume_fact_ids": list(m.resume_fact_ids),
+                    "match_type": m.match_type,
+                    "scope_valid": m.scope_valid,
+                    "safe_claims": list(m.safe_claims),
+                    "unsafe_claims": list(m.unsafe_claims),
+                    "limitations": list(m.limitations),
+                    "recommended_sections": list(m.recommended_sections),
                 }
             )
         return out
@@ -345,6 +435,14 @@ class ResumeStrategy:
     company_influenced_priorities: list[str] = field(default_factory=list)
     narrative_themes: list[str] = field(default_factory=list)
     professional_story: str = ""
+    # Required narrative / budget fields (Agent 5)
+    professional_narrative: str = ""
+    top_reasons_to_interview: list[str] = field(default_factory=list)
+    facts_to_expand: list[str] = field(default_factory=list)
+    facts_to_condense: list[str] = field(default_factory=list)
+    facts_to_omit: list[str] = field(default_factory=list)
+    genuine_gaps: list[str] = field(default_factory=list)
+    one_page_budget: dict[str, Any] = field(default_factory=dict)
     # Full legacy strategy bag for rewrite / rebuild services
     legacy_strategy: dict[str, Any] = field(default_factory=dict)
 
@@ -359,9 +457,12 @@ class ResumeStrategy:
         base.setdefault("experience_order", list(self.experience_order))
         base.setdefault("skills_to_emphasize", list(self.skills_priority))
         base.setdefault("section_order", list(self.section_order))
-        base.setdefault("facts_to_expand", list(self.important_evidence))
-        base.setdefault("facts_to_condense", list(self.low_priority_evidence))
-        base.setdefault("facts_to_omit", list(self.hidden_evidence))
+        expand = list(self.facts_to_expand or self.important_evidence)
+        condense = list(self.facts_to_condense or self.low_priority_evidence)
+        omit = list(self.facts_to_omit or self.hidden_evidence)
+        base.setdefault("facts_to_expand", expand)
+        base.setdefault("facts_to_condense", condense)
+        base.setdefault("facts_to_omit", omit)
         base.setdefault("safe_inferences", list(self.safe_inferences))
         base.setdefault("forbidden_claims", list(self.forbidden_claims))
         base.setdefault("requirement_coverage", dict(self.requirement_coverage))
@@ -370,6 +471,16 @@ class ResumeStrategy:
         )
         base.setdefault("narrative_themes", list(self.narrative_themes))
         base.setdefault("professional_story", self.professional_story)
+        base.setdefault(
+            "professional_narrative",
+            self.professional_narrative or self.professional_story,
+        )
+        base.setdefault(
+            "top_interview_reasons", list(self.top_reasons_to_interview)
+        )
+        base.setdefault("top_reasons_to_interview", list(self.top_reasons_to_interview))
+        base.setdefault("genuine_gaps", list(self.genuine_gaps))
+        base.setdefault("one_page_budget", dict(self.one_page_budget or {}))
         return base
 
 
@@ -475,6 +586,36 @@ class ClaimValidationItem:
     reason: str = ""
     rewritten_text: str = ""
     source_location: str = ""
+    # Required claim schema fields
+    claim_id: str = ""
+    source_fact_ids: list[str] = field(default_factory=list)
+    source_entry_ids: list[str] = field(default_factory=list)
+    evidence_type: str = ""
+    context_type: str = ""
+    confidence: float = 0.0
+    status: ClaimStatus = "accepted"
+    errors: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class FinalScoreBreakdown:
+    """Agent 11 score report — always computed from the final validated resume."""
+
+    original_resume_score: float = 0.0
+    tailored_resume_score: float = 0.0
+    score_delta: float = 0.0
+    requirement_coverage: float = 0.0
+    evidence_strength: float = 0.0
+    keyword_alignment: float = 0.0
+    seniority_fit: float = 0.0
+    writing_quality: float = 0.0
+    truthfulness_score: float = 100.0
+    one_page_passed: bool = True
+    unsupported_claim_count: int = 0
+    genuine_gaps: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -563,6 +704,14 @@ class RecruiterReviewOutput:
     summary_feedback: str = ""
     sections_to_regenerate: list[str] = field(default_factory=list)
     raw_review: dict[str, Any] = field(default_factory=dict)
+    # Adversarial review schema
+    interview_recommendation: str = ""
+    top_strengths: list[str] = field(default_factory=list)
+    credibility_risks: list[str] = field(default_factory=list)
+    underused_evidence: list[str] = field(default_factory=list)
+    weak_sections: list[str] = field(default_factory=list)
+    required_rewrites: list[str] = field(default_factory=list)
+    one_page_issues: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -591,10 +740,18 @@ class HiringManagerFeedback:
     communication: int = 0
     resume_quality: int = 0
     evidence_quality: int = 0
+    evidence_confidence: int = 0
+    seniority_fit: int = 0
+    technical_or_domain_fit: int = 0
     missing_evidence: list[str] = field(default_factory=list)
     section_effectiveness: dict[str, int] = field(default_factory=dict)
     why_interview: list[str] = field(default_factory=list)
     why_reject: list[str] = field(default_factory=list)
+    reasons_to_interview: list[str] = field(default_factory=list)
+    reasons_for_rejection: list[str] = field(default_factory=list)
+    genuine_gaps: list[str] = field(default_factory=list)
+    underrepresented_strengths: list[str] = field(default_factory=list)
+    requested_section_changes: list[str] = field(default_factory=list)
     strongest_sections: list[str] = field(default_factory=list)
     weakest_sections: list[str] = field(default_factory=list)
     actionable_feedback: list[str] = field(default_factory=list)
@@ -614,9 +771,9 @@ def normalize_evidence_strength(category: str, status: str) -> EvidenceStrength:
     if cat == "explicit" or (st == "MATCH" and "infer" not in cat):
         if st == "MATCH":
             return "Explicit Evidence"
-    if cat in ("strongly inferred", "strong inference"):
+    if cat in ("strongly inferred", "strong inference", "strongly supported"):
         return "Strong Inference"
-    if cat in ("weakly inferred", "weak inference"):
+    if cat in ("weakly inferred", "weak inference", "weak", "transferable"):
         return "Weak Inference"
     if st == "MISSING" or cat in ("unsupported", "no evidence", ""):
         return "No Evidence"
@@ -625,6 +782,14 @@ def normalize_evidence_strength(category: str, status: str) -> EvidenceStrength:
     if st == "MATCH":
         return "Explicit Evidence"
     return "No Evidence"
+
+
+def strength_to_match_type(strength: str, category: str = "") -> EvidenceMatchType:
+    key = (strength or "").strip()
+    if key in _STRENGTH_TO_MATCH:
+        return _STRENGTH_TO_MATCH[key]
+    cat = (category or strength or "").strip().lower().replace("_", " ")
+    return _STRENGTH_TO_MATCH.get(cat, "Unsupported")
 
 
 def enrich_lists(*groups: list[str]) -> list[str]:
