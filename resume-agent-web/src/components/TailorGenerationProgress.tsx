@@ -34,30 +34,23 @@ const AGENT_CATALOG: Array<{
   substeps: string[];
 }> = [
   {
-    id: "candidate_opportunity_intelligence",
-    label: "מנתח את הניסיון שלך ואת ההזדמנות",
-    idleMessage: "קורא פרופיל מועמד, משרה, חברה וראיות…",
+    id: "prepare_evidence",
+    label: "מכין ראיות מועמד ומשרה",
+    idleMessage: "מפרסר קורות חיים ומשרה וממפה ראיות…",
     icon: Brain,
     substeps: [
-      "קורא פרופיל מועמד",
-      "מנתח דרישות משרה",
-      "בודק הקשר ארגוני",
-      "ממפה ראיות",
+      "מפרסר קורות חיים",
+      "מפרסר תיאור משרה",
+      "מנרמל עובדות",
+      "אוסף ראיות תומכות",
     ],
   },
   {
-    id: "strategy_content_selection",
-    label: "בונה את אסטרטגיית קורות החיים",
-    idleMessage: "בוחר ראיות ובונה נרטיב בעמוד אחד…",
-    icon: Sparkles,
-    substeps: ["בוחר ראיות חזקות", "בונה מבנה מותאם"],
-  },
-  {
-    id: "human_writing_credibility",
-    label: "כותב ומאמת את קורות החיים",
-    idleMessage: "מאמת טענות ומנסח ניסוח טבעי…",
+    id: "resume_generation_agent",
+    label: "מייצר את קורות החיים המותאמים",
+    idleMessage: "סוכן אחד חכם כותב את קורות החיים המלאים…",
     icon: PenLine,
-    substeps: ["מאמת טענות", "כותב ניסוח טבעי", "ביקורת אמינות"],
+    substeps: ["בוחר תוכן", "כותב ניסוח טבעי", "מאמת טענות"],
   },
   {
     id: "final_hiring_ats_page",

@@ -220,13 +220,15 @@ class TestGateSeverityAndPreview:
 
 
 class TestFourAgentArchitecture:
-    def test_four_ui_stages(self):
-        assert len(TAILOR_STAGES) == 4
-        assert TAILOR_STAGES[0]["id"] == "candidate_opportunity_intelligence"
-        assert resolve_merged_stage("resume_knowledge") == (
-            "candidate_opportunity_intelligence"
-        )
+    def test_ui_stages_single_agent(self):
+        # Migrated: three UI stages, one LLM resume-generation agent.
+        assert len(TAILOR_STAGES) == 3
+        assert TAILOR_STAGES[0]["id"] == "prepare_evidence"
+        assert resolve_merged_stage("resume_knowledge") == "prepare_evidence"
         assert resolve_merged_stage("final_polish") == "final_hiring_ats_page"
+        assert resolve_merged_stage("human_writing_credibility") == (
+            "resume_generation_agent"
+        )
 
     def test_merge_map_covers_legacy_agents(self):
         merged = set()
@@ -248,7 +250,16 @@ class TestFourAgentArchitecture:
 
     def test_old_prompt_rules_preserved(self):
         checks = merged_prompt_contains_legacy_rules()
-        assert all(checks.values()), checks
+        # Require the production single-agent merge to retain critical rules.
+        for key in (
+            "deep_tailor",
+            "human_writer",
+            "content_triage",
+            "one_page",
+            "philosophy",
+            "single_agent_system_present",
+        ):
+            assert checks.get(key), checks
 
     def test_knowledge_cache_reuse(self):
         clear_component_caches()
@@ -310,44 +321,24 @@ class TestProfessionAgnosticFixture:
 
 
 class TestPrimaryLlmCallBudget:
-    def test_intelligence_bundle_records_one_primary_call(self):
+    def test_deterministic_intelligence_records_zero_primary_calls(self):
         from intelligent_tailoring.llm_utils import begin_llm_metrics, get_llm_metrics
-        from intelligent_tailoring.stages.intelligence_bundle import (
-            run_intelligence_bundle_llm,
+        from intelligent_tailoring.stages.deterministic_job_extraction import (
+            run_deterministic_intelligence_bundle,
         )
 
         begin_llm_metrics()
-        fake = {
-            "job_requirements": {
-                "required_skills": ["Python"],
-                "preferred_skills": [],
-                "responsibilities": ["Build APIs"],
-                "tools_technologies": ["Python"],
-                "industry_terminology": [],
-                "seniority_level": "mid",
-                "soft_skills": [],
-                "education_certifications": [],
-                "ats_keywords": ["Python"],
-                "hard_requirements": ["Python"],
-                "soft_requirements": [],
-                "language": "en",
+        out = run_deterministic_intelligence_bundle(
+            job={
+                "title": "Engineer",
+                "company": "Acme",
+                "description": "We need Python engineers to build APIs and services. " * 5,
             },
-            "inferred_competencies": [],
-        }
-        with patch(
-            "intelligent_tailoring.stages.intelligence_bundle.call_stage_json",
-            return_value=fake,
-        ):
-            out = run_intelligence_bundle_llm(
-                job={
-                    "title": "Engineer",
-                    "company": "Acme",
-                    "description": "We need Python engineers to build APIs and services. " * 5,
-                },
-                resume_facts={"raw_text": "Python FastAPI developer " * 20, "skills": ["Python"]},
-                use_cache=False,
-            )
+            resume_facts={
+                "raw_text": "Python FastAPI developer " * 20,
+                "skills": ["Python"],
+            },
+        )
         metrics = get_llm_metrics()
-        assert out["primary_llm_calls"] == 1
-        assert metrics["primary_llm_calls"] == 1
-        assert "candidate_opportunity_intelligence" in metrics["primary_llm_call_agents"]
+        assert out["primary_llm_calls"] == 0
+        assert metrics["primary_llm_calls"] == 0

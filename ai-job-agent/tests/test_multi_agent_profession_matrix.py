@@ -393,7 +393,7 @@ def stub_job_extract(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements",
+        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements_deterministic",
         _extract,
     )
     monkeypatch.setattr(

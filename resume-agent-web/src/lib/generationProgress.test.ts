@@ -20,33 +20,35 @@ function agents(status: TailorAgentState["status"][] = []): TailorAgentState[] {
   }));
 }
 
-describe("generation progress source of truth (4 stages)", () => {
+describe("generation progress source of truth (single-agent stages)", () => {
   it("stage weights sum to 100", () => {
     const sum = Object.values(STAGE_WEIGHTS).reduce((a, b) => a + b, 0);
     expect(sum).toBe(100);
   });
 
-  it("exposes exactly four stages", () => {
-    expect(STAGE_ORDER).toHaveLength(4);
-    expect(STAGE_ORDER[0]).toBe("candidate_opportunity_intelligence");
-    expect(STAGE_ORDER[3]).toBe("final_hiring_ats_page");
+  it("exposes exactly three stages", () => {
+    expect(STAGE_ORDER).toHaveLength(3);
+    expect(STAGE_ORDER[0]).toBe("prepare_evidence");
+    expect(STAGE_ORDER[1]).toBe("resume_generation_agent");
+    expect(STAGE_ORDER[2]).toBe("final_hiring_ats_page");
   });
 
   it("completed count and percent come from the same agent list", () => {
-    const list = agents(["completed", "running", "pending", "pending"]);
+    const list = agents(["completed", "running", "pending"]);
     const snap = buildProgressSnapshot(list, { active: true });
     expect(snap.completedCount).toBe(1);
-    expect(snap.totalAgents).toBe(4);
+    expect(snap.totalAgents).toBe(3);
     expect(snap.overallProgress).toBe(computeWeightedProgress(list));
-    expect(snap.stageOfLabel).toBe("Stage 2 of 4");
+    expect(snap.stageOfLabel).toBe("Stage 2 of 3");
   });
 
-  it("maps legacy 11-agent SSE ids onto merged stages", () => {
-    expect(resolveMergedStage("evidence_mapping")).toBe(
-      "candidate_opportunity_intelligence"
-    );
-    expect(resolveMergedStage("human_writer")).toBe("human_writing_credibility");
+  it("maps legacy / four-agent SSE ids onto current stages", () => {
+    expect(resolveMergedStage("evidence_mapping")).toBe("prepare_evidence");
+    expect(resolveMergedStage("human_writer")).toBe("resume_generation_agent");
     expect(resolveMergedStage("final_polish")).toBe("final_hiring_ats_page");
+    expect(resolveMergedStage("candidate_opportunity_intelligence")).toBe(
+      "prepare_evidence"
+    );
   });
 
   it("localizes English SSE messages to Hebrew when possible", () => {
@@ -63,7 +65,7 @@ describe("generation progress source of truth (4 stages)", () => {
       message: "Mapping resume evidence to requirements…",
     });
     expect(list[0].status).toBe("running");
-    expect(list[0].id).toBe("candidate_opportunity_intelligence");
+    expect(list[0].id).toBe("prepare_evidence");
     expect(list[0].progress).toBe(0); // indeterminate — no fake percent
   });
 });

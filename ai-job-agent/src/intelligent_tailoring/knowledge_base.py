@@ -720,27 +720,22 @@ def build_knowledge_base(
             )
 
     # --- Education (also mine soft evidence from degree/field/notes) ---
-    for e_idx, edu in enumerate(structured.get("education") or []):
-        if isinstance(edu, dict):
-            text = " — ".join(
-                str(edu.get(k) or "")
-                for k in ("institution", "degree", "field", "dates", "specialization")
-                if edu.get(k)
-            ) or str(edu)
-            extra_bits = [
-                str(edu.get(k) or "").strip()
-                for k in ("description", "notes", "achievements", "honors", "details")
-                if edu.get(k)
-            ]
-        else:
-            text = str(edu)
-            extra_bits = []
+    from intelligent_tailoring.education_normalize import normalize_education_list
+
+    normalized_education = normalize_education_list(structured.get("education") or [])
+    for e_idx, edu in enumerate(normalized_education):
+        text = " — ".join(
+            str(edu.get(k) or "")
+            for k in ("degree", "institution", "field", "dates")
+            if edu.get(k)
+        ).strip()
+        extra_bits: list[str] = []
         text = text.strip()
         if not text:
             continue
         order += 1
         edu_id = f"edu_{e_idx}"
-        org = str(edu.get("institution") or "") if isinstance(edu, dict) else ""
+        org = str(edu.get("institution") or "")
         facts.append(
             ResumeFact(
                 id=_fact_id("edu", str(e_idx), text),
@@ -759,10 +754,6 @@ def build_knowledge_base(
         )
         # Soft/transferable signals hidden in education text
         soft_sources = [text] + extra_bits
-        if isinstance(edu, dict):
-            for bullet in edu.get("bullets") or []:
-                if str(bullet).strip():
-                    soft_sources.append(str(bullet).strip())
         seen_soft: set[str] = set()
         for src in soft_sources:
             activity = _classify_activity(src)
@@ -1077,7 +1068,28 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
             )
             entry["bullets"].append(f.original_text)
         elif f.fact_type == "education":
-            education.append({"institution": f.organization, "degree": f.original_text})
+            # original_text is "degree — institution — field — dates"
+            parts = [
+                p.strip()
+                for p in re.split(r"\s+[—\-–]\s+", f.original_text or "")
+                if p.strip()
+            ]
+            degree = parts[0] if parts else (f.original_text or "")
+            institution = f.organization or (parts[1] if len(parts) > 1 else "")
+            dates = ""
+            field = ""
+            if len(parts) >= 3 and re.search(r"\d{4}", parts[-1] or ""):
+                dates = parts[-1]
+                if len(parts) >= 4:
+                    field = parts[2]
+            education.append(
+                {
+                    "institution": institution,
+                    "degree": degree,
+                    "field": field,
+                    "dates": dates,
+                }
+            )
         elif f.fact_type == "certification":
             certifications.append(f.original_text)
 

@@ -196,13 +196,12 @@ def _jd_text(job: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_catalog_has_four_merged_agents():
-    assert len(AGENT_CATALOG) == 4
+def test_agent_catalog_has_single_resume_agent_stages():
+    assert len(AGENT_CATALOG) == 3
     ids = [a[0] for a in AGENT_CATALOG]
     assert ids == [
-        "candidate_opportunity_intelligence",
-        "strategy_content_selection",
-        "human_writing_credibility",
+        "prepare_evidence",
+        "resume_generation_agent",
         "final_hiring_ats_page",
     ]
 
@@ -216,8 +215,8 @@ def test_legacy_specialists_remain_callable():
         assert agent.responsibility
 
 
-def test_pipeline_version_is_four_agent():
-    assert PIPELINE_VERSION.startswith("four_agent_v2")
+def test_pipeline_version_is_single_agent():
+    assert PIPELINE_VERSION.startswith("single_agent")
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +260,7 @@ def test_job_intelligence_agent_extracts_scored_requirements(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements",
+        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements_deterministic",
         _fake_extract,
     )
     result = JobIntelligenceAgent().run(
@@ -760,7 +759,7 @@ def test_different_professions_produce_different_strategy_focus(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setattr(
-        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements",
+        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements_deterministic",
         lambda job, **kwargs: {
             "required_skills": ["core skill A", "core skill B"],
             "preferred_skills": ["nice skill"],

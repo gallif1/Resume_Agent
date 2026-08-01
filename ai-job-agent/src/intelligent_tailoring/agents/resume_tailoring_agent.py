@@ -13,12 +13,16 @@ from intelligent_tailoring.agents.schemas import (
     TailoredStructure,
     TailoringAgentInput,
 )
-from intelligent_tailoring.services.resume_rewriter import rewrite_resume_with_strategy
+from intelligent_tailoring.stages.single_resume_generation import (
+    generate_resume_single_agent,
+)
 
 
 class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
-    agent_id = "resume_tailoring"
-    responsibility = "Select and structure resume content from evidence and strategy"
+    agent_id = "resume_generation_agent"
+    responsibility = (
+        "Single Resume Generation Agent — select content and write final prose"
+    )
 
     def run(
         self,
@@ -43,7 +47,19 @@ class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
                 if str(kw).lower() not in forbidden
             ]
 
-        generated = rewrite_resume_with_strategy(
+        kb_summary = ""
+        try:
+            from intelligent_tailoring.stages.intelligence_bundle import (
+                knowledge_base_compact_summary,
+            )
+
+            kb_summary = knowledge_base_compact_summary(
+                getattr(payload.knowledge, "knowledge_base", None)
+            )
+        except Exception:
+            kb_summary = ""
+
+        generated = generate_resume_single_agent(
             resume_facts=payload.knowledge.resume_facts,
             rebuilt_resume=payload.rebuilt_resume or {},
             strategy=strategy,
@@ -51,10 +67,10 @@ class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
             ranked_requirements=payload.ranked_requirements or [],
             inferred=payload.inferred or [],
             evidence_map=evidence_list,
-            triage=payload.triage or {},
             language=language,
             use_cache=context.use_cache,
             regeneration_attempt=payload.regeneration_attempt,
+            knowledge_base_summary=kb_summary,
         )
 
         resume = dict(generated.get("tailored_resume") or {})
@@ -99,6 +115,12 @@ class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
                 if m.candidate_status == "MISSING" and m.importance == "hard"
             ]
 
+        from intelligent_tailoring.content_deduper import dedupe_resume_content
+        from intelligent_tailoring.education_normalize import normalize_education_list
+
+        resume = dedupe_resume_content(resume)
+        resume["education"] = normalize_education_list(resume.get("education") or [])
+
         structure = TailoredStructure(
             professional_title=str(resume.get("professional_title") or ""),
             professional_summary=str(
@@ -127,5 +149,6 @@ class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
                 "skill_count": len(structure.skills),
                 "matched_count": len(structure.matched_requirements),
                 "missing_count": len(structure.missing_requirements),
+                "primary_llm_calls": 1,
             },
         )

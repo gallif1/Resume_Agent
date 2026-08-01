@@ -14,35 +14,36 @@ export interface TailorAgentState {
   substeps?: string[];
 }
 
-/** Weighted stage progress — four merged agents. */
+/** Weighted stage progress — prepare (code) → one LLM → final (code). */
 export const STAGE_WEIGHTS: Record<string, number> = {
-  candidate_opportunity_intelligence: 30,
-  strategy_content_selection: 25,
-  human_writing_credibility: 30,
-  final_hiring_ats_page: 15,
+  prepare_evidence: 25,
+  resume_generation_agent: 55,
+  final_hiring_ats_page: 20,
 };
 
 export const STAGE_ORDER = Object.keys(STAGE_WEIGHTS);
 
-/** Map legacy 11-agent SSE ids onto the four UI stages. */
+/** Map legacy / four-agent SSE ids onto the current UI stages. */
 export const LEGACY_STAGE_TO_MERGED: Record<string, string> = {
-  resume_knowledge: "candidate_opportunity_intelligence",
-  job_intelligence: "candidate_opportunity_intelligence",
-  company_intelligence: "candidate_opportunity_intelligence",
-  evidence_mapping: "candidate_opportunity_intelligence",
-  resume_strategy: "strategy_content_selection",
-  resume_tailoring: "strategy_content_selection",
-  claim_validation: "human_writing_credibility",
-  human_writer: "human_writing_credibility",
-  human_resume_writer: "human_writing_credibility",
-  senior_recruiter: "human_writing_credibility",
-  senior_recruiter_review: "human_writing_credibility",
+  resume_knowledge: "prepare_evidence",
+  job_intelligence: "prepare_evidence",
+  company_intelligence: "prepare_evidence",
+  evidence_mapping: "prepare_evidence",
+  resume_strategy: "prepare_evidence",
+  candidate_opportunity_intelligence: "prepare_evidence",
+  strategy_content_selection: "prepare_evidence",
+  prepare_evidence: "prepare_evidence",
+  resume_tailoring: "resume_generation_agent",
+  resume_generation_agent: "resume_generation_agent",
+  claim_validation: "resume_generation_agent",
+  human_writer: "resume_generation_agent",
+  human_resume_writer: "resume_generation_agent",
+  senior_recruiter: "resume_generation_agent",
+  senior_recruiter_review: "resume_generation_agent",
+  human_writing_credibility: "resume_generation_agent",
   hiring_manager: "final_hiring_ats_page",
   hiring_manager_simulation: "final_hiring_ats_page",
   final_polish: "final_hiring_ats_page",
-  candidate_opportunity_intelligence: "candidate_opportunity_intelligence",
-  strategy_content_selection: "strategy_content_selection",
-  human_writing_credibility: "human_writing_credibility",
   final_hiring_ats_page: "final_hiring_ats_page",
 };
 
@@ -105,15 +106,15 @@ export function buildProgressSnapshot(
 
 /** Prefer Hebrew catalog messages over raw English SSE text when possible. */
 const EN_TO_HE_HINTS: Array<[RegExp, string]> = [
-  [/reading candidate|candidate profile|original resume/i, "קורא את פרופיל המועמד…"],
-  [/analyz(ing|e).*job|job requirements/i, "מנתח את דרישות המשרה…"],
-  [/company/i, "בודק הקשר ארגוני…"],
-  [/mapping.*(evidence|resume)|evidence/i, "ממפה ראיות לדרישות…"],
-  [/opportunity intelligence|experience and the opportunity/i, "מנתח ניסיון והזדמנות…"],
-  [/selecting.*evidence|strategy|building the best resume/i, "בונה אסטרטגיית קורות חיים…"],
-  [/building.*tailor|tailor(ing)?|structure/i, "בונה את מבנה קורות החיים…"],
+  [/reading candidate|candidate profile|original resume|parsing resume/i, "קורא את פרופיל המועמד…"],
+  [/analyz(ing|e).*job|job requirements|parsing job/i, "מנתח את דרישות המשרה…"],
+  [/company|normaliz/i, "מנרמל עובדות…"],
+  [/mapping.*(evidence|resume)|evidence|preparing candidate/i, "ממפה ראיות לדרישות…"],
+  [/opportunity intelligence|experience and the opportunity/i, "מכין ראיות מועמד ומשרה…"],
+  [/selecting.*evidence|strategy|building the best resume|prepar/i, "מכין ראיות ואסטרטגיה…"],
+  [/building.*tailor|tailor(ing)?|structure|generating your tailored|one intelligent/i, "מייצר את קורות החיים המותאמים…"],
   [/validat/i, "מאמת טענות מול ראיות…"],
-  [/writing and validating|writing|persuasive|natural/i, "כותב ומאמת את קורות החיים…"],
+  [/writing and validating|writing|persuasive|natural/i, "כותב ניסוח טבעי…"],
   [/recruiter|ats|one-page|one page|final|hiring/i, "ביקורת סופית — מגייס, ATS ועמוד אחד…"],
   [/interview probability/i, "מכין קורות חיים מוכנים לראיון…"],
   [/optimized for interview/i, "קורות החיים מוכנים — מותאמים להגדלת סיכוי לראיון"],
