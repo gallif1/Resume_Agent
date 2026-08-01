@@ -1,20 +1,30 @@
-"""Progress emission helpers for the live multi-agent generation UI."""
+"""Progress emission helpers for the live four-agent generation UI."""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from intelligent_tailoring.interview_philosophy import STAGE_INDEX, TAILOR_STAGES
+from intelligent_tailoring.interview_philosophy import (
+    STAGE_INDEX,
+    STAGE_SUBSTEPS,
+    TAILOR_STAGES,
+    resolve_merged_stage,
+)
 
 ProgressCallback = Callable[[dict[str, Any]], None] | None
 
 
 class ProgressReporter:
-    """Thin wrapper that safely emits stage/decision events."""
+    """Thin wrapper that safely emits stage/decision events.
+
+    Legacy specialist agent ids are remapped to the four merged UI stages so
+    callers can keep emitting fine-grained internal substeps.
+    """
 
     def __init__(self, callback: ProgressCallback = None) -> None:
         self.callback = callback
         self.total = len(TAILOR_STAGES)
+        self._last_substep: dict[str, str] = {}
 
     def emit(
         self,
@@ -28,16 +38,26 @@ class ProgressReporter:
     ) -> None:
         if not self.callback:
             return
+        merged = resolve_merged_stage(stage)
+        # Preserve original specialist id as substep metadata for the UI
+        legacy_id = agent_id or stage
+        substeps = list(STAGE_SUBSTEPS.get(merged) or [])
         payload: dict[str, Any] = {
             "event": "stage",
-            "stage": stage,
-            "agent_id": agent_id or stage,
+            "stage": merged,
+            "agent_id": merged,
+            "legacy_agent_id": legacy_id,
             "status": status,
             "message": message,
-            "index": STAGE_INDEX.get(stage, 0),
+            "index": STAGE_INDEX.get(merged, 0),
             "total": self.total,
+            "substeps": substeps,
+            "stage_of": f"Stage {STAGE_INDEX.get(merged, 0) + 1} of {self.total}",
             **extra,
         }
+        if status in ("started", "running", "completed"):
+            self._last_substep[merged] = message
+            payload["current_substep"] = message
         try:
             self.callback(payload)
         except Exception:
@@ -61,14 +81,17 @@ class ProgressReporter:
     def decision(self, stage: str, decision: dict[str, Any]) -> None:
         if not self.callback:
             return
+        merged = resolve_merged_stage(stage)
         payload = {
             "event": "decision",
-            "stage": stage,
+            "stage": merged,
+            "agent_id": merged,
             "status": "info",
             "message": decision.get("text") or decision.get("reason") or "",
             "decision": decision,
-            "index": STAGE_INDEX.get(stage, 0),
+            "index": STAGE_INDEX.get(merged, 0),
             "total": self.total,
+            "stage_of": f"Stage {STAGE_INDEX.get(merged, 0) + 1} of {self.total}",
         }
         try:
             self.callback(payload)

@@ -154,7 +154,7 @@ def test_tailor_stream_run_lifecycle():
             "status": "started",
             "message": "Selecting strongest evidence…",
             "index": 4,
-            "total": 11,
+            "total": 4,
         }
     )
     cb(

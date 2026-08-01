@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from intelligent_tailoring.agents import AGENT_CATALOG, build_agent_instances
+from intelligent_tailoring.agents.orchestrator import LEGACY_AGENT_CATALOG
 from intelligent_tailoring.agents.base import AgentContext
 from intelligent_tailoring.agents.claim_validation_agent import ClaimValidationAgent
 from intelligent_tailoring.agents.company_intelligence_agent import (
@@ -195,33 +196,28 @@ def _jd_text(job: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_catalog_has_ten_specialists():
-    assert len(AGENT_CATALOG) == 10
+def test_agent_catalog_has_four_merged_agents():
+    assert len(AGENT_CATALOG) == 4
     ids = [a[0] for a in AGENT_CATALOG]
     assert ids == [
-        "resume_knowledge",
-        "job_intelligence",
-        "company_intelligence",
-        "evidence_mapping",
-        "resume_strategy",
-        "resume_tailoring",
-        "claim_validation",
-        "human_resume_writer",
-        "senior_recruiter_review",
-        "hiring_manager_simulation",
+        "candidate_opportunity_intelligence",
+        "strategy_content_selection",
+        "human_writing_credibility",
+        "final_hiring_ats_page",
     ]
 
 
-def test_build_agent_instances_are_independently_callable():
+def test_legacy_specialists_remain_callable():
+    assert len(LEGACY_AGENT_CATALOG) == 10
     agents = build_agent_instances()
-    assert set(agents) == {a[0] for a in AGENT_CATALOG}
+    assert set(agents) == {a[0] for a in LEGACY_AGENT_CATALOG}
     for agent in agents.values():
         assert hasattr(agent, "run")
         assert agent.responsibility
 
 
-def test_pipeline_version_is_multi_agent():
-    assert PIPELINE_VERSION.startswith("multi_agent_v1")
+def test_pipeline_version_is_four_agent():
+    assert PIPELINE_VERSION.startswith("four_agent_v2")
 
 
 # ---------------------------------------------------------------------------

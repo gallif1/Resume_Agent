@@ -1,7 +1,8 @@
 """Pre-export quality gates for Intelligent Resume Tailoring.
 
-Gates must pass before a resume is persisted for download. Soft warnings are
-allowed; unsupported claims, schema failures, and empty summaries are not.
+Gates classify into critical (block download) vs warning (preview OK).
+Unsupported claims, schema failures, and empty summaries are critical.
+Preview must remain available even when critical gates fail (review mode).
 """
 
 from __future__ import annotations
@@ -9,7 +10,12 @@ from __future__ import annotations
 from typing import Any
 
 from intelligent_tailoring.claim_validator import statement_supported_by_evidence
+from intelligent_tailoring.gate_severity import (
+    classify_quality_gates,
+    should_block_download,
+)
 from intelligent_tailoring.scope_validator import (
+    _resolve_project_entry_id,
     extract_tech_mentions,
     has_unsupported_impact,
     validate_bullet_tech_scope,
@@ -106,13 +112,14 @@ def evaluate_quality_gates(
     require_one_page: bool = False,
     pdf_bytes: bytes | None = None,
 ) -> dict[str, Any]:
-    """Evaluate hard export gates. ``passed`` must be True to export."""
+    """Evaluate export gates and classify severity for preview vs download."""
     failures: list[str] = []
     warnings: list[str] = []
     resume = tailored_resume if isinstance(tailored_resume, dict) else {}
     facts = list(facts or [])
     change_log = list(change_log or [])
     source = original_resume_text or ""
+    _ = original_roles  # reserved for future role-scope gates
 
     summary = str(
         resume.get("professional_summary") or resume.get("summary") or ""
@@ -144,29 +151,15 @@ def evaluate_quality_gates(
             failures.append(f"unsupported_entity:{section}:{reason}")
             unsupported += 1
 
-    # Cross-entry tech leakage against KB facts
+    # Cross-entry tech leakage against KB facts — use shared project resolver
+    # so renamed titles (Restaurant Menu Ordering App) map to Restaurant App.
     orig_projects = list(original_projects or [])
     for idx, proj in enumerate(resume.get("projects") or []):
         if not isinstance(proj, dict):
             continue
         name = str(proj.get("name") or "")
-        name_l = name.lower()
-        entry_id = str(proj.get("source_entry_id") or f"project_{idx}")
-        orig: dict[str, Any] = {}
-        for o_idx, op in enumerate(orig_projects):
-            if str(op.get("name") or "").lower() == name_l and name_l:
-                orig = op
-                entry_id = f"project_{o_idx}"
-                break
-        if not orig and idx < len(orig_projects):
-            orig = orig_projects[idx]
-        entry_text = " ".join(
-            [
-                str(orig.get("name") or name),
-                str(orig.get("description") or ""),
-                " ".join(str(b) for b in (orig.get("bullets") or [])),
-                " ".join(str(t) for t in (orig.get("technologies") or [])),
-            ]
+        entry_id, _orig, entry_text = _resolve_project_entry_id(
+            proj, idx, orig_projects, facts
         )
         for bullet in list(proj.get("bullets") or []) + [
             str(proj.get("description") or "")
@@ -189,6 +182,10 @@ def evaluate_quality_gates(
         all_source_tech |= extract_tech_mentions(str(f.get("original_text") or ""))
         for skill in f.get("explicit_skills") or []:
             all_source_tech |= extract_tech_mentions(str(skill))
+        # Also bind normalized_value technology facts
+        nv = str(f.get("normalized_value") or "")
+        if nv:
+            all_source_tech |= extract_tech_mentions(nv)
     all_source_tech |= extract_tech_mentions(source)
     for skill in resume.get("skills") or []:
         for tech in extract_tech_mentions(str(skill)):
@@ -231,22 +228,25 @@ def evaluate_quality_gates(
             "pressure": estimate_page_pressure(resume),
         }
         if not ok_page:
-            failures.append(page_reason if str(page_reason).startswith("page_count:") else f"page_count:{page_reason}")
+            failures.append(
+                page_reason
+                if str(page_reason).startswith("page_count:")
+                else f"page_count:{page_reason}"
+            )
 
     # Deduplicate failures
     unique_failures = list(dict.fromkeys(failures))
-    passed = len(unique_failures) == 0
-    return {
-        "passed": passed,
+    result = {
+        "passed": len(unique_failures) == 0,
         "failures": unique_failures,
         "warnings": warnings,
         "unsupported_claim_count": unsupported,
-        "gate_version": "quality_gates_v2",
+        "gate_version": "quality_gates_v3",
         "one_page": page_meta,
     }
+    return classify_quality_gates(result)
 
 
 def should_block_export(gates: dict[str, Any] | None) -> bool:
-    if not gates:
-        return True
-    return not bool(gates.get("passed"))
+    """Block download/export on critical failures only (preview stays allowed)."""
+    return should_block_download(gates)

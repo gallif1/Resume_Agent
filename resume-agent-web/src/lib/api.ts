@@ -448,6 +448,21 @@ export interface TailoredCvResponse {
   agent_trace?: Array<Record<string, unknown>>;
   one_page?: Record<string, unknown> | null;
   sections_changed?: string[];
+  quality_gates?: {
+    passed?: boolean;
+    failures?: string[];
+    warnings?: string[];
+    critical_failures?: string[];
+    download_blocked?: boolean;
+    preview_allowed?: boolean;
+    review_mode?: boolean;
+    user_messages?: Array<{ code?: string; severity?: string; message?: string }>;
+  } | null;
+  preview_allowed?: boolean;
+  download_blocked?: boolean;
+  review_mode?: boolean;
+  gate_user_messages?: Array<{ code?: string; severity?: string; message?: string }>;
+  pipeline_metrics?: Record<string, unknown> | null;
 }
 
 export interface TailorDecision {

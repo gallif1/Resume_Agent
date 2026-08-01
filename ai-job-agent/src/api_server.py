@@ -114,6 +114,7 @@ from tailor_cv_service import (
     evaluate_job_for_cv,
     extract_cv_markdown_for_copy,
     load_saved_tailored_cv,
+    prepare_for_preview,
     tailor_cv_for_job,
 )
 
@@ -1741,6 +1742,12 @@ def _tailored_cv_response(
             "sections_changed"
         )
         or [],
+        "quality_gates": result.get("quality_gates") or {},
+        "preview_allowed": bool(result.get("preview_allowed", True)),
+        "download_blocked": bool(result.get("download_blocked")),
+        "review_mode": bool(result.get("review_mode")),
+        "gate_user_messages": result.get("gate_user_messages") or [],
+        "pipeline_metrics": result.get("pipeline_metrics") or {},
     }
 
 
@@ -1891,6 +1898,67 @@ def get_resume_themes(user: dict = Depends(auth.get_current_user)):
     """List ATS-safe resume PDF themes (presentation only; content unchanged)."""
     del user
     return {"themes": list_themes(), "default": "modern_ats"}
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/preview")
+@app.get("/tailored-resumes/{cv_id}/{job_id}/preview")
+def preview_tailored_cv(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Load the generated resume for review without running export gates.
+
+    Critical quality failures open review mode and disable download, but never
+    prevent inspecting the generated content.
+    """
+    db.ensure_multi_cv_storage()
+    if cv_id != db.WORKSPACE_CV_ID:
+        _require_owned_cv(cv_id, user)
+
+    saved = load_saved_tailored_cv(cv_id, job_id)
+    if not saved and cv_id != db.WORKSPACE_CV_ID:
+        saved = load_saved_tailored_cv(db.WORKSPACE_CV_ID, job_id)
+    if not saved:
+        raise HTTPException(
+            status_code=404,
+            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
+        )
+
+    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+    report: dict[str, Any] = {}
+    try:
+        report_row = db.get_tailored_resume_report(
+            cv_id=cv_id, job_id=job_id, db_path=cv_db
+        )
+        if report_row and isinstance(report_row.get("report"), dict):
+            report = prepare_for_preview(report_row["report"])
+    except Exception:
+        report = prepare_for_preview({})
+
+    return {
+        "cv_id": cv_id,
+        "job_id": job_id,
+        "markdown": extract_cv_markdown_for_copy(saved),
+        "preview_allowed": True,
+        "download_blocked": bool(report.get("download_blocked")),
+        "review_mode": bool(report.get("review_mode")),
+        "quality_gates": report.get("quality_gates") or {},
+        "gate_user_messages": report.get("gate_user_messages") or [],
+        "tailored_resume": report.get("tailored_resume") or {},
+    }
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/export")
+@app.post("/tailored-resumes/{cv_id}/{job_id}/export")
+def export_tailored_cv(
+    cv_id: str,
+    job_id: int,
+    theme: str | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Export-only path: run mandatory gates, then produce the downloadable PDF."""
+    return download_tailored_cv_pdf(cv_id=cv_id, job_id=job_id, theme=theme, user=user)
 
 
 @app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf")

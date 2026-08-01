@@ -50,7 +50,28 @@ logger = logging.getLogger("intelligent_tailoring.orchestrator")
 
 # Avoid circular imports: pipeline imports attach_quality_intelligence from here.
 
+# Four merged LLM agents (legacy specialists remain as internal modules).
 AGENT_CATALOG: tuple[tuple[str, str], ...] = (
+    (
+        "candidate_opportunity_intelligence",
+        "Extract candidate facts, analyze job/company, map evidence",
+    ),
+    (
+        "strategy_content_selection",
+        "Decide strategy and select one-page resume structure",
+    ),
+    (
+        "human_writing_credibility",
+        "Validate claims, write naturally, recruiter credibility review",
+    ),
+    (
+        "final_hiring_ats_page",
+        "Hiring-manager fit, ATS score, one-page enforcement",
+    ),
+)
+
+# Legacy specialist catalog kept for audits / tests
+LEGACY_AGENT_CATALOG: tuple[tuple[str, str], ...] = (
     ("resume_knowledge", "Parse candidate facts into ResumeKnowledgeBase"),
     ("job_intelligence", "Extract structured JobProfile from the JD"),
     ("company_intelligence", "Extract CompanyProfile without fabrication"),
@@ -390,6 +411,7 @@ def attach_quality_intelligence(
 # Re-export input types for tests
 __all__ = [
     "AGENT_CATALOG",
+    "LEGACY_AGENT_CATALOG",
     "PIPELINE_VERSION",
     "attach_quality_intelligence",
     "build_agent_instances",

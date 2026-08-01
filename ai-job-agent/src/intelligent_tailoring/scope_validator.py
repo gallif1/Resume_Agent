@@ -13,6 +13,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from intelligent_tailoring.normalization import (
+    canonical_skill,
+    project_names_match,
+    resolve_original_project,
+)
+
 _IMPACT_VERBS = re.compile(
     r"\b("
     r"improv(?:e|ed|ing|es)|enhanc(?:e|ed|ing|es)|increas(?:e|ed|ing|es)|"
@@ -77,7 +83,11 @@ def _norm(text: str) -> str:
 
 
 def extract_tech_mentions(text: str) -> set[str]:
-    return {_norm(m.group(0)) for m in _TECH_TOKEN_RE.finditer(text or "")}
+    """Return canonical tech ids mentioned in text (case/alias normalized)."""
+    return {
+        canonical_skill(m.group(0)) or _norm(m.group(0))
+        for m in _TECH_TOKEN_RE.finditer(text or "")
+    }
 
 
 def facts_for_entry(
@@ -324,34 +334,70 @@ def _resolve_project_entry_id(
     orig_projects: list[dict[str, Any]],
     facts: list[dict[str, Any]] | list[Any],
 ) -> tuple[str, dict[str, Any], str]:
-    """Map a tailored project to its source entry id by name, not list index."""
+    """Map a tailored project to its source entry id by stable identity.
+
+    Uses ``source_entry_id`` when present, soft project-name matching
+    (``Restaurant App`` ↔ ``Restaurant Menu Ordering App``), and bidirectional
+    fact-context matching. Falls back to index only as a last resort.
+    """
     name = str(proj.get("name") or "").strip()
     name_l = name.lower()
-    orig: dict[str, Any] = {}
-    entry_id = f"project_{idx}"
+    preferred = str(proj.get("source_entry_id") or "").strip()
 
-    for o_idx, op in enumerate(orig_projects):
-        if str(op.get("name") or "").strip().lower() == name_l and name_l:
-            orig = op
+    o_idx, orig = resolve_original_project(
+        proj, list(orig_projects or []), index=idx
+    )
+    if o_idx >= 0:
+        entry_id = preferred if preferred.startswith("project_") else f"project_{o_idx}"
+        # Prefer the resolved original index when preferred id is missing/stale
+        if not preferred.startswith("project_"):
             entry_id = f"project_{o_idx}"
-            break
+        elif preferred.startswith("project_"):
+            try:
+                p_idx = int(preferred.split("_", 1)[1])
+                if 0 <= p_idx < len(orig_projects or []):
+                    entry_id = preferred
+                    orig = orig_projects[p_idx]
+                    o_idx = p_idx
+            except (TypeError, ValueError):
+                entry_id = f"project_{o_idx}"
     else:
-        if idx < len(orig_projects):
-            orig = orig_projects[idx]
+        entry_id = preferred if preferred.startswith("project_") else f"project_{idx}"
+        orig = orig if orig else (
+            orig_projects[idx]
+            if idx < len(orig_projects or [])
+            else {}
+        )
 
-    # Prefer fact-backed entry id when available
+    # Prefer fact-backed entry id when available (bidirectional name match).
+    # Never treat empty context/text as a match ("" in name is True in Python).
     for f in facts or []:
         data = f if isinstance(f, dict) else (f.to_dict() if hasattr(f, "to_dict") else {})
         if str(data.get("source_section") or "") != "projects":
             continue
         sid = str(data.get("source_entry_id") or "")
-        ctx = str(data.get("context") or data.get("organization") or "").lower()
-        text = str(data.get("original_text") or "").lower()
-        if name_l and (name_l == ctx or name_l in text or name_l in ctx):
-            if sid.startswith("project_"):
-                entry_id = sid
-                break
+        ctx = str(data.get("context") or data.get("organization") or "").strip()
+        text = str(data.get("original_text") or "").strip()
+        if not sid.startswith("project_"):
+            continue
+        matched = False
+        if name_l and ctx and project_names_match(name, ctx):
+            matched = True
+        elif name_l and ctx and (name_l in ctx.lower() or ctx.lower() in name_l):
+            matched = True
+        elif name_l and text and name_l in text.lower():
+            matched = True
+        if matched:
+            entry_id = sid
+            try:
+                fact_idx = int(sid.split("_", 1)[1])
+                if 0 <= fact_idx < len(orig_projects or []):
+                    orig = orig_projects[fact_idx]
+            except (TypeError, ValueError):
+                pass
+            break
 
+    # Always rebuild entry_text from the resolved original project
     entry_text = " ".join(
         [
             str(orig.get("name") or name),

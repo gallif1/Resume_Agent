@@ -121,7 +121,7 @@ def begin_run(
             "status": "started",
             "message": "AI team starting work on your resume…",
             "index": 0,
-            "total": 11,
+            "total": 4,
         },
     )
     return rid

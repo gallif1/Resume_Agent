@@ -11,24 +11,45 @@ export interface TailorAgentState {
   details?: string[];
   startedAt?: string | null;
   completedAt?: string | null;
+  substeps?: string[];
 }
 
-/** Weighted stage progress — one source of truth for % and agent counts. */
+/** Weighted stage progress — four merged agents. */
 export const STAGE_WEIGHTS: Record<string, number> = {
-  resume_knowledge: 10,
-  job_intelligence: 10,
-  company_intelligence: 5,
-  evidence_mapping: 15,
-  resume_strategy: 10,
-  resume_tailoring: 15,
-  claim_validation: 10,
-  human_writer: 10,
-  senior_recruiter: 5,
-  hiring_manager: 5,
-  final_polish: 5,
+  candidate_opportunity_intelligence: 30,
+  strategy_content_selection: 25,
+  human_writing_credibility: 30,
+  final_hiring_ats_page: 15,
 };
 
 export const STAGE_ORDER = Object.keys(STAGE_WEIGHTS);
+
+/** Map legacy 11-agent SSE ids onto the four UI stages. */
+export const LEGACY_STAGE_TO_MERGED: Record<string, string> = {
+  resume_knowledge: "candidate_opportunity_intelligence",
+  job_intelligence: "candidate_opportunity_intelligence",
+  company_intelligence: "candidate_opportunity_intelligence",
+  evidence_mapping: "candidate_opportunity_intelligence",
+  resume_strategy: "strategy_content_selection",
+  resume_tailoring: "strategy_content_selection",
+  claim_validation: "human_writing_credibility",
+  human_writer: "human_writing_credibility",
+  human_resume_writer: "human_writing_credibility",
+  senior_recruiter: "human_writing_credibility",
+  senior_recruiter_review: "human_writing_credibility",
+  hiring_manager: "final_hiring_ats_page",
+  hiring_manager_simulation: "final_hiring_ats_page",
+  final_polish: "final_hiring_ats_page",
+  candidate_opportunity_intelligence: "candidate_opportunity_intelligence",
+  strategy_content_selection: "strategy_content_selection",
+  human_writing_credibility: "human_writing_credibility",
+  final_hiring_ats_page: "final_hiring_ats_page",
+};
+
+export function resolveMergedStage(stage: string | null | undefined): string | null {
+  if (!stage || stage === "start") return null;
+  return LEGACY_STAGE_TO_MERGED[stage] || stage;
+}
 
 export interface GenerationProgressSnapshot {
   agents: TailorAgentState[];
@@ -37,6 +58,7 @@ export interface GenerationProgressSnapshot {
   overallProgress: number;
   currentAgentId: string | null;
   currentMessage: string | null;
+  stageOfLabel: string | null;
 }
 
 export function computeWeightedProgress(agents: TailorAgentState[]): number {
@@ -68,6 +90,7 @@ export function buildProgressSnapshot(
   if (options?.complete || (!options?.active && completedCount === agents.length)) {
     overall = 100;
   }
+  const runningIndex = running ? agents.findIndex((a) => a.id === running.id) : -1;
   return {
     agents,
     completedCount,
@@ -75,22 +98,23 @@ export function buildProgressSnapshot(
     overallProgress: overall,
     currentAgentId: running?.id ?? null,
     currentMessage: running?.message ?? null,
+    stageOfLabel:
+      runningIndex >= 0 ? `Stage ${runningIndex + 1} of ${agents.length}` : null,
   };
 }
 
 /** Prefer Hebrew catalog messages over raw English SSE text when possible. */
 const EN_TO_HE_HINTS: Array<[RegExp, string]> = [
-  [/reading original resume/i, "קורא את קורות החיים המקוריים…"],
-  [/analyz(ing|e).*job/i, "מנתח את תיאור המשרה…"],
-  [/company/i, "מבין את הקשר הארגוני…"],
-  [/mapping.*(evidence|resume)/i, "ממפה ראיות לדרישות המשרה…"],
-  [/selecting.*evidence|strategy/i, "בוחר את הראיות החזקות ביותר…"],
-  [/building.*tailor|tailor(ing)?/i, "בונה את הנרטיב המותאם…"],
-  [/validat/i, "מוודא שכל טענה נתמכת בראיות…"],
-  [/writing|persuasive|natural/i, "מנסח ניסוח טבעי ומשכנע…"],
-  [/recruiter/i, "בודק כמו מגייס עמוס…"],
-  [/hiring manager/i, "בוחן התאמה כמנהל גיוס…"],
-  [/final|one-page|one page|polish/i, "מכין קורות חיים בעמוד אחד…"],
+  [/reading candidate|candidate profile|original resume/i, "קורא את פרופיל המועמד…"],
+  [/analyz(ing|e).*job|job requirements/i, "מנתח את דרישות המשרה…"],
+  [/company/i, "בודק הקשר ארגוני…"],
+  [/mapping.*(evidence|resume)|evidence/i, "ממפה ראיות לדרישות…"],
+  [/opportunity intelligence|experience and the opportunity/i, "מנתח ניסיון והזדמנות…"],
+  [/selecting.*evidence|strategy|building the best resume/i, "בונה אסטרטגיית קורות חיים…"],
+  [/building.*tailor|tailor(ing)?|structure/i, "בונה את מבנה קורות החיים…"],
+  [/validat/i, "מאמת טענות מול ראיות…"],
+  [/writing and validating|writing|persuasive|natural/i, "כותב ומאמת את קורות החיים…"],
+  [/recruiter|ats|one-page|one page|final|hiring/i, "ביקורת סופית — מגייס, ATS ועמוד אחד…"],
   [/interview probability/i, "מכין קורות חיים מוכנים לראיון…"],
   [/optimized for interview/i, "קורות החיים מוכנים — מותאמים להגדלת סיכוי לראיון"],
 ];
@@ -115,8 +139,9 @@ export function applyStageEventToAgents(
   agents: TailorAgentState[],
   event: TailorStageEvent
 ): TailorAgentState[] {
-  const stage = event.stage || event.agent_id;
-  if (!stage || stage === "start") return agents;
+  const rawStage = event.stage || event.agent_id;
+  const stage = resolveMergedStage(rawStage);
+  if (!stage) return agents;
   const idx = agents.findIndex((a) => a.id === stage);
   if (idx < 0) return agents;
   const next = agents.map((a) => ({ ...a }));
@@ -127,11 +152,16 @@ export function applyStageEventToAgents(
   }
   const status = event.status;
   const localized = localizeAgentMessage(event.message, next[idx].message);
+  const details = [...(next[idx].details || [])];
+  if (localized && !details.includes(localized)) {
+    details.push(localized);
+  }
   if (status === "started" || status === "running") {
     next[idx] = {
       ...next[idx],
       status: "running",
       message: localized,
+      details: details.slice(-6),
       // Indeterminate — do not invent precise substep %
       progress: 0,
     };
@@ -140,6 +170,7 @@ export function applyStageEventToAgents(
       ...next[idx],
       status: "completed",
       message: localized,
+      details: details.slice(-6),
       progress: 100,
     };
   } else if (status === "failed" || status === "retrying") {

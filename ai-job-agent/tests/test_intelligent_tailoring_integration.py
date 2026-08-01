@@ -554,16 +554,17 @@ def test_pipeline_cache_reuses_result(monkeypatch: pytest.MonkeyPatch, tmp_path)
 
 
 def test_no_generation_path_skips_claim_validator():
-    """Guard: pipeline module always invokes claim validation + human writer."""
+    """Guard: pipeline always invokes claim validation + merged writing agent."""
     import inspect
     import intelligent_tailoring.pipeline as pipeline_mod
 
-    # Production entry delegates to the multi-agent implementation.
+    # Production entry delegates to the four-agent implementation.
     entry = inspect.getsource(pipeline_mod.run_intelligent_tailoring)
     assert "run_intelligent_tailoring_agents" in entry
 
     source = inspect.getsource(pipeline_mod.run_intelligent_tailoring_agents)
     assert "ClaimValidationAgent" in source or "run_claim_validation" in source
     assert "claim_validator_passed" in source
-    assert "run_human_writing_stage" in source
+    assert "run_merged_writing_review" in source
     assert "writing_report" in source
+    assert "four_agent" in source or "candidate_opportunity_intelligence" in source
