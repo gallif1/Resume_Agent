@@ -6,12 +6,14 @@ import json
 from typing import Any
 
 from intelligent_tailoring.llm_utils import call_stage_json
+from intelligent_tailoring.prompts.merged_prompts import (
+    AGENT_2_SYSTEM,
+    MERGED_AGENT_2_PROMPT_VERSION,
+)
 from intelligent_tailoring.prompts.stage_prompts import (
-    DEEP_TAILOR_REWRITE_SYSTEM,
     build_deep_tailor_rewrite_user_prompt,
 )
 from intelligent_tailoring.schemas import (
-    PIPELINE_VERSION,
     InferredCompetency,
     SchemaValidationError,
     sanitize_change_log_raw,
@@ -44,10 +46,14 @@ def rewrite_resume_with_strategy(
     use_cache: bool = True,
     regeneration_attempt: int = 0,
 ) -> dict[str, Any]:
-    """Rewrite summary, bullets, and project descriptions per tailoring strategy."""
+    """Rewrite summary, bullets, and project descriptions per tailoring strategy.
+
+    Uses the composed Agent 2 prompt (strategy + triage + deep tailor rules).
+    Counts as one primary LLM call for the four-agent pipeline.
+    """
     cache_suffix = f"|regen{regeneration_attempt}" if regeneration_attempt else ""
     raw = call_stage_json(
-        system_prompt=DEEP_TAILOR_REWRITE_SYSTEM,
+        system_prompt=AGENT_2_SYSTEM,
         user_prompt=build_deep_tailor_rewrite_user_prompt(
             resume_facts=resume_facts_for_prompt(resume_facts),
             rebuilt_resume_json=json.dumps(rebuilt_resume, ensure_ascii=False, indent=2),
@@ -66,12 +72,13 @@ def rewrite_resume_with_strategy(
         ),
         validate=_validate,
         use_cache=use_cache and regeneration_attempt == 0,
-        cache_namespace=f"{PIPELINE_VERSION}_deep_rewrite",
+        cache_namespace=f"{MERGED_AGENT_2_PROMPT_VERSION}_strategy_content",
         cache_payload=(
             f"{language}|{strategy.get('job_family')}|"
             f"{resume_facts_for_prompt(resume_facts)[:2500]}{cache_suffix}"
         ),
         temperature=0.25 if regeneration_attempt else 0.2,
+        count_as_primary="strategy_content_selection",
     )
 
     resume = validate_tailored_resume(raw["tailored_resume"])

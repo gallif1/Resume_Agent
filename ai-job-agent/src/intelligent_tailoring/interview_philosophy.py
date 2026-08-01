@@ -56,99 +56,99 @@ If not YES, regenerate the weak sections.
 Never invent facts. Stay profession-agnostic.
 """.strip()
 
-# Live UI stage catalog — order matches the production pipeline.
+# Live UI stage catalog — four merged agents (legacy 11-agent ids map into these).
 TAILOR_STAGES: list[dict[str, str]] = [
     {
-        "id": "resume_knowledge",
-        "agent_id": "resume_knowledge",
-        "label_en": "Resume Knowledge Agent",
-        "label_he": "סוכן ידע קורות החיים",
-        "message_en": "Reading original resume…",
-        "message_he": "קורא את קורות החיים המקוריים…",
+        "id": "candidate_opportunity_intelligence",
+        "agent_id": "candidate_opportunity_intelligence",
+        "label_en": "Analyzing your experience and the opportunity",
+        "label_he": "מנתח את הניסיון שלך ואת ההזדמנות",
+        "message_en": "Reading candidate profile, job, company, and evidence…",
+        "message_he": "קורא פרופיל מועמד, משרה, חברה וראיות…",
     },
     {
-        "id": "job_intelligence",
-        "agent_id": "job_intelligence",
-        "label_en": "Job Intelligence Agent",
-        "label_he": "סוכן ניתוח משרה",
-        "message_en": "Analyzing the job description…",
-        "message_he": "מנתח את תיאור המשרה…",
+        "id": "strategy_content_selection",
+        "agent_id": "strategy_content_selection",
+        "label_en": "Building the best resume strategy",
+        "label_he": "בונה את אסטרטגיית קורות החיים",
+        "message_en": "Selecting evidence and structuring the one-page narrative…",
+        "message_he": "בוחר ראיות ובונה נרטיב בעמוד אחד…",
     },
     {
-        "id": "company_intelligence",
-        "agent_id": "company_intelligence",
-        "label_en": "Company Intelligence Agent",
-        "label_he": "סוכן מודיעין חברה",
-        "message_en": "Understanding company context…",
-        "message_he": "מבין את הקשר הארגוני…",
+        "id": "human_writing_credibility",
+        "agent_id": "human_writing_credibility",
+        "label_en": "Writing and validating your resume",
+        "label_he": "כותב ומאמת את קורות החיים",
+        "message_en": "Validating claims and writing natural recruiter-ready prose…",
+        "message_he": "מאמת טענות ומנסח ניסוח טבעי למגייסים…",
     },
     {
-        "id": "evidence_mapping",
-        "agent_id": "evidence_mapping",
-        "label_en": "Evidence Mapping Agent",
-        "label_he": "סוכן מיפוי ראיות",
-        "message_en": "Mapping resume evidence to requirements…",
-        "message_he": "ממפה ראיות מהקורות חיים לדרישות…",
-    },
-    {
-        "id": "resume_strategy",
-        "agent_id": "resume_strategy",
-        "label_en": "Resume Strategy Agent",
-        "label_he": "סוכן אסטרטגיית קורות חיים",
-        "message_en": "Selecting the strongest evidence…",
-        "message_he": "בוחר את הראיות החזקות ביותר…",
-    },
-    {
-        "id": "resume_tailoring",
-        "agent_id": "resume_tailoring",
-        "label_en": "Resume Tailoring Agent",
-        "label_he": "סוכן התאמת תוכן",
-        "message_en": "Building the tailored resume structure…",
-        "message_he": "בונה את מבנה קורות החיים המותאם…",
-    },
-    {
-        "id": "claim_validation",
-        "agent_id": "claim_validation",
-        "label_en": "Claim Validation Agent",
-        "label_he": "סוכן אימות טענות",
-        "message_en": "Validating every claim against evidence…",
-        "message_he": "מאמת כל טענה מול הראיות…",
-    },
-    {
-        "id": "human_writer",
-        "agent_id": "human_resume_writer",
-        "label_en": "Human Resume Writer",
-        "label_he": "כותב קורות חיים בכיר",
-        "message_en": "Writing natural, persuasive wording…",
-        "message_he": "מנסח ניסוח טבעי ומשכנע…",
-    },
-    {
-        "id": "senior_recruiter",
-        "agent_id": "senior_recruiter_review",
-        "label_en": "Senior Recruiter Review",
-        "label_he": "ביקורת מגייס בכיר",
-        "message_en": "Reviewing as a busy recruiter…",
-        "message_he": "בודק כמו מגייס עמוס…",
-    },
-    {
-        "id": "hiring_manager",
-        "agent_id": "hiring_manager_simulation",
-        "label_en": "Hiring Manager Simulation",
-        "label_he": "סימולציית מנהל גיוס",
-        "message_en": "Challenging fit as a hiring manager…",
-        "message_he": "בוחן התאמה כמנהל גיוס…",
-    },
-    {
-        "id": "final_polish",
-        "agent_id": "final_polish",
-        "label_en": "Final Polish & One-Page",
-        "label_he": "גימור סופי ועמוד אחד",
-        "message_en": "Preparing the final one-page resume…",
-        "message_he": "מכין את קורות החיים הסופיים בעמוד אחד…",
+        "id": "final_hiring_ats_page",
+        "agent_id": "final_hiring_ats_page",
+        "label_en": "Final recruiter, ATS, and one-page review",
+        "label_he": "ביקורת סופית — מגייס, ATS ועמוד אחד",
+        "message_en": "Hiring-manager fit, ATS alignment, and one-page enforcement…",
+        "message_he": "בודק התאמה, ATS ועמוד אחד…",
     },
 ]
 
 STAGE_INDEX = {s["id"]: i for i, s in enumerate(TAILOR_STAGES)}
+
+# Legacy specialist / tool stage ids → merged UI stage
+LEGACY_STAGE_TO_MERGED: dict[str, str] = {
+    "resume_knowledge": "candidate_opportunity_intelligence",
+    "job_intelligence": "candidate_opportunity_intelligence",
+    "company_intelligence": "candidate_opportunity_intelligence",
+    "evidence_mapping": "candidate_opportunity_intelligence",
+    "resume_strategy": "strategy_content_selection",
+    "resume_tailoring": "strategy_content_selection",
+    "claim_validation": "human_writing_credibility",
+    "human_writer": "human_writing_credibility",
+    "human_resume_writer": "human_writing_credibility",
+    "senior_recruiter": "human_writing_credibility",
+    "senior_recruiter_review": "human_writing_credibility",
+    "hiring_manager": "final_hiring_ats_page",
+    "hiring_manager_simulation": "final_hiring_ats_page",
+    "final_polish": "final_hiring_ats_page",
+    "final_quality": "final_hiring_ats_page",
+    "ats_scoring": "final_hiring_ats_page",
+    "one_page_enforcement": "final_hiring_ats_page",
+    # Also accept already-merged ids
+    "candidate_opportunity_intelligence": "candidate_opportunity_intelligence",
+    "strategy_content_selection": "strategy_content_selection",
+    "human_writing_credibility": "human_writing_credibility",
+    "final_hiring_ats_page": "final_hiring_ats_page",
+}
+
+STAGE_SUBSTEPS: dict[str, tuple[str, ...]] = {
+    "candidate_opportunity_intelligence": (
+        "Reading candidate profile",
+        "Analyzing job requirements",
+        "Reviewing company context",
+        "Mapping evidence",
+    ),
+    "strategy_content_selection": (
+        "Selecting strongest evidence",
+        "Building tailored structure",
+    ),
+    "human_writing_credibility": (
+        "Validating claims",
+        "Writing natural prose",
+        "Recruiter credibility review",
+    ),
+    "final_hiring_ats_page": (
+        "Hiring manager simulation",
+        "ATS scoring",
+        "One-page enforcement",
+    ),
+}
+
+
+def resolve_merged_stage(stage: str | None) -> str:
+    """Map any legacy or merged stage id to one of the four UI stages."""
+    if not stage:
+        return TAILOR_STAGES[0]["id"]
+    return LEGACY_STAGE_TO_MERGED.get(stage, stage)
 
 
 def select_top_interview_reasons(

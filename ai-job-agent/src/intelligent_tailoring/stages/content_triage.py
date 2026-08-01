@@ -21,15 +21,81 @@ def _validate(data: dict[str, Any]) -> None:
         raise SchemaValidationError("triage must be a list")
 
 
+def run_deterministic_content_triage(
+    *,
+    resume_facts: dict[str, Any],
+    ranked_requirements: list[dict[str, Any]] | None = None,
+    language: str = "en",
+) -> dict[str, Any]:
+    """Heuristic triage without an LLM call (merged into Agent 2 rewrite prompt)."""
+    _ = ranked_requirements, language
+    if resume_facts.get("sparse"):
+        return {"triage": [], "section_order": [], "sparse": True, "deterministic": True}
+    section_order = [
+        "professional_summary",
+        "skills",
+        "experience",
+        "projects",
+        "education",
+        "certifications",
+    ]
+    triage: list[dict[str, Any]] = []
+    for role in resume_facts.get("experience_roles") or []:
+        if not isinstance(role, dict):
+            continue
+        for bullet in role.get("bullets") or []:
+            text = str(bullet).strip()
+            if text:
+                triage.append(
+                    {
+                        "element_type": "experience_bullet",
+                        "original_text": text,
+                        "action": "Preserve",
+                        "reason": "deterministic_default_preserve",
+                        "related_job_requirement": "",
+                    }
+                )
+    for proj in resume_facts.get("projects") or []:
+        if not isinstance(proj, dict):
+            continue
+        for bullet in proj.get("bullets") or []:
+            text = str(bullet).strip()
+            if text:
+                triage.append(
+                    {
+                        "element_type": "project_bullet",
+                        "original_text": text,
+                        "action": "Preserve",
+                        "reason": "deterministic_default_preserve",
+                        "related_job_requirement": "",
+                    }
+                )
+    return {
+        "triage": triage,
+        "section_order": section_order,
+        "sparse": False,
+        "deterministic": True,
+    }
+
+
 def run_content_triage(
     *,
     resume_facts: dict[str, Any],
     ranked_requirements: list[dict[str, Any]],
     language: str = "en",
     use_cache: bool = True,
+    allow_llm: bool = True,
 ) -> dict[str, Any]:
     if resume_facts.get("sparse"):
         return {"triage": [], "section_order": [], "sparse": True}
+
+    # Four-agent pipeline: triage rules are composed into Agent 2 — skip LLM.
+    if not allow_llm:
+        return run_deterministic_content_triage(
+            resume_facts=resume_facts,
+            ranked_requirements=ranked_requirements,
+            language=language,
+        )
 
     raw = call_stage_json(
         system_prompt=CONTENT_TRIAGE_SYSTEM,

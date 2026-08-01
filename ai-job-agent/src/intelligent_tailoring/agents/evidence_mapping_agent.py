@@ -283,8 +283,11 @@ class EvidenceMappingAgent(Agent[EvidenceMappingInput, EvidenceMap]):
         requirements = payload.job_profile.to_legacy_requirements()
         inferred = list(payload.inferred or [])
 
-        # Run semantic inference if caller did not supply it (keeps agent self-contained)
-        if not inferred:
+        # Run semantic inference if caller did not supply it (keeps agent self-contained).
+        # Four-agent pipeline already ran inference inside Agent 1 — skip when the
+        # caller explicitly marks inference as completed (even if empty).
+        inference_done = bool((context.metadata or {}).get("inference_completed"))
+        if not inferred and not inference_done:
             inferred = run_semantic_inference(
                 resume_facts=payload.resume_facts,
                 requirements=requirements,

@@ -859,10 +859,16 @@ def sanitize_markdown_unsupported_impact(
 
 
 def assert_safe_to_export(report: dict[str, Any] | None) -> dict[str, Any]:
-    """Block PDF/DOCX/markdown export when hard quality gates failed.
+    """Block PDF/DOCX export when critical quality gates failed.
 
-    Returns the (possibly repaired) report so callers can use sanitized content.
+    Preview/generation must NOT call this — preview stays available in review
+    mode even when download is blocked. Returns the (possibly repaired) report.
     """
+    from intelligent_tailoring.gate_severity import (
+        classify_quality_gates,
+        humanize_gate_failure,
+        should_block_download,
+    )
     from intelligent_tailoring.quality_gates import should_block_export
 
     report = repair_report_for_export(report)
@@ -875,32 +881,31 @@ def assert_safe_to_export(report: dict[str, Any] | None) -> dict[str, Any]:
                 status_code=422,
             )
         return report
-    if should_block_export(gates):
-        hard = [
-            f
-            for f in (gates.get("failures") or [])
-            if any(
-                str(f).startswith(p)
-                for p in (
-                    "unsupported_impact",
-                    "unsupported_entity",
-                    "cross_entry_tech",
-                    "unknown_skill",
-                    "missing_professional_summary",
-                    "raw_llm_reasoning",
-                    "linguistic_integrity",
-                    "writing_quality:facts_changed",
-                    "writing_quality:grammar:",
-                    "writing_quality:ats:",
-                    "page_count:",
-                )
-            )
-        ]
+    classified = classify_quality_gates(gates)
+    report["quality_gates"] = classified
+    if should_block_export(classified) or should_block_download(classified):
+        hard = list(classified.get("critical_failures") or [])
         if hard:
+            messages = [humanize_gate_failure(f) for f in hard[:5]]
             raise TailorCvError(
-                "לא ניתן לייצא — שערי איכות נכשלו: " + "; ".join(hard[:5]),
+                "לא ניתן להוריד — שערי איכות קריטיים נכשלו: "
+                + "; ".join(messages),
                 status_code=422,
             )
+    return report
+
+
+def prepare_for_preview(report: dict[str, Any] | None) -> dict[str, Any]:
+    """Classify gates for preview without blocking. Never runs export side-effects."""
+    from intelligent_tailoring.gate_severity import classify_quality_gates
+
+    report = dict(report or {})
+    gates = classify_quality_gates(report.get("quality_gates") or {})
+    report["quality_gates"] = gates
+    report["preview_allowed"] = True
+    report["download_blocked"] = bool(gates.get("download_blocked"))
+    report["review_mode"] = bool(gates.get("review_mode"))
+    report["gate_user_messages"] = list(gates.get("user_messages") or [])
     return report
 
 
@@ -1385,11 +1390,11 @@ def tailor_cv_for_job(
                     progress_callback(
                         {
                             "event": "stage",
-                            "stage": "final_polish",
+                            "stage": "final_hiring_ats_page",
                             "status": "completed",
                             "message": "Loaded saved tailored resume.",
-                            "index": 10,
-                            "total": 11,
+                            "index": 3,
+                            "total": 4,
                         }
                     )
                 except Exception:
@@ -1418,7 +1423,17 @@ def tailor_cv_for_job(
         score_before=score_before,
         initial_match_score=initial,
     )
-    assert_safe_to_export({**report, **document})
+    # Preview/generation must not invoke export-only gates. Critical failures
+    # still persist so the UI can open review mode and disable download.
+    preview_report = prepare_for_preview({**report, **document})
+    report = {
+        **report,
+        "quality_gates": preview_report.get("quality_gates") or report.get("quality_gates"),
+        "preview_allowed": True,
+        "download_blocked": preview_report.get("download_blocked"),
+        "review_mode": preview_report.get("review_mode"),
+        "gate_user_messages": preview_report.get("gate_user_messages") or [],
+    }
     path = save_tailored_cv(cv_id, job_id, document["markdown"])
     version_id = _record_version(
         cv_id,
@@ -1461,6 +1476,12 @@ def tailor_cv_for_job(
             "hiring_manager_feedback": report.get("hiring_manager_feedback") or {},
             "agent_trace": report.get("agent_trace") or [],
             "one_page": report.get("one_page") or {},
+            "quality_gates": report.get("quality_gates") or {},
+            "preview_allowed": True,
+            "download_blocked": bool(report.get("download_blocked")),
+            "review_mode": bool(report.get("review_mode")),
+            "gate_user_messages": list(report.get("gate_user_messages") or []),
+            "pipeline_metrics": report.get("pipeline_metrics") or {},
         },
         initial_match_score=initial,
         score_before=score_before,

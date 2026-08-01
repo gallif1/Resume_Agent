@@ -163,7 +163,7 @@ describe("expandable agent cards", () => {
     );
 
     const buttons = screen.getAllByRole("button", { expanded: false });
-    expect(buttons.length).toBeGreaterThanOrEqual(11);
+    expect(buttons.length).toBeGreaterThanOrEqual(4);
     for (const btn of buttons) {
       fireEvent.click(btn);
       expect(btn).toHaveAttribute("aria-expanded", "true");

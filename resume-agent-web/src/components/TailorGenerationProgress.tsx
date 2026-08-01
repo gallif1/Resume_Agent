@@ -6,13 +6,8 @@ import {
   Loader2,
   Sparkles,
   Brain,
-  FileSearch,
-  Target,
   PenLine,
   ShieldCheck,
-  Users,
-  Briefcase,
-  Wand2,
   AlertTriangle,
   Info,
 } from "lucide-react";
@@ -36,72 +31,40 @@ const AGENT_CATALOG: Array<{
   label: string;
   idleMessage: string;
   icon: typeof Brain;
+  substeps: string[];
 }> = [
   {
-    id: "resume_knowledge",
-    label: "סוכן ידע קורות החיים",
-    idleMessage: "קורא את קורות החיים המקוריים…",
-    icon: FileSearch,
-  },
-  {
-    id: "job_intelligence",
-    label: "סוכן ניתוח משרה",
-    idleMessage: "מנתח את תיאור המשרה…",
-    icon: Target,
-  },
-  {
-    id: "company_intelligence",
-    label: "סוכן מודיעין חברה",
-    idleMessage: "מבין את הקשר הארגוני…",
-    icon: Briefcase,
-  },
-  {
-    id: "evidence_mapping",
-    label: "סוכן מיפוי ראיות",
-    idleMessage: "ממפה ראיות לדרישות המשרה…",
+    id: "candidate_opportunity_intelligence",
+    label: "מנתח את הניסיון שלך ואת ההזדמנות",
+    idleMessage: "קורא פרופיל מועמד, משרה, חברה וראיות…",
     icon: Brain,
+    substeps: [
+      "קורא פרופיל מועמד",
+      "מנתח דרישות משרה",
+      "בודק הקשר ארגוני",
+      "ממפה ראיות",
+    ],
   },
   {
-    id: "resume_strategy",
-    label: "סוכן אסטרטגיה",
-    idleMessage: "בוחר את הראיות החזקות ביותר…",
+    id: "strategy_content_selection",
+    label: "בונה את אסטרטגיית קורות החיים",
+    idleMessage: "בוחר ראיות ובונה נרטיב בעמוד אחד…",
     icon: Sparkles,
+    substeps: ["בוחר ראיות חזקות", "בונה מבנה מותאם"],
   },
   {
-    id: "resume_tailoring",
-    label: "סוכן התאמת תוכן",
-    idleMessage: "בונה את הנרטיב המותאם…",
+    id: "human_writing_credibility",
+    label: "כותב ומאמת את קורות החיים",
+    idleMessage: "מאמת טענות ומנסח ניסוח טבעי…",
     icon: PenLine,
+    substeps: ["מאמת טענות", "כותב ניסוח טבעי", "ביקורת אמינות"],
   },
   {
-    id: "claim_validation",
-    label: "סוכן אימות טענות",
-    idleMessage: "מוודא שכל טענה נתמכת בראיות…",
+    id: "final_hiring_ats_page",
+    label: "ביקורת סופית — מגייס, ATS ועמוד אחד",
+    idleMessage: "בודק התאמה, ATS ועמוד אחד…",
     icon: ShieldCheck,
-  },
-  {
-    id: "human_writer",
-    label: "כותב קורות חיים בכיר",
-    idleMessage: "מנסח ניסוח טבעי ומשכנע…",
-    icon: PenLine,
-  },
-  {
-    id: "senior_recruiter",
-    label: "ביקורת מגייס בכיר",
-    idleMessage: "בודק כמו מגייס עמוס (15 שניות)…",
-    icon: Users,
-  },
-  {
-    id: "hiring_manager",
-    label: "סימולציית מנהל גיוס",
-    idleMessage: "בוחן התאמה כמנהל גיוס…",
-    icon: Briefcase,
-  },
-  {
-    id: "final_polish",
-    label: "גימור סופי",
-    idleMessage: "מכין קורות חיים בעמוד אחד…",
-    icon: Wand2,
+    substeps: ["סימולציית מנהל גיוס", "ציון ATS", "אכיפת עמוד אחד"],
   },
 ];
 
@@ -139,6 +102,7 @@ export function initialAgents(): TailorAgentState[] {
     status: "pending" as const,
     progress: 0,
     details: [],
+    substeps: a.substeps,
   }));
 }
 
@@ -459,9 +423,10 @@ export default function TailorGenerationProgress({
         <ScoreLifecyclePanel score={score} active={false} />
         <ul className="tailor-complete-stats">
           <li>
-            <span>סוכנים שהושלמו</span>
+            <span>שלבים שהושלמו</span>
             <strong>
-              {snapshot.completedCount}/{snapshot.totalAgents}
+              {snapshot.stageOfLabel ||
+                `${snapshot.completedCount}/${snapshot.totalAgents}`}
             </strong>
           </li>
           <li>
@@ -548,7 +513,8 @@ export default function TailorGenerationProgress({
         <div className="tailor-live-bar-meta">
           <span>{snapshot.overallProgress}%</span>
           <span>
-            {snapshot.completedCount}/{snapshot.totalAgents} סוכנים
+            {snapshot.stageOfLabel ||
+              `שלב ${Math.min(snapshot.completedCount + 1, snapshot.totalAgents)} מתוך ${snapshot.totalAgents}`}
           </span>
         </div>
       </div>
@@ -592,7 +558,7 @@ export default function TailorGenerationProgress({
             {(decisionsOpen ? allDecisions : recentDecisions).length === 0 ? (
               <p className="tailor-decision-empty">
                 {active
-                  ? "מחכה להחלטות משמעותיות מהסוכנים…"
+                  ? "מחכה להחלטות משמעותיות מהשלבים…"
                   : "אין החלטות להצגה"}
               </p>
             ) : (

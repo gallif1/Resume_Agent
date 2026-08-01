@@ -35,8 +35,8 @@ from intelligent_tailoring.services.tailoring_strategy_builder import (
 from intelligent_tailoring.writing.resume_quality_score import evaluate_resume_quality
 
 
-def test_pipeline_version_bumped_to_v1_4():
-    assert PIPELINE_VERSION == "multi_agent_v1_4"
+def test_pipeline_version_bumped_to_four_agent_v2():
+    assert PIPELINE_VERSION == "four_agent_v2_0"
 
 
 def test_hiring_intent_infers_person_not_just_keywords():
