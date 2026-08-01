@@ -1,7 +1,9 @@
 """Agent 10 — Hiring Manager Simulation.
 
 Role: Hiring Manager for THIS specific job.
-Returns actionable feedback only — never modifies the resume.
+Evaluates: Can this person perform the job? What evidence supports that?
+What concerns remain? Sends only weak sections back for rewriting.
+Never modifies the resume.
 """
 
 from __future__ import annotations
@@ -190,6 +192,12 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
         if not weakest and len(ranked_sections) > 1:
             weakest = [ranked_sections[-1][0]]
 
+        # Hiring priorities / story from Job Intelligence
+        hiring_priorities = list(getattr(job, "hiring_priorities", None) or [])
+        narrative_themes = list(getattr(job, "narrative_themes", None) or [])
+        archetype = str(getattr(job, "person_archetype", "") or "")
+        screening_focus = list(getattr(job, "interview_screening_focus", None) or [])
+
         why_interview: list[str] = []
         if matched_hard:
             sample = ", ".join(m.requirement for m in matched_hard[:4])
@@ -200,6 +208,8 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
             why_interview.append("Background aligns with business/domain priorities.")
         if resume_quality >= 70:
             why_interview.append("Resume communicates value clearly and professionally.")
+        if archetype and archetype.lower()[:24] in resume_blob:
+            why_interview.append(f"Signals match the person we want: {archetype}.")
         if not why_interview:
             why_interview.append("Partial alignment — interview only if pipeline is thin.")
 
@@ -212,6 +222,18 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
             why_reject.append("Resume quality undercuts the candidate's signal.")
         if coverage < 0.4:
             why_reject.append("Too many hard requirements lack supporting evidence.")
+        # Story / hiring-priority gaps reduce confidence
+        missing_priority_signals = [
+            p
+            for p in (hiring_priorities[:4] + narrative_themes[:3])
+            if p and str(p).lower().split()[0] not in resume_blob
+        ]
+        if missing_priority_signals and coverage < 0.7:
+            why_reject.append(
+                "Story does not clearly match what we hire for: "
+                + ", ".join(str(p) for p in missing_priority_signals[:3])
+                + "."
+            )
 
         actionable: list[str] = []
         summary = str(
@@ -222,6 +244,8 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
                 "I still don't understand why this candidate fits — rewrite the summary "
                 "to sell specialization and evidenced strengths for THIS role."
             )
+            if "summary" not in weakest:
+                weakest = ["summary"] + list(weakest)
         elif any(
             p in summary.lower()
             for p in (
@@ -229,12 +253,27 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
                 "strong understanding",
                 "passionate about",
                 "highly motivated",
+                "knowledge of",
+                "experienced in",
             )
         ):
             actionable.append(
                 "Summary sounds AI-generated — rewrite into natural recruiter language "
                 "that answers who / why fit / what work, without filler phrases."
             )
+            if "summary" not in weakest:
+                weakest = ["summary"] + list(weakest)
+        # Challenge missing hiring-story themes when evidence likely exists
+        for theme in (screening_focus or narrative_themes or hiring_priorities)[:3]:
+            token = str(theme).lower().split()[0] if theme else ""
+            if token and len(token) > 3 and token not in summary.lower():
+                # Only ask to surface if somewhere on resume
+                if token in resume_blob:
+                    actionable.append(
+                        f"Make '{theme}' more obvious in the Summary — evidence exists "
+                        f"but my confidence that they can do this job is still low."
+                    )
+                    break
         # Challenge under-emphasized evidenced technologies
         for group_name, terms in (
             ("Cloud", list(job.cloud or [])),
@@ -282,9 +321,15 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
                     "Skills ordering does not lead with role-critical competencies — reorder."
                 )
             elif section == "experience":
+                theme_hint = (
+                    f" Lead with evidenced work on: {', '.join(narrative_themes[:2])}."
+                    if narrative_themes
+                    else ""
+                )
                 actionable.append(
-                    "Backend/architecture experience is under-emphasized — lead with "
-                    "the strongest evidenced design and systems work for this role."
+                    "Strongest role-relevant experience is under-emphasized — expand "
+                    "exceptional evidenced bullets and reduce weaker duty lists."
+                    + theme_hint
                 )
             else:
                 actionable.append(
@@ -298,12 +343,14 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
         if overall < 70:
             why_reject.insert(
                 0,
-                "I still don't understand why this candidate fits this specific role.",
+                "I still don't understand why this candidate can perform this specific job.",
             )
         if not actionable:
             actionable.append(
                 "Tighten weakest bullets for scanability; keep emphasis role-specific."
             )
+        # Only send weak sections back — dedupe preserve order
+        weakest = list(dict.fromkeys(weakest))[:3]
 
         feedback = HiringManagerFeedback(
             overall_fit=overall,

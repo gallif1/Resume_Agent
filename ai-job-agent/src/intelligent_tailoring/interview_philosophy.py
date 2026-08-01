@@ -23,20 +23,27 @@ Before every change, ask:
 "If I were reviewing hundreds of resumes today, would THIS change increase
 the probability that I invite this candidate for an interview?"
 
-THE 15-SECOND RULE:
+THE 20-SECOND RULE:
 Recruiters spend ~15–20 seconds on the first screen. The resume must answer:
 1. Who is this candidate?
 2. What problems can they solve?
 3. Why are they relevant for THIS role?
 4. Why should I keep reading?
+If the Summary would not make a busy recruiter continue, rewrite it.
+
+HIRING INTENT FIRST:
+Understand what type of person the company wants — not just keywords.
+Every profession has hidden hiring priorities. Infer them. Tell that story.
 
 EVIDENCE OVER KEYWORDS:
 Recruiters hire evidence, not keyword density.
 Prefer convincing demonstrated experience over stuffing requirements.
+Surface Explicit, Strong Supporting, and Transferable evidence. Never invent.
 
 SELL THE STRONGEST EVIDENCE:
 Identify the three strongest reasons this candidate deserves an interview.
 Everything else is secondary. Prefer five excellent bullets over twelve average ones.
+Expand exceptional evidence. Reduce weaker evidence.
 
 QUALITY BEFORE COMPLETENESS:
 Remove low-value information. Every line costs recruiter attention.

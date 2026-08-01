@@ -73,6 +73,18 @@ Philosophy shift: every agent optimizes for interview probability, not document 
 - Final `generation_report` + section-change chips in the web preview
 - Same multi-agent architecture — no new agents
 
+## Decision-quality upgrade (`multi_agent_v1_4`)
+
+Same agents — dramatically better reasoning. Success metric is interview probability only.
+
+- Job Intelligence infers hiring intent (person archetype, priorities, narrative themes)
+- Knowledge / Evidence discover soft + transferable competencies (ownership, debugging, teaching, …)
+- Strategy builds a job-specific professional story; two jobs → different resumes
+- Writer sells strongest evidence; Recruiter/HM actively challenge weak/generic sections
+- Quality loop adds 20-second recruiter screen + interview_probability dimensions
+- Requirement coverage tiers: Explicit / Strong Supporting / Transferable / No Evidence
+- Never invent facts
+
 ## Acceptance criteria mapping
 
 1. Different jobs → different resumes — strategy + evidence + company influence

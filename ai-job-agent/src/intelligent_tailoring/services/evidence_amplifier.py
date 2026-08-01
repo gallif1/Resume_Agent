@@ -14,8 +14,30 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
+_SOFT_COMPETENCY_CUES: dict[str, tuple[str, ...]] = {
+    "problem_solving": ("problem", "troubleshoot", "debug", "root cause", "diagnos", "resolv"),
+    "leadership": ("led", "managed", "mentored", "supervised", "coached", "directed"),
+    "ownership": ("owned", "ownership", "accountable", "end-to-end", "drove", "championed"),
+    "communication": ("present", "communicat", "wrote", "drafted", "negotiat", "taught"),
+    "learning_ability": ("learned", "upskill", "self-taught", "adopted", "studied"),
+    "decision_making": ("decided", "chose", "selected", "trade-off", "prioritiz"),
+    "architecture": ("architect", "system design", "schema", "microservice", "infrastructure"),
+    "debugging": ("debug", "fix", "incident", "defect", "bug"),
+    "optimization": ("optimiz", "performance", "latency", "throughput", "efficiency"),
+    "customer_interaction": ("customer", "client", "patient", "guest", "account"),
+    "teaching": ("train", "teach", "tutor", "instruct", "onboard", "mentor"),
+    "automation": ("automat", "script", "ci/cd", "pipeline", "orchestrat"),
+    "scalability": ("scalab", "high-traffic", "distributed", "load"),
+    "testing": ("test", "qa", "coverage", "regression", "validation"),
+    "monitoring": ("monitor", "observability", "alert", "telemetry", "on-call"),
+    "documentation": ("document", "runbook", "playbook", "spec", "wiki"),
+    "collaboration": ("cross-functional", "collaborat", "stakeholder", "partner"),
+    "initiative": ("initiated", "proposed", "volunteered", "pioneered", "proactive"),
+}
+
+
 def extract_entry_evidence(entry: dict[str, Any], *, kind: str) -> dict[str, Any]:
-    """Pull responsibilities, technologies, achievements from one entry."""
+    """Pull responsibilities, technologies, soft evidence, achievements from one entry."""
     bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
     desc = str(entry.get("description") or "").strip()
     blob = " ".join([desc] + bullets)
@@ -65,6 +87,15 @@ def extract_entry_evidence(entry: dict[str, Any], *, kind: str) -> dict[str, Any
         )
     ]
 
+    soft_competencies: list[str] = []
+    soft_evidence: dict[str, list[str]] = {}
+    for label, cues in _SOFT_COMPETENCY_CUES.items():
+        matched = [b for b in bullets if any(c in b.lower() for c in cues)]
+        if matched or any(c in low for c in cues):
+            soft_competencies.append(label)
+            if matched:
+                soft_evidence[label] = matched[:3]
+
     return {
         "kind": kind,
         "name": str(entry.get("name") or entry.get("company") or entry.get("title") or ""),
@@ -74,6 +105,8 @@ def extract_entry_evidence(entry: dict[str, Any], *, kind: str) -> dict[str, Any
         "architecture": architecture[:4],
         "achievements": impact[:4],
         "challenges": challenges[:4],
+        "soft_competencies": soft_competencies,
+        "soft_evidence": soft_evidence,
         "description": desc,
         "bullet_count": len(bullets),
         "relevance_hint": blob[:240],
@@ -97,6 +130,13 @@ def build_evidence_inventory(resume_facts: dict[str, Any]) -> dict[str, Any]:
     rich_projects = [
         p["name"] for p in projects if p["bullet_count"] >= 3 and p["name"]
     ]
+    soft_all = sorted(
+        {
+            c
+            for block in experiences + projects
+            for c in (block.get("soft_competencies") or [])
+        }
+    )
     return {
         "experiences": experiences,
         "projects": projects,
@@ -109,13 +149,17 @@ def build_evidence_inventory(resume_facts: dict[str, Any]) -> dict[str, Any]:
                 for t in (block.get("technologies") or [])
             }
         ),
+        "soft_competencies": soft_all,
+        "transferable_strengths": soft_all[:12],
     }
 
 
 def score_requirement_support(
     evidence_map: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Classify each requirement as Explicit / Strongly / Weakly / Unsupported."""
+    """Classify each requirement into Explicit / Strong Supporting / Transferable / No Evidence."""
+    from intelligent_tailoring.hiring_intent import classify_requirement_support_tier
+
     out: list[dict[str, Any]] = []
     for entry in evidence_map or []:
         strength = str(
@@ -131,14 +175,25 @@ def score_requirement_support(
             support = "Weakly Supported"
         else:
             support = "Unsupported"
+        tier = classify_requirement_support_tier(support)
+        # Transferable: weak inference that still has supporting text
+        if support == "Weakly Supported" and str(entry.get("supporting_evidence") or "").strip():
+            tier = "Transferable Evidence"
         out.append(
             {
                 "requirement": str(entry.get("requirement") or ""),
                 "support": support,
+                "support_tier": tier,
                 "importance": str(entry.get("importance") or "soft"),
                 "supporting_evidence": str(entry.get("supporting_evidence") or ""),
                 "must_highlight": support in ("Explicit", "Strongly Supported")
                 and str(entry.get("importance") or "") in ("hard", "soft"),
+                "surface_if_present": tier
+                in (
+                    "Explicit Evidence",
+                    "Strong Supporting Evidence",
+                    "Transferable Evidence",
+                ),
             }
         )
     return out

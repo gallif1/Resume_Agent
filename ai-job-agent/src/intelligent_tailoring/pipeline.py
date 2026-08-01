@@ -1399,7 +1399,7 @@ def run_intelligent_tailoring_agents(
             "claim_decisions": validation.get("decisions") or [],
             "agent_trace": agent_trace,
             "agent_timings_ms": agent_timings_ms,
-            "architecture": "multi_agent_v1_3",
+            "architecture": "multi_agent_v1_4",
             "one_page": one_page_meta,
             "decision_log": decision_log,
             "top_interview_reasons": list(
@@ -1450,7 +1450,7 @@ def run_intelligent_tailoring_agents(
         result_payload["claim_decisions"] = validation.get("decisions") or []
         result_payload["agent_trace"] = agent_trace
         result_payload["agent_timings_ms"] = agent_timings_ms
-        result_payload["architecture"] = "multi_agent_v1_3"
+        result_payload["architecture"] = "multi_agent_v1_4"
         result_payload["one_page"] = one_page_meta
         result_payload["decision_log"] = decision_log
         result_payload["top_interview_reasons"] = list(

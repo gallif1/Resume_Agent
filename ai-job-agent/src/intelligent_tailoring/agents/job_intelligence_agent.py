@@ -1,6 +1,7 @@
 """Agent 2 — Job Intelligence Agent.
 
-Responsibility: understand the job description and extract structured requirements.
+Responsibility: understand what type of person the company is actually hiring,
+not just extract keywords. Infers hiring priorities and narrative themes.
 Never generates resume text.
 """
 
@@ -16,6 +17,7 @@ from intelligent_tailoring.agents.schemas import (
     ScoredRequirement,
     enrich_lists,
 )
+from intelligent_tailoring.hiring_intent import infer_hiring_intent
 from intelligent_tailoring.services.job_analyzer import analyze_job
 from intelligent_tailoring.services.job_family import detect_industry, detect_job_family
 from intelligent_tailoring.stages.job_requirement_extraction import (
@@ -119,7 +121,9 @@ def _classify_category(text: str) -> str:
 
 class JobIntelligenceAgent(Agent[JobIntelligenceInput, JobProfile]):
     agent_id = "job_intelligence"
-    responsibility = "Extract structured JobProfile from a job description"
+    responsibility = (
+        "Infer who the company wants to hire and extract structured JobProfile"
+    )
 
     def run(
         self,
@@ -219,6 +223,20 @@ class JobIntelligenceAgent(Agent[JobIntelligenceInput, JobProfile]):
             stored = parse_stored_job_profile(job.get("job_profile"))
             jd_text = build_job_payload(job, stored)
 
+        intent = infer_hiring_intent(
+            title=title,
+            job_family=job_family,
+            responsibilities=[str(x) for x in responsibilities],
+            required_skills=[str(x) for x in required],
+            soft_skills=[str(x) for x in soft],
+            leadership_expectations=leadership,
+            learning_expectations=learning,
+            communication_expectations=communication,
+            customer_interaction=customer,
+            jd_text=jd_text,
+            business_priorities=business_domain,
+        )
+
         profile = JobProfile(
             title=title,
             company=company,
@@ -249,6 +267,16 @@ class JobIntelligenceAgent(Agent[JobIntelligenceInput, JobProfile]):
             raw_requirements=dict(requirements),
             job_family=job_family,
             industry=industry,
+            person_archetype=str(intent.get("person_archetype") or ""),
+            problem_to_solve=str(intent.get("problem_to_solve") or ""),
+            hiring_priorities=list(intent.get("hiring_priorities") or []),
+            narrative_themes=list(intent.get("narrative_themes") or []),
+            hiring_signals=list(intent.get("must_signal_traits") or []),
+            interview_screening_focus=list(
+                intent.get("interview_screening_focus") or []
+            ),
+            interview_lens=str(intent.get("interview_lens") or ""),
+            hiring_intent=dict(intent),
         )
         return AgentResult(
             agent_id=self.agent_id,
@@ -259,6 +287,8 @@ class JobIntelligenceAgent(Agent[JobIntelligenceInput, JobProfile]):
                 "scored_count": len(scored),
                 "job_family": job_family,
                 "industry": industry,
+                "person_archetype": profile.person_archetype,
+                "hiring_priorities_count": len(profile.hiring_priorities),
             },
         )
 

@@ -6,7 +6,7 @@ The system does not simply rewrite resumes. It thinks like a team of specialists
 Each agent has exactly one responsibility. Inter-agent communication uses
 structured objects, not free-form prompts.
 
-Pipeline version: `multi_agent_v1_3`
+Pipeline version: `multi_agent_v1_4`
 
 ## Writing quality layer (same agents, smarter behavior)
 
@@ -19,9 +19,11 @@ Quality improvements live inside existing stages — no additional agents:
 - **Dynamic skill taxonomy order** — Backend/Frontend/Data/Sales/Healthcare/… category priority
 - **Human writer + recruiter prompts** — tougher anti-AI standards; project storytelling; cross-section reinforcement
 - **Hiring Manager refine loop** — actionable challenges feed one wording-only refine pass
-- **Resume Quality Score** — naturalness, evidence utilization, job relevance, ATS, human writing, clarity, balance, role differentiation, one-page fit; regenerates weak sections below threshold
+- **Resume Quality Score** — interview probability + 20-second screen, naturalness, evidence utilization, job relevance, ATS, human writing, clarity, balance, role differentiation, one-page fit; regenerates weak sections below threshold
 - **Premium ATS themes** — tighter professional spacing without shrinking fonts below readability
-- **Interview-probability philosophy** — every agent optimizes for “would a busy recruiter interview?” (15-second rule, strongest evidence, quality over completeness)
+- **Interview-probability philosophy** — every agent optimizes for “would a busy recruiter interview?” (20-second rule, strongest evidence, quality over completeness)
+- **Hiring-intent inference** — Job Intelligence answers what person the company wants; Strategy builds a job-specific professional story
+- **Soft/transferable evidence discovery** — Knowledge + Evidence Amplifier surface ownership, problem solving, debugging, collaboration, etc. without inventing facts
 - **Live generation progress** — stage/decision SSE (`/api/tailor/stream`) + generation report for the web UI
 
 ## Data flow

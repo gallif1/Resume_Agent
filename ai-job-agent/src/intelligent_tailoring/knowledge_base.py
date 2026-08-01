@@ -48,6 +48,20 @@ FACT_TYPES = (
     "analytical_activity",
     "safety_activity",
     "training_activity",
+    "problem_solving_activity",
+    "ownership_activity",
+    "architecture_activity",
+    "debugging_activity",
+    "optimization_activity",
+    "automation_activity",
+    "testing_activity",
+    "monitoring_activity",
+    "documentation_activity",
+    "collaboration_activity",
+    "initiative_activity",
+    "decision_making_activity",
+    "learning_activity",
+    "scalability_activity",
     "measurable_result",
     "skill",
     "summary",
@@ -55,6 +69,7 @@ FACT_TYPES = (
 )
 
 # Patterns that classify bullet/activity text into fact types (profession-agnostic).
+# Order matters: more specific evidence types are matched first.
 _ACTIVITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("customer_facing_activity", re.compile(
         r"customer|client|complaint|ticket|service desk|front.?desk|"
@@ -64,12 +79,68 @@ _ACTIVITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"\bled\b|\bmanaged\b|\bsupervised\b|\bmentored\b|team lead|"
         r"coordinat|delegat|ניהול צוות|הנחיה", re.I
     )),
+    ("ownership_activity", re.compile(
+        r"\bowned\b|ownership|accountable|end[- ]to[- ]end|"
+        r"drove|championed|took ownership|solely responsible", re.I
+    )),
+    ("problem_solving_activity", re.compile(
+        r"problem.?solv|root cause|diagnos|investigat|"
+        r"troubleshoot|resolved|unblocked|workaround", re.I
+    )),
+    ("debugging_activity", re.compile(
+        r"\bdebug(?:ged|ging)?\b|fix(?:ed|ing)?\s+(?:bug|issue|defect|incident)|"
+        r"incident response|postmortem|root.?cause", re.I
+    )),
+    ("architecture_activity", re.compile(
+        r"architect(?:ed|ure)?|system design|microservice|schema design|"
+        r"data model|component design|infrastructure design", re.I
+    )),
+    ("scalability_activity", re.compile(
+        r"scalab|high.?traffic|throughput|latency|distributed|"
+        r"horizontal scale|load.?balanc|concurrency", re.I
+    )),
+    ("optimization_activity", re.compile(
+        r"optimiz|performance|reduc(?:ed|ing)\s+(?:latency|cost|time)|"
+        r"improv(?:ed|ing)\s+(?:speed|efficiency|throughput)|profil(?:ed|ing)", re.I
+    )),
+    ("automation_activity", re.compile(
+        r"automat(?:ed|ion|ing)|script(?:ed|ing)|ci/?cd|orchestrat|"
+        r"pipeline|self[- ]service|bot\b", re.I
+    )),
+    ("testing_activity", re.compile(
+        r"\btest(?:ed|ing|s)?\b|qa\b|unit test|integration test|"
+        r"regression|coverage|quality assurance|uat\b", re.I
+    )),
+    ("monitoring_activity", re.compile(
+        r"monitor(?:ed|ing)|observability|alert(?:s|ing)|dashboard|"
+        r"telemetry|logging|metrics|on[- ]call", re.I
+    )),
+    ("documentation_activity", re.compile(
+        r"document(?:ed|ation|ing)|runbook|playbook|wiki|"
+        r"wrote\s+(?:docs|spec|guide)|knowledge base", re.I
+    )),
+    ("collaboration_activity", re.compile(
+        r"cross[- ]functional|collaborat|partner(?:ed|ing)\s+with|"
+        r"stakeholder|worked with|interdisciplin", re.I
+    )),
+    ("initiative_activity", re.compile(
+        r"initiated|proposed|self[- ]started|proactive|"
+        r"volunteered|introduced|pioneered|started from scratch", re.I
+    )),
+    ("decision_making_activity", re.compile(
+        r"decid(?:ed|ing)|chose|selected|trade[- ]off|"
+        r"prioritiz|judgment|evaluated options", re.I
+    )),
+    ("learning_activity", re.compile(
+        r"learn(?:ed|ing)|upskill|self[- ]taught|studied|"
+        r"rapidly adopted|onboarded to|new (?:stack|tool|framework)", re.I
+    )),
     ("training_activity", re.compile(
         r"train|teach|tutor|instruct|onboard|workshop|lesson|"
         r"curriculum|הדרכה|הוראה|העברת ידע", re.I
     )),
     ("administrative_activity", re.compile(
-        r"invoice|billing|schedule|roster|filing|documentation|"
+        r"invoice|billing|schedule|roster|filing|"
         r"record.?keep|appointment|admin|חשבונית|תיעוד", re.I
     )),
     ("operational_activity", re.compile(
@@ -77,7 +148,7 @@ _ACTIVITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         r"procurement|fulfillment|מלאי|לוגיסטיקה|תפעול", re.I
     )),
     ("analytical_activity", re.compile(
-        r"analy[sz]|report|forecast|audit|reconcil|metric|dashboard|"
+        r"analy[sz]|report|forecast|audit|reconcil|metric|"
         r"data entry|ניתוח|דוח", re.I
     )),
     ("safety_activity", re.compile(
