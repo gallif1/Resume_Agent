@@ -292,6 +292,38 @@ def infer_hiring_intent(
     return intent
 
 
+def _clean_theme_token(text: str) -> str:
+    """Normalize theme/requirement crumbs from noisy JD word-splits."""
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    cleaned = cleaned.strip(" \t\r\n,;:.-")
+    cleaned = re.sub(
+        r"^(required|responsibilities|requirements|preferred|qualifications)\s*:?\s*",
+        "",
+        cleaned,
+        flags=re.I,
+    ).strip(" \t\r\n,;:.-")
+    return cleaned
+
+
+_THEME_STOPWORDS = {
+    "required",
+    "responsibilities",
+    "requirements",
+    "preferred",
+    "qualifications",
+    "investigate",
+    "issues",
+    "issue",
+    "communicate",
+    "analyze",
+    "verify",
+    "and",
+    "with",
+    "the",
+    "for",
+}
+
+
 def build_narrative_themes(
     *,
     hiring_intent: dict[str, Any] | None,
@@ -304,19 +336,26 @@ def build_narrative_themes(
     themes: list[str] = []
     intent = hiring_intent or {}
 
-    archetype = str(intent.get("person_archetype") or "").strip()
+    archetype = _clean_theme_token(str(intent.get("person_archetype") or ""))
     if archetype:
         themes.append(archetype)
 
     for reason in list(top_interview_reasons or []) + list(matched_hard or []):
-        text = str(reason).strip()
+        text = _clean_theme_token(str(reason))
+        if not text or text.lower() in _THEME_STOPWORDS:
+            continue
+        # Prefer multi-word priorities / real competencies over JD crumbs
+        if len(text.split()) == 1 and len(text) < 4:
+            continue
         if text and text not in themes:
             themes.append(text)
         if len(themes) >= limit:
             return themes[:limit]
 
     for p in list(intent.get("hiring_priorities") or []) + list(company_priorities or []):
-        text = str(p).strip()
+        text = _clean_theme_token(str(p))
+        if not text or text.lower() in _THEME_STOPWORDS:
+            continue
         if text and text not in themes:
             themes.append(text)
         if len(themes) >= limit:

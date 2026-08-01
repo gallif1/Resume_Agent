@@ -228,14 +228,25 @@ def build_highlight_plan(
         for s in support
         if s.get("support_tier") == "Transferable Evidence" and s.get("requirement")
     ]
+    def _clean_term(value: str) -> str:
+        text = re.sub(r"\s+", " ", (value or "").strip()).strip(" \t\r\n,;:.-")
+        text = re.sub(
+            r"^(required|responsibilities|requirements|preferred|qualifications)\s*:?\s*",
+            "",
+            text,
+            flags=re.I,
+        ).strip(" \t\r\n,;:.-")
+        return text
+
     highlight_terms = []
     for item in must + soft_highlight:
-        req = str(item.get("requirement") or "").strip()
-        if req and req not in highlight_terms:
+        req = _clean_term(str(item.get("requirement") or ""))
+        if req and req not in highlight_terms and len(req) > 2:
             highlight_terms.append(req)
     for skill in skills_to_emphasize:
-        if skill and skill not in highlight_terms:
-            highlight_terms.append(skill)
+        cleaned = _clean_term(str(skill))
+        if cleaned and cleaned not in highlight_terms and len(cleaned) > 2:
+            highlight_terms.append(cleaned)
     # Fold evidenced soft competencies that match hiring priorities / soft reqs
     priority_blob = " ".join(
         str(x).lower()

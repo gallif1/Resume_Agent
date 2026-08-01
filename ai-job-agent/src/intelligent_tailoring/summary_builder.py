@@ -47,6 +47,50 @@ _BANNED_LEAD_INS = (
 )
 
 
+_JD_JUNK_TOKENS = {
+    "required",
+    "responsibilities",
+    "requirements",
+    "preferred",
+    "qualifications",
+    "investigate",
+    "issues",
+    "issue",
+    "debug",
+    "support",
+    "build",
+    "deploy",
+    "write",
+    "manage",
+    "improve",
+    "optimize",
+    "ensure",
+    "experience",
+    "knowledge",
+    "understanding",
+    "strong",
+    "good",
+    "communicate",
+    "analyze",
+    "verify",
+    "troubleshoot",
+}
+
+
+def _clean_evidence_token(token: str) -> str:
+    """Strip JD punctuation/labels so fragments like 'issues,' never enter prose."""
+    text = re.sub(r"\s+", " ", (token or "").strip())
+    text = text.strip(" \t\r\n,;:.-")
+    # Drop leading JD section labels ("Required: foo")
+    text = re.sub(
+        r"^(required|responsibilities|requirements|preferred|qualifications)\s*:?\s*",
+        "",
+        text,
+        flags=re.I,
+    ).strip(" \t\r\n,;:.-")
+    return text
+
+
 def build_summary_plan(
     *,
     strategy: dict[str, Any],
@@ -66,51 +110,56 @@ def build_summary_plan(
         title = ""
 
     emphasize = [
-        str(s).strip()
+        _clean_evidence_token(str(s))
         for s in (
             strategy.get("skills_to_emphasize")
             or strategy.get("propagate_terms")
             or strategy.get("must_highlight_in_summary")
             or []
         )
-        if str(s).strip()
+        if _clean_evidence_token(str(s))
     ]
     must_highlight = [
-        str(s).strip()
+        _clean_evidence_token(str(s))
         for s in (strategy.get("must_highlight_in_summary") or [])
-        if str(s).strip()
+        if _clean_evidence_token(str(s))
     ]
     source_l = (resume_text or "").lower()
 
     def _skill_like(token: str) -> bool:
-        t = token.strip()
+        t = _clean_evidence_token(token)
         if not t or len(t) < 2:
             return False
-        low = t.lower()
-        if low in {
-            "investigate", "issues", "issue", "debug", "support", "build",
-            "deploy", "write", "manage", "improve", "optimize", "ensure",
-            "experience", "knowledge", "understanding", "strong", "good",
-        }:
+        # Reject single generic verbs / JD crumbs (must be a real competency phrase)
+        if len(t.split()) == 1 and t.lower() in _JD_JUNK_TOKENS:
             return False
-        return low in source_l
+        if len(t) < 3:
+            return False
+        low = t.lower()
+        # Prefer whole-token evidence, not accidental substring matches on "issues,"
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(low)}(?![a-z0-9])", source_l))
 
     evidenced = []
     for s in must_highlight + emphasize:
-        if _skill_like(s) and s not in evidenced:
-            evidenced.append(s)
+        cleaned = _clean_evidence_token(s)
+        if _skill_like(cleaned) and cleaned not in evidenced:
+            evidenced.append(cleaned)
         if len(evidenced) >= 5:
             break
     if not evidenced:
         skills = resume_facts.get("display_skills") or resume_facts.get("skills") or []
         if isinstance(skills, dict):
             for key in ("frameworks", "languages", "cloud", "other", "tools"):
-                evidenced.extend(str(x) for x in (skills.get(key) or [])[:2])
+                evidenced.extend(
+                    _clean_evidence_token(str(x))
+                    for x in (skills.get(key) or [])[:2]
+                    if _clean_evidence_token(str(x))
+                )
         else:
             for s in skills:
                 atom = str(s).split(":")[-1].strip()
                 for part in atom.split(","):
-                    p = part.strip()
+                    p = _clean_evidence_token(part)
                     if p and _skill_like(p) and p not in evidenced:
                         evidenced.append(p)
         evidenced = evidenced[:5]
@@ -120,11 +169,20 @@ def build_summary_plan(
     for bit in list(strategy.get("strongest_evidence") or []) + list(
         strategy.get("top_interview_reasons") or []
     ):
-        text = str(bit).strip()
+        text = _clean_evidence_token(str(bit))
+        # Skip JD crumb tokens that are not real evidence sentences/phrases
+        if not text or len(text.split()) < 2 and text.lower() in _JD_JUNK_TOKENS:
+            continue
         if text and text not in strongest_bits and (
             text.lower() in source_l
-            or any(t in source_l for t in text.lower().split() if len(t) > 3)
+            or any(
+                len(t) > 3 and re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", source_l)
+                for t in text.lower().split()
+            )
         ):
+            # Prefer full resume bullets over lone JD crumbs
+            if len(text.split()) == 1 and text.lower() in _JD_JUNK_TOKENS:
+                continue
             strongest_bits.append(text)
         if len(strongest_bits) >= 2:
             break
@@ -161,9 +219,10 @@ def build_summary_plan(
         or ""
     ).strip()
     themes = [
-        str(t).strip()
+        _clean_evidence_token(str(t))
         for t in (strategy.get("narrative_themes") or [])
-        if str(t).strip()
+        if _clean_evidence_token(str(t))
+        and _clean_evidence_token(str(t)).lower() not in _JD_JUNK_TOKENS
     ][:4]
 
     return {
@@ -334,13 +393,19 @@ def _compose_hebrew(plan: dict[str, Any]) -> str:
 
 
 def _join(items: list[str]) -> str:
-    if not items:
+    cleaned = [
+        _clean_evidence_token(str(i))
+        for i in items
+        if _clean_evidence_token(str(i))
+        and _clean_evidence_token(str(i)).lower() not in _JD_JUNK_TOKENS
+    ]
+    if not cleaned:
         return ""
-    if len(items) == 1:
-        return items[0]
-    if len(items) == 2:
-        return f"{items[0]} and {items[1]}"
-    return ", ".join(items[:-1]) + f", and {items[-1]}"
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} and {cleaned[1]}"
+    return ", ".join(cleaned[:-1]) + f", and {cleaned[-1]}"
 
 
 def _cleanup_summary_text(text: str) -> str:
@@ -350,6 +415,8 @@ def _cleanup_summary_text(text: str) -> str:
     cleaned = re.sub(r"\band\s*\.", ".", cleaned)
     cleaned = re.sub(r"\bin\s*\.", ".", cleaned)
     cleaned = re.sub(r"\s+\.", ".", cleaned)
+    cleaned = re.sub(r"\bon\s*\.", ".", cleaned)
+    cleaned = re.sub(r"\busing\s*\.", ".", cleaned)
     cleaned = re.sub(r"^(contributor|professional)\s+with\s+with\b", r"\1 with", cleaned, flags=re.I)
     return cleaned.strip()
 
@@ -452,12 +519,22 @@ def build_professional_summary(
         # Avoid banned "Professional with..." lead-ins
         if role.lower() == "professional":
             role = "Contributor"
-        evidence = str(plan.get("strongest_evidence") or "").strip().rstrip(".")
-        minimal = (
-            f"{role} focused on {_join(list(comps)[:4])}. "
-            f"Practical delivery grounded in completed work"
-            + (f", including {evidence.lower()}." if evidence else ".")
-        )
+        evidence = _clean_evidence_token(
+            str(plan.get("strongest_evidence") or "")
+        ).rstrip(".")
+        joined = _join(list(comps)[:4])
+        if joined:
+            minimal = (
+                f"{role} focused on {joined}. "
+                f"Practical delivery grounded in completed work"
+                + (f", including {evidence.lower()}." if evidence else ".")
+            )
+        else:
+            minimal = (
+                f"{role} with practical delivery experience across completed "
+                f"roles and projects."
+            )
+        minimal = _cleanup_summary_text(minimal)
         if not minimal.endswith("."):
             minimal += "."
         ok2, errs2 = summary_passes_checks(minimal, resume_text=resume_text)
@@ -469,12 +546,24 @@ def build_professional_summary(
                 "errors": errs,
             }
         # Guaranteed non-empty safe summary for export gates
-        safe = (
-            f"{role} focused on {_join(list(comps)[:4])}. "
-            f"Brings practical strengths drawn from completed roles and projects."
-        )
+        clean_comps = [
+            _clean_evidence_token(c)
+            for c in comps
+            if _clean_evidence_token(c)
+            and _clean_evidence_token(c).lower() not in _JD_JUNK_TOKENS
+        ][:4]
+        if clean_comps:
+            safe = (
+                f"{role} focused on {_join(clean_comps)}. "
+                f"Brings practical strengths drawn from completed roles and projects."
+            )
+        else:
+            safe = (
+                f"{role} with practical delivery experience across completed "
+                f"roles and projects."
+            )
         return {
-            "summary": safe,
+            "summary": _cleanup_summary_text(safe),
             "repair_method": "safe_fallback",
             "plan": plan,
             "errors": errs2,

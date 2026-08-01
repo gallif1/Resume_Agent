@@ -6,6 +6,7 @@ Optimizes for interview probability, not keyword coverage.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from intelligent_tailoring.hiring_intent import (
@@ -314,6 +315,17 @@ def _rank_projects(
     return ordered
 
 
+def _clean_story_token(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip()).strip(" \t\r\n,;:.-")
+    cleaned = re.sub(
+        r"^(required|responsibilities|requirements|preferred|qualifications)\s*:?\s*",
+        "",
+        cleaned,
+        flags=re.I,
+    ).strip(" \t\r\n,;:.-")
+    return cleaned
+
+
 def _professional_story(
     *,
     intent: dict[str, Any],
@@ -321,12 +333,22 @@ def _professional_story(
     strengths: list[str],
     top_interview_reasons: list[str],
 ) -> str:
-    archetype = str(intent.get("person_archetype") or "").strip()
-    problem = str(intent.get("problem_to_solve") or "").strip()
-    themes = ", ".join(narrative_themes[:3]) if narrative_themes else ""
-    evidence = ", ".join(
-        (top_interview_reasons or strengths)[:3]
-    ) or "available evidenced strengths"
+    import re as _re
+
+    archetype = _clean_story_token(str(intent.get("person_archetype") or ""))
+    problem = _clean_story_token(str(intent.get("problem_to_solve") or ""))
+    theme_bits = [
+        _clean_story_token(t)
+        for t in narrative_themes
+        if _clean_story_token(t) and len(_clean_story_token(t)) > 2
+    ][:3]
+    themes = ", ".join(theme_bits)
+    evidence_bits = [
+        _clean_story_token(t)
+        for t in (top_interview_reasons or strengths)
+        if _clean_story_token(t) and len(_clean_story_token(t)) > 2
+    ][:3]
+    evidence = ", ".join(evidence_bits) or "available evidenced strengths"
     parts = []
     if archetype:
         parts.append(f"Position as {archetype}")
@@ -336,7 +358,7 @@ def _professional_story(
         parts.append(f"Story themes: {themes}")
     parts.append(f"Sell strongest evidence first: {evidence}")
     parts.append(
-        "Expand exceptional bullets; reduce weaker duty lists. Never invent facts."
+        "Expand exceptional bullets; reduce weaker duty lists. Never invent facts"
     )
     return ". ".join(parts) + "."
 
