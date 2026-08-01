@@ -22,7 +22,7 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v1"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v2"
 MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v1"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
@@ -160,6 +160,27 @@ def build_agent_1_user_prompt(
 # Agent 2 — Strategy & Content Selection
 # ---------------------------------------------------------------------------
 
+# Triage rules only — strip the competing JSON schema so the model cannot
+# return {triage, section_order} instead of tailored_resume.
+_CONTENT_TRIAGE_RULES_ONLY = """
+You are a Principal Recruiter applying content triage WHILE selecting content.
+Optimize for interview probability — not completeness.
+
+For each resume element (summary, skill, experience bullet, project bullet),
+internally decide one action: Preserve | Rewrite | Reorder | Expand | Condense | Remove.
+Do NOT return a triage array. Apply those decisions inside the tailored_resume.
+
+Ask for every line: "Would keeping this help a busy recruiter decide to interview?"
+Prefer five excellent bullets over twelve average ones.
+Remove low-value duty language that does not raise interview probability.
+
+Rules:
+- Never invent facts.
+- Remove content that does not help win an interview for THIS job.
+- Expand only when the original resume already contains supporting detail.
+- Preserve the selected output language.
+""".strip()
+
 AGENT_2_SYSTEM = "\n".join(
     [
         f"PROMPT_VERSION: {MERGED_AGENT_2_PROMPT_VERSION}",
@@ -169,11 +190,18 @@ AGENT_2_SYSTEM = "\n".join(
         "Do NOT perform the final polished human rewrite — that is Agent 3.",
         "Never invent facts. Profession-agnostic.",
         "",
+        "CRITICAL OUTPUT CONTRACT:",
+        "Your response MUST be a single JSON object with top-level key "
+        '"tailored_resume".',
+        "Do NOT return a triage/section_order-only payload.",
+        "Do NOT omit tailored_resume.",
+        "",
         PIPELINE_PHILOSOPHY,
         "",
         _block(
-            "RESPONSIBILITY BLOCK — CONTENT TRIAGE (from Content Triage stage)",
-            CONTENT_TRIAGE_SYSTEM,
+            "RESPONSIBILITY BLOCK — CONTENT TRIAGE RULES "
+            "(from Content Triage stage — apply internally, do not emit triage JSON)",
+            _CONTENT_TRIAGE_RULES_ONLY,
         ),
         _block(
             "RESPONSIBILITY BLOCK — DEEP TAILOR / CONTENT SELECTION "
@@ -192,6 +220,26 @@ Strategy rules preserved:
 - Prefer five excellent bullets over twelve average ones.
 """,
         ),
+        """
+MANDATORY FINAL SCHEMA (override any earlier schema snippets):
+{
+  "tailored_resume": {
+    "professional_title": "string",
+    "professional_summary": "string",
+    "skills": [],
+    "experience": [],
+    "projects": [],
+    "education": [],
+    "certifications": []
+  },
+  "change_log": [],
+  "matched_requirements": [],
+  "missing_requirements": [],
+  "removed_or_deprioritized_content": [],
+  "ats_keywords_added": []
+}
+Output JSON only. tailored_resume is required.
+""".strip(),
     ]
 )
 
@@ -377,7 +425,9 @@ def merged_prompt_contains_legacy_rules() -> dict[str, bool]:
         and "FORBIDDEN" in AGENT_1_SYSTEM,
         "deep_tailor": "NEVER invent employers" in AGENT_2_SYSTEM
         and "NEVER move a technology" in AGENT_2_SYSTEM,
-        "content_triage": "Preserve | Rewrite | Reorder" in AGENT_2_SYSTEM,
+        "content_triage": "Preserve | Rewrite | Reorder" in AGENT_2_SYSTEM
+        or "Preserve | Rewrite | Reorder | Expand | Condense | Remove"
+        in AGENT_2_SYSTEM,
         "human_writer": "FACTS ARE IMMUTABLE" in AGENT_3_SYSTEM
         and "15-SECOND RULE" in AGENT_3_SYSTEM,
         "recruiter": "SENIOR RECRUITER" in AGENT_3_SYSTEM
