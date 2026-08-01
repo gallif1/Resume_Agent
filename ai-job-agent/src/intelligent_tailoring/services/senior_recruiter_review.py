@@ -24,7 +24,11 @@ MAX_REVIEW_CYCLES = 3
 
 
 def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic senior-recruiter-style review when LLM is unavailable."""
+    """Strict senior-recruiter challenge when LLM is unavailable.
+
+    Actively asks: Would I interview this person? What felt generic?
+    Which evidence is underused? What would make me reject?
+    """
     grammar = validate_grammar(resume)
     style = evaluate_writing_quality(resume)
     ai = detect_ai_writing(resume)
@@ -64,9 +68,10 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
 
     human = int(ai.get("human_score") or style["dimensions"].get("ai_likeness") or 0)
     interview = int(style.get("overall_score") or 0)
-    summary = str(
+    summary_raw = str(
         resume.get("professional_summary") or resume.get("summary") or ""
-    ).lower()
+    )
+    summary = summary_raw.lower()
     if any(
         p in summary
         for p in (
@@ -77,12 +82,14 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
             "proven track record",
             "experienced professional",
             "results-driven",
+            "knowledge of",
+            "experienced in",
         )
     ):
         issues.append(
             {
                 "section": "summary",
-                "problem": "Summary uses generic AI filler phrasing",
+                "problem": "Summary uses generic AI filler phrasing — I would skim past this",
                 "guidance": (
                     "Rewrite the summary to sound like a senior recruiter wrote it. "
                     "Answer who this is, why they fit, and what work they've done — no clichés."
@@ -90,7 +97,7 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
             }
         )
         sections.update({"summary"})
-    # Summary must communicate value, not just list tools
+    # 20-second screen: Summary must make me continue reading
     summary_words = len(summary.split())
     if summary and (
         summary_words < 28
@@ -100,7 +107,10 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
         issues.append(
             {
                 "section": "summary",
-                "problem": "Summary does not immediately communicate candidate value",
+                "problem": (
+                    "In 20 seconds I still don't know why I'd interview this person — "
+                    "Summary does not sell value"
+                ),
                 "guidance": (
                     "Write 2–3 natural sentences that sell specialization and "
                     "evidenced strengths for this role. Avoid keyword lists."
@@ -108,6 +118,43 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
             }
         )
         sections.update({"summary"})
+    # Challenge weak / duty-list experience bullets
+    weak_bullet_count = 0
+    value_bullet_count = 0
+    for entry in resume.get("experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        for b in entry.get("bullets") or []:
+            text = str(b).strip()
+            low = text.lower()
+            if not text:
+                continue
+            if re.match(
+                r"^(responsible for|worked on|helped with|participated in|duties include)\b",
+                low,
+            ) or len(text.split()) < 7:
+                weak_bullet_count += 1
+            if re.search(
+                r"\b(designed|built|implemented|led|resolved|improved|reduced|"
+                r"increased|taught|negotiated|owned|delivered)\b",
+                low,
+            ):
+                value_bullet_count += 1
+    if weak_bullet_count >= 2 and value_bullet_count < max(2, weak_bullet_count):
+        issues.append(
+            {
+                "section": "experience",
+                "problem": (
+                    f"{weak_bullet_count} weak/duty-list bullets — underused evidence "
+                    "that would not survive a 20-second scan"
+                ),
+                "guidance": (
+                    "Rewrite weak bullets into exceptional value statements using only "
+                    "existing facts. Prefer fewer stronger bullets over many average ones."
+                ),
+            }
+        )
+        sections.update({"experience"})
     # Thin / activity-only projects → request regeneration
     for entry in resume.get("projects") or []:
         if not isinstance(entry, dict):
@@ -126,7 +173,7 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
             issues.append(
                 {
                     "section": "projects",
-                    "problem": "Projects are not convincing — bullets lack story/value",
+                    "problem": "Projects feel generic — bullets lack story/value",
                     "guidance": (
                         "Rewrite project bullets as short stories: what was built, "
                         "why it mattered, how it worked, which technologies, which "
@@ -150,22 +197,39 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
                 issues.append(
                     {
                         "section": "experience",
-                        "problem": "Technologies are siloed in Skills and missing from Experience bullets",
+                        "problem": (
+                            "Strongest technical evidence is underused — technologies "
+                            "siloed in Skills, missing from Experience"
+                        ),
                         "guidance": (
                             "Integrate evidenced technologies naturally into experience "
-                            "bullets (e.g. 'using FastAPI and PostgreSQL') without inventing tools."
+                            "bullets without inventing tools."
                         ),
                     }
                 )
                 sections.update({"experience"})
                 break
-    approved = (
-        not issues
-        and human >= 78
-        and interview >= 78
+
+    # Would I interview? Strict bar.
+    reject_reasons = [
+        i["problem"] for i in issues if i.get("section") in {"summary", "experience", "projects"}
+    ]
+    would_interview = (
+        human >= 78
+        and interview >= 75
+        and bool(summary_raw.strip())
+        and summary_words >= 28
+        and not any("filler" in (i.get("problem") or "").lower() for i in issues)
+        and not any("20 seconds" in (i.get("problem") or "") for i in issues)
         and bool(grammar.get("passed"))
-        and bool(style.get("passed"))
         and bool(ai.get("passed"))
+    )
+    approved = (
+        would_interview
+        and not issues
+        and human >= 80
+        and interview >= 78
+        and bool(style.get("passed"))
     )
     # Normalize section names
     norm_sections = sorted(
@@ -182,17 +246,27 @@ def _heuristic_review(resume: dict[str, Any]) -> dict[str, Any]:
     if not approved and not norm_sections:
         norm_sections = ["summary", "experience"]
 
+    if would_interview and approved:
+        feedback = "I would interview this candidate — strongest sections are clear."
+    elif would_interview:
+        feedback = (
+            "Borderline interview — fix weak sections before I would confidently shortlist."
+        )
+    else:
+        reject_hint = reject_reasons[0] if reject_reasons else "signal is too weak or generic"
+        feedback = f"I would not interview yet: {reject_hint}"
+
     return {
         "approved": approved,
         "human_believability": human,
         "interview_quality": interview,
+        "would_interview": would_interview,
+        "sounds_robotic": not bool(ai.get("passed")),
+        "summary_sells_candidate": summary_words >= 28
+        and not any(i.get("section") == "summary" for i in issues),
         "issues": issues[:12],
         "sections_to_regenerate": [] if approved else norm_sections,
-        "summary_feedback": (
-            "Ready for interview shortlist."
-            if approved
-            else "Writing still feels generic or uneven — polish affected sections."
-        ),
+        "summary_feedback": feedback,
         "mode": "heuristic",
     }
 
@@ -242,6 +316,13 @@ def _normalize_review(raw: dict[str, Any]) -> dict[str, Any]:
             0, min(100, int(raw.get("human_believability") or 0))
         ),
         "interview_quality": max(0, min(100, int(raw.get("interview_quality") or 0))),
+        "would_interview": bool(
+            raw["would_interview"]
+            if "would_interview" in raw
+            else approved
+        ),
+        "sounds_robotic": bool(raw.get("sounds_robotic", False)),
+        "summary_sells_candidate": bool(raw.get("summary_sells_candidate", approved)),
         "issues": issues,
         "sections_to_regenerate": mapped,
         "summary_feedback": str(raw.get("summary_feedback") or "")[:400],

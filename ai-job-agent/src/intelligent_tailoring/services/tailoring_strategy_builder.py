@@ -1,9 +1,18 @@
-"""TailoringStrategyBuilder — evidence-driven, profession-agnostic strategy."""
+"""TailoringStrategyBuilder — evidence-driven, profession-agnostic strategy.
+
+Builds the strongest truthful professional story for THIS job.
+Optimizes for interview probability, not keyword coverage.
+"""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from intelligent_tailoring.hiring_intent import (
+    build_narrative_themes,
+    infer_hiring_intent,
+)
 from intelligent_tailoring.services.job_family import (
     deprioritize_keywords_from_requirements,
     emphasis_keywords_from_requirements,
@@ -20,8 +29,10 @@ def build_tailoring_strategy(
     ranked_requirements: list[dict[str, Any]],
     language: str = "en",
     fact_scores: list[dict[str, Any]] | None = None,
+    hiring_intent: dict[str, Any] | None = None,
+    company_priorities: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build strategy from evidence map + JD — not a title-only template."""
+    """Build the strongest truthful story for THIS job from available evidence."""
     job_family = str(job_analysis.get("job_family") or "general")
     industry = str(job_analysis.get("industry") or "general")
     requirements = job_analysis.get("requirements") or {}
@@ -113,19 +124,76 @@ def build_tailoring_strategy(
             keywords_to_insert.append(req)
     keywords_to_insert = keywords_to_insert[:12]
 
-    summary_focus = _summary_focus(job_analysis, matched_reqs, strengths)
-    experience_focus = _experience_focus(job_analysis, matched_reqs)
-    value_prop = _value_proposition(strengths, job_analysis)
-
-    section_order = _section_order(job_family, fact_scores)
-
     from intelligent_tailoring.services.evidence_amplifier import build_highlight_plan
     from intelligent_tailoring.skill_taxonomy import category_order_for_role
 
+    soft_comps = list(
+        resume_facts.get("soft_competencies")
+        or resume_facts.get("transferable_strengths")
+        or []
+    )
     highlight_plan = build_highlight_plan(
         evidence_map=evidence_map,
         skills_to_emphasize=skills_to_emphasize,
+        soft_competencies=soft_comps,
+        hiring_priorities=list(
+            (hiring_intent or {}).get("hiring_priorities")
+            or (job_analysis.get("hiring_intent") or {}).get("hiring_priorities")
+            or []
+        ),
     )
+    top_interview_reasons = list(highlight_plan.get("top_interview_reasons") or [])[:3]
+
+    intent = hiring_intent or job_analysis.get("hiring_intent") or {}
+    if not intent:
+        intent = infer_hiring_intent(
+            title=str(
+                job_analysis.get("primary_role")
+                or job_analysis.get("job_title")
+                or ""
+            ),
+            job_family=job_family,
+            responsibilities=list(requirements.get("responsibilities") or []),
+            required_skills=list(
+                requirements.get("required_skills")
+                or requirements.get("hard_requirements")
+                or []
+            ),
+            soft_skills=list(requirements.get("soft_skills") or []),
+            business_priorities=list(company_priorities or []),
+        )
+
+    narrative_themes = build_narrative_themes(
+        hiring_intent=intent,
+        top_interview_reasons=top_interview_reasons,
+        matched_hard=strengths[:5],
+        company_priorities=list(company_priorities or []),
+        limit=4,
+    )
+    professional_story = _professional_story(
+        intent=intent,
+        narrative_themes=narrative_themes,
+        strengths=strengths,
+        top_interview_reasons=top_interview_reasons,
+    )
+
+    summary_focus = _summary_focus(
+        job_analysis,
+        matched_reqs,
+        strengths,
+        narrative_themes=narrative_themes,
+        professional_story=professional_story,
+        intent=intent,
+    )
+    experience_focus = _experience_focus(
+        job_analysis, matched_reqs, narrative_themes=narrative_themes
+    )
+    value_prop = _value_proposition(
+        strengths, job_analysis, professional_story=professional_story
+    )
+
+    section_order = _section_order(job_family, fact_scores)
+
     # Prefer taxonomy-aligned category order, boosted by emphasize terms
     cat_order = category_order_for_role(
         job_family, emphasize=skills_to_emphasize
@@ -133,6 +201,24 @@ def build_tailoring_strategy(
 
     # Experience order: roles whose bullets overlap emphasize terms first
     experience_order = _experience_order(resume_facts, skills_to_emphasize)
+
+    # Prefer expanding the strongest evidence; condense weaker material
+    strongest = list(dict.fromkeys(facts_to_expand[:8] + top_interview_reasons))[:10]
+    weaker_to_reduce = list(facts_to_condense[:12]) + list(facts_to_omit[:8])
+
+    support_rows = list(highlight_plan.get("requirement_support") or [])
+    coverage_tiers = {
+        str(r.get("requirement") or ""): str(
+            r.get("support_tier") or r.get("support") or "No Evidence"
+        )
+        for r in support_rows
+        if r.get("requirement")
+    }
+    transferable = [
+        str(r.get("requirement") or "")
+        for r in support_rows
+        if r.get("support_tier") == "Transferable Evidence" and r.get("requirement")
+    ][:8]
 
     return {
         "target_positioning": value_prop,
@@ -143,7 +229,8 @@ def build_tailoring_strategy(
         "candidate_strengths": strengths[:10],
         "candidate_weaknesses": missing_reqs[:8],
         "important_missing_requirements": missing_reqs[:8],
-        "strongest_evidence": facts_to_expand[:12],
+        "strongest_evidence": strongest,
+        "weaker_evidence_to_reduce": weaker_to_reduce[:12],
         "top_resume_sections": section_order,
         "top_projects": project_priority[:5],
         "top_skills": top_skills,
@@ -164,7 +251,7 @@ def build_tailoring_strategy(
             if f.get("fact_type") == "education" and int(f.get("score") or 0) >= 30
         ][:5],
         "facts_to_preserve": facts_to_preserve[:40],
-        "facts_to_expand": facts_to_expand[:25],
+        "facts_to_expand": strongest[:12] + facts_to_expand[:20],
         "facts_to_condense": facts_to_condense[:20],
         "facts_to_omit": facts_to_omit[:20],
         "section_order": section_order,
@@ -179,10 +266,22 @@ def build_tailoring_strategy(
         "highlight_plan": highlight_plan,
         "must_highlight_in_summary": list(highlight_plan.get("must_highlight") or [])[:8],
         "propagate_terms": list(highlight_plan.get("propagate_terms") or [])[:16],
-        "requirement_support": list(highlight_plan.get("requirement_support") or []),
+        "requirement_support": support_rows,
+        "requirement_coverage_tiers": coverage_tiers,
+        "transferable_evidence": transferable,
+        "top_interview_reasons": top_interview_reasons,
+        "hiring_intent": intent,
+        "person_archetype": str(intent.get("person_archetype") or ""),
+        "hiring_priorities": list(intent.get("hiring_priorities") or [])[:6],
+        "narrative_themes": narrative_themes,
+        "professional_story": professional_story,
+        "interview_screening_focus": list(
+            intent.get("interview_screening_focus") or narrative_themes
+        )[:6],
         "risk_warnings": [
             f"Missing hard requirement: {m}" for m in missing_reqs[:5]
         ],
+        "success_metric": "interview_probability",
     }
 
 
@@ -216,20 +315,83 @@ def _rank_projects(
     return ordered
 
 
+def _clean_story_token(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip()).strip(" \t\r\n,;:.-")
+    cleaned = re.sub(
+        r"^(required|responsibilities|requirements|preferred|qualifications)\s*:?\s*",
+        "",
+        cleaned,
+        flags=re.I,
+    ).strip(" \t\r\n,;:.-")
+    return cleaned
+
+
+def _professional_story(
+    *,
+    intent: dict[str, Any],
+    narrative_themes: list[str],
+    strengths: list[str],
+    top_interview_reasons: list[str],
+) -> str:
+    import re as _re
+
+    archetype = _clean_story_token(str(intent.get("person_archetype") or ""))
+    problem = _clean_story_token(str(intent.get("problem_to_solve") or ""))
+    theme_bits = [
+        _clean_story_token(t)
+        for t in narrative_themes
+        if _clean_story_token(t) and len(_clean_story_token(t)) > 2
+    ][:3]
+    themes = ", ".join(theme_bits)
+    evidence_bits = [
+        _clean_story_token(t)
+        for t in (top_interview_reasons or strengths)
+        if _clean_story_token(t) and len(_clean_story_token(t)) > 2
+    ][:3]
+    evidence = ", ".join(evidence_bits) or "available evidenced strengths"
+    parts = []
+    if archetype:
+        parts.append(f"Position as {archetype}")
+    if problem:
+        parts.append(f"focused on {problem}")
+    if themes:
+        parts.append(f"Story themes: {themes}")
+    parts.append(f"Sell strongest evidence first: {evidence}")
+    parts.append(
+        "Expand exceptional bullets; reduce weaker duty lists. Never invent facts"
+    )
+    return ". ".join(parts) + "."
+
+
 def _summary_focus(
     job_analysis: dict[str, Any],
     matched_reqs: list[str],
     strengths: list[str],
+    *,
+    narrative_themes: list[str] | None = None,
+    professional_story: str = "",
+    intent: dict[str, Any] | None = None,
 ) -> str:
     role = job_analysis.get("primary_role") or job_analysis.get("job_title") or "this role"
     industry = job_analysis.get("industry") or ""
     top = strengths[:5] or matched_reqs[:5]
     focus_bits = ", ".join(top) if top else "relevant professional experience"
     industry_bit = f" in {industry}" if industry and industry != "general" else ""
+    themes = ", ".join(narrative_themes or [])
+    archetype = str((intent or {}).get("person_archetype") or "")
+    story_bit = (
+        f" Professional story: {professional_story}"
+        if professional_story
+        else ""
+    )
+    theme_bit = f" Emphasize themes ({themes})." if themes else ""
+    archetype_bit = f" Archetype: {archetype}." if archetype else ""
     return (
-        f"Explain why this candidate fits {role}{industry_bit}. "
-        f"Lead with specialization and business value; weave in evidenced strengths "
-        f"({focus_bits}). Do not merely list tools. Sound like a human resume writer."
+        f"In the first 20 seconds, make a recruiter want to interview this person for "
+        f"{role}{industry_bit}.{archetype_bit}{theme_bit} "
+        f"Lead with specialization and business value; weave in strongest evidenced "
+        f"strengths ({focus_bits}). Prefer five exceptional bullets over ten average ones. "
+        f"Do not list tools. Sound like a senior recruiter wrote it.{story_bit}"
     )
 
 
@@ -255,16 +417,33 @@ def _experience_order(
     return [label for _, label in scored if label]
 
 
-def _experience_focus(job_analysis: dict[str, Any], matched_reqs: list[str]) -> str:
+def _experience_focus(
+    job_analysis: dict[str, Any],
+    matched_reqs: list[str],
+    *,
+    narrative_themes: list[str] | None = None,
+) -> str:
     top = matched_reqs[:6]
-    if top:
-        return "Lead with: " + "; ".join(top)
+    themes = list(narrative_themes or [])[:3]
+    lead = themes + [t for t in top if t not in themes]
+    if lead:
+        return (
+            "Tell the role-specific story. Expand strongest evidence first: "
+            + "; ".join(lead[:6])
+        )
     secondary = job_analysis.get("secondary_role") or ""
     return secondary or "Most relevant responsibilities first"
 
 
-def _value_proposition(strengths: list[str], job_analysis: dict[str, Any]) -> str:
+def _value_proposition(
+    strengths: list[str],
+    job_analysis: dict[str, Any],
+    *,
+    professional_story: str = "",
+) -> str:
     role = job_analysis.get("primary_role") or "the target role"
+    if professional_story:
+        return professional_story
     if strengths:
         return f"Candidate for {role} with demonstrated: {', '.join(strengths[:4])}"
     return f"Honest positioning for {role} based on available evidence"

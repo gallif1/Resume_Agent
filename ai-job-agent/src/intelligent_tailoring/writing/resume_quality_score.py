@@ -1,9 +1,7 @@
 """Internal Resume Quality Score — drives weak-section regeneration.
 
-Dimensions (0–100 each):
-  naturalness, evidence_utilization, job_relevance, ats_optimization,
-  human_writing_quality, technical_clarity, section_balance,
-  visual_quality, role_differentiation
+Primary success metric: interview probability.
+Dimensions (0–100 each) include a 20-second recruiter screen simulation.
 """
 
 from __future__ import annotations
@@ -15,19 +13,21 @@ from intelligent_tailoring.writing.ai_detector import detect_ai_writing
 from intelligent_tailoring.writing.ai_phrases import AI_CLICHE_PHRASES
 from intelligent_tailoring.writing.style_validator import evaluate_writing_quality
 
-DEFAULT_QUALITY_THRESHOLD = 72
+DEFAULT_QUALITY_THRESHOLD = 74
 
 _WEIGHTS = {
-    "naturalness": 0.14,
-    "evidence_utilization": 0.13,
-    "job_relevance": 0.14,
-    "ats_optimization": 0.07,
-    "human_writing_quality": 0.14,
-    "technical_clarity": 0.10,
-    "section_balance": 0.07,
-    "visual_quality": 0.04,
-    "role_differentiation": 0.07,
-    "one_page_fit": 0.10,
+    "interview_probability": 0.16,
+    "twenty_second_screen": 0.12,
+    "naturalness": 0.10,
+    "evidence_utilization": 0.11,
+    "job_relevance": 0.11,
+    "ats_optimization": 0.05,
+    "human_writing_quality": 0.10,
+    "technical_clarity": 0.07,
+    "section_balance": 0.05,
+    "visual_quality": 0.03,
+    "role_differentiation": 0.05,
+    "one_page_fit": 0.05,
 }
 
 
@@ -100,6 +100,23 @@ def _evidence_utilization(
             notes.append(f"thin_projects:{short}")
     elif thin:
         notes.append("inventory_had_thin_projects")
+
+    # Soft / transferable competencies should appear when inventoried
+    soft = list(
+        (evidence_inventory or {}).get("soft_competencies")
+        or (highlight_plan or {}).get("soft_competencies")
+        or []
+    )[:6]
+    if soft:
+        soft_hits = sum(
+            1
+            for c in soft
+            if any(tok in blob for tok in str(c).lower().split() if len(tok) > 3)
+        )
+        soft_ratio = soft_hits / max(len(soft), 1)
+        score = score * 0.85 + soft_ratio * 100 * 0.15
+        if soft_hits == 0:
+            notes.append("soft_competencies_underused")
     return _clamp(score), notes
 
 
@@ -123,6 +140,127 @@ def _job_relevance(
         score -= 15
         notes.append("summary_misses_emphasis")
     return _clamp(score), notes
+
+
+def _twenty_second_screen(
+    resume: dict[str, Any],
+    *,
+    strategy: dict[str, Any] | None,
+    highlight_plan: dict[str, Any] | None,
+) -> tuple[int, list[str]]:
+    """Simulate the first 20 seconds of a recruiter reading the resume."""
+    notes: list[str] = []
+    score = 80.0
+    summary = str(
+        resume.get("professional_summary") or resume.get("summary") or ""
+    ).strip()
+    title = str(resume.get("professional_title") or resume.get("title") or "").strip()
+    words = len(summary.split())
+
+    if not summary:
+        return 20, ["no_summary"]
+    if not title:
+        score -= 10
+        notes.append("no_title")
+    if words < 28:
+        score -= 25
+        notes.append("summary_too_thin_for_20s")
+    elif words > 75:
+        score -= 10
+        notes.append("summary_too_long_for_scan")
+    if not re.search(r"[.!?]", summary):
+        score -= 12
+        notes.append("summary_not_sentences")
+    low = summary.lower()
+    if any(
+        p in low
+        for p in (
+            "professional with",
+            "strong understanding",
+            "passionate about",
+            "highly motivated",
+            "knowledge of",
+            "experienced in",
+        )
+    ):
+        score -= 20
+        notes.append("generic_summary_filler")
+
+    reasons = list(
+        (strategy or {}).get("top_interview_reasons")
+        or (highlight_plan or {}).get("top_interview_reasons")
+        or (strategy or {}).get("narrative_themes")
+        or []
+    )[:3]
+    visible = 0
+    first_screen = " ".join(
+        [
+            title,
+            summary,
+            " ".join(str(s) for s in (resume.get("skills") or [])[:8]),
+        ]
+    ).lower()
+    # First experience company/title also in the 20s scan
+    for entry in (resume.get("experience") or [])[:1]:
+        if isinstance(entry, dict):
+            first_screen += " " + str(entry.get("title") or "").lower()
+            first_screen += " " + " ".join(
+                str(b) for b in (entry.get("bullets") or [])[:2]
+            ).lower()
+    for reason in reasons:
+        token = str(reason).strip().lower()
+        if not token:
+            continue
+        if token in first_screen or any(
+            t and t in first_screen for t in token.split() if len(t) > 3
+        ):
+            visible += 1
+    if reasons:
+        score = score * 0.55 + (100.0 * visible / len(reasons)) * 0.45
+        if visible == 0:
+            notes.append("strongest_reasons_not_obvious")
+        elif visible < len(reasons):
+            notes.append(f"reasons_partially_visible:{visible}/{len(reasons)}")
+    else:
+        notes.append("no_interview_reasons_provided")
+
+    return _clamp(score), notes
+
+
+def _interview_probability(
+    dims: dict[str, int],
+    *,
+    recruiter_review: dict[str, Any] | None,
+    hiring_manager: dict[str, Any] | None,
+) -> tuple[int, list[str]]:
+    """Composite interview-probability estimate from quality + reviewer signals."""
+    notes: list[str] = []
+    base = (
+        dims.get("twenty_second_screen", 60) * 0.30
+        + dims.get("job_relevance", 60) * 0.22
+        + dims.get("evidence_utilization", 60) * 0.18
+        + dims.get("human_writing_quality", 60) * 0.15
+        + dims.get("naturalness", 60) * 0.15
+    )
+    if recruiter_review:
+        iq = int(recruiter_review.get("interview_quality") or 0)
+        if "would_interview" in recruiter_review:
+            if recruiter_review.get("would_interview"):
+                base = base * 0.7 + max(iq, 75) * 0.3
+            else:
+                base = base * 0.7 + min(iq or 45, 55) * 0.3
+                notes.append("recruiter_would_not_interview")
+        elif iq:
+            base = base * 0.75 + iq * 0.25
+    if hiring_manager:
+        fit = int(hiring_manager.get("overall_fit") or 0)
+        base = base * 0.8 + fit * 0.2
+        if fit < 60:
+            notes.append("hm_low_confidence")
+        rejects = list(hiring_manager.get("why_reject") or [])
+        if rejects:
+            notes.append(f"hm_concerns:{len(rejects)}")
+    return _clamp(base), notes
 
 
 def _ats_score(resume: dict[str, Any]) -> tuple[int, list[str]]:
@@ -285,6 +423,9 @@ def evaluate_resume_quality(
     dims["role_differentiation"], notes["role_differentiation"] = _role_differentiation(
         resume, strategy=strategy
     )
+    dims["twenty_second_screen"], notes["twenty_second_screen"] = _twenty_second_screen(
+        resume, strategy=strategy, highlight_plan=highlight_plan
+    )
     from intelligent_tailoring.services.one_page_compressor import estimate_page_pressure
 
     pressure = estimate_page_pressure(resume)
@@ -315,11 +456,22 @@ def evaluate_resume_quality(
             + int(hiring_manager.get("evidence_quality") or 0) * 0.15
         )
 
+    dims["interview_probability"], notes["interview_probability"] = _interview_probability(
+        dims,
+        recruiter_review=recruiter_review,
+        hiring_manager=hiring_manager,
+    )
+
     overall = sum(dims[k] * _WEIGHTS[k] for k in _WEIGHTS)
     overall_i = _clamp(overall)
 
     weak_sections: list[str] = []
-    if dims["naturalness"] < threshold or dims["human_writing_quality"] < threshold:
+    if (
+        dims["naturalness"] < threshold
+        or dims["human_writing_quality"] < threshold
+        or dims.get("twenty_second_screen", 100) < threshold
+        or dims.get("interview_probability", 100) < threshold
+    ):
         weak_sections.append("summary")
         weak_sections.append("experience")
     if dims["job_relevance"] < threshold or "summary_misses_emphasis" in notes["job_relevance"]:
@@ -343,6 +495,11 @@ def evaluate_resume_quality(
         weak_sections.append("projects")
         if "summary" not in weak_sections:
             weak_sections.append("summary")
+    if "strongest_reasons_not_obvious" in notes.get("twenty_second_screen", []):
+        if "summary" not in weak_sections:
+            weak_sections.append("summary")
+        if "experience" not in weak_sections:
+            weak_sections.append("experience")
 
     # Recruiter/HM explicit section requests
     for src in (recruiter_review or {}, hiring_manager or {}):

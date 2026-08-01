@@ -143,6 +143,7 @@ def run_human_writing_stage(
     style_threshold: int = DEFAULT_THRESHOLD,
     max_review_cycles: int = MAX_REVIEW_CYCLES,
     hiring_manager_feedback: dict[str, Any] | None = None,
+    review_feedback: dict[str, Any] | None = None,
     highlight_plan: dict[str, Any] | None = None,
     evidence_inventory: dict[str, Any] | None = None,
     quality_threshold: int = DEFAULT_QUALITY_THRESHOLD,
@@ -154,8 +155,14 @@ def run_human_writing_stage(
     """
     baseline = _sync(validated_resume)
     cycles: list[dict[str, Any]] = []
-    review_feedback: dict[str, Any] | None = None
+    seeded_review = dict(review_feedback) if review_feedback else None
+    review_feedback = seeded_review
     sections: list[str] | None = None
+    if seeded_review:
+        sections = _normalize_sections(
+            list(seeded_review.get("sections_to_regenerate") or [])
+            + list(seeded_review.get("sections_to_strengthen") or [])
+        ) or None
     quality_report: dict[str, Any] = {}
 
     writer_result = write_human_resume(
@@ -163,7 +170,9 @@ def run_human_writing_stage(
         strategy=strategy,
         knowledge_base=knowledge_base,
         output_language=output_language,
+        review_feedback=review_feedback,
         hiring_manager_feedback=hiring_manager_feedback,
+        sections=sections,
         use_cache=use_cache,
         allow_llm=allow_llm,
     )
@@ -356,6 +365,13 @@ def run_human_writing_stage(
         failures.append(f"ai_risk:{ai.get('ai_risk')}")
     if int(quality_report.get("overall_score") or 0) < max(60, quality_threshold - 12):
         failures.append(f"quality_score:{quality_report.get('overall_score')}")
+    dims = dict(quality_report.get("dimensions") or {})
+    if int(dims.get("interview_probability") or 100) < max(55, quality_threshold - 15):
+        failures.append(
+            f"interview_probability:{dims.get('interview_probability')}"
+        )
+    if int(dims.get("twenty_second_screen") or 100) < max(55, quality_threshold - 15):
+        failures.append(f"twenty_second_screen:{dims.get('twenty_second_screen')}")
 
     return {
         "tailored_resume": current,

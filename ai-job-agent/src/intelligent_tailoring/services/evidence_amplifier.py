@@ -14,8 +14,30 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 
 
+_SOFT_COMPETENCY_CUES: dict[str, tuple[str, ...]] = {
+    "problem_solving": ("problem", "troubleshoot", "debug", "root cause", "diagnos", "resolv"),
+    "leadership": ("led", "managed", "mentored", "supervised", "coached", "directed"),
+    "ownership": ("owned", "ownership", "accountable", "end-to-end", "drove", "championed"),
+    "communication": ("present", "communicat", "wrote", "drafted", "negotiat", "taught"),
+    "learning_ability": ("learned", "upskill", "self-taught", "adopted", "studied"),
+    "decision_making": ("decided", "chose", "selected", "trade-off", "prioritiz"),
+    "architecture": ("architect", "system design", "schema", "microservice", "infrastructure"),
+    "debugging": ("debug", "fix", "incident", "defect", "bug"),
+    "optimization": ("optimiz", "performance", "latency", "throughput", "efficiency"),
+    "customer_interaction": ("customer", "client", "patient", "guest", "account"),
+    "teaching": ("train", "teach", "tutor", "instruct", "onboard", "mentor"),
+    "automation": ("automat", "script", "ci/cd", "pipeline", "orchestrat"),
+    "scalability": ("scalab", "high-traffic", "distributed", "load"),
+    "testing": ("test", "qa", "coverage", "regression", "validation"),
+    "monitoring": ("monitor", "observability", "alert", "telemetry", "on-call"),
+    "documentation": ("document", "runbook", "playbook", "spec", "wiki"),
+    "collaboration": ("cross-functional", "collaborat", "stakeholder", "partner"),
+    "initiative": ("initiated", "proposed", "volunteered", "pioneered", "proactive"),
+}
+
+
 def extract_entry_evidence(entry: dict[str, Any], *, kind: str) -> dict[str, Any]:
-    """Pull responsibilities, technologies, achievements from one entry."""
+    """Pull responsibilities, technologies, soft evidence, achievements from one entry."""
     bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
     desc = str(entry.get("description") or "").strip()
     blob = " ".join([desc] + bullets)
@@ -65,6 +87,15 @@ def extract_entry_evidence(entry: dict[str, Any], *, kind: str) -> dict[str, Any
         )
     ]
 
+    soft_competencies: list[str] = []
+    soft_evidence: dict[str, list[str]] = {}
+    for label, cues in _SOFT_COMPETENCY_CUES.items():
+        matched = [b for b in bullets if any(c in b.lower() for c in cues)]
+        if matched or any(c in low for c in cues):
+            soft_competencies.append(label)
+            if matched:
+                soft_evidence[label] = matched[:3]
+
     return {
         "kind": kind,
         "name": str(entry.get("name") or entry.get("company") or entry.get("title") or ""),
@@ -74,6 +105,8 @@ def extract_entry_evidence(entry: dict[str, Any], *, kind: str) -> dict[str, Any
         "architecture": architecture[:4],
         "achievements": impact[:4],
         "challenges": challenges[:4],
+        "soft_competencies": soft_competencies,
+        "soft_evidence": soft_evidence,
         "description": desc,
         "bullet_count": len(bullets),
         "relevance_hint": blob[:240],
@@ -97,6 +130,13 @@ def build_evidence_inventory(resume_facts: dict[str, Any]) -> dict[str, Any]:
     rich_projects = [
         p["name"] for p in projects if p["bullet_count"] >= 3 and p["name"]
     ]
+    soft_all = sorted(
+        {
+            c
+            for block in experiences + projects
+            for c in (block.get("soft_competencies") or [])
+        }
+    )
     return {
         "experiences": experiences,
         "projects": projects,
@@ -109,13 +149,17 @@ def build_evidence_inventory(resume_facts: dict[str, Any]) -> dict[str, Any]:
                 for t in (block.get("technologies") or [])
             }
         ),
+        "soft_competencies": soft_all,
+        "transferable_strengths": soft_all[:12],
     }
 
 
 def score_requirement_support(
     evidence_map: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Classify each requirement as Explicit / Strongly / Weakly / Unsupported."""
+    """Classify each requirement into Explicit / Strong Supporting / Transferable / No Evidence."""
+    from intelligent_tailoring.hiring_intent import classify_requirement_support_tier
+
     out: list[dict[str, Any]] = []
     for entry in evidence_map or []:
         strength = str(
@@ -131,14 +175,25 @@ def score_requirement_support(
             support = "Weakly Supported"
         else:
             support = "Unsupported"
+        tier = classify_requirement_support_tier(support)
+        # Transferable: weak inference that still has supporting text
+        if support == "Weakly Supported" and str(entry.get("supporting_evidence") or "").strip():
+            tier = "Transferable Evidence"
         out.append(
             {
                 "requirement": str(entry.get("requirement") or ""),
                 "support": support,
+                "support_tier": tier,
                 "importance": str(entry.get("importance") or "soft"),
                 "supporting_evidence": str(entry.get("supporting_evidence") or ""),
                 "must_highlight": support in ("Explicit", "Strongly Supported")
                 and str(entry.get("importance") or "") in ("hard", "soft"),
+                "surface_if_present": tier
+                in (
+                    "Explicit Evidence",
+                    "Strong Supporting Evidence",
+                    "Transferable Evidence",
+                ),
             }
         )
     return out
@@ -148,11 +203,14 @@ def build_highlight_plan(
     *,
     evidence_map: list[dict[str, Any]],
     skills_to_emphasize: list[str],
+    soft_competencies: list[str] | None = None,
+    hiring_priorities: list[str] | None = None,
 ) -> dict[str, Any]:
     """Decide which supported requirements must appear across sections.
 
     Interview-first: identify the strongest evidenced reasons to interview,
-    not maximum keyword coverage.
+    not maximum keyword coverage. Surfaces transferable soft evidence when
+    it aligns with hiring priorities — never invents.
     """
     from intelligent_tailoring.interview_philosophy import select_top_interview_reasons
 
@@ -165,14 +223,47 @@ def build_highlight_plan(
     soft_highlight = [
         s for s in support if s.get("must_highlight") and s.get("importance") == "soft"
     ]
+    transferable = [
+        s
+        for s in support
+        if s.get("support_tier") == "Transferable Evidence" and s.get("requirement")
+    ]
+    def _clean_term(value: str) -> str:
+        text = re.sub(r"\s+", " ", (value or "").strip()).strip(" \t\r\n,;:.-")
+        text = re.sub(
+            r"^(required|responsibilities|requirements|preferred|qualifications)\s*:?\s*",
+            "",
+            text,
+            flags=re.I,
+        ).strip(" \t\r\n,;:.-")
+        return text
+
     highlight_terms = []
     for item in must + soft_highlight:
-        req = str(item.get("requirement") or "").strip()
-        if req and req not in highlight_terms:
+        req = _clean_term(str(item.get("requirement") or ""))
+        if req and req not in highlight_terms and len(req) > 2:
             highlight_terms.append(req)
     for skill in skills_to_emphasize:
-        if skill and skill not in highlight_terms:
-            highlight_terms.append(skill)
+        cleaned = _clean_term(str(skill))
+        if cleaned and cleaned not in highlight_terms and len(cleaned) > 2:
+            highlight_terms.append(cleaned)
+    # Fold evidenced soft competencies that match hiring priorities / soft reqs
+    priority_blob = " ".join(
+        str(x).lower()
+        for x in list(hiring_priorities or [])
+        + [s.get("requirement") or "" for s in soft_highlight + transferable]
+    )
+    for comp in soft_competencies or []:
+        label = str(comp).strip()
+        if not label or label in highlight_terms:
+            continue
+        token = label.lower().split()[0] if label else ""
+        if token and len(token) > 3 and token in priority_blob:
+            highlight_terms.append(label)
+        elif not priority_blob and label not in highlight_terms:
+            # Still surface top soft competencies as secondary propagate terms
+            if len(highlight_terms) < 14:
+                highlight_terms.append(label)
 
     plan = {
         "requirement_support": support,
@@ -180,12 +271,16 @@ def build_highlight_plan(
         "soft_highlight": [
             m["requirement"] for m in soft_highlight if m.get("requirement")
         ],
+        "transferable_highlight": [
+            m["requirement"] for m in transferable if m.get("requirement")
+        ][:8],
         "propagate_terms": highlight_terms[:16],
         "unsupported_hard": [
             s["requirement"]
             for s in support
             if s.get("support") == "Unsupported" and s.get("importance") == "hard"
         ],
+        "soft_competencies": list(soft_competencies or [])[:12],
     }
     plan["top_interview_reasons"] = select_top_interview_reasons(
         highlight_plan=plan,
@@ -320,9 +415,20 @@ def apply_evidence_amplification(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return updated resume_facts + enrichment payload for strategy/writer."""
     inventory = build_evidence_inventory(resume_facts)
+    soft_comps = list(
+        resume_facts.get("soft_competencies")
+        or inventory.get("soft_competencies")
+        or []
+    )
     highlight = build_highlight_plan(
         evidence_map=evidence_map,
         skills_to_emphasize=list(strategy.get("skills_to_emphasize") or []),
+        soft_competencies=soft_comps,
+        hiring_priorities=list(
+            strategy.get("hiring_priorities")
+            or strategy.get("narrative_themes")
+            or []
+        ),
     )
     facts = expand_thin_projects_from_facts(
         resume_facts,
@@ -343,6 +449,8 @@ def apply_evidence_amplification(
         "must_highlight_in_summary": highlight.get("must_highlight") or [],
         "propagate_terms": highlight.get("propagate_terms") or [],
         "top_interview_reasons": highlight.get("top_interview_reasons") or [],
+        "transferable_evidence": highlight.get("transferable_highlight") or [],
+        "soft_competencies": soft_comps[:12],
         "thin_projects_expanded": inventory.get("thin_projects") or [],
     }
     return facts, enrichment

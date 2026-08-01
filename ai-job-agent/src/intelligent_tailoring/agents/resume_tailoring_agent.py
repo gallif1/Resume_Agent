@@ -58,11 +58,16 @@ class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
         )
 
         resume = dict(generated.get("tailored_resume") or {})
-        # Strip weak/no-evidence requirements from skills selection
+        # Strip only No Evidence claims from skills.
+        # Transferable / Weak Inference with supporting text may still surface.
         no_evidence_reqs = {
             m.requirement.lower()
             for m in payload.evidence_map.mappings
-            if m.evidence_strength in ("No Evidence", "Weak Inference")
+            if m.evidence_strength == "No Evidence"
+            or (
+                m.candidate_status == "MISSING"
+                and not str(m.supporting_evidence or "").strip()
+            )
         }
         skills = []
         for skill in resume.get("skills") or []:

@@ -36,14 +36,20 @@ def _trim_words(text: str, maximum: int) -> str:
     return trimmed
 
 
-def _bullet_score(bullet: str, emphasize: list[str]) -> int:
+def _bullet_score(
+    bullet: str,
+    emphasize: list[str],
+    *,
+    strongest: list[str] | None = None,
+    weaker: list[str] | None = None,
+) -> int:
     """Rank by interview probability for THIS role (quality over completeness)."""
+    low = _norm(bullet)
     try:
         from intelligent_tailoring.interview_philosophy import bullet_interview_score
 
-        return bullet_interview_score(bullet, emphasize)
+        score = bullet_interview_score(bullet, emphasize)
     except Exception:
-        low = _norm(bullet)
         score = min(len(low.split()), 28)
         for term in emphasize:
             t = _norm(term)
@@ -58,7 +64,17 @@ def _bullet_score(bullet: str, emphasize: list[str]) -> int:
             score -= 15
         if re.match(r"^(worked on|helped with|responsible for|created database)\b", low):
             score -= 12
-        return score
+    for bit in strongest or []:
+        frag = _norm(str(bit))[:48]
+        if frag and (frag in low or any(t in low for t in frag.split() if len(t) > 4)):
+            score += 22
+            break
+    for bit in weaker or []:
+        frag = _norm(str(bit))[:48]
+        if frag and frag in low:
+            score -= 18
+            break
+    return score
 
 
 def _dedupe_similar(bullets: list[str]) -> list[str]:
@@ -167,10 +183,30 @@ def compress_resume_to_one_page(
             strategy.get("propagate_terms")
             or strategy.get("skills_to_emphasize")
             or strategy.get("must_highlight_in_summary")
+            or strategy.get("top_interview_reasons")
             or []
         )
         if str(s).strip()
     ]
+    strongest = [
+        str(s)
+        for s in (
+            strategy.get("strongest_evidence")
+            or strategy.get("facts_to_expand")
+            or []
+        )
+        if str(s).strip()
+    ][:12]
+    weaker = [
+        str(s)
+        for s in (
+            strategy.get("weaker_evidence_to_reduce")
+            or strategy.get("facts_to_condense")
+            or strategy.get("facts_to_omit")
+            or []
+        )
+        if str(s).strip()
+    ][:16]
 
     summary_max = 48 if aggressive else DEFAULT_SUMMARY_MAX_WORDS
     max_roles = 2 if aggressive else DEFAULT_MAX_EXPERIENCE_ROLES
@@ -201,14 +237,14 @@ def compress_resume_to_one_page(
         raw_bullets = _dedupe_similar(raw_bullets)
         limit = bullets_top if i == 0 else bullets_other
         scored = sorted(
-            raw_bullets, key=lambda b: _bullet_score(b, emphasize), reverse=True
+            raw_bullets,
+            key=lambda b: _bullet_score(
+                b, emphasize, strongest=strongest, weaker=weaker
+            ),
+            reverse=True,
         )
-        # Preserve relative quality order but keep original chronology among kept set
-        keep_set = set(scored[:limit])
-        kept = [b for b in raw_bullets if b in keep_set][:limit]
-        # If ranking preferred different ones, use scored order for strength
-        if len(kept) < min(limit, len(scored)):
-            kept = scored[:limit]
+        # Prefer strongest evidence order for interview probability
+        kept = scored[:limit]
         entry["bullets"] = kept
         total_bullets += len(kept)
         compressed_roles.append(entry)
@@ -225,7 +261,11 @@ def compress_resume_to_one_page(
         raw_bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
         raw_bullets = _dedupe_similar(raw_bullets)
         scored = sorted(
-            raw_bullets, key=lambda b: _bullet_score(b, emphasize), reverse=True
+            raw_bullets,
+            key=lambda b: _bullet_score(
+                b, emphasize, strongest=strongest, weaker=weaker
+            ),
+            reverse=True,
         )
         room = max(0, max_total - total_bullets)
         kept = scored[: min(bullets_proj, room)]

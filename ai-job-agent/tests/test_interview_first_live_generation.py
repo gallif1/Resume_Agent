@@ -115,7 +115,7 @@ def test_generation_report_shape():
             "recruiter_review": {"would_interview": True},
             "hiring_manager_feedback": {"overall_fit": 80},
             "tailoring_strategy": {"top_interview_reasons": ["Python"]},
-            "pipeline_version": "multi_agent_v1_3",
+            "pipeline_version": "multi_agent_v1_4",
         },
         elapsed_seconds=12.3,
     )

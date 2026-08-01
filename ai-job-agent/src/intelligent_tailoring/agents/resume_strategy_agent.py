@@ -1,7 +1,8 @@
 """Agent 5 — Resume Strategy Agent.
 
-Creates the entire resume strategy before any writing begins.
+Builds the strongest truthful professional story for THIS job.
 No writing. Company intelligence may influence prioritization only.
+Success metric: interview probability — not keyword coverage.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from intelligent_tailoring.agents.schemas import (
     ResumeStrategy,
     ResumeStrategyInput,
 )
+from intelligent_tailoring.hiring_intent import classify_requirement_support_tier
 from intelligent_tailoring.services.job_analyzer import analyze_job
 from intelligent_tailoring.services.tailoring_strategy_builder import (
     build_tailoring_strategy,
@@ -84,7 +86,9 @@ def _apply_company_influence(
 
 class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
     agent_id = "resume_strategy"
-    responsibility = "Decide resume strategy (order, focus, coverage) without writing"
+    responsibility = (
+        "Build the strongest truthful professional story for this job (no writing)"
+    )
 
     def run(
         self,
@@ -110,7 +114,13 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
                 jd_snapshot=payload.job_profile.jd_text,
                 requirements=requirements,
             )
+        # Carry hiring intent from Job Intelligence into strategy
+        intent = dict(getattr(payload.job_profile, "hiring_intent", None) or {})
+        if intent and "hiring_intent" not in job_analysis:
+            job_analysis = dict(job_analysis)
+            job_analysis["hiring_intent"] = intent
 
+        company_priorities = _company_priorities(payload.company_profile)
         legacy = build_tailoring_strategy(
             job_analysis=job_analysis,
             resume_facts=payload.resume_facts,
@@ -118,9 +128,9 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
             ranked_requirements=ranked,
             language=language,
             fact_scores=payload.fact_scores,
+            hiring_intent=intent or None,
+            company_priorities=company_priorities,
         )
-
-        company_priorities = _company_priorities(payload.company_profile)
         legacy = _apply_company_influence(legacy, company_priorities, evidence_list)
 
         coverage: dict[str, str] = {}
@@ -128,21 +138,31 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
             req = str(entry.get("requirement") or "")
             if not req:
                 continue
-            strength = str(entry.get("evidence_strength") or entry.get("inference_category") or "")
-            coverage[req] = strength
+            strength = str(
+                entry.get("evidence_strength") or entry.get("inference_category") or ""
+            )
+            coverage[req] = classify_requirement_support_tier(strength)
+
+        # Prefer tiers already computed in highlight plan when present
+        for req, tier in (legacy.get("requirement_coverage_tiers") or {}).items():
+            if req:
+                coverage[str(req)] = str(tier)
 
         safe_inferences = [
             str(entry.get("generated_statement") or entry.get("requirement") or "")
             for entry in evidence_list
             if entry.get("evidence_strength") == "Strong Inference"
             or entry.get("inference_category") == "Strongly Inferred"
+            or coverage.get(str(entry.get("requirement") or ""))
+            in ("Strong Supporting Evidence", "Transferable Evidence")
         ]
         safe_inferences = [s for s in safe_inferences if s][:20]
 
         forbidden = [
             str(entry.get("requirement") or "")
             for entry in evidence_list
-            if entry.get("evidence_strength") in ("No Evidence", "Weak Inference")
+            if coverage.get(str(entry.get("requirement") or "")) == "No Evidence"
+            or entry.get("evidence_strength") in ("No Evidence",)
             or entry.get("candidate_status") == "MISSING"
         ]
         # Also fold explicit forbidden wording from evidence map
@@ -155,6 +175,8 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
         important = list(legacy.get("facts_to_expand") or [])[:20]
         low = list(legacy.get("facts_to_condense") or [])[:20]
         hidden = list(legacy.get("facts_to_omit") or [])[:20]
+        narrative_themes = [str(t) for t in (legacy.get("narrative_themes") or []) if t]
+        professional_story = str(legacy.get("professional_story") or "")
 
         strategy = ResumeStrategy(
             summary_focus=str(legacy.get("summary_focus") or ""),
@@ -169,6 +191,8 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
             forbidden_claims=forbidden,
             requirement_coverage=coverage,
             company_influenced_priorities=company_priorities,
+            narrative_themes=narrative_themes,
+            professional_story=professional_story,
             legacy_strategy=legacy,
         )
         return AgentResult(
@@ -180,6 +204,7 @@ class ResumeStrategyAgent(Agent[ResumeStrategyInput, ResumeStrategy]):
                 "forbidden_claims_count": len(strategy.forbidden_claims),
                 "company_influence_count": len(company_priorities),
                 "coverage_count": len(coverage),
+                "narrative_theme_count": len(narrative_themes),
             },
         )
 

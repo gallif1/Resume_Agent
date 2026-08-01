@@ -134,6 +134,15 @@ class JobProfile:
     raw_requirements: dict[str, Any] = field(default_factory=dict)
     job_family: str = "general"
     industry: str = "general"
+    # Interview-probability hiring intent — what person they actually want
+    person_archetype: str = ""
+    problem_to_solve: str = ""
+    hiring_priorities: list[str] = field(default_factory=list)
+    narrative_themes: list[str] = field(default_factory=list)
+    hiring_signals: list[str] = field(default_factory=list)
+    interview_screening_focus: list[str] = field(default_factory=list)
+    interview_lens: str = ""
+    hiring_intent: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -170,6 +179,12 @@ class JobProfile:
         base.setdefault("customer_interaction", list(self.customer_interaction))
         base.setdefault("business_domain", list(self.business_domain))
         base.setdefault("experience_expectations", list(self.experience_expectations))
+        base.setdefault("person_archetype", self.person_archetype)
+        base.setdefault("hiring_priorities", list(self.hiring_priorities))
+        base.setdefault("narrative_themes", list(self.narrative_themes))
+        base.setdefault("hiring_signals", list(self.hiring_signals))
+        base.setdefault("interview_screening_focus", list(self.interview_screening_focus))
+        base.setdefault("hiring_intent", dict(self.hiring_intent or {}))
         if self.jd_text:
             base["jd_text"] = self.jd_text
         return base
@@ -328,6 +343,8 @@ class ResumeStrategy:
     forbidden_claims: list[str] = field(default_factory=list)
     requirement_coverage: dict[str, str] = field(default_factory=dict)
     company_influenced_priorities: list[str] = field(default_factory=list)
+    narrative_themes: list[str] = field(default_factory=list)
+    professional_story: str = ""
     # Full legacy strategy bag for rewrite / rebuild services
     legacy_strategy: dict[str, Any] = field(default_factory=dict)
 
@@ -351,6 +368,8 @@ class ResumeStrategy:
         base.setdefault(
             "company_influenced_priorities", list(self.company_influenced_priorities)
         )
+        base.setdefault("narrative_themes", list(self.narrative_themes))
+        base.setdefault("professional_story", self.professional_story)
         return base
 
 
