@@ -272,41 +272,48 @@ def render_tailored_cv_markdown(
 
     experience = [e for e in cv.get("experience") or [] if isinstance(e, dict)]
     if experience:
-        lines += ["", "## Experience"]
+        rendered_exp = 0
         for entry in experience:
             title = str(entry.get("title") or "").strip()
             company = str(entry.get("company") or "").strip()
             dates = str(entry.get("dates") or "").strip()
-            heading = title or company
-            if not heading and not entry.get("bullets"):
+            bullets = _string_list(entry.get("bullets"), max_items=8)
+            # Never render empty experience shells (heading without bullets).
+            if not bullets:
                 continue
+            if rendered_exp == 0:
+                lines += ["", "## Experience"]
+            heading = title or company
             lines += ["", f"### {heading or 'Experience'}"]
             meta = _entry_meta_line(company if title else "", dates)
             if meta:
                 lines += ["", meta]
-            bullets = _string_list(entry.get("bullets"), max_items=8)
-            if bullets:
-                lines.append("")
-                lines += [f"- {bullet}" for bullet in bullets]
+            lines.append("")
+            lines += [f"- {bullet}" for bullet in bullets]
+            rendered_exp += 1
 
     projects = [p for p in cv.get("projects") or [] if isinstance(p, dict)]
     if projects:
-        lines += ["", "## Projects"]
+        rendered_proj = 0
         for entry in projects:
             project_name = str(entry.get("name") or "").strip()
             description = str(entry.get("description") or "").strip()
-            if not project_name and not description and not entry.get("bullets"):
+            bullets = _string_list(entry.get("bullets"), max_items=8)
+            # Never render title-only projects.
+            if not description and not bullets:
                 continue
+            if rendered_proj == 0:
+                lines += ["", "## Projects"]
             lines += ["", f"### {project_name or 'Project'}"]
             if description:
                 lines += ["", description]
-            bullets = _string_list(entry.get("bullets"), max_items=8)
             if bullets:
                 lines.append("")
                 lines += [f"- {bullet}" for bullet in bullets]
             techs = _string_list(entry.get("technologies"), max_items=20)
             if techs:
                 lines += ["", f"Technologies: {', '.join(techs)}"]
+            rendered_proj += 1
 
     skills = _string_list(cv.get("skills"), max_items=40)
     if skills:

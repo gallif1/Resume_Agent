@@ -81,6 +81,23 @@ _DROP_SKILL_ATOMS = frozenset(
         "fullstack",
         "full stack",
         "full-stack",
+        # Abstract competencies that must not appear as free-form skills
+        "architecture",
+        "architectures",
+        "design",
+        "system design",
+        "systems",
+        "applications",
+        "services",
+        "platform",
+        "platforms",
+        "infrastructure",
+        "scalability",
+        "performance",
+        "problem solving",
+        "problem-solving",
+        "teamwork",
+        "collaboration",
     }
 )
 

@@ -255,6 +255,17 @@ def run_intelligent_tailoring_agents(
         agent_id="resume_knowledge",
         fact_count=len(kb.facts),
     )
+    try:
+        from intelligent_tailoring.canonical_resume import log_stage_inventory
+
+        log_stage_inventory(
+            generation_id=str(job.get("id") or "gen"),
+            stage="resume_knowledge",
+            resume_facts=resume_facts,
+            extra={"fact_count": len(kb.facts)},
+        )
+    except Exception:
+        pass
 
     if use_cache and not regenerate_section:
         cached = read_tailoring_cache(
@@ -1304,6 +1315,92 @@ def run_intelligent_tailoring_agents(
             ),
             job_family=str(strategy.get("job_family") or ""),
             category_order=list(strategy.get("skill_category_order") or []),
+        )
+
+        # Preservation-first repair: refill empty shells / underfilled sections
+        # from verified source facts before final gates and render.
+        from intelligent_tailoring.canonical_resume import (
+            build_source_coverage_report,
+            completeness_failures as canonical_completeness_failures,
+            drop_empty_shell_entries,
+            estimate_content_density,
+            inventory_from_facts,
+            log_stage_inventory,
+            restore_missing_content_from_source,
+        )
+
+        generation_id = str(
+            (cv_profile or {}).get("id")
+            or job.get("id")
+            or "gen"
+        )
+        source_inv = inventory_from_facts(resume_facts)
+        log_stage_inventory(
+            generation_id=str(generation_id),
+            stage="pre_preserve_repair",
+            resume=cleaned_resume,
+            extra={"source": source_inv},
+        )
+        cleaned_resume = restore_missing_content_from_source(
+            cleaned_resume,
+            resume_facts=resume_facts,
+        )
+        density = estimate_content_density(cleaned_resume)
+        if density.get("underfilled"):
+            # Pull additional high-value source content rather than leaving
+            # half a page empty.
+            cleaned_resume = restore_missing_content_from_source(
+                cleaned_resume,
+                resume_facts=resume_facts,
+                max_roles=3,
+                max_projects=2,
+                min_bullets_per_role=2,
+                min_bullets_per_project=2,
+            )
+            # Re-fit to one page without stripping restored substance to shells
+            if not allow_multi:
+                cleaned_resume = compress_resume_to_one_page(
+                    cleaned_resume, strategy=strategy, aggressive=False
+                )
+                cleaned_resume = restore_missing_content_from_source(
+                    cleaned_resume,
+                    resume_facts=resume_facts,
+                    min_bullets_per_role=1,
+                    min_bullets_per_project=1,
+                )
+        cleaned_resume = drop_empty_shell_entries(cleaned_resume)
+        cleaned_resume["skills"] = normalize_skill_lines(
+            list(cleaned_resume.get("skills") or []),
+            emphasize=list(
+                strategy.get("propagate_terms")
+                or strategy.get("skills_to_emphasize")
+                or []
+            ),
+            job_family=str(strategy.get("job_family") or ""),
+            category_order=list(strategy.get("skill_category_order") or []),
+        )
+        cleaned_resume["summary"] = str(
+            cleaned_resume.get("professional_summary")
+            or cleaned_resume.get("summary")
+            or ""
+        )
+        cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+        coverage_report = build_source_coverage_report(
+            source_facts=list(kb.facts) if kb is not None else [],
+            tailored_resume=cleaned_resume,
+            omission_decisions=list(strategy.get("omission_decisions") or []),
+        )
+        strategy["source_coverage_report"] = coverage_report
+        log_stage_inventory(
+            generation_id=str(generation_id),
+            stage="post_preserve_repair",
+            resume=cleaned_resume,
+            warnings=canonical_completeness_failures(
+                cleaned_resume,
+                source_inventory=source_inv,
+                coverage=coverage_report,
+            ),
+            extra={"density": density, "coverage_score": coverage_report.get("coverage_score")},
         )
 
         # Final 20-second interview simulation after compress/weave
