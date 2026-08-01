@@ -2302,9 +2302,15 @@ code {
 .tailored-cv-modal {
   max-width: 760px;
   width: 100%;
-  max-height: min(88vh, 900px);
+  max-height: min(92dvh, calc(100dvh - var(--safe-top) - var(--safe-bottom) - 12px));
+  height: auto;
   display: flex;
   flex-direction: column;
+  padding-top: max(16px, env(safe-area-inset-top, 0px));
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  overflow: hidden;
 }
 
 .tailored-cv-header {
@@ -2313,6 +2319,18 @@ code {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+  padding-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.tailored-cv-header .touch-target,
+.tailored-cv-header .btn {
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .tailored-cv-header h3 {
@@ -2797,20 +2815,440 @@ code {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 0.45rem;
-  max-height: 22rem;
-  overflow: auto;
+  gap: 0.55rem;
+  max-height: none;
+  overflow: visible;
 }
 
 .tailor-agent-card {
   display: flex;
-  gap: 0.55rem;
-  align-items: flex-start;
-  padding: 0.55rem 0.65rem;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
   border-radius: 10px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   background: rgba(255, 255, 255, 0.72);
   transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+  overflow: hidden;
+}
+
+.tailor-agent-header {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0.7rem 0.75rem;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  text-align: inherit;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+
+.tailor-agent-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tailor-agent-expand {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.tailor-chevron-open {
+  transform: rotate(180deg);
+}
+
+.tailor-agent-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.tailor-agent-status {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tailor-agent-status-running { color: #2563eb; }
+.tailor-agent-status-completed { color: #0f766e; }
+.tailor-agent-status-failed { color: #dc2626; }
+
+.tailor-agent-details {
+  padding: 0 0.75rem 0.75rem 2.6rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.tailor-agent-details[hidden] {
+  display: none !important;
+}
+
+.tailor-agent-detail-list {
+  margin: 0.4rem 0;
+  padding-inline-start: 1.1rem;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.tailor-agent-meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.tailor-agent-progress-indeterminate .tailor-agent-progress-fill {
+  width: 40%;
+  animation: tailor-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes tailor-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(280%); }
+}
+
+.tailor-score-lifecycle {
+  margin: 0 0 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.85);
+  display: grid;
+  gap: 0.4rem;
+}
+
+.tailor-score-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 0.9rem;
+  color: var(--text);
+}
+
+.tailor-score-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.tailor-score-value {
+  font-weight: 700;
+  text-align: end;
+}
+
+.tailor-score-delta strong {
+  color: #0f766e;
+}
+
+.tailor-score-note {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.tailor-score-reasons h5 {
+  margin: 0.35rem 0 0.25rem;
+  font-size: 0.8rem;
+}
+
+.tailor-score-reasons ul {
+  margin: 0;
+  padding-inline-start: 1.1rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.tailor-decision-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.tailor-decision-all {
+  max-height: min(50dvh, 320px);
+  overflow: auto;
+}
+
+.tailor-decision-item {
+  align-items: flex-start;
+}
+
+.tailor-decision-warning .tailor-decision-check,
+.tailor-decision-missing .tailor-decision-check {
+  color: #d97706;
+}
+
+.tailor-decision-positive .tailor-decision-check {
+  color: #0f766e;
+}
+
+.btn-link-touch {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.btn-link-touch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.tailor-show-more p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.tailor-complete-hero {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #0f766e;
+  margin-bottom: 0.75rem;
+}
+
+.tailor-complete-hero h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.tailor-complete-stats {
+  list-style: none;
+  margin: 0.75rem 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.tailor-complete-stats li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.tailor-complete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+/* Full-screen generation sheet */
+.generation-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 0;
+}
+
+.generation-modal {
+  width: 100%;
+  max-width: 820px;
+  height: 100dvh;
+  max-height: 100dvh;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+@supports not (height: 100dvh) {
+  .generation-modal {
+    height: 100vh;
+    max-height: 100vh;
+  }
+}
+
+.generation-modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding:
+    max(12px, env(safe-area-inset-top, 0px))
+    max(14px, env(safe-area-inset-right, 0px))
+    10px
+    max(14px, env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.generation-modal-heading h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.generation-modal-sub,
+.generation-modal-elapsed {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.generation-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.generation-modal-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.generation-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+}
+
+.generation-modal-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: stretch;
+  padding:
+    10px
+    max(14px, env(safe-area-inset-right, 0px))
+    max(12px, env(safe-area-inset-bottom, 0px))
+    max(14px, env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.generation-modal-footer .btn {
+  flex: 1 1 auto;
+}
+
+.generation-confirm-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding:
+    16px
+    max(12px, env(safe-area-inset-right, 0px))
+    max(16px, env(safe-area-inset-bottom, 0px))
+    max(12px, env(safe-area-inset-left, 0px));
+}
+
+.generation-confirm {
+  width: 100%;
+  max-width: 480px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.15rem;
+  box-shadow: var(--shadow);
+}
+
+.generation-confirm h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.generation-confirm p {
+  margin: 0 0 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.generation-confirm-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.generation-background-banner {
+  margin: 0 16px 12px;
+  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(37, 99, 235, 0.25);
+  background: rgba(239, 246, 255, 0.95);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+@media (min-width: 820px) {
+  .generation-modal-overlay {
+    align-items: center;
+    padding: max(12px, env(safe-area-inset-top, 0px)) 16px max(12px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .generation-modal {
+    height: min(92dvh, 900px);
+    max-height: min(92dvh, 900px);
+    border-radius: var(--radius);
+  }
+
+  .generation-confirm-overlay {
+    align-items: center;
+  }
 }
 
 .tailor-agent-running {
@@ -2861,10 +3299,19 @@ code {
 }
 
 .tailor-agent-message {
-  font-size: 0.72rem;
-  color: var(--text-muted);
+  font-size: 0.9rem;
+  color: var(--text);
   margin-top: 0.12rem;
-  line-height: 1.35;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.tailor-agent-header .tailor-agent-message {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .tailor-agent-progress {
@@ -2919,9 +3366,11 @@ code {
 .tailor-generation-report li {
   display: flex;
   gap: 0.4rem;
-  font-size: 0.72rem;
-  line-height: 1.4;
+  font-size: 0.88rem;
+  line-height: 1.45;
   color: var(--text);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .tailor-decision-check {

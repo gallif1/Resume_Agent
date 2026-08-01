@@ -289,6 +289,21 @@ def build_generation_report(
             strategy=strategy,
         )
     )
+    score_breakdown = dict(result.get("score_breakdown") or {})
+    if not score_breakdown and result.get("original_match_score") is not None:
+        # Minimal fallback when scoring details were not attached.
+        orig = result.get("original_match_score")
+        tailored = result.get("tailored_match_score")
+        if orig is not None and tailored is not None:
+            score_breakdown = {
+                "original_score": int(orig),
+                "tailored_score": int(tailored),
+                "score_delta": int(tailored) - int(orig),
+                "calculation_status": "complete",
+                "still_missing": list(result.get("missing_requirements") or [])[:12],
+                "improved_because": top_reasons[:6],
+            }
+
     return {
         "status": "success",
         "job_requirements_analyzed": len(evidence),
@@ -311,6 +326,12 @@ def build_generation_report(
         ),
         "pipeline_version": result.get("pipeline_version"),
         "sections_changed": _sections_changed(change_log),
+        "score_breakdown": score_breakdown,
+        "agents_total": len(TAILOR_STAGES),
+        "agents_completed": len(TAILOR_STAGES),
+        "overall_progress": 100,
+        "original_match_score": result.get("original_match_score"),
+        "tailored_match_score": result.get("tailored_match_score"),
     }
 
 
