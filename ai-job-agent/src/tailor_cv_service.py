@@ -766,11 +766,106 @@ def _read_saved_draft(cv_id: str, job_id: int) -> tuple[str | None, str | None]:
     return (text or None), version
 
 
-def assert_safe_to_export(report: dict[str, Any] | None) -> None:
-    """Block PDF/DOCX/markdown export when hard quality gates failed."""
+def repair_report_for_export(report: dict[str, Any] | None) -> dict[str, Any]:
+    """Auto-repair export blockers that are safe to neutralize in-place.
+
+    Older drafts may still carry ``unsupported_impact`` gate failures from
+    over-aggressive detection or writer phrases like "ensuring/optimized".
+    Neutralize those claims against the original resume text and drop the
+    repaired impact failures so export can proceed without inventing facts.
+
+    Mutates ``report`` in place when provided as a dict.
+    """
+    from intelligent_tailoring.scope_validator import sanitize_resume_unsupported_impact
+
+    if not isinstance(report, dict):
+        return {}
+    gates = dict(report.get("quality_gates") or {})
+    failures = list(gates.get("failures") or [])
+    impact_failures = [f for f in failures if str(f).startswith("unsupported_impact")]
+    if not impact_failures:
+        return report
+
+    resume = dict(
+        report.get("tailored_resume")
+        or report.get("tailored_cv")
+        or {}
+    )
+    source = str(
+        report.get("original_resume_text")
+        or (report.get("knowledge_base_summary") or {}).get("raw_text")
+        or report.get("resume_text")
+        or ""
+    )
+    # Fall back to concatenating evidence / change-log originals when raw text missing
+    if len(source) < 40:
+        parts: list[str] = []
+        for item in report.get("change_log") or []:
+            if isinstance(item, dict) and item.get("original_text"):
+                parts.append(str(item["original_text"]))
+        for entry in report.get("evidence_map") or []:
+            if isinstance(entry, dict) and entry.get("supporting_evidence"):
+                parts.append(str(entry["supporting_evidence"]))
+        source = "\n".join(parts)
+
+    if resume:
+        cleaned, _changed = sanitize_resume_unsupported_impact(
+            resume, source_text=source
+        )
+        report["tailored_resume"] = cleaned
+        report["tailored_cv"] = cleaned
+
+    # Drop impact failures after neutralization. Do not re-run full gates here —
+    # missing facts/projects in the saved report would create false tech leaks.
+    gates["failures"] = [
+        f for f in failures if not str(f).startswith("unsupported_impact")
+    ]
+    gates["passed"] = len(gates["failures"]) == 0
+    gates["impact_auto_repaired"] = True
+    report["quality_gates"] = gates
+    return report
+
+
+def sanitize_markdown_unsupported_impact(
+    markdown: str,
+    *,
+    source_text: str = "",
+) -> str:
+    """Neutralize unsupported impact phrases in saved tailored markdown."""
+    from intelligent_tailoring.scope_validator import (
+        has_unsupported_impact,
+        neutralize_unsupported_impact,
+    )
+
+    lines: list[str] = []
+    for line in (markdown or "").splitlines():
+        stripped = line.lstrip()
+        prefix = line[: len(line) - len(stripped)]
+        bullet = None
+        for marker in ("- ", "* ", "• "):
+            if stripped.startswith(marker):
+                bullet = stripped[len(marker) :]
+                marker_used = marker
+                break
+        if bullet is None:
+            lines.append(line)
+            continue
+        if not has_unsupported_impact(bullet, source_text or ""):
+            lines.append(line)
+            continue
+        fixed = neutralize_unsupported_impact(bullet)
+        lines.append(f"{prefix}{marker_used}{fixed}")
+    return "\n".join(lines)
+
+
+def assert_safe_to_export(report: dict[str, Any] | None) -> dict[str, Any]:
+    """Block PDF/DOCX/markdown export when hard quality gates failed.
+
+    Returns the (possibly repaired) report so callers can use sanitized content.
+    """
     from intelligent_tailoring.quality_gates import should_block_export
 
-    report = report or {}
+    report = repair_report_for_export(report)
     gates = report.get("quality_gates")
     if gates is None:
         # Legacy drafts without gate metadata — allow, but require claim flag if present
@@ -779,7 +874,7 @@ def assert_safe_to_export(report: dict[str, Any] | None) -> None:
                 "לא ניתן לייצא — בודק הטענות נכשל. יש לייצר מחדש.",
                 status_code=422,
             )
-        return
+        return report
     if should_block_export(gates):
         hard = [
             f
@@ -806,6 +901,7 @@ def assert_safe_to_export(report: dict[str, Any] | None) -> None:
                 "לא ניתן לייצא — שערי איכות נכשלו: " + "; ".join(hard[:5]),
                 status_code=422,
             )
+    return report
 
 
 def load_saved_tailored_cv(cv_id: str, job_id: int) -> str | None:

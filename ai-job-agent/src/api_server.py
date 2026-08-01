@@ -1917,16 +1917,29 @@ def download_tailored_cv_pdf(
 
     # Enforce quality gates from the structured report when available
     cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+    repaired_report: dict[str, Any] | None = None
     try:
         report_row = db.get_tailored_resume_report(
             cv_id=cv_id, job_id=job_id, db_path=cv_db
         )
         if report_row and isinstance(report_row.get("report"), dict):
-            assert_safe_to_export(report_row["report"])
+            repaired_report = assert_safe_to_export(report_row["report"])
     except TailorCvError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     cv_body = extract_cv_markdown_for_copy(saved)
+    # Repair stale drafts whose writer added ensuring/optimized without evidence
+    if repaired_report and (repaired_report.get("quality_gates") or {}).get(
+        "impact_auto_repaired"
+    ):
+        from tailor_cv_service import sanitize_markdown_unsupported_impact
+
+        source = str(
+            repaired_report.get("original_resume_text")
+            or repaired_report.get("resume_text")
+            or ""
+        )
+        cv_body = sanitize_markdown_unsupported_impact(cv_body, source_text=source)
     try:
         pdf_bytes, filename = generate_tailored_cv_pdf(cv_body, theme=theme)
     except PdfGeneratorError as exc:
@@ -1958,9 +1971,16 @@ def download_tailored_cv_docx(
         cv_id=cv_id, job_id=job_id, db_path=cv_db
     )
     tailored_cv: dict[str, Any] = {}
+    repaired_report: dict[str, Any] | None = None
     if report_row and isinstance(report_row.get("report"), dict):
+        try:
+            repaired_report = assert_safe_to_export(report_row["report"])
+        except TailorCvError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
         tailored_cv = (
-            report_row["report"].get("tailored_resume")
+            (repaired_report or {}).get("tailored_resume")
+            or (repaired_report or {}).get("tailored_cv")
+            or report_row["report"].get("tailored_resume")
             or report_row["report"].get("tailored_cv")
             or {}
         )
@@ -1971,12 +1991,6 @@ def download_tailored_cv_docx(
             status_code=404,
             detail="לא נמצא דוח התאמה מובנה לייצוא DOCX — יש לייצר קורות חיים מחדש",
         )
-
-    try:
-        if report_row and isinstance(report_row.get("report"), dict):
-            assert_safe_to_export(report_row["report"])
-    except TailorCvError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     from intelligent_tailoring.docx_export import build_tailored_cv_docx
     from tailor_cv_service import build_resume_header, _load_cv_profile_or_raise

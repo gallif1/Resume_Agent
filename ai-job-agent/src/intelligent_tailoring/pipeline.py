@@ -1112,6 +1112,40 @@ def run_intelligent_tailoring_agents(
         )
         generated["change_log"] = deterministic_log
 
+        # Neutralize unsupported impact wording before final gates / export
+        from intelligent_tailoring.scope_validator import (
+            sanitize_resume_unsupported_impact,
+        )
+
+        cleaned_resume, impact_fixes = sanitize_resume_unsupported_impact(
+            cleaned_resume, source_text=resume_text
+        )
+        if impact_fixes:
+            progress.decision(
+                "final_polish",
+                {
+                    "action": "rewrite",
+                    "text": (
+                        f"Neutralized {len(impact_fixes)} unsupported impact "
+                        "phrases so the resume stays truthful and exportable"
+                    ),
+                    "target": "experience,projects",
+                    "reason": "unsupported_impact",
+                },
+            )
+            cleaned_resume["summary"] = str(
+                cleaned_resume.get("professional_summary")
+                or cleaned_resume.get("summary")
+                or ""
+            )
+            cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+            deterministic_log = build_deterministic_change_log(
+                baseline_resume=baseline_resume,
+                final_resume=cleaned_resume,
+                evidence_map=evidence_map,
+            )
+            generated["change_log"] = deterministic_log
+
         # Final export gates (includes one-page when required)
         quality_gates = evaluate_quality_gates(
             tailored_resume=cleaned_resume,
