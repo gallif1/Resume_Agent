@@ -34,6 +34,8 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     PATCH  /cvs/{cv_id}/matches/{id}/status set the application status for a match
     POST   /cvs/{cv_id}/jobs/{job_id}/tailor-cv  generate ATS-tailored CV markdown for a job
            (?regenerate=true deep-scans original CVs + ATS gaps; score-guarded)
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/preview       reopen saved tailored CV (no export gates)
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/preview-pdf   view PDF inline (no export gates)
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf  download tailored CV as PDF
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-docx download tailored CV as DOCX
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/versions      list tailored versions + reports
@@ -114,6 +116,7 @@ from tailor_cv_service import (
     evaluate_job_for_cv,
     extract_cv_markdown_for_copy,
     load_saved_tailored_cv,
+    load_saved_tailored_result,
     prepare_for_preview,
     tailor_cv_for_job,
 )
@@ -1910,7 +1913,70 @@ def preview_tailored_cv(
     """Load the generated resume for review without running export gates.
 
     Critical quality failures open review mode and disable download, but never
-    prevent inspecting the generated content.
+    prevent inspecting the generated content. Returns the same shape as
+    tailor-cv so the web client can reopen the result modal after close.
+    """
+    db.ensure_multi_cv_storage()
+    if cv_id != db.WORKSPACE_CV_ID:
+        _require_owned_cv(cv_id, user)
+
+    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None and cv_id != db.WORKSPACE_CV_ID:
+        # Workspace-mode matches may store the draft under the user workspace.
+        workspace_db = user_db_path(user["id"])
+        job = db.get_job_by_id(job_id, db_path=workspace_db)
+        if job is not None:
+            cv_db = workspace_db
+
+    result = load_saved_tailored_result(cv_id, job_id, db_path=cv_db)
+    resolved_cv_id = cv_id
+    if not result and cv_id != db.WORKSPACE_CV_ID:
+        workspace_db = user_db_path(user["id"])
+        result = load_saved_tailored_result(
+            db.WORKSPACE_CV_ID, job_id, db_path=workspace_db
+        )
+        if result:
+            resolved_cv_id = db.WORKSPACE_CV_ID
+            cv_db = workspace_db
+            if job is None:
+                job = db.get_job_by_id(job_id, db_path=workspace_db)
+
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
+        )
+
+    if job is None:
+        job = {"id": job_id, "title": None, "company": None}
+
+    relative_path = (
+        f"data/cvs/{resolved_cv_id}/tailored_cvs/{job_id}.md"
+        if resolved_cv_id != db.WORKSPACE_CV_ID
+        else f"data/users/{user['id']}/tailored_cvs/{job_id}.md"
+    )
+    return _tailored_cv_response(
+        cv_id=cv_id,
+        job_id=job_id,
+        job=job,
+        result=result,
+        relative_path=relative_path,
+    )
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/preview-pdf")
+@app.get("/tailored-resumes/{cv_id}/{job_id}/preview-pdf")
+def preview_tailored_cv_pdf(
+    cv_id: str,
+    job_id: int,
+    theme: str | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Render the saved tailored CV as an inline PDF for on-screen preview.
+
+    Unlike download-pdf, this path never runs export gates — review mode can
+    still inspect the generated document.
     """
     db.ensure_multi_cv_storage()
     if cv_id != db.WORKSPACE_CV_ID:
@@ -1925,28 +1991,18 @@ def preview_tailored_cv(
             detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
         )
 
-    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
-    report: dict[str, Any] = {}
+    cv_body = extract_cv_markdown_for_copy(saved)
     try:
-        report_row = db.get_tailored_resume_report(
-            cv_id=cv_id, job_id=job_id, db_path=cv_db
-        )
-        if report_row and isinstance(report_row.get("report"), dict):
-            report = prepare_for_preview(report_row["report"])
-    except Exception:
-        report = prepare_for_preview({})
+        pdf_bytes, filename = generate_tailored_cv_pdf(cv_body, theme=theme)
+    except PdfGeneratorError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    return {
-        "cv_id": cv_id,
-        "job_id": job_id,
-        "markdown": extract_cv_markdown_for_copy(saved),
-        "preview_allowed": True,
-        "download_blocked": bool(report.get("download_blocked")),
-        "review_mode": bool(report.get("review_mode")),
-        "quality_gates": report.get("quality_gates") or {},
-        "gate_user_messages": report.get("gate_user_messages") or [],
-        "tailored_resume": report.get("tailored_resume") or {},
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "CV_Tailored.pdf"
+    headers = {
+        "Content-Disposition": f'inline; filename="{ascii_name}"',
+        "Cache-Control": "no-store",
     }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/export")

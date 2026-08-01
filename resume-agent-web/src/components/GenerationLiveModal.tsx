@@ -27,6 +27,8 @@ interface Props {
   onRequestClose: () => void;
   onConfirmClose: (choice: CloseChoice) => void;
   onPreview?: () => void;
+  onViewPdf?: () => void;
+  pdfBusy?: boolean;
   onContinueWatching?: () => void;
 }
 
@@ -50,6 +52,8 @@ export default function GenerationLiveModal({
   onRequestClose,
   onConfirmClose,
   onPreview,
+  onViewPdf,
+  pdfBusy = false,
   onContinueWatching,
 }: Props) {
   const titleId = useId();
@@ -116,7 +120,7 @@ export default function GenerationLiveModal({
     onConfirmClose(choice);
   }
 
-  const showCompletion = !active && !!generationReport;
+  const showCompletion = !active && (!!generationReport || !!result);
 
   return (
     <div
@@ -159,6 +163,8 @@ export default function GenerationLiveModal({
             scoreBreakdown={score}
             showCompletion={showCompletion}
             onPreview={onPreview}
+            onViewPdf={onViewPdf}
+            pdfBusy={pdfBusy}
             onClose={handleCloseAttempt}
           />
         </div>
@@ -190,10 +196,20 @@ export default function GenerationLiveModal({
             </>
           ) : (
             <>
-              {onPreview && (
+              {onViewPdf && (
                 <button
                   type="button"
                   className="btn btn-primary touch-target"
+                  onClick={onViewPdf}
+                  disabled={pdfBusy}
+                >
+                  {pdfBusy ? "מכין PDF..." : "הצג PDF"}
+                </button>
+              )}
+              {onPreview && (
+                <button
+                  type="button"
+                  className="btn btn-ghost touch-target"
                   onClick={onPreview}
                 >
                   תצוגה מקדימה

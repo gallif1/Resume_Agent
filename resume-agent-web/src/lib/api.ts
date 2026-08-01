@@ -922,13 +922,13 @@ function filenameFromContentDisposition(header: string | null): string | null {
   return raw || null;
 }
 
-/** Download the tailored CV as a professionally rendered PDF (Playwright). */
-export async function downloadTailoredCvPdf(
+async function fetchTailoredCvPdfBlob(
   cvId: string,
-  jobId: number
-): Promise<void> {
+  jobId: number,
+  path: "download-pdf" | "preview-pdf"
+): Promise<{ blob: Blob; filename: string }> {
   const res = await fetch(
-    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-pdf`,
+    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/${path}`,
     { headers: authHeaders() }
   );
   if (res.status === 401) {
@@ -946,11 +946,47 @@ export async function downloadTailoredCvPdf(
     }
     throw new Error(detail);
   }
-
   const blob = await res.blob();
   const filename =
     filenameFromContentDisposition(res.headers.get("Content-Disposition")) ||
     "Gal_Lifshitz_CV_Tailored.pdf";
+  return { blob, filename };
+}
+
+/** Reopen a saved tailored CV without regenerating (no export gates). */
+export function getTailoredCvPreview(
+  cvId: string,
+  jobId: number
+): Promise<TailoredCvResponse> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/preview`);
+}
+
+/** Open the tailored CV PDF in a new tab for on-screen preview (no export gates). */
+export async function openTailoredCvPdfPreview(
+  cvId: string,
+  jobId: number
+): Promise<void> {
+  const { blob } = await fetchTailoredCvPdfBlob(cvId, jobId, "preview-pdf");
+  const url = URL.createObjectURL(blob);
+  const opened = window.open(url, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    // Popup blocked — fall back to same-tab navigation.
+    window.location.href = url;
+  } else {
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+}
+
+/** Download the tailored CV as a professionally rendered PDF (Playwright). */
+export async function downloadTailoredCvPdf(
+  cvId: string,
+  jobId: number
+): Promise<void> {
+  const { blob, filename } = await fetchTailoredCvPdfBlob(
+    cvId,
+    jobId,
+    "download-pdf"
+  );
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

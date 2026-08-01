@@ -323,8 +323,10 @@ interface Props {
   scoreBreakdown?: ScoreBreakdown | null;
   showCompletion?: boolean;
   onPreview?: () => void;
+  onViewPdf?: () => void;
   onViewScoreBreakdown?: () => void;
   onClose?: () => void;
+  pdfBusy?: boolean;
 }
 
 export default function TailorGenerationProgress({
@@ -338,8 +340,10 @@ export default function TailorGenerationProgress({
   scoreBreakdown = null,
   showCompletion = false,
   onPreview,
+  onViewPdf,
   onViewScoreBreakdown,
   onClose,
+  pdfBusy = false,
 }: Props) {
   const [agents, setAgents] = useState<TailorAgentState[]>(initialAgents);
   const [hintIndex, setHintIndex] = useState(0);
@@ -407,7 +411,8 @@ export default function TailorGenerationProgress({
     current?.message || (active ? RUNNING_HINTS[hintIndex] : "התהליך הושלם")
   );
 
-  const completionReady = showCompletion && !active && !!generationReport;
+  // Parent decides when completion UI is ready (report and/or result present).
+  const completionReady = showCompletion && !active;
 
   if (completionReady) {
     return (
@@ -455,8 +460,18 @@ export default function TailorGenerationProgress({
           </div>
         )}
         <div className="tailor-complete-actions">
+          {onViewPdf && (
+            <button
+              type="button"
+              className="btn btn-primary touch-target"
+              onClick={onViewPdf}
+              disabled={pdfBusy}
+            >
+              {pdfBusy ? "מכין PDF..." : "הצג PDF"}
+            </button>
+          )}
           {onPreview && (
-            <button type="button" className="btn btn-primary touch-target" onClick={onPreview}>
+            <button type="button" className="btn btn-ghost touch-target" onClick={onPreview}>
               תצוגה מקדימה
             </button>
           )}
