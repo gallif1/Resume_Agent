@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   Check,
+  ChevronDown,
   Circle,
   Loader2,
   Sparkles,
@@ -12,18 +13,23 @@ import {
   Users,
   Briefcase,
   Wand2,
+  AlertTriangle,
+  Info,
 } from "lucide-react";
 import type { GenerationReport, TailorDecision, TailorStageEvent } from "../lib/api";
+import {
+  applyStageEventToAgents,
+  buildProgressSnapshot,
+  localizeAgentMessage,
+  type AgentUiStatus,
+  type TailorAgentState,
+} from "../lib/generationProgress";
+import {
+  buildScoreBreakdown,
+  type ScoreBreakdown,
+} from "../lib/tailorScores";
 
-export type AgentUiStatus = "pending" | "running" | "completed" | "failed";
-
-export interface TailorAgentState {
-  id: string;
-  label: string;
-  message: string;
-  status: AgentUiStatus;
-  progress: number;
-}
+export type { AgentUiStatus, TailorAgentState };
 
 const AGENT_CATALOG: Array<{
   id: string;
@@ -111,6 +117,237 @@ const RUNNING_HINTS = [
   "מכין את ה-PDF הסופי…",
 ];
 
+const STATUS_LABEL_HE: Record<AgentUiStatus, string> = {
+  pending: "ממתין",
+  running: "פועל",
+  completed: "הושלם",
+  failed: "נכשל",
+};
+
+export function applyStageEvent(
+  agents: TailorAgentState[],
+  event: TailorStageEvent
+): TailorAgentState[] {
+  return applyStageEventToAgents(agents, event);
+}
+
+export function initialAgents(): TailorAgentState[] {
+  return AGENT_CATALOG.map((a) => ({
+    id: a.id,
+    label: a.label,
+    message: a.idleMessage,
+    status: "pending" as const,
+    progress: 0,
+    details: [],
+  }));
+}
+
+function decisionTone(text: string, action?: string): "info" | "positive" | "missing" | "revision" | "warning" {
+  const t = `${action || ""} ${text}`.toLowerCase();
+  if (/warn|⚠|unsupported|could not|fail/.test(t)) return "warning";
+  if (/missing|not added|gap|חסר/.test(t)) return "missing";
+  if (/revis|refine|compress|reduced|שינ/.test(t)) return "revision";
+  if (/found|strong|highlight|✓|match|emphas/.test(t)) return "positive";
+  return "info";
+}
+
+function ToneIcon({ tone }: { tone: ReturnType<typeof decisionTone> }) {
+  if (tone === "warning" || tone === "missing") {
+    return <AlertTriangle size={14} aria-hidden="true" />;
+  }
+  if (tone === "positive") return <Check size={14} aria-hidden="true" />;
+  return <Info size={14} aria-hidden="true" />;
+}
+
+function ShowMoreText({
+  text,
+  maxChars = 220,
+}: {
+  text: string;
+  maxChars?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  const needsClamp = text.length > maxChars;
+  const shown = !needsClamp || open ? text : `${text.slice(0, maxChars).trim()}…`;
+  return (
+    <div className="tailor-show-more" dir="auto">
+      <p>{shown}</p>
+      {needsClamp && (
+        <button
+          type="button"
+          className="btn-link-touch"
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? "הצג פחות" : "הצג עוד"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ScoreLifecyclePanel({
+  score,
+  active,
+}: {
+  score: ScoreBreakdown;
+  active: boolean;
+}) {
+  const original = score.original_score;
+  const tailored = score.tailored_score;
+  const delta = score.score_delta;
+  const calculating =
+    active ||
+    score.calculation_status === "calculating" ||
+    score.calculation_status === "pending";
+
+  return (
+    <div className="tailor-score-lifecycle" aria-live="polite">
+      <div className="tailor-score-row">
+        <span className="tailor-score-label">התאמת קורות חיים מקוריים</span>
+        <strong className="tailor-score-value">
+          {original != null ? `${original}%` : "—"}
+        </strong>
+      </div>
+      <div className="tailor-score-row">
+        <span className="tailor-score-label">התאמת קורות חיים מותאמים</span>
+        <strong className="tailor-score-value">
+          {calculating && tailored == null
+            ? "מחשב אחרי אימות סופי…"
+            : tailored != null
+              ? `${tailored}%`
+              : score.calculation_status === "failed"
+                ? "חישוב נכשל"
+                : "—"}
+        </strong>
+      </div>
+      {!calculating && delta != null && (
+        <div className="tailor-score-row tailor-score-delta">
+          <span className="tailor-score-label">שיפור</span>
+          <strong>
+            {delta > 0 ? `+${delta}` : `${delta}`}
+          </strong>
+        </div>
+      )}
+      {calculating && (
+        <p className="tailor-score-note">
+          הציון הסופי יחושב רק אחרי אימות הטענות, ביקורת מגייס, מנהל גיוס ואימות
+          ATS/עמוד אחד — לא מוצג ציון מקורי כאילו הוא של הגרסה המותאמת.
+        </p>
+      )}
+      {!calculating && !!(score.improved_because?.length) && (
+        <div className="tailor-score-reasons">
+          <h5>שופר כי</h5>
+          <ul>
+            {score.improved_because!.slice(0, 4).map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!calculating && !!(score.still_missing?.length) && (
+        <div className="tailor-score-reasons tailor-score-missing">
+          <h5>עדיין חסר</h5>
+          <ul>
+            {score.still_missing!.slice(0, 6).map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentCard({
+  agent,
+  expanded,
+  onToggle,
+}: {
+  agent: TailorAgentState;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const meta = AGENT_CATALOG.find((a) => a.id === agent.id);
+  const Icon = meta?.icon || Circle;
+  const panelId = useId();
+  const indeterminate = agent.status === "running";
+
+  return (
+    <li className={`tailor-agent-card tailor-agent-${agent.status}`}>
+      <button
+        type="button"
+        className="tailor-agent-header"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        onClick={onToggle}
+      >
+        <div className="tailor-agent-icon" aria-hidden="true">
+          {agent.status === "completed" ? (
+            <Check size={16} />
+          ) : agent.status === "running" ? (
+            <Loader2 size={16} className="spin" />
+          ) : agent.status === "failed" ? (
+            <AlertTriangle size={16} />
+          ) : (
+            <Icon size={16} />
+          )}
+        </div>
+        <div className="tailor-agent-body">
+          <div className="tailor-agent-label-row">
+            <span className="tailor-agent-label">{agent.label}</span>
+            <span className={`tailor-agent-status tailor-agent-status-${agent.status}`}>
+              {STATUS_LABEL_HE[agent.status]}
+            </span>
+          </div>
+          <div className="tailor-agent-message" dir="auto">
+            {agent.message}
+          </div>
+          <div
+            className={`tailor-agent-progress ${indeterminate ? "tailor-agent-progress-indeterminate" : ""}`}
+            aria-hidden="true"
+          >
+            <div
+              className="tailor-agent-progress-fill"
+              style={
+                indeterminate
+                  ? undefined
+                  : { width: `${agent.progress}%` }
+              }
+            />
+          </div>
+        </div>
+        <span className="tailor-agent-expand" aria-hidden="true">
+          <ChevronDown
+            size={18}
+            className={expanded ? "tailor-chevron-open" : ""}
+          />
+        </span>
+      </button>
+      <div
+        id={panelId}
+        className={`tailor-agent-details ${expanded ? "is-open" : ""}`}
+        hidden={!expanded}
+      >
+        <ShowMoreText text={agent.message} maxChars={160} />
+        {!!agent.details?.length && (
+          <ul className="tailor-agent-detail-list">
+            {agent.details.map((d, i) => (
+              <li key={`${agent.id}-d-${i}`} dir="auto">
+                {d}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="tailor-agent-meta">
+          משימה נוכחית: {STATUS_LABEL_HE[agent.status]}
+          {agent.status === "running" && " · התקדמות בתוך השלב אינה מדויקת באחוזים"}
+        </p>
+      </div>
+    </li>
+  );
+}
+
 interface Props {
   active: boolean;
   stages: TailorStageEvent[];
@@ -118,61 +355,12 @@ interface Props {
   statusMessage?: string | null;
   generationReport?: GenerationReport | null;
   compact?: boolean;
-}
-
-function initialAgents(): TailorAgentState[] {
-  return AGENT_CATALOG.map((a) => ({
-    id: a.id,
-    label: a.label,
-    message: a.idleMessage,
-    status: "pending" as const,
-    progress: 0,
-  }));
-}
-
-export function applyStageEvent(
-  agents: TailorAgentState[],
-  event: TailorStageEvent
-): TailorAgentState[] {
-  const stage = event.stage;
-  if (!stage || stage === "start") return agents;
-  const idx = agents.findIndex((a) => a.id === stage);
-  if (idx < 0) return agents;
-  const next = agents.map((a) => ({ ...a }));
-  // Mark prior stages completed if we jumped ahead
-  for (let i = 0; i < idx; i++) {
-    if (next[i].status !== "failed") {
-      next[i] = {
-        ...next[i],
-        status: "completed",
-        progress: 100,
-      };
-    }
-  }
-  const status = event.status;
-  if (status === "started" || status === "running") {
-    next[idx] = {
-      ...next[idx],
-      status: "running",
-      message: event.message || next[idx].message,
-      progress: Math.max(next[idx].progress, status === "running" ? 55 : 18),
-    };
-  } else if (status === "completed") {
-    next[idx] = {
-      ...next[idx],
-      status: "completed",
-      message: event.message || next[idx].message,
-      progress: 100,
-    };
-  } else if (status === "failed") {
-    next[idx] = {
-      ...next[idx],
-      status: "failed",
-      message: event.message || "שגיאה",
-      progress: next[idx].progress,
-    };
-  }
-  return next;
+  originalBaseline?: number | null;
+  scoreBreakdown?: ScoreBreakdown | null;
+  showCompletion?: boolean;
+  onPreview?: () => void;
+  onViewScoreBreakdown?: () => void;
+  onClose?: () => void;
 }
 
 export default function TailorGenerationProgress({
@@ -182,17 +370,22 @@ export default function TailorGenerationProgress({
   statusMessage,
   generationReport,
   compact = false,
+  originalBaseline = null,
+  scoreBreakdown = null,
+  showCompletion = false,
+  onPreview,
+  onViewScoreBreakdown,
+  onClose,
 }: Props) {
   const [agents, setAgents] = useState<TailorAgentState[]>(initialAgents);
   const [hintIndex, setHintIndex] = useState(0);
-  const [pulseProgress, setPulseProgress] = useState(0);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [decisionsOpen, setDecisionsOpen] = useState(false);
 
   useEffect(() => {
-    if (!active) {
-      // Keep final state visible when report arrives
-      return;
-    }
+    if (!active) return;
     setAgents(initialAgents());
+    setExpandedIds(new Set());
   }, [active]);
 
   useEffect(() => {
@@ -200,45 +393,126 @@ export default function TailorGenerationProgress({
     for (const stage of stages) {
       next = applyStageEvent(next, stage);
     }
+    // Attach recent decisions as details per agent
+    const byStage = new Map<string, string[]>();
+    for (const d of decisions) {
+      const key = d.stage || "";
+      if (!key) continue;
+      const list = byStage.get(key) || [];
+      list.push(d.text);
+      byStage.set(key, list);
+    }
+    next = next.map((a) => ({
+      ...a,
+      details: byStage.get(a.id)?.slice(-6) || [],
+    }));
     setAgents(next);
-  }, [stages]);
+  }, [stages, decisions]);
 
-  // Keep the UI alive while an agent runs
   useEffect(() => {
     if (!active) return;
     const hintTimer = window.setInterval(() => {
       setHintIndex((i) => (i + 1) % RUNNING_HINTS.length);
     }, 2800);
-    const pulseTimer = window.setInterval(() => {
-      setPulseProgress((p) => (p >= 92 ? 40 : p + 3));
-      setAgents((prev) =>
-        prev.map((a) =>
-          a.status === "running"
-            ? {
-                ...a,
-                progress: Math.min(92, a.progress + 2),
-              }
-            : a
-        )
-      );
-    }, 700);
-    return () => {
-      window.clearInterval(hintTimer);
-      window.clearInterval(pulseTimer);
-    };
+    return () => window.clearInterval(hintTimer);
   }, [active]);
 
-  const overall = useMemo(() => {
-    const done = agents.filter((a) => a.status === "completed").length;
-    const running = agents.some((a) => a.status === "running");
-    const base = Math.round((done / agents.length) * 100);
-    if (running) return Math.min(99, Math.max(base, pulseProgress));
-    if (!active && generationReport) return 100;
-    return base;
-  }, [agents, active, pulseProgress, generationReport]);
+  const snapshot = useMemo(
+    () =>
+      buildProgressSnapshot(agents, {
+        active,
+        complete: !active && !!generationReport,
+      }),
+    [agents, active, generationReport]
+  );
+
+  const score =
+    scoreBreakdown ||
+    buildScoreBreakdown({
+      generationReport,
+      originalBaseline,
+      isGenerating: active,
+    });
 
   const current = agents.find((a) => a.status === "running");
-  const recentDecisions = decisions.slice(-8).reverse();
+  const recentDecisions = decisions.slice(-3).reverse();
+  const allDecisions = [...decisions].reverse();
+
+  const localizedStatus = localizeAgentMessage(
+    statusMessage,
+    current?.message || (active ? RUNNING_HINTS[hintIndex] : "התהליך הושלם")
+  );
+
+  const completionReady = showCompletion && !active && !!generationReport;
+
+  if (completionReady) {
+    return (
+      <div
+        className={`tailor-live tailor-live-complete ${compact ? "tailor-live-compact" : ""}`}
+        role="status"
+        aria-live="polite"
+      >
+        <div className="tailor-complete-hero">
+          <Sparkles size={22} aria-hidden="true" />
+          <h3>קורות החיים מוכנים</h3>
+        </div>
+        <ScoreLifecyclePanel score={score} active={false} />
+        <ul className="tailor-complete-stats">
+          <li>
+            <span>סוכנים שהושלמו</span>
+            <strong>
+              {snapshot.completedCount}/{snapshot.totalAgents}
+            </strong>
+          </li>
+          <li>
+            <span>תיקונים</span>
+            <strong>{generationReport?.resume_revisions ?? "—"}</strong>
+          </li>
+          <li>
+            <span>זמן יצירה</span>
+            <strong>
+              {generationReport?.generation_time_seconds != null
+                ? `${generationReport.generation_time_seconds} שניות`
+                : "—"}
+            </strong>
+          </li>
+        </ul>
+        {!!generationReport?.top_interview_reasons?.length && (
+          <div className="tailor-top-reasons">
+            <h5>סיבות חזקות לראיון</h5>
+            <ol>
+              {generationReport.top_interview_reasons.map((r) => (
+                <li key={r} dir="auto">
+                  {r}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+        <div className="tailor-complete-actions">
+          {onPreview && (
+            <button type="button" className="btn btn-primary touch-target" onClick={onPreview}>
+              תצוגה מקדימה
+            </button>
+          )}
+          {onViewScoreBreakdown && (
+            <button
+              type="button"
+              className="btn btn-ghost touch-target"
+              onClick={onViewScoreBreakdown}
+            >
+              פירוט ציון
+            </button>
+          )}
+          {onClose && (
+            <button type="button" className="btn btn-ghost touch-target" onClick={onClose}>
+              סגור
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -255,77 +529,88 @@ export default function TailorGenerationProgress({
               : "סיכום יצירת קורות החיים"}
           </h3>
         </div>
-        <p className="tailor-live-sub">
-          {statusMessage ||
-            current?.message ||
-            (active ? RUNNING_HINTS[hintIndex] : "התהליך הושלם")}
+        <p className="tailor-live-sub" dir="auto">
+          {localizedStatus}
         </p>
-        <div className="tailor-live-bar" aria-hidden="true">
+        <div
+          className="tailor-live-bar"
+          role="progressbar"
+          aria-valuenow={snapshot.overallProgress}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label="התקדמות כוללת"
+        >
           <div
             className="tailor-live-bar-fill"
-            style={{ width: `${overall}%` }}
+            style={{ width: `${snapshot.overallProgress}%` }}
           />
         </div>
         <div className="tailor-live-bar-meta">
-          <span>{overall}%</span>
+          <span>{snapshot.overallProgress}%</span>
           <span>
-            {agents.filter((a) => a.status === "completed").length}/
-            {agents.length} סוכנים
+            {snapshot.completedCount}/{snapshot.totalAgents} סוכנים
           </span>
         </div>
       </div>
 
+      <ScoreLifecyclePanel score={score} active={active} />
+
       <div className="tailor-live-grid">
         <ol className="tailor-live-timeline">
-          {agents.map((agent) => {
-            const meta = AGENT_CATALOG.find((a) => a.id === agent.id);
-            const Icon = meta?.icon || Circle;
-            return (
-              <li
-                key={agent.id}
-                className={`tailor-agent-card tailor-agent-${agent.status}`}
-              >
-                <div className="tailor-agent-icon">
-                  {agent.status === "completed" ? (
-                    <Check size={16} />
-                  ) : agent.status === "running" ? (
-                    <Loader2 size={16} className="spin" />
-                  ) : (
-                    <Icon size={16} />
-                  )}
-                </div>
-                <div className="tailor-agent-body">
-                  <div className="tailor-agent-label">{agent.label}</div>
-                  <div className="tailor-agent-message">{agent.message}</div>
-                  <div className="tailor-agent-progress" aria-hidden="true">
-                    <div
-                      className="tailor-agent-progress-fill"
-                      style={{ width: `${agent.progress}%` }}
-                    />
-                  </div>
-                </div>
-              </li>
-            );
-          })}
+          {agents.map((agent) => (
+            <AgentCard
+              key={agent.id}
+              agent={agent}
+              expanded={expandedIds.has(agent.id)}
+              onToggle={() =>
+                setExpandedIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(agent.id)) next.delete(agent.id);
+                  else next.add(agent.id);
+                  return next;
+                })
+              }
+            />
+          ))}
         </ol>
 
         <div className="tailor-live-side">
           <div className="tailor-decision-log">
-            <h4>יומן החלטות AI</h4>
-            {recentDecisions.length === 0 ? (
+            <div className="tailor-decision-log-header">
+              <h4>יומן החלטות AI</h4>
+              {decisions.length > 3 && (
+                <button
+                  type="button"
+                  className="btn-link-touch"
+                  onClick={() => setDecisionsOpen((v) => !v)}
+                  aria-expanded={decisionsOpen}
+                >
+                  {decisionsOpen ? "הצג פחות" : "הצג את כל ההחלטות"}
+                </button>
+              )}
+            </div>
+            {(decisionsOpen ? allDecisions : recentDecisions).length === 0 ? (
               <p className="tailor-decision-empty">
                 {active
                   ? "מחכה להחלטות משמעותיות מהסוכנים…"
                   : "אין החלטות להצגה"}
               </p>
             ) : (
-              <ul>
-                {recentDecisions.map((d, i) => (
-                  <li key={`${d.text}-${i}`}>
-                    <span className="tailor-decision-check">✓</span>
-                    <span>{d.text}</span>
-                  </li>
-                ))}
+              <ul className={decisionsOpen ? "tailor-decision-all" : undefined}>
+                {(decisionsOpen ? allDecisions : recentDecisions).map((d, i) => {
+                  const tone = decisionTone(d.text, d.action);
+                  return (
+                    <li
+                      key={`${d.text}-${i}`}
+                      className={`tailor-decision-item tailor-decision-${tone}`}
+                    >
+                      <span className="tailor-decision-check" aria-hidden="true">
+                        <ToneIcon tone={tone} />
+                      </span>
+                      <span dir="auto">{d.text}</span>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -369,25 +654,6 @@ export default function TailorGenerationProgress({
                   </li>
                 )}
               </ul>
-              {!!generationReport.sections_changed?.length && (
-                <div className="tailor-sections-changed">
-                  {generationReport.sections_changed.map((s) => (
-                    <span key={s} className="tailor-chip">
-                      {s}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {!!generationReport.top_interview_reasons?.length && (
-                <div className="tailor-top-reasons">
-                  <h5>3 הסיבות החזקות לראיון</h5>
-                  <ol>
-                    {generationReport.top_interview_reasons.map((r) => (
-                      <li key={r}>{r}</li>
-                    ))}
-                  </ol>
-                </div>
-              )}
             </div>
           )}
         </div>

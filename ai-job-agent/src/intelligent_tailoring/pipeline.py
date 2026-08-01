@@ -1377,14 +1377,29 @@ def run_intelligent_tailoring_agents(
                 status_code=422,
             )
 
-        # --- Stage 11: ATS scoring after writing polish ---
+        # --- Stage 11: ATS scoring after writing polish (final validated resume) ---
+        from intelligent_tailoring.interview_philosophy import (
+            select_top_interview_reasons,
+        )
+
+        improved_because = list(
+            strategy.get("top_interview_reasons")
+            or select_top_interview_reasons(
+                highlight_plan=strategy.get("highlight_plan"),
+                evidence_map=evidence_map,
+                strategy=strategy,
+            )
+        )
         tailored_scoring = rescore_after_tailoring(
             evidence_map=evidence_map,
             tailored_resume=cleaned_resume,
             original_resume_text=resume_text,
             job_title=str(job.get("title") or ""),
+            original_score=original_score,
+            improved_because=improved_because,
         )
         tailored_score = int(tailored_scoring["realistic_match_score"])
+        score_breakdown = dict(tailored_scoring.get("score_breakdown") or {})
 
         tailoring_report = build_tailoring_report(
             strategy=strategy,
@@ -1486,6 +1501,7 @@ def run_intelligent_tailoring_agents(
             "validation_warnings": validation.get("warnings") or [],
             "original_match_score": original_score,
             "tailored_match_score": tailored_score,
+            "score_breakdown": score_breakdown,
             "language": output_language,
             "evidence_map": evidence_map,
             "job_requirements": {
@@ -1614,6 +1630,7 @@ def run_intelligent_tailoring_agents(
         result_payload["top_interview_reasons"] = list(
             strategy.get("top_interview_reasons") or []
         )
+        result_payload["score_breakdown"] = score_breakdown
         result_payload["generation_report"] = build_generation_report(
             result=result_payload
         )

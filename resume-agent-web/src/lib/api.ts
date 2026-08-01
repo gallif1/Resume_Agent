@@ -81,7 +81,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
-  } catch {
+  } catch (err) {
+    if (
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
+      throw err;
+    }
     throw new Error("השרת לא זמין כרגע — נסה לרענן בעוד דקה");
   }
   if (res.status === 401) {
@@ -401,6 +407,8 @@ export interface TailoredCvResponse {
   validation_warnings?: ValidationWarningItem[];
   original_match_score?: number | null;
   tailored_match_score?: number | null;
+  /** Structured ATS/job-fit breakdown computed after final validation. */
+  score_breakdown?: ScoreBreakdown | null;
   language?: string | null;
   claim_validator_passed?: boolean;
   pipeline_version?: string | null;
@@ -464,6 +472,25 @@ export interface TailorStageEvent {
   event?: string;
 }
 
+export interface ScoreBreakdown {
+  original_score?: number | null;
+  tailored_score?: number | null;
+  score_delta?: number | null;
+  requirements_coverage?: number | null;
+  ats_keyword_alignment?: number | null;
+  evidence_strength?: number | null;
+  role_relevance?: number | null;
+  seniority_fit?: number | null;
+  missing_required_requirements?: string[];
+  missing_preferred_requirements?: string[];
+  unsupported_requirements?: string[];
+  improved_because?: string[];
+  still_missing?: string[];
+  calculation_status?: "pending" | "calculating" | "complete" | "failed" | string;
+  score_version?: string | null;
+  resume_version_id?: string | number | null;
+}
+
 export interface GenerationReport {
   status?: string;
   job_requirements_analyzed?: number;
@@ -481,6 +508,10 @@ export interface GenerationReport {
   pipeline_version?: string | null;
   sections_changed?: string[];
   run_id?: string;
+  score_breakdown?: ScoreBreakdown | null;
+  agents_completed?: number | null;
+  agents_total?: number | null;
+  overall_progress?: number | null;
 }
 
 export interface RequirementAssessment {
@@ -790,7 +821,12 @@ export function updateWorkspaceMatchStatus(
 
 export function tailorWorkspaceJob(
   jobId: number,
-  options?: { force?: boolean; regenerate?: boolean; sourceCvId?: string }
+  options?: {
+    force?: boolean;
+    regenerate?: boolean;
+    sourceCvId?: string;
+    signal?: AbortSignal;
+  }
 ): Promise<TailoredCvResponse> {
   const regenerate = Boolean(options?.regenerate);
   const force = Boolean(options?.force) || regenerate;
@@ -802,6 +838,7 @@ export function tailorWorkspaceJob(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
+    signal: options?.signal,
   });
 }
 
@@ -842,7 +879,7 @@ export function updateMatchStatus(
 export function tailorCvForJob(
   cvId: string,
   jobId: number,
-  options?: { force?: boolean; regenerate?: boolean }
+  options?: { force?: boolean; regenerate?: boolean; signal?: AbortSignal }
 ): Promise<TailoredCvResponse> {
   const regenerate = Boolean(options?.regenerate);
   const force = Boolean(options?.force) || regenerate;
@@ -851,6 +888,7 @@ export function tailorCvForJob(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ force }),
+    signal: options?.signal,
   });
 }
 

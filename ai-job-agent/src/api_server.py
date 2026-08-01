@@ -1711,6 +1711,9 @@ def _tailored_cv_response(
         "tailored_match_score": result.get("tailored_match_score")
         or result.get("score_after")
         or result.get("estimated_ats_score"),
+        "score_breakdown": result.get("score_breakdown")
+        or (result.get("generation_report") or {}).get("score_breakdown")
+        or {},
         "evidence_map": result.get("evidence_map") or [],
         "language": result.get("language"),
         "claim_validator_passed": bool(result.get("claim_validator_passed", True)),

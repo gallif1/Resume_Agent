@@ -35,9 +35,15 @@ import {
 } from "../lib/api";
 import { formatJobDescription } from "../lib/formatJobDescription";
 import PipelineProgress from "./PipelineProgress";
-import TailorGenerationProgress from "./TailorGenerationProgress";
+import GenerationLiveModal, { type CloseChoice } from "./GenerationLiveModal";
 import ProfileSettings from "./ProfileSettings";
 import type { CSSProperties } from "react";
+import {
+  buildScoreBreakdown,
+  formatScoreProgression,
+  getPreviousTailoredScore,
+  getTailoredScore,
+} from "../lib/tailorScores";
 
 interface Props {
   cvId: string;
@@ -94,71 +100,6 @@ function scoreClass(score: number | null, isPotential = false): string {
   if (score >= 85) return "score-high";
   if (score >= 70) return "score-mid";
   return "score-low";
-}
-
-/** Best available ATS/match score from a tailored-CV payload. */
-function getTailoredScore(result: TailoredCvResponse): number | null {
-  if (typeof result.score_after === "number") {
-    return result.score_after;
-  }
-  if (typeof result.estimated_ats_score === "number") {
-    return result.estimated_ats_score;
-  }
-  const fromFeedback = result.matcher_feedback?.current?.match_score
-    ?? result.matcher_feedback?.current?.ats_score;
-  return typeof fromFeedback === "number" ? fromFeedback : null;
-}
-
-/** Previous score for progression display (never LLM-hallucinated). */
-function getPreviousTailoredScore(
-  result: TailoredCvResponse,
-  fallbackBaseline?: number | null
-): number | null {
-  if (typeof result.score_before === "number") {
-    return result.score_before;
-  }
-  const fromFeedback = result.matcher_feedback?.previous?.match_score
-    ?? result.matcher_feedback?.previous?.ats_score;
-  if (typeof fromFeedback === "number") {
-    return fromFeedback;
-  }
-  if (typeof result.initial_match_score === "number") {
-    return result.initial_match_score;
-  }
-  return fallbackBaseline ?? null;
-}
-
-/** Original scan baseline shown as "Original Score" on first generate. */
-function getOriginalMatchScore(
-  result: TailoredCvResponse,
-  fallbackBaseline?: number | null
-): number | null {
-  if (typeof result.initial_match_score === "number") {
-    return result.initial_match_score;
-  }
-  return fallbackBaseline ?? null;
-}
-
-function formatScoreProgression(
-  before: number | null,
-  after: number | null,
-  { original = false }: { original?: boolean } = {}
-): string | null {
-  if (after == null) return null;
-  if (before == null) {
-    return original
-      ? `ציון ההתאמה למשרה: ${after}`
-      : `ציון ההתאמה אחרי התאמה: ${after}`;
-  }
-  if (before === after) {
-    return `ציון ההתאמה למשרה: ${after}`;
-  }
-  if (before < after) {
-    return original
-      ? `שיפרנו את ההתאמה למשרה מ־${before} ל־${after}`
-      : `שיפרנו עוד את ההתאמה מ־${before} ל־${after}`;
-  }
-  return `ציון ההתאמה אחרי התאמה: ${after}`;
 }
 
 /** Prefer LTR for Latin-heavy blocks so English stays readable in the RTL app. */
@@ -378,9 +319,17 @@ export default function CvDetails({
   );
   const [generationReport, setGenerationReport] =
     useState<GenerationReport | null>(null);
+  const [generationUiOpen, setGenerationUiOpen] = useState(false);
+  const [generationBackground, setGenerationBackground] = useState(false);
+  const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(
+    null
+  );
+  const [elapsedSeconds, setElapsedSeconds] = useState<number | null>(null);
   const prevRunning = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const tailorEventSourceRef = useRef<EventSource | null>(null);
+  const tailorAbortRef = useRef<AbortController | null>(null);
+  const generationCancelledRef = useRef(false);
   const streamedJobIdsRef = useRef<Set<number>>(new Set());
   /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
   const bestSessionRef = useRef<{
@@ -393,6 +342,20 @@ export default function CvDetails({
     regenerating ||
     (tailoringId != null &&
       (tailoredCv == null || tailoringId === tailoredCv.job_id));
+
+  useEffect(() => {
+    if (!isGenerating || generationStartedAt == null) {
+      setElapsedSeconds(null);
+      return;
+    }
+    const tick = () =>
+      setElapsedSeconds(
+        Math.max(0, Math.round((Date.now() - generationStartedAt) / 1000))
+      );
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [isGenerating, generationStartedAt]);
 
   const { primaryMatches, potentialMatches } = useMemo(() => {
     const primary: CvMatch[] = [];
@@ -744,6 +707,49 @@ export default function CvDetails({
     }
   };
 
+  const beginGenerationSession = (jobId: number) => {
+    generationCancelledRef.current = false;
+    if (tailorAbortRef.current) {
+      tailorAbortRef.current.abort();
+    }
+    tailorAbortRef.current = new AbortController();
+    setGenerationUiOpen(true);
+    setGenerationBackground(false);
+    setGenerationStartedAt(Date.now());
+    setElapsedSeconds(0);
+    openTailorStream(jobId);
+  };
+
+  const cancelGenerationRequest = () => {
+    generationCancelledRef.current = true;
+    tailorAbortRef.current?.abort();
+    tailorAbortRef.current = null;
+    closeTailorStream();
+    setTailoringId(null);
+    setRegenerating(false);
+    setTailorStatusMessage("היצירה בוטלה");
+  };
+
+  const handleGenerationConfirmClose = (choice: CloseChoice) => {
+    if (choice === "stay") return;
+    if (choice === "background") {
+      setGenerationUiOpen(false);
+      setGenerationBackground(true);
+      return;
+    }
+    cancelGenerationRequest();
+    setGenerationUiOpen(false);
+    setGenerationBackground(false);
+  };
+
+  const closeGenerationUi = () => {
+    setGenerationUiOpen(false);
+    setGenerationBackground(false);
+    if (!isGenerating) {
+      setGenerationStartedAt(null);
+    }
+  };
+
   const openTailorStream = (jobId: number) => {
     closeTailorStream();
     setTailorStages([]);
@@ -816,11 +822,17 @@ export default function CvDetails({
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
-    openTailorStream(match.job_id);
+    beginGenerationSession(match.job_id);
     try {
+      const signal = tailorAbortRef.current?.signal;
       const result = workspaceMode
-        ? await tailorWorkspaceJob(match.job_id, { force, sourceCvId: cvId })
-        : await tailorCvForJob(cvId, match.job_id, { force });
+        ? await tailorWorkspaceJob(match.job_id, {
+            force,
+            sourceCvId: cvId,
+            signal,
+          })
+        : await tailorCvForJob(cvId, match.job_id, { force, signal });
+      if (generationCancelledRef.current) return;
       if (result.generation_report) {
         setGenerationReport(result.generation_report);
       }
@@ -829,12 +841,21 @@ export default function CvDetails({
       }
       applyTailoredResult(result, { resetSession: true });
       setTailorStatusMessage("קורות החיים נוצרו בהצלחה");
+      setGenerationUiOpen(true);
+      setGenerationBackground(false);
     } catch (e) {
+      if (
+        generationCancelledRef.current ||
+        (e instanceof DOMException && e.name === "AbortError")
+      ) {
+        return;
+      }
       setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
       setTailorStatusMessage(null);
     } finally {
       closeTailorStream();
       setTailoringId(null);
+      tailorAbortRef.current = null;
     }
   };
 
@@ -959,16 +980,20 @@ export default function CvDetails({
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
-    openTailorStream(previous.job_id);
+    beginGenerationSession(previous.job_id);
     try {
+      const signal = tailorAbortRef.current?.signal;
       const result = workspaceMode
         ? await tailorWorkspaceJob(previous.job_id, {
             regenerate: true,
             sourceCvId: cvId,
+            signal,
           })
         : await tailorCvForJob(cvId, previous.job_id, {
             regenerate: true,
+            signal,
           });
+      if (generationCancelledRef.current) return;
       if (result.generation_report) setGenerationReport(result.generation_report);
       if (result.decision_log?.length) setTailorDecisions(result.decision_log);
 
@@ -1014,13 +1039,22 @@ export default function CvDetails({
 
       setStagnantAttempts(0);
       applyTailoredResult(result);
+      setGenerationUiOpen(true);
+      setGenerationBackground(false);
     } catch (e) {
+      if (
+        generationCancelledRef.current ||
+        (e instanceof DOMException && e.name === "AbortError")
+      ) {
+        return;
+      }
       setError(
         e instanceof Error ? e.message : "שגיאה בשיפור קורות החיים המותאמים"
       );
     } finally {
       closeTailorStream();
       setRegenerating(false);
+      tailorAbortRef.current = null;
     }
   };
 
@@ -1030,26 +1064,39 @@ export default function CvDetails({
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
-    openTailorStream(tailoredCv.job_id);
+    beginGenerationSession(tailoredCv.job_id);
     try {
+      const signal = tailorAbortRef.current?.signal;
       const result = workspaceMode
         ? await tailorWorkspaceJob(tailoredCv.job_id, {
             force: true,
             sourceCvId: cvId,
+            signal,
           })
         : await tailorCvForJob(cvId, tailoredCv.job_id, {
             force: true,
+            signal,
           });
+      if (generationCancelledRef.current) return;
       if (result.generation_report) setGenerationReport(result.generation_report);
       if (result.decision_log?.length) setTailorDecisions(result.decision_log);
       applyTailoredResult(result, { resetSession: true });
+      setGenerationUiOpen(true);
+      setGenerationBackground(false);
     } catch (e) {
+      if (
+        generationCancelledRef.current ||
+        (e instanceof DOMException && e.name === "AbortError")
+      ) {
+        return;
+      }
       setError(
         e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים"
       );
     } finally {
       closeTailorStream();
       setTailoringId(null);
+      tailorAbortRef.current = null;
     }
   };
 
@@ -1235,14 +1282,20 @@ export default function CvDetails({
           </div>
         </div>
 
-        {busyTailor && !tailoredCv && (
-          <TailorGenerationProgress
-            active
-            stages={tailorStages}
-            decisions={tailorDecisions}
-            statusMessage={tailorStatusMessage}
-            compact
-          />
+        {busyTailor && generationBackground && (
+          <div className="generation-background-banner" role="status">
+            <span>יצירת קורות החיים ממשיכה ברקע…</span>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm touch-target"
+              onClick={() => {
+                setGenerationUiOpen(true);
+                setGenerationBackground(false);
+              }}
+            >
+              חזרה למעקב
+            </button>
+          </div>
         )}
 
         {expanded && (
@@ -1457,7 +1510,47 @@ export default function CvDetails({
         </div>
       )}
 
-      {tailoredCv && (
+      <GenerationLiveModal
+        open={generationUiOpen}
+        active={isGenerating}
+        jobLabel={
+          tailoredCv
+            ? [tailoredCv.title, tailoredCv.company].filter(Boolean).join(" · ")
+            : matches.find((m) => m.job_id === tailoringId)
+              ? [
+                  matches.find((m) => m.job_id === tailoringId)?.title,
+                  matches.find((m) => m.job_id === tailoringId)?.company,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              : null
+        }
+        stages={tailorStages}
+        decisions={
+          tailorDecisions.length
+            ? tailorDecisions
+            : tailoredCv?.decision_log || []
+        }
+        statusMessage={tailorStatusMessage}
+        generationReport={
+          generationReport || tailoredCv?.generation_report || null
+        }
+        result={tailoredCv}
+        originalBaseline={activeMatchBaseline}
+        elapsedSeconds={elapsedSeconds}
+        supportsBackground
+        onRequestClose={closeGenerationUi}
+        onConfirmClose={handleGenerationConfirmClose}
+        onPreview={() => {
+          setGenerationUiOpen(false);
+          setGenerationBackground(false);
+        }}
+        onContinueWatching={() => {
+          /* stay on sheet — focus remains in modal */
+        }}
+      />
+
+      {tailoredCv && !generationUiOpen && (
         <div className="modal-overlay" role="dialog" aria-modal="true">
           <div className="modal tailored-cv-modal" dir="rtl">
             <div className="tailored-cv-header">
@@ -1470,8 +1563,12 @@ export default function CvDetails({
               </div>
               <button
                 type="button"
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-sm touch-target"
                 onClick={() => {
+                  if (isGenerating) {
+                    setGenerationUiOpen(true);
+                    return;
+                  }
                   setTailoredCv(null);
                   setActiveMatchBaseline(null);
                   setInfoMessage(null);
@@ -1480,55 +1577,88 @@ export default function CvDetails({
                   setTailorDecisions([]);
                   setTailorStatusMessage(null);
                 }}
-                disabled={isGenerating}
+                aria-label="סגור"
               >
                 סגור
               </button>
             </div>
-            {(tailoredCv.estimated_ats_score != null ||
-              tailoredCv.score_after != null ||
-              tailoredCv.initial_match_score != null ||
-              (tailoredCv.changes_breakdown?.length ?? 0) > 0) && (
-              <p className="tailored-cv-meta">
-                {(() => {
-                  const optimized: number | null =
-                    getTailoredScore(tailoredCv) ??
-                    tailoredCv.score_after ??
-                    tailoredCv.estimated_ats_score ??
-                    null;
-                  if (optimized == null) return null;
-                  const previous = getPreviousTailoredScore(
-                    tailoredCv,
-                    activeMatchBaseline
-                  );
-                  const original = getOriginalMatchScore(
-                    tailoredCv,
-                    activeMatchBaseline
-                  );
-                  const progression = tailoredCv.regenerated
-                    ? formatScoreProgression(previous, optimized)
-                    : formatScoreProgression(
-                        original ?? previous,
-                        optimized,
-                        { original: true }
+            {(() => {
+              const breakdown = buildScoreBreakdown({
+                result: tailoredCv,
+                generationReport:
+                  generationReport || tailoredCv.generation_report || null,
+                originalBaseline: activeMatchBaseline,
+                isGenerating,
+              });
+              const original = breakdown.original_score;
+              const tailored = breakdown.tailored_score;
+              const labelHe = formatScoreLabel(
+                tailoredCv.matcher_feedback?.current?.score_label ?? null
+              );
+              if (
+                original == null &&
+                tailored == null &&
+                !(tailoredCv.changes_breakdown?.length ?? 0)
+              ) {
+                return null;
+              }
+              return (
+                <div className="tailored-cv-meta tailor-score-lifecycle">
+                  <div className="tailor-score-row">
+                    <span className="tailor-score-label">מקורי</span>
+                    <strong>
+                      {original != null ? `${original}%` : "—"}
+                    </strong>
+                  </div>
+                  <div className="tailor-score-row">
+                    <span className="tailor-score-label">מותאם</span>
+                    <strong>
+                      {isGenerating && tailored == null
+                        ? "מחשב אחרי אימות סופי…"
+                        : tailored != null
+                          ? `${tailored}%`
+                          : "—"}
+                    </strong>
+                  </div>
+                  {!isGenerating &&
+                    breakdown.score_delta != null && (
+                      <div className="tailor-score-row tailor-score-delta">
+                        <span className="tailor-score-label">שיפור</span>
+                        <strong>
+                          {breakdown.score_delta > 0
+                            ? `+${breakdown.score_delta}`
+                            : `${breakdown.score_delta}`}
+                        </strong>
+                      </div>
+                    )}
+                  {!isGenerating &&
+                    tailored != null &&
+                    (() => {
+                      const previous = getPreviousTailoredScore(
+                        tailoredCv,
+                        activeMatchBaseline
                       );
-                  if (!progression) return null;
-                  const labelHe = formatScoreLabel(
-                    tailoredCv.matcher_feedback?.current?.score_label ?? null
-                  );
-                  return (
-                    <>
-                      {progression}
-                      {labelHe ? ` · ${labelHe}` : ""}
-                      {(tailoredCv.changes_breakdown?.length ?? 0) > 0 ? " · " : ""}
-                    </>
-                  );
-                })()}
-                {(tailoredCv.changes_breakdown?.length ?? 0) > 0 && (
-                  <span className="cv-meta">פירוט השינויים בגוף המסמך למטה</span>
-                )}
-              </p>
-            )}
+                      const progression = tailoredCv.regenerated
+                        ? formatScoreProgression(previous, tailored)
+                        : formatScoreProgression(original, tailored, {
+                            original: true,
+                          });
+                      if (!progression && !labelHe) return null;
+                      return (
+                        <p className="tailor-score-note">
+                          {progression}
+                          {labelHe ? ` · ${labelHe}` : ""}
+                        </p>
+                      );
+                    })()}
+                  {(tailoredCv.changes_breakdown?.length ?? 0) > 0 && (
+                    <span className="cv-meta">
+                      פירוט השינויים בגוף המסמך למטה
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
             {(tailoredCv.matcher_feedback?.current?.missing_keywords?.length ??
               0) > 0 &&
               tailoredCv.regenerated && (
@@ -1747,20 +1877,20 @@ export default function CvDetails({
                 </div>
               </div>
             </div>
-            {(isGenerating || generationReport) && (
-              <TailorGenerationProgress
-                active={isGenerating}
-                stages={tailorStages}
-                decisions={
-                  tailorDecisions.length
-                    ? tailorDecisions
-                    : tailoredCv?.decision_log || []
-                }
-                statusMessage={tailorStatusMessage}
-                generationReport={
-                  generationReport || tailoredCv?.generation_report || null
-                }
-              />
+            {isGenerating && !generationUiOpen && (
+              <div className="generation-background-banner" role="status">
+                <span>יצירה פעילה — ניתן לחזור למעקב החי</span>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm touch-target"
+                  onClick={() => {
+                    setGenerationUiOpen(true);
+                    setGenerationBackground(false);
+                  }}
+                >
+                  פתח מעקב
+                </button>
+              </div>
             )}
             <div
               key={previewAnimKey}
