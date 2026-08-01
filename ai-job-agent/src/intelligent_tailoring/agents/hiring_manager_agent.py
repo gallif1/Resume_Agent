@@ -179,19 +179,54 @@ class HiringManagerSimulationAgent(Agent[HiringManagerInput, HiringManagerFeedba
             why_reject.append("Too many hard requirements lack supporting evidence.")
 
         actionable: list[str] = []
+        summary = str(
+            resume.get("professional_summary") or resume.get("summary") or ""
+        ).strip()
+        if not summary or len(summary.split()) < 25:
+            actionable.append(
+                "I still don't understand why this candidate fits — rewrite the summary "
+                "to sell specialization and evidenced strengths for THIS role."
+            )
         for req in missing_hard[:4]:
             actionable.append(
-                f"If accurate, surface concrete evidence for '{req}' from real experience."
+                f"Required '{req}' is too weak or missing — surface concrete evidence "
+                f"only if it already exists in the resume."
             )
+        for m in matched_hard[:3]:
+            term = m.requirement
+            if term and term.lower() not in resume_blob:
+                actionable.append(
+                    f"'{term}' is supported by evidence but not visible enough — "
+                    f"reinforce it in summary/skills/projects without inventing facts."
+                )
         for section in weakest:
-            actionable.append(f"Strengthen the {section} section with clearer outcomes.")
+            if section == "projects":
+                actionable.append(
+                    "Key projects look thin — expand bullets using existing project facts "
+                    "to show design decisions and technical value."
+                )
+            elif section == "skills":
+                actionable.append(
+                    "Skills ordering does not lead with role-critical competencies — reorder."
+                )
+            else:
+                actionable.append(
+                    f"Strengthen the {section} section with clearer, natural value statements."
+                )
         if company.preferred_candidate_traits:
             trait = company.preferred_candidate_traits[0]
             actionable.append(
                 f"Where evidenced, emphasize traits valued here (e.g. {trait})."
             )
+        if overall < 70:
+            why_reject.insert(
+                0,
+                "I still don't understand why this candidate fits this specific role.",
+            )
         if not actionable:
-            actionable.append("Maintain evidence honesty; tighten weakest bullets for scanability.")
+            actionable.append(
+                "Tighten weakest bullets for scanability; keep emphasis role-specific."
+            )
 
         feedback = HiringManagerFeedback(
             overall_fit=overall,

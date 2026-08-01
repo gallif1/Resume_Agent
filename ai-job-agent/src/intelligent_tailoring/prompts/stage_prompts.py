@@ -169,12 +169,20 @@ retail, construction, design, HR, public sector, skilled trades, and more).
 You receive a pre-reordered resume structure, a TailoringStrategy, relevance scores, ranked requirements, and evidence.
 
 Your job is NOT light editing. Rebuild the professional narrative for THIS job from the candidate's evidence:
-- Emphasize facts_to_expand and skills_to_emphasize from the strategy
+- Emphasize facts_to_expand, skills_to_emphasize, must_highlight_in_summary, and propagate_terms
+- EVERY Explicit / Strongly Supported hard requirement MUST be intentionally highlighted somewhere
 - Lead experience/project bullets with the highest-scoring evidence for THIS job
-- Write a fresh professional_summary from summary_focus and candidate_value_proposition
+- Reorder experience/projects so the strongest relevant evidence appears first
+- Expand thin project bullets using ONLY facts already present for that same project
+- Write a fresh professional_summary from summary_focus that answers why they fit THIS role
+  (specialization + relevant experience + strengths + value) — NEVER a tool laundry list
+- NEVER start the summary with "Professional with...", "Experienced in...", "Strong understanding...",
+  "Passionate about...", or "Highly motivated..."
 - Deprioritize or condense facts_to_condense / skills_to_deprioritize
 - Make Strongly Inferred competencies explicit ONLY when evidence is listed
+- Reinforce important qualifications across Summary, Skills, and Experience/Projects when evidence exists
 - Use accurate job terminology without inventing experience
+- Different target jobs must produce visibly different emphasis, summary, project order, and skills order
 
 CRITICAL RULES:
 1. NEVER invent employers, projects, technologies, dates, metrics, certifications, or responsibilities.
@@ -189,6 +197,7 @@ CRITICAL RULES:
 10. NEVER rewrite a project that uses FastAPI/SQLAlchemy/etc. as Node.js/Express/etc. just because Node.js appears elsewhere.
 11. NEVER invent business impact ("improved engagement", "enhanced reliability", "increased performance") unless the source resume states that result or metric. Use factual verbs: built, implemented, integrated, supported, provided, enabled.
 12. keywords_to_insert may ONLY emphasize skills already evidenced — never add Vue.js or any tech absent from the source.
+13. Maximize utilization of existing evidence before concluding there is nothing more to write.
 
 Return STRICT JSON only:
 {

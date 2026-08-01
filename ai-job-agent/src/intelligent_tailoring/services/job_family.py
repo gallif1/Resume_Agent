@@ -205,22 +205,10 @@ def deprioritize_keywords(job_family: str) -> list[str]:
 
 
 def skill_category_order(job_family: str) -> list[str]:
-    """Generic category order; strategy builder may override from JD."""
-    orders = {
-        "sales": ["Sales & CRM", "Communication", "Tools", "Other"],
-        "marketing": ["Marketing", "Content & Campaigns", "Tools", "Other"],
-        "finance": ["Finance & Accounting", "Tools", "Other"],
-        "operations": ["Operations", "Tools", "Other"],
-        "education": ["Teaching & Instruction", "Subject Knowledge", "Tools", "Other"],
-        "healthcare": ["Healthcare Administration", "Compliance", "Tools", "Other"],
-        "customer_service": ["Customer Service", "Communication", "Tools", "Other"],
-        "backend": ["Languages & Frameworks", "APIs & Backend", "Databases", "Tools", "Other"],
-        "frontend": ["Frontend Frameworks", "UI & Styling", "Languages", "Tools", "Other"],
-        "devops": ["Cloud & Infrastructure", "CI/CD & Automation", "Languages", "Other"],
-        "qa": ["Testing & Quality", "Debugging & Analysis", "Tools", "Other"],
-        "support": ["Support & Troubleshooting", "Communication", "Tools", "Other"],
-    }
-    return list(orders.get(job_family) or ["Core Competencies", "Tools", "Other"])
+    """Canonical taxonomy category order aligned with skill_taxonomy."""
+    from intelligent_tailoring.skill_taxonomy import category_order_for_role
+
+    return category_order_for_role(job_family)
 
 
 def project_priority_hints(job_family: str) -> list[str]:
