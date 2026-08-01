@@ -126,9 +126,20 @@ def build_tailoring_strategy(
     from intelligent_tailoring.services.evidence_amplifier import build_highlight_plan
     from intelligent_tailoring.skill_taxonomy import category_order_for_role
 
+    soft_comps = list(
+        resume_facts.get("soft_competencies")
+        or resume_facts.get("transferable_strengths")
+        or []
+    )
     highlight_plan = build_highlight_plan(
         evidence_map=evidence_map,
         skills_to_emphasize=skills_to_emphasize,
+        soft_competencies=soft_comps,
+        hiring_priorities=list(
+            (hiring_intent or {}).get("hiring_priorities")
+            or (job_analysis.get("hiring_intent") or {}).get("hiring_priorities")
+            or []
+        ),
     )
     top_interview_reasons = list(highlight_plan.get("top_interview_reasons") or [])[:3]
 

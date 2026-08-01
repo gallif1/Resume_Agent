@@ -203,11 +203,14 @@ def build_highlight_plan(
     *,
     evidence_map: list[dict[str, Any]],
     skills_to_emphasize: list[str],
+    soft_competencies: list[str] | None = None,
+    hiring_priorities: list[str] | None = None,
 ) -> dict[str, Any]:
     """Decide which supported requirements must appear across sections.
 
     Interview-first: identify the strongest evidenced reasons to interview,
-    not maximum keyword coverage.
+    not maximum keyword coverage. Surfaces transferable soft evidence when
+    it aligns with hiring priorities — never invents.
     """
     from intelligent_tailoring.interview_philosophy import select_top_interview_reasons
 
@@ -220,6 +223,11 @@ def build_highlight_plan(
     soft_highlight = [
         s for s in support if s.get("must_highlight") and s.get("importance") == "soft"
     ]
+    transferable = [
+        s
+        for s in support
+        if s.get("support_tier") == "Transferable Evidence" and s.get("requirement")
+    ]
     highlight_terms = []
     for item in must + soft_highlight:
         req = str(item.get("requirement") or "").strip()
@@ -228,6 +236,23 @@ def build_highlight_plan(
     for skill in skills_to_emphasize:
         if skill and skill not in highlight_terms:
             highlight_terms.append(skill)
+    # Fold evidenced soft competencies that match hiring priorities / soft reqs
+    priority_blob = " ".join(
+        str(x).lower()
+        for x in list(hiring_priorities or [])
+        + [s.get("requirement") or "" for s in soft_highlight + transferable]
+    )
+    for comp in soft_competencies or []:
+        label = str(comp).strip()
+        if not label or label in highlight_terms:
+            continue
+        token = label.lower().split()[0] if label else ""
+        if token and len(token) > 3 and token in priority_blob:
+            highlight_terms.append(label)
+        elif not priority_blob and label not in highlight_terms:
+            # Still surface top soft competencies as secondary propagate terms
+            if len(highlight_terms) < 14:
+                highlight_terms.append(label)
 
     plan = {
         "requirement_support": support,
@@ -235,12 +260,16 @@ def build_highlight_plan(
         "soft_highlight": [
             m["requirement"] for m in soft_highlight if m.get("requirement")
         ],
+        "transferable_highlight": [
+            m["requirement"] for m in transferable if m.get("requirement")
+        ][:8],
         "propagate_terms": highlight_terms[:16],
         "unsupported_hard": [
             s["requirement"]
             for s in support
             if s.get("support") == "Unsupported" and s.get("importance") == "hard"
         ],
+        "soft_competencies": list(soft_competencies or [])[:12],
     }
     plan["top_interview_reasons"] = select_top_interview_reasons(
         highlight_plan=plan,
@@ -375,9 +404,20 @@ def apply_evidence_amplification(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return updated resume_facts + enrichment payload for strategy/writer."""
     inventory = build_evidence_inventory(resume_facts)
+    soft_comps = list(
+        resume_facts.get("soft_competencies")
+        or inventory.get("soft_competencies")
+        or []
+    )
     highlight = build_highlight_plan(
         evidence_map=evidence_map,
         skills_to_emphasize=list(strategy.get("skills_to_emphasize") or []),
+        soft_competencies=soft_comps,
+        hiring_priorities=list(
+            strategy.get("hiring_priorities")
+            or strategy.get("narrative_themes")
+            or []
+        ),
     )
     facts = expand_thin_projects_from_facts(
         resume_facts,
@@ -398,6 +438,8 @@ def apply_evidence_amplification(
         "must_highlight_in_summary": highlight.get("must_highlight") or [],
         "propagate_terms": highlight.get("propagate_terms") or [],
         "top_interview_reasons": highlight.get("top_interview_reasons") or [],
+        "transferable_evidence": highlight.get("transferable_highlight") or [],
+        "soft_competencies": soft_comps[:12],
         "thin_projects_expanded": inventory.get("thin_projects") or [],
     }
     return facts, enrichment

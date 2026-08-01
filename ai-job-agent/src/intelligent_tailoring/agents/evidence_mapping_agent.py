@@ -94,14 +94,25 @@ def _allowed_wording(
 
 def _forbidden_wording(requirement: str, strength: str) -> list[str]:
     forbidden = list(_FORBIDDEN_GENERIC)
-    if strength in ("Weak Inference", "No Evidence"):
+    if strength == "No Evidence":
         forbidden.extend(
             [
                 f"expert in {requirement}",
                 f"extensive experience with {requirement}",
                 f"proficient in {requirement}",
                 f"deep expertise in {requirement}",
-                requirement,  # cannot claim the requirement itself without evidence
+                requirement,  # cannot claim without any evidence
+            ]
+        )
+    elif strength == "Weak Inference":
+        # Transferable: allow careful mention; forbid expert-level claims
+        forbidden.extend(
+            [
+                f"expert in {requirement}",
+                f"extensive experience with {requirement}",
+                f"proficient in {requirement}",
+                f"deep expertise in {requirement}",
+                f"years of experience with {requirement}",
             ]
         )
     elif strength == "Strong Inference":

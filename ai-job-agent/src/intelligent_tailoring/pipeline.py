@@ -930,6 +930,62 @@ def run_intelligent_tailoring_agents(
                     "reason": "weak interview signal",
                 },
             )
+        # Recruiter challenge → writer pass (wording only) when would not interview
+        recruiter_dict = recruiter_review_obj.to_dict()
+        needs_recruiter_refine = (
+            not bool(getattr(recruiter_review_obj, "would_interview", False))
+            or not recruiter_review_obj.approved
+        ) and bool(recruiter_review_obj.sections_to_regenerate)
+        if needs_recruiter_refine:
+            logger.info(
+                "intelligent_tailoring: recruiter refine pass sections=%s",
+                recruiter_review_obj.sections_to_regenerate,
+            )
+            recruiter_refine = run_human_writing_stage(
+                validated_resume=cleaned_resume,
+                strategy=strategy,
+                knowledge_base=kb,
+                output_language=output_language,
+                use_cache=False,
+                allow_llm=True,
+                review_feedback=recruiter_dict,
+                highlight_plan=strategy.get("highlight_plan"),
+                evidence_inventory=strategy.get("evidence_inventory"),
+                max_review_cycles=2,
+            )
+            if recruiter_refine.get("facts_unchanged", True) and recruiter_refine.get(
+                "tailored_resume"
+            ):
+                cleaned_resume = recruiter_refine["tailored_resume"]
+                cleaned_resume["summary"] = str(
+                    cleaned_resume.get("professional_summary")
+                    or cleaned_resume.get("summary")
+                    or ""
+                )
+                cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+                writing_stage = {
+                    **writing_stage,
+                    **recruiter_refine,
+                    "recruiter_refine_pass": True,
+                }
+                # Re-review after refine
+                recruiter_result = SeniorRecruiterReviewAgent().run(
+                    RecruiterReviewInput(
+                        resume=cleaned_resume, output_language=output_language
+                    ),
+                    AgentContext(use_cache=False, language=output_language),
+                )
+                recruiter_review_obj = recruiter_result.output
+                recruiter_dict = recruiter_review_obj.to_dict()
+                agent_trace.append(
+                    {
+                        "agent_id": recruiter_result.agent_id,
+                        "metrics": {
+                            **recruiter_result.metrics,
+                            "pass": "post_recruiter_refine",
+                        },
+                    }
+                )
         progress.completed(
             "senior_recruiter",
             (
@@ -979,15 +1035,19 @@ def run_intelligent_tailoring_agents(
         # Hiring Manager feedback loop → writer (wording/emphasis only)
         hm_dict = hiring_manager_obj.to_dict()
         quality_score = writing_stage.get("quality_score") or {}
+        quality_dims = dict(quality_score.get("dimensions") or {})
         needs_hm_refine = (
             int(hm_dict.get("overall_fit") or 0) < 70
-            or int(quality_score.get("overall_score") or 100) < 72
+            or int(quality_score.get("overall_score") or 100) < 74
+            or int(quality_dims.get("interview_probability") or 100) < 70
+            or int(quality_dims.get("twenty_second_screen") or 100) < 70
             or bool(hm_dict.get("weakest_sections"))
             or bool(hm_dict.get("actionable_feedback"))
         ) and (
             not recruiter_review_obj.approved
             or int(hm_dict.get("overall_fit") or 0) < 75
-            or int(quality_score.get("overall_score") or 100) < 72
+            or int(quality_score.get("overall_score") or 100) < 74
+            or int(quality_dims.get("interview_probability") or 100) < 72
         )
         if needs_hm_refine:
             logger.info(
@@ -1104,6 +1164,84 @@ def run_intelligent_tailoring_agents(
             category_order=list(strategy.get("skill_category_order") or []),
         )
 
+        # Final 20-second interview simulation after compress/weave
+        from intelligent_tailoring.writing.resume_quality_score import (
+            evaluate_resume_quality,
+        )
+
+        post_polish_quality = evaluate_resume_quality(
+            cleaned_resume,
+            strategy=strategy,
+            highlight_plan=strategy.get("highlight_plan"),
+            evidence_inventory=strategy.get("evidence_inventory"),
+            recruiter_review=recruiter_review_obj.to_dict(),
+            hiring_manager=hiring_manager_obj.to_dict(),
+            threshold=74,
+        )
+        writing_stage["quality_score"] = post_polish_quality
+        writing_stage["post_polish_quality"] = True
+        post_dims = dict(post_polish_quality.get("dimensions") or {})
+        interview_prob = int(post_dims.get("interview_probability") or 0)
+        screen_20s = int(post_dims.get("twenty_second_screen") or 0)
+        if (
+            interview_prob < 70
+            or screen_20s < 70
+            or not post_polish_quality.get("passed")
+        ) and post_polish_quality.get("weak_sections"):
+            progress.decision(
+                "final_polish",
+                {
+                    "action": "rewrite",
+                    "text": (
+                        "20-second screen / interview probability below bar — "
+                        "refining "
+                        + ", ".join(post_polish_quality["weak_sections"][:3])
+                    ),
+                    "target": ",".join(post_polish_quality["weak_sections"][:3]),
+                    "reason": "interview_probability",
+                },
+            )
+            final_refine = run_human_writing_stage(
+                validated_resume=cleaned_resume,
+                strategy=strategy,
+                knowledge_base=kb,
+                output_language=output_language,
+                use_cache=False,
+                allow_llm=True,
+                highlight_plan=strategy.get("highlight_plan"),
+                evidence_inventory=strategy.get("evidence_inventory"),
+                max_review_cycles=1,
+            )
+            if final_refine.get("facts_unchanged", True) and final_refine.get(
+                "tailored_resume"
+            ):
+                cleaned_resume = final_refine["tailored_resume"]
+                if not allow_multi:
+                    cleaned_resume = compress_resume_to_one_page(
+                        cleaned_resume, strategy=strategy, aggressive=False
+                    )
+                cleaned_resume["summary"] = str(
+                    cleaned_resume.get("professional_summary")
+                    or cleaned_resume.get("summary")
+                    or ""
+                )
+                cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+                cleaned_resume = weave_resume_technologies(cleaned_resume)
+                post_polish_quality = evaluate_resume_quality(
+                    cleaned_resume,
+                    strategy=strategy,
+                    highlight_plan=strategy.get("highlight_plan"),
+                    evidence_inventory=strategy.get("evidence_inventory"),
+                    recruiter_review=recruiter_review_obj.to_dict(),
+                    hiring_manager=hiring_manager_obj.to_dict(),
+                    threshold=74,
+                )
+                writing_stage["quality_score"] = post_polish_quality
+                writing_stage["post_polish_refine_pass"] = True
+                post_dims = dict(post_polish_quality.get("dimensions") or {})
+                interview_prob = int(post_dims.get("interview_probability") or 0)
+                screen_20s = int(post_dims.get("twenty_second_screen") or 0)
+
         # Rebuild deterministic change log against the polished wording
         deterministic_log = build_deterministic_change_log(
             baseline_resume=baseline_resume,
@@ -1189,8 +1327,28 @@ def run_intelligent_tailoring_agents(
             "quality_dimensions": (writing_stage.get("quality_score") or {}).get(
                 "dimensions"
             ),
+            "interview_probability": interview_prob,
+            "twenty_second_screen": screen_20s,
             "failures": list(writing_stage.get("quality_gate_failures") or []),
         }
+        quality_gates["interview_simulation"] = {
+            "interview_probability": interview_prob,
+            "twenty_second_screen": screen_20s,
+            "passed": interview_prob >= 65 and screen_20s >= 65,
+            "notes": (post_polish_quality.get("notes") or {}).get(
+                "twenty_second_screen", []
+            )[:4],
+        }
+        if interview_prob < 55 or screen_20s < 55:
+            # Hard-block only when interview signal is critically weak
+            failure = f"interview_probability:{interview_prob}"
+            if failure not in quality_gates.setdefault("failures", []):
+                quality_gates["failures"].append(failure)
+            quality_gates["passed"] = False
+        elif interview_prob < 70 or screen_20s < 70:
+            soft = f"interview_probability_soft:{interview_prob}"
+            if soft not in quality_gates.setdefault("failures", []):
+                quality_gates["failures"].append(soft)
         if writing_stage.get("quality_gate_failures"):
             for failure in writing_stage["quality_gate_failures"]:
                 key = f"writing_quality:{failure}"

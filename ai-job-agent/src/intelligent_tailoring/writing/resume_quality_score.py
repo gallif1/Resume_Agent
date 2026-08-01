@@ -100,6 +100,23 @@ def _evidence_utilization(
             notes.append(f"thin_projects:{short}")
     elif thin:
         notes.append("inventory_had_thin_projects")
+
+    # Soft / transferable competencies should appear when inventoried
+    soft = list(
+        (evidence_inventory or {}).get("soft_competencies")
+        or (highlight_plan or {}).get("soft_competencies")
+        or []
+    )[:6]
+    if soft:
+        soft_hits = sum(
+            1
+            for c in soft
+            if any(tok in blob for tok in str(c).lower().split() if len(tok) > 3)
+        )
+        soft_ratio = soft_hits / max(len(soft), 1)
+        score = score * 0.85 + soft_ratio * 100 * 0.15
+        if soft_hits == 0:
+            notes.append("soft_competencies_underused")
     return _clamp(score), notes
 
 

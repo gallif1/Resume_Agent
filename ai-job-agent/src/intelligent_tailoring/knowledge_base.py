@@ -68,6 +68,31 @@ FACT_TYPES = (
     "other",
 )
 
+_SOFT_FACT_TYPES = {
+    "communication_activity",
+    "leadership_activity",
+    "customer_facing_activity",
+    "training_activity",
+    "problem_solving_activity",
+    "ownership_activity",
+    "architecture_activity",
+    "debugging_activity",
+    "optimization_activity",
+    "automation_activity",
+    "testing_activity",
+    "monitoring_activity",
+    "documentation_activity",
+    "collaboration_activity",
+    "initiative_activity",
+    "decision_making_activity",
+    "learning_activity",
+    "scalability_activity",
+    "analytical_activity",
+    "safety_activity",
+    "operational_activity",
+    "administrative_activity",
+}
+
 # Patterns that classify bullet/activity text into fact types (profession-agnostic).
 # Order matters: more specific evidence types are matched first.
 _ACTIVITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -483,7 +508,7 @@ def build_knowledge_base(
                 )
             )
 
-    # --- Education ---
+    # --- Education (also mine soft evidence from degree/field/notes) ---
     for e_idx, edu in enumerate(structured.get("education") or []):
         if isinstance(edu, dict):
             text = " — ".join(
@@ -491,12 +516,20 @@ def build_knowledge_base(
                 for k in ("institution", "degree", "field", "dates", "specialization")
                 if edu.get(k)
             ) or str(edu)
+            extra_bits = [
+                str(edu.get(k) or "").strip()
+                for k in ("description", "notes", "achievements", "honors", "details")
+                if edu.get(k)
+            ]
         else:
             text = str(edu)
+            extra_bits = []
         text = text.strip()
         if not text:
             continue
         order += 1
+        edu_id = f"edu_{e_idx}"
+        org = str(edu.get("institution") or "") if isinstance(edu, dict) else ""
         facts.append(
             ResumeFact(
                 id=_fact_id("edu", str(e_idx), text),
@@ -504,13 +537,52 @@ def build_knowledge_base(
                 normalized_value=text.lower(),
                 original_text=text,
                 source_section="education",
-                source_entry_id=f"edu_{e_idx}",
+                source_entry_id=edu_id,
                 source_order=order,
-                organization=str(edu.get("institution") or "") if isinstance(edu, dict) else "",
+                organization=org,
                 confidence=1.0,
                 extraction_method="profile",
             )
         )
+        # Soft/transferable signals hidden in education text
+        soft_sources = [text] + extra_bits
+        if isinstance(edu, dict):
+            for bullet in edu.get("bullets") or []:
+                if str(bullet).strip():
+                    soft_sources.append(str(bullet).strip())
+        seen_soft: set[str] = set()
+        for src in soft_sources:
+            activity = _classify_activity(src)
+            if activity not in _SOFT_FACT_TYPES and activity not in (
+                "leadership_activity",
+                "training_activity",
+                "communication_activity",
+                "analytical_activity",
+            ):
+                continue
+            key = f"{activity}:{src.lower()[:80]}"
+            if key in seen_soft:
+                continue
+            seen_soft.add(key)
+            order += 1
+            facts.append(
+                ResumeFact(
+                    id=_fact_id("edu_soft", str(e_idx), activity, src),
+                    fact_type=activity,
+                    normalized_value=src.lower(),
+                    original_text=src,
+                    source_section="education",
+                    source_entry_id=edu_id,
+                    source_order=order,
+                    organization=org,
+                    context="education",
+                    confidence=0.85,
+                    extraction_method="education_soft_mine",
+                    implied_competencies=[
+                        activity.replace("_activity", "").replace("_", " ")
+                    ],
+                )
+            )
 
     # --- Certifications ---
     for c_idx, cert in enumerate(structured.get("certifications") or []):
@@ -719,6 +791,8 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
     projects_map: dict[str, dict[str, Any]] = {}
     education: list[Any] = []
     certifications: list[Any] = []
+    soft_competencies: list[str] = []
+    soft_evidence_by_type: dict[str, list[str]] = {}
 
     for f in kb.facts:
         if f.fact_type in ("skill", "technology", "tool"):
@@ -767,6 +841,24 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
         elif f.fact_type == "certification":
             certifications.append(f.original_text)
 
+        # Index soft / transferable competencies from any section
+        if f.fact_type in _SOFT_FACT_TYPES:
+            label = f.fact_type.replace("_activity", "").replace("_", " ")
+            if label not in soft_competencies:
+                soft_competencies.append(label)
+            bucket = soft_evidence_by_type.setdefault(label, [])
+            if f.original_text not in bucket:
+                bucket.append(f.original_text)
+        for implied in f.implied_competencies or []:
+            label = str(implied).strip().lower().replace("_", " ")
+            if not label:
+                continue
+            if label not in soft_competencies:
+                soft_competencies.append(label)
+            bucket = soft_evidence_by_type.setdefault(label, [])
+            if f.original_text not in bucket:
+                bucket.append(f.original_text)
+
     # Preserve role order by source_entry_id
     roles = [roles_map[k] for k in sorted(roles_map.keys())]
     projects = [projects_map[k] for k in sorted(projects_map.keys())]
@@ -784,6 +876,11 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
         "education": education,
         "certifications": certifications,
         "years_of_experience": years,
+        "soft_competencies": soft_competencies[:24],
+        "soft_evidence_by_type": {
+            k: v[:4] for k, v in list(soft_evidence_by_type.items())[:20]
+        },
+        "transferable_strengths": soft_competencies[:12],
         "sparse": len(kb.facts) < 3 and len(kb.raw_text.strip()) < 120,
         "knowledge_base": kb.to_dict(),
         "fact_ids": [f.id for f in kb.facts],
@@ -831,15 +928,23 @@ def score_facts_for_job(
             score += 6
         if f.extraction_method == "fallback":
             score -= 5
-        # Soft-skill evidence types get boost when soft skills are in JD
-        soft_blob = " ".join(str(s).lower() for s in (job_requirements.get("soft_skills") or []))
-        if soft_blob and f.fact_type in (
-            "communication_activity",
-            "customer_facing_activity",
-            "leadership_activity",
-            "training_activity",
-        ):
+        # Soft-skill evidence types get boost when soft skills / priorities are in JD
+        soft_blob = " ".join(
+            str(s).lower()
+            for s in (
+                list(job_requirements.get("soft_skills") or [])
+                + list(job_requirements.get("hiring_priorities") or [])
+                + list(job_requirements.get("leadership_expectations") or [])
+                + list(job_requirements.get("learning_expectations") or [])
+            )
+        )
+        if soft_blob and f.fact_type in _SOFT_FACT_TYPES:
             score += 10
+            label = f.fact_type.replace("_activity", "").replace("_", " ")
+            if any(tok in soft_blob for tok in label.split() if len(tok) > 3):
+                score += 8
+        if f.source_section == "education" and f.fact_type in _SOFT_FACT_TYPES:
+            score += 4
         scored.append(
             {
                 "fact_id": f.id,

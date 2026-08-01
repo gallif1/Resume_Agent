@@ -115,19 +115,31 @@ def build_summary_plan(
                         evidenced.append(p)
         evidenced = evidenced[:5]
 
-    # Strongest evidence bullets — prefer achievements / design decisions
+    # Strongest evidence — prefer strategy-ranked evidence, then resume bullets
     strongest_bits: list[str] = []
-    for proj in resume_facts.get("projects") or []:
-        if not isinstance(proj, dict):
-            continue
-        for b in proj.get("bullets") or []:
-            text = str(b).strip()
-            if text and text not in strongest_bits:
-                strongest_bits.append(text)
-            if len(strongest_bits) >= 2:
-                break
+    for bit in list(strategy.get("strongest_evidence") or []) + list(
+        strategy.get("top_interview_reasons") or []
+    ):
+        text = str(bit).strip()
+        if text and text not in strongest_bits and (
+            text.lower() in source_l
+            or any(t in source_l for t in text.lower().split() if len(t) > 3)
+        ):
+            strongest_bits.append(text)
         if len(strongest_bits) >= 2:
             break
+    if len(strongest_bits) < 2:
+        for proj in resume_facts.get("projects") or []:
+            if not isinstance(proj, dict):
+                continue
+            for b in proj.get("bullets") or []:
+                text = str(b).strip()
+                if text and text not in strongest_bits:
+                    strongest_bits.append(text)
+                if len(strongest_bits) >= 2:
+                    break
+            if len(strongest_bits) >= 2:
+                break
     if len(strongest_bits) < 2:
         for role in resume_facts.get("experience_roles") or resume_facts.get("experience") or []:
             if not isinstance(role, dict):
@@ -143,10 +155,16 @@ def build_summary_plan(
 
     summary_focus = str(strategy.get("summary_focus") or "").strip()
     value_prop = str(
-        strategy.get("candidate_value_proposition")
+        strategy.get("professional_story")
+        or strategy.get("candidate_value_proposition")
         or strategy.get("target_positioning")
         or ""
     ).strip()
+    themes = [
+        str(t).strip()
+        for t in (strategy.get("narrative_themes") or [])
+        if str(t).strip()
+    ][:4]
 
     return {
         "target_role": title,
@@ -154,6 +172,7 @@ def build_summary_plan(
         "top_supported_competencies": evidenced,
         "strongest_evidence": (strongest_bits[0] if strongest_bits else "")[:180],
         "secondary_evidence": (strongest_bits[1] if len(strongest_bits) > 1 else "")[:160],
+        "narrative_themes": themes,
         "summary_focus": summary_focus,
         "value_proposition": value_prop,
         "seniority": str(strategy.get("seniority") or ""),

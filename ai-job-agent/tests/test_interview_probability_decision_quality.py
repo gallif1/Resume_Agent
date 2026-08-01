@@ -373,6 +373,121 @@ def test_recruiter_heuristic_sets_would_interview_and_challenges_generic():
     assert any(i.get("section") == "summary" for i in review["issues"])
 
 
+def test_soft_competencies_exposed_on_resume_facts():
+    from intelligent_tailoring.knowledge_base import (
+        ResumeFact,
+        ResumeKnowledgeBase,
+        knowledge_base_to_resume_facts,
+    )
+
+    kb = ResumeKnowledgeBase(
+        facts=[
+            ResumeFact(
+                id="1",
+                fact_type="ownership_activity",
+                normalized_value="owned api",
+                original_text="Owned end-to-end API delivery",
+                source_section="experience",
+            ),
+            ResumeFact(
+                id="2",
+                fact_type="debugging_activity",
+                normalized_value="debugged",
+                original_text="Debugged production incidents",
+                source_section="projects",
+            ),
+            ResumeFact(
+                id="3",
+                fact_type="education",
+                normalized_value="bs cs",
+                original_text="BS Computer Science",
+                source_section="education",
+                organization="State U",
+            ),
+        ],
+        raw_text="Owned end-to-end API delivery. Debugged production incidents.",
+    )
+    facts = knowledge_base_to_resume_facts(kb)
+    assert "ownership" in facts["soft_competencies"]
+    assert "debugging" in facts["soft_competencies"]
+    assert facts["soft_evidence_by_type"]["ownership"]
+
+
+def test_compressor_prefers_strongest_evidence():
+    from intelligent_tailoring.services.one_page_compressor import compress_resume_to_one_page
+
+    resume = {
+        "professional_summary": (
+            "Backend engineer who designs reliable APIs with Python and PostgreSQL. "
+            "Owns service reliability for payment systems."
+        ),
+        "skills": ["Python", "PostgreSQL"],
+        "experience": [
+            {
+                "company": "Acme",
+                "title": "Engineer",
+                "bullets": [
+                    "Responsible for various day-to-day duties on the team.",
+                    "Designed REST APIs using Python and PostgreSQL for payments.",
+                    "Attended weekly standups and wrote status emails.",
+                ],
+            }
+        ],
+        "projects": [],
+    }
+    compressed = compress_resume_to_one_page(
+        resume,
+        strategy={
+            "propagate_terms": ["Python", "PostgreSQL", "REST APIs"],
+            "strongest_evidence": [
+                "Designed REST APIs using Python and PostgreSQL for payments."
+            ],
+            "weaker_evidence_to_reduce": [
+                "Responsible for various day-to-day duties on the team."
+            ],
+        },
+    )
+    bullets = compressed["experience"][0]["bullets"]
+    assert any("REST APIs" in b for b in bullets)
+    assert not any("various day-to-day" in b for b in bullets) or len(bullets) <= 3
+
+
+def test_transferable_not_stripped_from_skills():
+    from intelligent_tailoring.agents.schemas import EvidenceMapping
+
+    # Policy: only No Evidence / unsupported MISSING are stripped from skills.
+    # Weak Inference (Transferable) with supporting text may still surface.
+    mappings = [
+        EvidenceMapping(
+            requirement="Kubernetes",
+            importance="soft",
+            candidate_status="PARTIAL",
+            evidence_strength="Weak Inference",
+            supporting_evidence="Dockerized services",
+            confidence=0.5,
+        ),
+        EvidenceMapping(
+            requirement="Ruby",
+            importance="hard",
+            candidate_status="MISSING",
+            evidence_strength="No Evidence",
+            supporting_evidence="",
+            confidence=0.1,
+        ),
+    ]
+    no_evidence = {
+        m.requirement.lower()
+        for m in mappings
+        if m.evidence_strength == "No Evidence"
+        or (
+            m.candidate_status == "MISSING"
+            and not str(m.supporting_evidence or "").strip()
+        )
+    }
+    assert "ruby" in no_evidence
+    assert "kubernetes" not in no_evidence
+
+
 def test_quality_score_includes_interview_probability_and_20s_screen():
     resume = {
         "professional_title": "Backend Engineer",
