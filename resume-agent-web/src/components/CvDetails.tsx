@@ -12,6 +12,8 @@ import {
   getJobMatches,
   getJobMatchStatus,
   getJobApplication,
+  getTailoredCvPreview,
+  openTailoredCvPdfPreview,
   parseScanSummary,
   regenerateTailoredSection,
   scanStreamUrl,
@@ -300,9 +302,14 @@ export default function CvDetails({
   const [activeTab, setActiveTab] = useState<"jobs" | "profile">("jobs");
   const [tailoringId, setTailoringId] = useState<number | null>(null);
   const [tailoredCv, setTailoredCv] = useState<TailoredCvResponse | null>(null);
+  const [resultModalOpen, setResultModalOpen] = useState(false);
   const [activeMatchBaseline, setActiveMatchBaseline] = useState<number | null>(null);
   const [copyDone, setCopyDone] = useState(false);
   const [pdfDownloading, setPdfDownloading] = useState(false);
+  const [pdfPreviewing, setPdfPreviewing] = useState(false);
+  const [loadingSavedTailored, setLoadingSavedTailored] = useState<number | null>(
+    null
+  );
   const [regenerating, setRegenerating] = useState(false);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [stagnantAttempts, setStagnantAttempts] = useState(0);
@@ -713,6 +720,7 @@ export default function CvDetails({
       tailorAbortRef.current.abort();
     }
     tailorAbortRef.current = new AbortController();
+    setResultModalOpen(false);
     setGenerationUiOpen(true);
     setGenerationBackground(false);
     setGenerationStartedAt(Date.now());
@@ -747,6 +755,61 @@ export default function CvDetails({
     setGenerationBackground(false);
     if (!isGenerating) {
       setGenerationStartedAt(null);
+    }
+    // Keep tailoredCv / generationReport — closing must not wipe the result.
+  };
+
+  const openResultModal = () => {
+    setGenerationUiOpen(false);
+    setGenerationBackground(false);
+    setResultModalOpen(true);
+  };
+
+  const closeResultModal = () => {
+    if (isGenerating) {
+      setGenerationUiOpen(true);
+      return;
+    }
+    // Hide only — saved result stays in state and can be reopened from the job card.
+    setResultModalOpen(false);
+  };
+
+  const handleViewPdf = async (jobId?: number) => {
+    const id = jobId ?? tailoredCv?.job_id;
+    if (id == null) return;
+    setPdfPreviewing(true);
+    setError(null);
+    try {
+      await openTailoredCvPdfPreview(cvId, id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "שגיאה בפתיחת PDF");
+    } finally {
+      setPdfPreviewing(false);
+    }
+  };
+
+  const handleOpenSavedTailored = async (match: CvMatch) => {
+    setError(null);
+    setInfoMessage(null);
+    if (tailoredCv?.job_id === match.job_id && tailoredCv.markdown) {
+      setActiveMatchBaseline(match.match_score);
+      setResultModalOpen(true);
+      return;
+    }
+    setLoadingSavedTailored(match.job_id);
+    try {
+      const result = await getTailoredCvPreview(cvId, match.job_id);
+      applyTailoredResult(result);
+      setActiveMatchBaseline(match.match_score);
+      setResultModalOpen(true);
+      setGenerationUiOpen(false);
+      setGenerationBackground(false);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "לא ניתן לטעון את קורות החיים השמורים"
+      );
+    } finally {
+      setLoadingSavedTailored(null);
     }
   };
 
@@ -1241,10 +1304,34 @@ export default function CvDetails({
                   <span className="btn-spinner" aria-hidden="true" />
                   מייצר קורות חיים...
                 </>
+              ) : m.has_tailored_cv ? (
+                "ייצר מחדש"
               ) : (
                 "ייצר קורות חיים"
               )}
             </button>
+            {m.has_tailored_cv && (
+              <button
+                type="button"
+                className={`btn btn-primary btn-sm ${
+                  loadingSavedTailored === m.job_id ? "btn-loading" : ""
+                }`}
+                disabled={busyTailor || loadingSavedTailored === m.job_id}
+                onClick={() => {
+                  void handleOpenSavedTailored(m);
+                }}
+                aria-busy={loadingSavedTailored === m.job_id}
+              >
+                {loadingSavedTailored === m.job_id ? (
+                  <>
+                    <span className="btn-spinner" aria-hidden="true" />
+                    טוען...
+                  </>
+                ) : (
+                  "צפה בתוצאה"
+                )}
+              </button>
+            )}
             {renderApplyButton(m)}
             {app && (
               <button
@@ -1327,6 +1414,16 @@ export default function CvDetails({
                 {m.tailored_cv_updated_at
                   ? ` · עודכן ${formatDate(m.tailored_cv_updated_at)}`
                   : ""}
+                {" · "}
+                <button
+                  type="button"
+                  className="btn-link-touch"
+                  onClick={() => {
+                    void handleOpenSavedTailored(m);
+                  }}
+                >
+                  פתח שוב
+                </button>
               </p>
             )}
             {app?.failure_reason && (
@@ -1513,18 +1610,20 @@ export default function CvDetails({
       <GenerationLiveModal
         open={generationUiOpen}
         active={isGenerating}
-        jobLabel={
-          tailoredCv
-            ? [tailoredCv.title, tailoredCv.company].filter(Boolean).join(" · ")
-            : matches.find((m) => m.job_id === tailoringId)
-              ? [
-                  matches.find((m) => m.job_id === tailoringId)?.title,
-                  matches.find((m) => m.job_id === tailoringId)?.company,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-              : null
-        }
+        jobLabel={(() => {
+          const activeJob =
+            (tailoringId != null
+              ? matches.find((m) => m.job_id === tailoringId)
+              : null) ||
+            (tailoredCv
+              ? {
+                  title: tailoredCv.title,
+                  company: tailoredCv.company,
+                }
+              : null);
+          if (!activeJob) return null;
+          return [activeJob.title, activeJob.company].filter(Boolean).join(" · ");
+        })()}
         stages={tailorStages}
         decisions={
           tailorDecisions.length
@@ -1541,16 +1640,17 @@ export default function CvDetails({
         supportsBackground
         onRequestClose={closeGenerationUi}
         onConfirmClose={handleGenerationConfirmClose}
-        onPreview={() => {
-          setGenerationUiOpen(false);
-          setGenerationBackground(false);
+        onPreview={openResultModal}
+        onViewPdf={() => {
+          void handleViewPdf();
         }}
+        pdfBusy={pdfPreviewing}
         onContinueWatching={() => {
           /* stay on sheet — focus remains in modal */
         }}
       />
 
-      {tailoredCv && !generationUiOpen && (
+      {tailoredCv && resultModalOpen && !generationUiOpen && (
         <div className="modal-overlay" role="dialog" aria-modal="true">
           <div className="modal tailored-cv-modal" dir="rtl">
             <div className="tailored-cv-header">
@@ -1564,19 +1664,7 @@ export default function CvDetails({
               <button
                 type="button"
                 className="btn btn-ghost btn-sm touch-target"
-                onClick={() => {
-                  if (isGenerating) {
-                    setGenerationUiOpen(true);
-                    return;
-                  }
-                  setTailoredCv(null);
-                  setActiveMatchBaseline(null);
-                  setInfoMessage(null);
-                  setGenerationReport(null);
-                  setTailorStages([]);
-                  setTailorDecisions([]);
-                  setTailorStatusMessage(null);
-                }}
+                onClick={closeResultModal}
                 aria-label="סגור"
               >
                 סגור
@@ -2022,9 +2110,11 @@ export default function CvDetails({
               <button
                 type="button"
                 className="btn btn-primary btn-pdf-download"
-                onClick={handleDownloadTailoredPdf}
+                onClick={() => {
+                  void handleViewPdf(tailoredCv.job_id);
+                }}
                 disabled={
-                  pdfDownloading ||
+                  pdfPreviewing ||
                   regenerating ||
                   tailoringId === tailoredCv.job_id
                 }
@@ -2051,6 +2141,24 @@ export default function CvDetails({
                     />
                   </svg>
                 </span>
+                {pdfPreviewing ? "מכין PDF..." : "הצג PDF"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-pdf-download"
+                onClick={handleDownloadTailoredPdf}
+                disabled={
+                  pdfDownloading ||
+                  regenerating ||
+                  tailoringId === tailoredCv.job_id ||
+                  Boolean(tailoredCv.download_blocked)
+                }
+                title={
+                  tailoredCv.download_blocked
+                    ? "ההורדה חסומה — מצב סקירה עקב שערי איכות"
+                    : undefined
+                }
+              >
                 {pdfDownloading ? "מכין PDF..." : "הורד כ-PDF"}
               </button>
               <button

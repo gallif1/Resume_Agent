@@ -125,6 +125,85 @@ describe("GenerationLiveModal mobile close UX", () => {
     expect(screen.getByText(/קורות החיים מוכנים/)).toBeInTheDocument();
     expect(screen.getByText("+8")).toBeInTheDocument();
   });
+
+  it("shows הצג PDF and preview actions when result is ready", () => {
+    const onViewPdf = vi.fn();
+    const onPreview = vi.fn();
+    render(
+      <GenerationLiveModal
+        open
+        active={false}
+        stages={[]}
+        decisions={[]}
+        generationReport={{
+          resume_revisions: 1,
+          generation_time_seconds: 12,
+          score_breakdown: {
+            original_score: 50,
+            tailored_score: 60,
+            score_delta: 10,
+            calculation_status: "complete",
+          },
+        }}
+        result={{
+          cv_id: "cv1",
+          job_id: 7,
+          title: "Engineer",
+          company: "Acme",
+          markdown: "# CV",
+          highlights: [],
+          caveats: [],
+          from_cache: false,
+          saved_path: "x.md",
+        }}
+        onRequestClose={vi.fn()}
+        onConfirmClose={vi.fn()}
+        onPreview={onPreview}
+        onViewPdf={onViewPdf}
+      />
+    );
+
+    const pdfButtons = screen.getAllByRole("button", { name: "הצג PDF" });
+    expect(pdfButtons.length).toBeGreaterThan(0);
+    fireEvent.click(pdfButtons[0]);
+    expect(onViewPdf).toHaveBeenCalled();
+
+    const previewButtons = screen.getAllByRole("button", {
+      name: "תצוגה מקדימה",
+    });
+    fireEvent.click(previewButtons[0]);
+    expect(onPreview).toHaveBeenCalled();
+  });
+
+  it("shows completion actions when result exists without generationReport", () => {
+    render(
+      <GenerationLiveModal
+        open
+        active={false}
+        stages={[]}
+        decisions={[]}
+        result={{
+          cv_id: "cv1",
+          job_id: 7,
+          title: "Engineer",
+          company: "Acme",
+          markdown: "# CV",
+          highlights: [],
+          caveats: [],
+          from_cache: false,
+          saved_path: "x.md",
+        }}
+        onRequestClose={vi.fn()}
+        onConfirmClose={vi.fn()}
+        onPreview={vi.fn()}
+        onViewPdf={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/קורות החיים מוכנים/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "הצג PDF" }).length).toBeGreaterThan(
+      0
+    );
+  });
 });
 
 describe("expandable agent cards", () => {

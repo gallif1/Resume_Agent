@@ -32,6 +32,7 @@ from db import (
     WORKSPACE_CV_ID,
     apply_honest_match_score,
     get_latest_cv_tailor_version,
+    get_tailored_resume_report,
     list_cv_tailor_versions,
     record_cv_tailor_version,
     save_tailored_resume_report,
@@ -913,6 +914,100 @@ def load_saved_tailored_cv(cv_id: str, job_id: int) -> str | None:
     """The saved tailored document, without the internal pipeline marker."""
     markdown, _version = _read_saved_draft(cv_id, job_id)
     return markdown
+
+
+def load_saved_tailored_result(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Load a persisted tailored CV plus report metadata for preview/reopen.
+
+    Does not regenerate and does not run export gates. Returns ``None`` when no
+    draft exists on disk.
+    """
+    cached = load_saved_tailored_cv(cv_id, job_id)
+    if not cached:
+        return None
+
+    result = _enrich_cached_result_with_db_scores(
+        _result_from_saved_markdown(
+            cached, saved_path=str(tailored_cv_path(cv_id, job_id))
+        ),
+        cv_id=cv_id,
+        job_id=job_id,
+        db_path=db_path,
+    )
+
+    report: dict[str, Any] = {}
+    if db_path is not None:
+        try:
+            report_row = get_tailored_resume_report(
+                cv_id=cv_id, job_id=job_id, db_path=db_path
+            )
+            if report_row and isinstance(report_row.get("report"), dict):
+                report = prepare_for_preview(report_row["report"])
+        except Exception:
+            report = prepare_for_preview({})
+
+    if report:
+        result = {
+            **result,
+            "tailored_resume": report.get("tailored_resume")
+            or report.get("tailored_cv")
+            or result.get("tailored_resume"),
+            "matched_requirements": report.get("matched_requirements")
+            or result.get("matched_requirements")
+            or [],
+            "missing_requirements": report.get("missing_requirements")
+            or result.get("missing_requirements")
+            or [],
+            "change_log": report.get("change_log") or result.get("change_log") or [],
+            "validation_warnings": report.get("validation_warnings")
+            or result.get("validation_warnings")
+            or [],
+            "decision_log": report.get("decision_log")
+            or result.get("decision_log")
+            or [],
+            "generation_report": report.get("generation_report")
+            or result.get("generation_report")
+            or {},
+            "top_interview_reasons": report.get("top_interview_reasons")
+            or result.get("top_interview_reasons")
+            or [],
+            "score_breakdown": report.get("score_breakdown")
+            or (report.get("generation_report") or {}).get("score_breakdown")
+            or result.get("score_breakdown")
+            or {},
+            "quality_gates": report.get("quality_gates") or {},
+            "preview_allowed": True,
+            "download_blocked": bool(report.get("download_blocked")),
+            "review_mode": bool(report.get("review_mode")),
+            "gate_user_messages": list(report.get("gate_user_messages") or []),
+            "original_match_score": report.get("original_match_score")
+            if report.get("original_match_score") is not None
+            else result.get("original_match_score"),
+            "tailored_match_score": report.get("tailored_match_score")
+            if report.get("tailored_match_score") is not None
+            else result.get("tailored_match_score") or result.get("score_after"),
+            "claim_validator_passed": bool(
+                report.get("claim_validator_passed", result.get("claim_validator_passed", True))
+            ),
+            "pipeline_version": report.get("pipeline_version")
+            or result.get("pipeline_version"),
+            "from_cache": True,
+        }
+    else:
+        result = {
+            **result,
+            "preview_allowed": True,
+            "download_blocked": False,
+            "review_mode": False,
+            "gate_user_messages": [],
+            "from_cache": True,
+        }
+    return result
 
 
 def saved_draft_is_current(cv_id: str, job_id: int) -> bool:
