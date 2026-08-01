@@ -42,7 +42,11 @@ BANNED PHRASES (never write these unless already present as a proper noun):
 "Professional with Knowledge", "Professional with experience", "Experienced in" as a lead-in,
 "Strong understanding", "Passionate about", "Highly motivated", "Results-driven",
 "Proven track record", "Responsible for", "Worked on", "Seasoned professional",
-"Leveraged", "Utilized", "Spearheaded", "cutting-edge", "synergy", "detail-oriented professional".
+"Leveraged", "Utilized", "Spearheaded", "cutting-edge", "synergy", "detail-oriented professional",
+"ensuring quality", "ensuring reliability", "ensuring scalability", "Optimized ... ensuring".
+
+Do NOT append unsupported impact filler ("ensuring…", "optimized…") unless that exact
+result language already appears in the source facts.
 
 WRITING PHILOSOPHY:
 - Write for humans first. ATS second.

@@ -173,26 +173,30 @@ def validate_bullet_tech_scope(
 
 
 def has_unsupported_impact(statement: str, source_text: str) -> bool:
-    """True when impact verb is used but source has no supporting metric/result phrasing."""
-    if not _IMPACT_VERBS.search(statement or ""):
-        return False
+    """True when the statement invents quantified/result impact not grounded in source.
+
+    Rules:
+    - Invented metrics (numbers/% in statement but not in source) → unsupported
+    - Impact verbs in the statement when the source has no impact verbs → unsupported
+    - Impact verbs that already appear in the source are allowed (factual paraphrase)
+    - Bare descriptive bullets without impact verbs → supported
+    """
+    statement = statement or ""
     src = source_text or ""
-    # If the source itself contains the same impact phrasing or a metric, allow.
-    if _METRIC_RE.search(src) and _IMPACT_VERBS.search(src):
-        # Only allow if the specific metric appears in the statement OR source shares impact context
-        stmt_metrics = {m.group(0).lower() for m in _METRIC_RE.finditer(statement or "")}
-        src_metrics = {m.group(0).lower() for m in _METRIC_RE.finditer(src)}
-        if stmt_metrics and stmt_metrics & src_metrics:
-            return False
-        if stmt_metrics and not (stmt_metrics & src_metrics):
-            return True  # invented metric
-        # Impact verb in source without metric — still weak; require metric for generated impact
+    if not _IMPACT_VERBS.search(statement):
+        return False
+
+    stmt_metrics = {m.group(0).lower() for m in _METRIC_RE.finditer(statement)}
+    src_metrics = {m.group(0).lower() for m in _METRIC_RE.finditer(src)}
+    if stmt_metrics and not (stmt_metrics & src_metrics):
+        return True  # invented / ungrounded metric
+
+    # Novel impact language not present in the candidate's source material
+    if not _IMPACT_VERBS.search(src):
         return True
-    if _METRIC_RE.search(statement or "") and not _METRIC_RE.search(src):
-        return True  # invented metric
-    if _IMPACT_VERBS.search(statement or "") and not _IMPACT_VERBS.search(src):
-        return True
-    return bool(_IMPACT_VERBS.search(statement or ""))
+
+    # Source already uses impact language — allow paraphrase without requiring metrics
+    return False
 
 
 def neutralize_unsupported_impact(statement: str) -> str:
@@ -211,7 +215,71 @@ def neutralize_unsupported_impact(statement: str) -> str:
             return replacement.capitalize()
         return replacement
 
-    return _IMPACT_VERBS.sub(_repl, text)
+    text = _IMPACT_VERBS.sub(_repl, text)
+    # Drop common AI filler tails left after neutralization
+    text = re.sub(
+        r",?\s*supporting\s+(?:data\s+)?"
+        r"(?:quality|reliability|scalability|performance|integrity|efficiency)"
+        r"(?:\s+and\s+\w+)?\b\.?",
+        "",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    text = re.sub(r"\s+([,.;])", r"\1", text)
+    if text and text[-1] not in ".!?":
+        text += "."
+    return text
+
+
+def sanitize_resume_unsupported_impact(
+    resume: dict[str, Any],
+    *,
+    source_text: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Neutralize unsupported impact wording across visible resume claims.
+
+    Returns (cleaned_resume, list_of_changed_snippets).
+    """
+    out = dict(resume or {})
+    changed: list[str] = []
+
+    def _fix(text: str) -> str:
+        original = str(text or "").strip()
+        if not original or not has_unsupported_impact(original, source_text):
+            return original
+        fixed = neutralize_unsupported_impact(original)
+        if fixed != original:
+            changed.append(original[:80])
+        return fixed
+
+    summary = str(out.get("professional_summary") or out.get("summary") or "")
+    if summary:
+        fixed = _fix(summary)
+        out["professional_summary"] = fixed
+        out["summary"] = fixed
+
+    experience: list[dict[str, Any]] = []
+    for role in list(out.get("experience") or []):
+        if not isinstance(role, dict):
+            continue
+        entry = dict(role)
+        entry["bullets"] = [_fix(str(b)) for b in (entry.get("bullets") or []) if str(b).strip()]
+        experience.append(entry)
+    out["experience"] = experience
+
+    projects: list[dict[str, Any]] = []
+    for proj in list(out.get("projects") or []):
+        if not isinstance(proj, dict):
+            continue
+        entry = dict(proj)
+        if entry.get("description"):
+            entry["description"] = _fix(str(entry.get("description") or ""))
+        entry["bullets"] = [_fix(str(b)) for b in (entry.get("bullets") or []) if str(b).strip()]
+        projects.append(entry)
+    out["projects"] = projects
+
+    return out, changed
 
 
 def strip_leaked_tech_from_bullet(
