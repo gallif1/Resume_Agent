@@ -315,8 +315,8 @@ Languages: Python, SQL
 
 def test_one_page_css_contract():
     html_doc = pdf.markdown_to_resume_html(SAMPLE_CV)
-    assert "margin: 14mm 16mm 14mm 16mm" in html_doc
-    assert "line-height: 1.45" in html_doc
+    assert "margin: 12mm 14mm 12mm 14mm" in html_doc
+    assert "line-height: 1.38" in html_doc
     assert "font-size: 10pt" in html_doc
     assert "#0f766e" in html_doc
     assert 'class="skills-container"' in html_doc

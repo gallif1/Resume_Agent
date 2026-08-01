@@ -53,7 +53,7 @@ def build_summary_plan(
     resume_facts: dict[str, Any],
     resume_text: str,
     output_language: str = "en",
-    maximum_words: int = 75,
+    maximum_words: int = 58,
 ) -> dict[str, Any]:
     title = str(
         strategy.get("honest_title")
@@ -294,7 +294,7 @@ def _compose_english(plan: dict[str, Any], *, resume_text: str = "") -> str:
             text = re.sub(pat, role_phrase if role_phrase else "Contributor", text, count=1, flags=re.I)
             text = _cleanup_summary_text(text)
             break
-    return _trim_words(text, int(plan.get("maximum_words") or 75))
+    return _trim_words(text, int(plan.get("maximum_words") or 58))
 
 
 def _compose_hebrew(plan: dict[str, Any]) -> str:
@@ -304,12 +304,12 @@ def _compose_hebrew(plan: dict[str, Any]) -> str:
         return _trim_words(
             f"{role} עם ניסיון מעשי ב{_join(comps)}. "
             f"מתמקד ביישום הכישורים האלה בפרויקטים ובתפקידים רלוונטיים.",
-            int(plan.get("maximum_words") or 75),
+            int(plan.get("maximum_words") or 58),
         )
     if comps:
         return _trim_words(
             f"בעל/ת ניסיון מעשי ב{_join(comps)}, עם התאמה לתפקיד היעד.",
-            int(plan.get("maximum_words") or 75),
+            int(plan.get("maximum_words") or 58),
         )
     return "בעל/ת ניסיון מעשי בפרויקטים ובתפקידים רלוונטיים."
 

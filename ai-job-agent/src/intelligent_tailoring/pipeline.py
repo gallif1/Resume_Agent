@@ -862,6 +862,62 @@ def run_intelligent_tailoring_agents(
                     }
                 )
 
+        # --- Premium polish: weave evidenced tech, then enforce one page ---
+        from intelligent_tailoring.services.tech_weaver import weave_resume_technologies
+        from intelligent_tailoring.services.one_page_compressor import (
+            compress_until_likely_fit,
+            compress_resume_to_one_page,
+            estimate_page_pressure,
+        )
+        from intelligent_tailoring.services.page_count import (
+            allow_multi_page_requested,
+            assert_one_page,
+        )
+        from intelligent_tailoring.skill_taxonomy import normalize_skill_lines
+
+        prior_quality_gates = dict(quality_gates or {})
+        allow_multi = allow_multi_page_requested(job, cv_profile)
+        cleaned_resume = weave_resume_technologies(cleaned_resume)
+        one_page_meta: dict[str, Any] = {"enabled": not allow_multi, "ok": True}
+        if not allow_multi:
+            cleaned_resume = compress_until_likely_fit(
+                cleaned_resume, strategy=strategy
+            )
+            ok_page, page_reason = assert_one_page(
+                resume=cleaned_resume, allow_multi_page=False
+            )
+            if not ok_page:
+                cleaned_resume = compress_resume_to_one_page(
+                    cleaned_resume, strategy=strategy, aggressive=True
+                )
+                ok_page, page_reason = assert_one_page(
+                    resume=cleaned_resume, allow_multi_page=False
+                )
+            one_page_meta = {
+                "enabled": True,
+                "ok": ok_page,
+                "reason": page_reason,
+                "estimate": estimate_page_pressure(cleaned_resume),
+                "compressed": True,
+            }
+            cleaned_resume.pop("_one_page", None)
+        cleaned_resume["summary"] = str(
+            cleaned_resume.get("professional_summary")
+            or cleaned_resume.get("summary")
+            or ""
+        )
+        cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+        cleaned_resume["skills"] = normalize_skill_lines(
+            list(cleaned_resume.get("skills") or []),
+            emphasize=list(
+                strategy.get("propagate_terms")
+                or strategy.get("skills_to_emphasize")
+                or []
+            ),
+            job_family=str(strategy.get("job_family") or ""),
+            category_order=list(strategy.get("skill_category_order") or []),
+        )
+
         # Rebuild deterministic change log against the polished wording
         deterministic_log = build_deterministic_change_log(
             baseline_resume=baseline_resume,
@@ -869,6 +925,35 @@ def run_intelligent_tailoring_agents(
             evidence_map=evidence_map,
         )
         generated["change_log"] = deterministic_log
+
+        # Final export gates (includes one-page when required)
+        quality_gates = evaluate_quality_gates(
+            tailored_resume=cleaned_resume,
+            original_resume_text=resume_text,
+            facts=[f.to_dict() for f in kb.facts],
+            change_log=deterministic_log,
+            original_roles=list(resume_facts.get("experience_roles") or []),
+            original_projects=list(resume_facts.get("projects") or []),
+            require_summary=True,
+            rejected_statements=validation.get("rejected_statements") or [],
+            require_one_page=not allow_multi,
+        )
+        if prior_quality_gates.get("linguistic_integrity"):
+            quality_gates["linguistic_integrity"] = prior_quality_gates[
+                "linguistic_integrity"
+            ]
+            if not (prior_quality_gates.get("linguistic_integrity") or {}).get("passed", True):
+                quality_gates["passed"] = False
+                for pattern in (
+                    (prior_quality_gates.get("linguistic_integrity") or {}).get(
+                        "detected_patterns"
+                    )
+                    or []
+                ):
+                    failure = f"linguistic_integrity:{pattern}"
+                    if failure not in quality_gates.setdefault("failures", []):
+                        quality_gates["failures"].append(failure)
+        quality_gates["one_page_enforcement"] = one_page_meta
 
         quality_gates["writing_quality"] = {
             "passed": bool(writing_stage.get("passed")),
@@ -1071,7 +1156,8 @@ def run_intelligent_tailoring_agents(
             "claim_decisions": validation.get("decisions") or [],
             "agent_trace": agent_trace,
             "agent_timings_ms": agent_timings_ms,
-            "architecture": "multi_agent_v1_1",
+            "architecture": "multi_agent_v1_2",
+            "one_page": one_page_meta,
         }
 
         # Strict schema validation of the assembled result
@@ -1114,7 +1200,8 @@ def run_intelligent_tailoring_agents(
         result_payload["claim_decisions"] = validation.get("decisions") or []
         result_payload["agent_trace"] = agent_trace
         result_payload["agent_timings_ms"] = agent_timings_ms
-        result_payload["architecture"] = "multi_agent_v1_1"
+        result_payload["architecture"] = "multi_agent_v1_2"
+        result_payload["one_page"] = one_page_meta
         result_payload["resume_quality_score"] = writing_stage.get("quality_score")
         result_payload["writing_report"] = result_payload.get("writing_report")
         # Preserve structured change_log fields after schema round-trip

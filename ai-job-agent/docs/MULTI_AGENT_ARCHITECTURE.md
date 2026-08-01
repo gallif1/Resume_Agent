@@ -6,18 +6,21 @@ The system does not simply rewrite resumes. It thinks like a team of specialists
 Each agent has exactly one responsibility. Inter-agent communication uses
 structured objects, not free-form prompts.
 
-Pipeline version: `multi_agent_v1_1`
+Pipeline version: `multi_agent_v1_2`
 
 ## Writing quality layer (same agents, smarter behavior)
 
 Quality improvements live inside existing stages — no additional agents:
 
 - **Evidence amplifier** — inventories experience/projects, expands thin projects from same-entry KB facts, propagates important evidenced skills
-- **Summary builder** — role-fit narrative; bans AI filler lead-ins
+- **Summary builder** — role-fit narrative (~58 words); bans AI filler lead-ins
+- **Tech weaver** — integrates evidenced technologies into Experience/Projects bullets
+- **One-page compressor** — relevance-ranked compression (roles/bullets/skills) so every resume fits one A4 page by default
 - **Dynamic skill taxonomy order** — Backend/Frontend/Data/Sales/Healthcare/… category priority
-- **Human writer + recruiter prompts** — tougher anti-AI standards; project depth; cross-section reinforcement
+- **Human writer + recruiter prompts** — tougher anti-AI standards; project storytelling; cross-section reinforcement
 - **Hiring Manager refine loop** — actionable challenges feed one wording-only refine pass
-- **Resume Quality Score** — naturalness, evidence utilization, job relevance, ATS, human writing, clarity, balance, role differentiation; regenerates weak sections below threshold
+- **Resume Quality Score** — naturalness, evidence utilization, job relevance, ATS, human writing, clarity, balance, role differentiation, one-page fit; regenerates weak sections below threshold
+- **Premium ATS themes** — tighter professional spacing without shrinking fonts below readability
 
 ## Data flow
 

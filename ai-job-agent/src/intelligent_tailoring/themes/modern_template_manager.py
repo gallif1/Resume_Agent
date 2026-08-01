@@ -43,9 +43,9 @@ def _theme(
     name_tracking: str = "0.2px",
     section_transform: str = "uppercase",
     section_tracking: str = "0.8px",
-    margin: str = "14mm 16mm 14mm 16mm",
+    margin: str = "12mm 14mm 12mm 14mm",
     body_size: str = "10pt",
-    line_height: str = "1.42",
+    line_height: str = "1.38",
     header_align: str = "left",
 ) -> ResumeTheme:
     if section_style == "bar":
@@ -57,7 +57,7 @@ h2.section-title {{
     background-color: {section_bg};
     padding: 1.4mm 2.5mm;
     text-transform: {section_transform};
-    margin: 4.5mm 0 2mm 0;
+    margin: 3.2mm 0 1.4mm 0;
     letter-spacing: {section_tracking};
     border-left: 2.5px solid {accent};
     page-break-after: avoid;
@@ -119,9 +119,9 @@ body {{
 }}
 .header {{
     text-align: {header_align};
-    margin-bottom: 4mm;
+    margin-bottom: 3mm;
     border-bottom: 1px solid {rule};
-    padding-bottom: 3mm;
+    padding-bottom: 2.2mm;
 }}
 .header h1 {{
     font-size: {name_size};
@@ -152,7 +152,7 @@ body {{
 }}
 {section_css}
 .resume-entry {{
-    margin: 0 0 3.2mm 0;
+    margin: 0 0 2.4mm 0;
     page-break-inside: avoid;
     break-inside: avoid;
 }}
@@ -160,13 +160,13 @@ body {{
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    gap: 5mm;
-    margin-bottom: 0.6mm;
+    gap: 4mm;
+    margin-bottom: 0.4mm;
 }}
 .title-main {{
     font-weight: 700;
     color: {heading};
-    font-size: 10.35pt;
+    font-size: 10.2pt;
 }}
 .title-sub {{
     font-weight: 500;
@@ -182,11 +182,11 @@ body {{
     flex-shrink: 0;
 }}
 ul {{
-    margin: 1mm 0 1.8mm 0;
-    padding-left: 4.8mm;
+    margin: 0.8mm 0 1.4mm 0;
+    padding-left: 4.5mm;
 }}
 li {{
-    margin-bottom: 1.15mm;
+    margin-bottom: 0.85mm;
     color: {text};
     text-align: left;
 }}
@@ -198,11 +198,11 @@ li::marker {{
     color: {muted};
 }}
 .skills-container {{
-    margin-top: 1.2mm;
-    line-height: 1.5;
+    margin-top: 0.8mm;
+    line-height: 1.42;
 }}
 .skills-line {{
-    margin-bottom: 1.15mm;
+    margin-bottom: 0.85mm;
     font-size: {body_size};
     color: {text};
 }}
@@ -211,10 +211,10 @@ li::marker {{
     color: {heading};
 }}
 .summary-text {{
-    margin: 0 0 2.2mm 0;
+    margin: 0 0 1.6mm 0;
     color: {text};
     max-width: 100%;
-    line-height: 1.48;
+    line-height: 1.4;
 }}
 """
     return ResumeTheme(
@@ -235,11 +235,11 @@ _THEMES: dict[str, ResumeTheme] = {
         rule="#d1d5db",
         section_bg="#f3f4f6",
         section_style="bar",
-        name_size="21.5pt",
+        name_size="21pt",
         name_weight="700",
-        margin="14mm 16mm 14mm 16mm",
+        margin="12mm 14mm 12mm 14mm",
         body_size="10pt",
-        line_height="1.45",
+        line_height="1.38",
         header_align="left",
     ),
     "professional": _theme(
@@ -254,10 +254,10 @@ _THEMES: dict[str, ResumeTheme] = {
         rule="#cbd5e1",
         section_bg="transparent",
         section_style="rule",
-        name_size="20.5pt",
-        margin="15mm 17mm 15mm 17mm",
-        body_size="10.1pt",
-        line_height="1.46",
+        name_size="20pt",
+        margin="12mm 14mm 12mm 14mm",
+        body_size="10pt",
+        line_height="1.4",
         header_align="left",
     ),
     "executive": _theme(
@@ -272,12 +272,12 @@ _THEMES: dict[str, ResumeTheme] = {
         rule="#a8a29e",
         section_bg="transparent",
         section_style="underline",
-        name_size="22.5pt",
+        name_size="21.5pt",
         name_tracking="0.7px",
         section_tracking="1.4px",
-        margin="17mm 19mm 17mm 19mm",
-        body_size="10.3pt",
-        line_height="1.5",
+        margin="13mm 15mm 13mm 15mm",
+        body_size="10pt",
+        line_height="1.42",
         header_align="left",
     ),
     "minimal": _theme(
@@ -296,9 +296,9 @@ _THEMES: dict[str, ResumeTheme] = {
         name_weight="600",
         section_transform="none",
         section_tracking="0.35px",
-        margin="16mm 18mm 16mm 18mm",
-        body_size="10.1pt",
-        line_height="1.5",
+        margin="12mm 14mm 12mm 14mm",
+        body_size="10pt",
+        line_height="1.4",
         header_align="left",
     ),
     "classic": ResumeTheme(
