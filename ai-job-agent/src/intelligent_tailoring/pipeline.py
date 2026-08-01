@@ -90,6 +90,7 @@ from intelligent_tailoring.services.resume_validator import (
 from intelligent_tailoring.services.tailoring_reporter import build_tailoring_report
 from intelligent_tailoring.stages.semantic_inference import run_semantic_inference
 from intelligent_tailoring.writing.writing_pipeline import run_human_writing_stage
+from intelligent_tailoring.progress import ProgressReporter
 from match_tailor_service import (
     MatchTailorError,
     align_recommendation,
@@ -128,6 +129,7 @@ def run_intelligent_tailoring(
     source_documents: str | None = None,
     language: str | None = None,
     regenerate_section: str | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline and return a dual-schema result.
 
@@ -141,6 +143,7 @@ def run_intelligent_tailoring(
         source_documents=source_documents,
         language=language,
         regenerate_section=regenerate_section,
+        progress_callback=progress_callback,
     )
 
 
@@ -152,8 +155,10 @@ def run_intelligent_tailoring_agents(
     source_documents: str | None = None,
     language: str | None = None,
     regenerate_section: str | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Production multi-agent implementation."""
+    progress = ProgressReporter(progress_callback)
     if not is_ai_available():
         raise IntelligentTailorError(
             "OPENAI_API_KEY is not configured — cannot tailor this resume",
@@ -177,6 +182,11 @@ def run_intelligent_tailoring_agents(
     from intelligent_tailoring.agents.resume_knowledge_agent import ResumeKnowledgeAgent
     from intelligent_tailoring.agents.schemas import ResumeKnowledgeInput
 
+    progress.started(
+        "resume_knowledge",
+        "Reading original resume and extracting candidate evidence…",
+        agent_id="resume_knowledge",
+    )
     knowledge_result = ResumeKnowledgeAgent().run(
         ResumeKnowledgeInput(
             cv_profile=cv_profile,
@@ -205,6 +215,12 @@ def run_intelligent_tailoring_agents(
     )
     kb.target_output_language = output_language
     resume_text = str(kb.raw_text or resume_facts.get("raw_text") or "")
+    progress.completed(
+        "resume_knowledge",
+        f"Candidate evidence extracted ({len(kb.facts)} facts).",
+        agent_id="resume_knowledge",
+        fact_count=len(kb.facts),
+    )
 
     if use_cache and not regenerate_section:
         cached = read_tailoring_cache(
@@ -214,6 +230,16 @@ def run_intelligent_tailoring_agents(
         )
         if cached is not None:
             cached["from_cache"] = True
+            progress.decision(
+                "resume_knowledge",
+                {
+                    "action": "cache",
+                    "text": "Reusing a recent tailored draft for this job (cache hit).",
+                    "target": "pipeline",
+                    "reason": "identical resume + job inputs",
+                },
+            )
+            progress.completed("final_polish", "Cached resume ready.", agent_id="final_polish")
             return _ensure_legacy_fields(cached, job=job, cv_profile=cv_profile)
 
     ontology = get_ontology()
@@ -229,6 +255,11 @@ def run_intelligent_tailoring_agents(
 
     try:
         # Agent 2 — Job Intelligence
+        progress.started(
+            "job_intelligence",
+            "Analyzing job requirements…",
+            agent_id="job_intelligence",
+        )
         job_intel = JobIntelligenceAgent().run(
             JobIntelligenceInput(job=job, jd_snapshot=jd_snapshot),
             AgentContext(use_cache=use_cache, language=output_language),
@@ -237,8 +268,18 @@ def run_intelligent_tailoring_agents(
         agent_trace.append(
             {"agent_id": job_intel.agent_id, "metrics": job_intel.metrics}
         )
+        progress.completed(
+            "job_intelligence",
+            "Job requirements analyzed.",
+            agent_id="job_intelligence",
+        )
 
         # Agent 3 — Company Intelligence (no fabrication)
+        progress.started(
+            "company_intelligence",
+            "Understanding company context…",
+            agent_id="company_intelligence",
+        )
         company_intel = CompanyIntelligenceAgent().run(
             CompanyIntelligenceInput(
                 job=job,
@@ -250,6 +291,11 @@ def run_intelligent_tailoring_agents(
         company_profile_obj = company_intel.output
         agent_trace.append(
             {"agent_id": company_intel.agent_id, "metrics": company_intel.metrics}
+        )
+        progress.completed(
+            "company_intelligence",
+            "Company context reviewed (no invented facts).",
+            agent_id="company_intelligence",
         )
 
         requirements = job_profile_obj.to_legacy_requirements()
@@ -275,6 +321,11 @@ def run_intelligent_tailoring_agents(
         job_profile_obj.raw_requirements = requirements
 
         # Semantic inference (tool) then Evidence Mapping Agent
+        progress.started(
+            "evidence_mapping",
+            "Finding supporting experience and transferable strengths…",
+            agent_id="evidence_mapping",
+        )
         inferred = run_semantic_inference(
             resume_facts=resume_facts,
             requirements=requirements,
@@ -304,6 +355,16 @@ def run_intelligent_tailoring_agents(
                 "metrics": evidence_agent_result.metrics,
             }
         )
+        matched_n = sum(
+            1
+            for e in evidence_map
+            if e.get("candidate_status") in ("MATCH", "PARTIAL")
+        )
+        progress.completed(
+            "evidence_mapping",
+            f"Mapped evidence to requirements ({matched_n} supported).",
+            agent_id="evidence_mapping",
+        )
 
         # Requirement ranking + content triage (tools)
         ranked = rank_requirements(requirements, evidence_map)
@@ -332,6 +393,11 @@ def run_intelligent_tailoring_agents(
         )
         from intelligent_tailoring.agents.schemas import ResumeStrategyInput
 
+        progress.started(
+            "resume_strategy",
+            "Selecting the strongest reasons to interview…",
+            agent_id="resume_strategy",
+        )
         strategy_result = ResumeStrategyAgent().run(
             ResumeStrategyInput(
                 job_profile=job_profile_obj,
@@ -386,9 +452,45 @@ def run_intelligent_tailoring_agents(
                     "must_highlight_in_summary"
                 ),
                 "propagate_terms": evidence_enrichment.get("propagate_terms"),
+                "top_interview_reasons": evidence_enrichment.get(
+                    "top_interview_reasons"
+                ),
             }
         )
         strategy_obj.legacy_strategy = strategy
+        for reason in list(strategy.get("top_interview_reasons") or [])[:3]:
+            progress.decision(
+                "resume_strategy",
+                {
+                    "action": "emphasize",
+                    "text": (
+                        f"Highlighting {reason} because it is among the strongest "
+                        "evidenced reasons to interview"
+                    ),
+                    "target": str(reason),
+                    "reason": "top interview evidence",
+                },
+            )
+        for unsupported in list(
+            (strategy.get("highlight_plan") or {}).get("unsupported_hard") or []
+        )[:3]:
+            progress.decision(
+                "resume_strategy",
+                {
+                    "action": "omit",
+                    "text": (
+                        f"Not mentioning {unsupported} because no reliable "
+                        "supporting evidence exists"
+                    ),
+                    "target": str(unsupported),
+                    "reason": "unsupported hard requirement",
+                },
+            )
+        progress.completed(
+            "resume_strategy",
+            "Resume strategy locked around strongest interview evidence.",
+            agent_id="resume_strategy",
+        )
 
         content_scores = score_resume_content(
             resume_facts=resume_facts,
@@ -429,6 +531,11 @@ def run_intelligent_tailoring_agents(
         previous_generated: dict[str, Any] | None = None
         tailoring_agent = ResumeTailoringAgent()
         claim_agent = ClaimValidationAgent()
+        progress.started(
+            "resume_tailoring",
+            "Building the tailored resume narrative…",
+            agent_id="resume_tailoring",
+        )
         while True:
             try:
                 # Agent 6 — content selection (never invents facts / wording polish)
@@ -511,6 +618,16 @@ def run_intelligent_tailoring_agents(
                     continue
 
             # Agent 7 — Claim validation (sentence-level)
+            progress.completed(
+                "resume_tailoring",
+                "Tailored structure drafted from evidenced content.",
+                agent_id="resume_tailoring",
+            )
+            progress.started(
+                "claim_validation",
+                "Validating every claim against evidence…",
+                agent_id="claim_validation",
+            )
             claim_result = claim_agent.run(
                 ClaimValidationInput(
                     original_resume_text=resume_text,
@@ -740,6 +857,16 @@ def run_intelligent_tailoring_agents(
 
         # --- Agents 8–9: Human Resume Writer + Senior Recruiter Review ---
         # Isolated from tailoring: polishes wording only; facts stay locked.
+        progress.completed(
+            "claim_validation",
+            "Claim validation complete — only evidenced statements remain.",
+            agent_id="claim_validation",
+        )
+        progress.started(
+            "human_writer",
+            "Writing natural, persuasive wording…",
+            agent_id="human_resume_writer",
+        )
         writing_stage = run_human_writing_stage(
             validated_resume=cleaned_resume,
             strategy=strategy,
@@ -765,6 +892,16 @@ def run_intelligent_tailoring_agents(
         cleaned_resume["professional_summary"] = cleaned_resume["summary"]
 
         # Agents 9–10 — structured reviews; HM challenges can trigger one refine pass
+        progress.completed(
+            "human_writer",
+            "Human writing polish complete.",
+            agent_id="human_resume_writer",
+        )
+        progress.started(
+            "senior_recruiter",
+            "Reviewing as a busy recruiter (15-second screen)…",
+            agent_id="senior_recruiter_review",
+        )
         strategy_obj.legacy_strategy = strategy
         recruiter_result = SeniorRecruiterReviewAgent().run(
             RecruiterReviewInput(
@@ -779,7 +916,36 @@ def run_intelligent_tailoring_agents(
                 "metrics": recruiter_result.metrics,
             }
         )
+        if recruiter_review_obj.sections_to_regenerate:
+            progress.decision(
+                "senior_recruiter",
+                {
+                    "action": "rewrite",
+                    "text": (
+                        "Rewriting "
+                        + ", ".join(recruiter_review_obj.sections_to_regenerate[:3])
+                        + " after recruiter feedback"
+                    ),
+                    "target": ",".join(recruiter_review_obj.sections_to_regenerate[:3]),
+                    "reason": "weak interview signal",
+                },
+            )
+        progress.completed(
+            "senior_recruiter",
+            (
+                "Recruiter would interview."
+                if getattr(recruiter_review_obj, "would_interview", False)
+                or recruiter_review_obj.approved
+                else "Recruiter requested improvements on weak sections."
+            ),
+            agent_id="senior_recruiter_review",
+        )
 
+        progress.started(
+            "hiring_manager",
+            "Challenging role fit as a hiring manager…",
+            agent_id="hiring_manager_simulation",
+        )
         hm_result = HiringManagerSimulationAgent().run(
             HiringManagerInput(
                 resume=cleaned_resume,
@@ -793,6 +959,21 @@ def run_intelligent_tailoring_agents(
         hiring_manager_obj = hm_result.output
         agent_trace.append(
             {"agent_id": hm_result.agent_id, "metrics": hm_result.metrics}
+        )
+        for tip in list(hiring_manager_obj.actionable_feedback or [])[:3]:
+            progress.decision(
+                "hiring_manager",
+                {
+                    "action": "challenge",
+                    "text": str(tip)[:180],
+                    "target": "resume",
+                    "reason": "hiring manager challenge",
+                },
+            )
+        progress.completed(
+            "hiring_manager",
+            "Hiring manager review complete.",
+            agent_id="hiring_manager_simulation",
         )
 
         # Hiring Manager feedback loop → writer (wording/emphasis only)
@@ -875,6 +1056,11 @@ def run_intelligent_tailoring_agents(
         )
         from intelligent_tailoring.skill_taxonomy import normalize_skill_lines
 
+        progress.started(
+            "final_polish",
+            "Preparing the final one-page resume…",
+            agent_id="final_polish",
+        )
         prior_quality_gates = dict(quality_gates or {})
         allow_multi = allow_multi_page_requested(job, cv_profile)
         cleaned_resume = weave_resume_technologies(cleaned_resume)
@@ -1073,6 +1259,29 @@ def run_intelligent_tailoring_agents(
             len(validation.get("rejected_statements") or []),
         )
 
+        from intelligent_tailoring.services.decision_log import build_decision_log
+        from intelligent_tailoring.interview_philosophy import build_generation_report
+
+        decision_log = build_decision_log(
+            strategy=strategy,
+            evidence_map=evidence_map,
+            highlight_plan=strategy.get("highlight_plan"),
+            removed=removed,
+            change_log=deterministic_log,
+            recruiter_review=recruiter_review_obj.to_dict(),
+            hiring_manager=hiring_manager_obj.to_dict(),
+            one_page=one_page_meta,
+            writing_report=writing_stage,
+        )
+        for item in decision_log[:8]:
+            # Already emitted many live; keep final log complete without spamming
+            pass
+        progress.completed(
+            "final_polish",
+            "Final resume ready — optimized for interview probability.",
+            agent_id="final_polish",
+        )
+
         result_payload = {
             "tailored_resume": cleaned_resume,
             "matched_requirements": matched,
@@ -1156,9 +1365,16 @@ def run_intelligent_tailoring_agents(
             "claim_decisions": validation.get("decisions") or [],
             "agent_trace": agent_trace,
             "agent_timings_ms": agent_timings_ms,
-            "architecture": "multi_agent_v1_2",
+            "architecture": "multi_agent_v1_3",
             "one_page": one_page_meta,
+            "decision_log": decision_log,
+            "top_interview_reasons": list(
+                strategy.get("top_interview_reasons") or []
+            ),
         }
+        result_payload["generation_report"] = build_generation_report(
+            result=result_payload
+        )
 
         # Strict schema validation of the assembled result
         validated = validate_tailoring_result(result_payload)
@@ -1200,8 +1416,15 @@ def run_intelligent_tailoring_agents(
         result_payload["claim_decisions"] = validation.get("decisions") or []
         result_payload["agent_trace"] = agent_trace
         result_payload["agent_timings_ms"] = agent_timings_ms
-        result_payload["architecture"] = "multi_agent_v1_2"
+        result_payload["architecture"] = "multi_agent_v1_3"
         result_payload["one_page"] = one_page_meta
+        result_payload["decision_log"] = decision_log
+        result_payload["top_interview_reasons"] = list(
+            strategy.get("top_interview_reasons") or []
+        )
+        result_payload["generation_report"] = build_generation_report(
+            result=result_payload
+        )
         result_payload["resume_quality_score"] = writing_stage.get("quality_score")
         result_payload["writing_report"] = result_payload.get("writing_report")
         # Preserve structured change_log fields after schema round-trip

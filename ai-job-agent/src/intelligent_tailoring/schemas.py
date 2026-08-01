@@ -32,7 +32,7 @@ JSON_RETRY_NOTE = (
     "Return ONLY the JSON object, nothing else."
 )
 
-PIPELINE_VERSION = "multi_agent_v1_2"
+PIPELINE_VERSION = "multi_agent_v1_3"
 
 
 @dataclass

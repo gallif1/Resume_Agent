@@ -6,7 +6,7 @@ The system does not simply rewrite resumes. It thinks like a team of specialists
 Each agent has exactly one responsibility. Inter-agent communication uses
 structured objects, not free-form prompts.
 
-Pipeline version: `multi_agent_v1_2`
+Pipeline version: `multi_agent_v1_3`
 
 ## Writing quality layer (same agents, smarter behavior)
 
@@ -21,6 +21,8 @@ Quality improvements live inside existing stages — no additional agents:
 - **Hiring Manager refine loop** — actionable challenges feed one wording-only refine pass
 - **Resume Quality Score** — naturalness, evidence utilization, job relevance, ATS, human writing, clarity, balance, role differentiation, one-page fit; regenerates weak sections below threshold
 - **Premium ATS themes** — tighter professional spacing without shrinking fonts below readability
+- **Interview-probability philosophy** — every agent optimizes for “would a busy recruiter interview?” (15-second rule, strongest evidence, quality over completeness)
+- **Live generation progress** — stage/decision SSE (`/api/tailor/stream`) + generation report for the web UI
 
 ## Data flow
 

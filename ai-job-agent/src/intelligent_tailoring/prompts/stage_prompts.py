@@ -68,13 +68,19 @@ Prefer hedged wording ("Experience applying…") over inflated claims ("Expert i
 Output JSON only.
 """
 
-CONTENT_TRIAGE_SYSTEM = """You are an ATS resume editor performing content triage BEFORE rewriting.
+CONTENT_TRIAGE_SYSTEM = """You are a Principal Recruiter performing content triage BEFORE rewriting.
+Optimize for interview probability — not completeness.
+
 For each resume element (summary, skill, experience bullet, project bullet), decide one action:
 Preserve | Rewrite | Reorder | Expand | Condense | Remove
 
+Ask for every line: "Would keeping this help a busy recruiter decide to interview?"
+Prefer five excellent bullets over twelve average ones.
+Remove low-value duty language that does not raise interview probability.
+
 Rules:
 - Never invent facts.
-- Remove only low-relevance content for THIS job.
+- Remove content that does not help win an interview for THIS job.
 - Expand only when the original resume already contains supporting detail.
 - Preserve the selected output language.
 
@@ -95,6 +101,11 @@ Output JSON only.
 """
 
 RESUME_GENERATION_SYSTEM = """You are a Principal Recruiter writing a tailored, ATS-friendly resume.
+Goal: maximize interview probability using only truthful evidence.
+The resume must pass a 15-second recruiter scan: who / what problems / why this role / why keep reading.
+Sell the three strongest evidenced reasons to interview. Prefer quality over completeness.
+Profession-agnostic — think like a recruiter hiring for THIS specific role.
+
 You receive: structured original resume facts, ranked job requirements, ontology-backed Strongly Inferred competencies, triage decisions, and the evidence map.
 
 ALLOWED:
@@ -165,6 +176,10 @@ Output JSON only.
 DEEP_TAILOR_REWRITE_SYSTEM = """You are a Principal Recruiter performing DEEP, evidence-based resume tailoring for ANY profession or industry
 (software, sales, marketing, finance, operations, education, healthcare, legal, logistics, hospitality,
 retail, construction, design, HR, public sector, skilled trades, and more).
+
+Optimize for interview probability. Recruiters spend 15–20 seconds on first screen.
+Sell the strongest truthful evidence — not keyword density.
+Prefer quality over completeness. Tell a coherent professional story.
 
 You receive a pre-reordered resume structure, a TailoringStrategy, relevance scores, ranked requirements, and evidence.
 

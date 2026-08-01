@@ -16,6 +16,7 @@ import {
   regenerateTailoredSection,
   scanStreamUrl,
   tailorCvForJob,
+  tailorStreamUrl,
   tailorWorkspaceJob,
   updateMatchStatus,
   updateWorkspaceMatchStatus,
@@ -23,14 +24,18 @@ import {
   type Cv,
   type CvMatch,
   type CvScanStatus,
+  type GenerationReport,
   type JobApplication,
   type JobApplicationStatus,
   type MatchSortBy,
   type MatchSortOrder,
+  type TailorDecision,
+  type TailorStageEvent,
   type TailoredCvResponse,
 } from "../lib/api";
 import { formatJobDescription } from "../lib/formatJobDescription";
 import PipelineProgress from "./PipelineProgress";
+import TailorGenerationProgress from "./TailorGenerationProgress";
 import ProfileSettings from "./ProfileSettings";
 import type { CSSProperties } from "react";
 
@@ -366,8 +371,16 @@ export default function CvDetails({
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
+  const [tailorStages, setTailorStages] = useState<TailorStageEvent[]>([]);
+  const [tailorDecisions, setTailorDecisions] = useState<TailorDecision[]>([]);
+  const [tailorStatusMessage, setTailorStatusMessage] = useState<string | null>(
+    null
+  );
+  const [generationReport, setGenerationReport] =
+    useState<GenerationReport | null>(null);
   const prevRunning = useRef(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const tailorEventSourceRef = useRef<EventSource | null>(null);
   const streamedJobIdsRef = useRef<Set<number>>(new Set());
   /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
   const bestSessionRef = useRef<{
@@ -697,6 +710,12 @@ export default function CvDetails({
   ) => {
     trackSessionBest(result, { resetSession });
     setTailoredCv(result);
+    if (result.generation_report) {
+      setGenerationReport(result.generation_report);
+    }
+    if (result.decision_log?.length) {
+      setTailorDecisions(result.decision_log);
+    }
     setPreviewAnimKey((k) => k + 1);
     // The evaluated score replaces the scan estimate on the card too, so the
     // list and the tailored-CV view can never show two different numbers.
@@ -718,20 +737,103 @@ export default function CvDetails({
     );
   };
 
+  const closeTailorStream = () => {
+    if (tailorEventSourceRef.current) {
+      tailorEventSourceRef.current.close();
+      tailorEventSourceRef.current = null;
+    }
+  };
+
+  const openTailorStream = (jobId: number) => {
+    closeTailorStream();
+    setTailorStages([]);
+    setTailorDecisions([]);
+    setTailorStatusMessage("מתחבר לצוות ה-AI…");
+    setGenerationReport(null);
+    try {
+      const es = new EventSource(
+        tailorStreamUrl({ cvId, jobId })
+      );
+      tailorEventSourceRef.current = es;
+      es.addEventListener("tailor_stage", (ev) => {
+        try {
+          const data = JSON.parse((ev as MessageEvent).data) as TailorStageEvent;
+          if (data.job_id != null && Number(data.job_id) !== jobId) return;
+          setTailorStages((prev) => [...prev, data]);
+          if (data.message) setTailorStatusMessage(data.message);
+          if (data.decision?.text) {
+            setTailorDecisions((prev) => [
+              ...prev,
+              { ...data.decision!, stage: data.stage },
+            ]);
+          }
+        } catch {
+          /* ignore malformed */
+        }
+      });
+      es.addEventListener("tailor_decision", (ev) => {
+        try {
+          const data = JSON.parse((ev as MessageEvent).data) as TailorStageEvent;
+          if (data.job_id != null && Number(data.job_id) !== jobId) return;
+          const decision = data.decision || {
+            text: data.message || "",
+            stage: data.stage,
+          };
+          if (decision.text) {
+            setTailorDecisions((prev) => [...prev, decision as TailorDecision]);
+          }
+          if (data.message) setTailorStatusMessage(data.message);
+        } catch {
+          /* ignore */
+        }
+      });
+      es.addEventListener("tailor_complete", (ev) => {
+        try {
+          const data = JSON.parse((ev as MessageEvent).data) as {
+            generation_report?: GenerationReport;
+            error?: string;
+          };
+          if (data.generation_report) {
+            setGenerationReport(data.generation_report);
+          }
+          if (data.error) setTailorStatusMessage(data.error);
+        } catch {
+          /* ignore */
+        }
+        closeTailorStream();
+      });
+      es.onerror = () => {
+        // Keep POST as source of truth; stream is best-effort UX.
+      };
+    } catch {
+      // EventSource unavailable — generation still works via POST.
+    }
+  };
+
   const handleTailorCv = async (match: CvMatch, force = false) => {
     setTailoringId(match.job_id);
     setActiveMatchBaseline(match.match_score);
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
+    openTailorStream(match.job_id);
     try {
       const result = workspaceMode
         ? await tailorWorkspaceJob(match.job_id, { force, sourceCvId: cvId })
         : await tailorCvForJob(cvId, match.job_id, { force });
+      if (result.generation_report) {
+        setGenerationReport(result.generation_report);
+      }
+      if (result.decision_log?.length) {
+        setTailorDecisions(result.decision_log);
+      }
       applyTailoredResult(result, { resetSession: true });
+      setTailorStatusMessage("קורות החיים נוצרו בהצלחה");
     } catch (e) {
       setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
+      setTailorStatusMessage(null);
     } finally {
+      closeTailorStream();
       setTailoringId(null);
     }
   };
@@ -857,6 +959,7 @@ export default function CvDetails({
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
+    openTailorStream(previous.job_id);
     try {
       const result = workspaceMode
         ? await tailorWorkspaceJob(previous.job_id, {
@@ -866,6 +969,8 @@ export default function CvDetails({
         : await tailorCvForJob(cvId, previous.job_id, {
             regenerate: true,
           });
+      if (result.generation_report) setGenerationReport(result.generation_report);
+      if (result.decision_log?.length) setTailorDecisions(result.decision_log);
 
       const newScore = getTailoredScore(result);
       const bestScore = sessionBest.score;
@@ -914,6 +1019,7 @@ export default function CvDetails({
         e instanceof Error ? e.message : "שגיאה בשיפור קורות החיים המותאמים"
       );
     } finally {
+      closeTailorStream();
       setRegenerating(false);
     }
   };
@@ -924,6 +1030,7 @@ export default function CvDetails({
     setError(null);
     setInfoMessage(null);
     setCopyDone(false);
+    openTailorStream(tailoredCv.job_id);
     try {
       const result = workspaceMode
         ? await tailorWorkspaceJob(tailoredCv.job_id, {
@@ -933,12 +1040,15 @@ export default function CvDetails({
         : await tailorCvForJob(cvId, tailoredCv.job_id, {
             force: true,
           });
+      if (result.generation_report) setGenerationReport(result.generation_report);
+      if (result.decision_log?.length) setTailorDecisions(result.decision_log);
       applyTailoredResult(result, { resetSession: true });
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים"
       );
     } finally {
+      closeTailorStream();
       setTailoringId(null);
     }
   };
@@ -1126,21 +1236,13 @@ export default function CvDetails({
         </div>
 
         {busyTailor && !tailoredCv && (
-          <div
-            className="cv-generating-feedback cv-generating-feedback-card"
-            role="status"
-            aria-live="polite"
-          >
-            <div className="cv-generating-feedback-pulse" aria-hidden="true" />
-            <p className="cv-generating-feedback-title">
-              סוכן ה-AI מנתח את תיאור המשרה ומנסח עבורך קורות חיים מותאמים
-              במיוחד...
-            </p>
-            <p className="cv-generating-feedback-sub">
-              התהליך עשוי לקחת מספר שניות, אנא המתן בזמן שאנו משפרים את סיכויי
-              הקבלה שלך.
-            </p>
-          </div>
+          <TailorGenerationProgress
+            active
+            stages={tailorStages}
+            decisions={tailorDecisions}
+            statusMessage={tailorStatusMessage}
+            compact
+          />
         )}
 
         {expanded && (
@@ -1373,6 +1475,10 @@ export default function CvDetails({
                   setTailoredCv(null);
                   setActiveMatchBaseline(null);
                   setInfoMessage(null);
+                  setGenerationReport(null);
+                  setTailorStages([]);
+                  setTailorDecisions([]);
+                  setTailorStatusMessage(null);
                 }}
                 disabled={isGenerating}
               >
@@ -1641,22 +1747,20 @@ export default function CvDetails({
                 </div>
               </div>
             </div>
-            {isGenerating && (
-              <div
-                className="cv-generating-feedback"
-                role="status"
-                aria-live="polite"
-              >
-                <div className="cv-generating-feedback-pulse" aria-hidden="true" />
-                <p className="cv-generating-feedback-title">
-                  סוכן ה-AI מנתח את תיאור המשרה ומנסח עבורך קורות חיים מותאמים
-                  במיוחד...
-                </p>
-                <p className="cv-generating-feedback-sub">
-                  התהליך עשוי לקחת מספר שניות, אנא המתן בזמן שאנו משפרים את סיכויי
-                  הקבלה שלך.
-                </p>
-              </div>
+            {(isGenerating || generationReport) && (
+              <TailorGenerationProgress
+                active={isGenerating}
+                stages={tailorStages}
+                decisions={
+                  tailorDecisions.length
+                    ? tailorDecisions
+                    : tailoredCv?.decision_log || []
+                }
+                statusMessage={tailorStatusMessage}
+                generationReport={
+                  generationReport || tailoredCv?.generation_report || null
+                }
+              />
             )}
             <div
               key={previewAnimKey}

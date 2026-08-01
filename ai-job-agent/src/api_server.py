@@ -25,6 +25,7 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     POST   /jobs/match                        run agent across all uploaded CVs (aggregated)
     GET    /jobs/match-status                 live workspace scan progress
     GET    /api/scan/stream                   SSE: job_found / status_update / scan_complete
+    GET    /api/tailor/stream                 SSE: tailor_stage / tailor_decision / tailor_complete
     GET    /jobs/matches                      workspace job matches
            (query: latest, min_score, sort_by=date|score|site, order=asc|desc)
     POST   /jobs/matches/reset                clear workspace match results
@@ -66,6 +67,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -86,6 +88,7 @@ import auth
 import cv_service
 import db
 import scan_stream
+import tailor_stream
 from application_service import ApplicationError, get_application_for_cv, get_job_application_status, public_application, start_application
 from application_worker import enqueue_application, is_application_active
 from build_info import build_info
@@ -1139,6 +1142,97 @@ async def scan_stream_endpoint(
     return EventSourceResponse(event_generator())
 
 
+@app.get("/api/tailor/stream")
+async def tailor_stream_endpoint(
+    request: Request,
+    cv_id: str | None = None,
+    job_id: int | None = None,
+    user: dict = Depends(auth.get_current_user_sse),
+):
+    """Server-Sent Events stream of live resume-generation progress.
+
+    Events:
+      - ``tailor_stage`` — agent stage started/running/completed
+      - ``tailor_decision`` — human-readable AI decision (not chain-of-thought)
+      - ``tailor_complete`` — generation finished
+      - ``ping`` — keepalive
+
+    Auth: ``Authorization: Bearer …`` or ``?token=`` (EventSource cannot set headers).
+    Optional ``cv_id`` / ``job_id`` filters ignore events for other runs.
+    """
+    user_id = user["id"]
+    q = tailor_stream.subscribe(user_id)
+
+    def _matches_filter(raw: str) -> bool:
+        if cv_id is None and job_id is None:
+            return True
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return True
+        if not isinstance(data, dict):
+            return True
+        if cv_id is not None and str(data.get("cv_id") or "") not in ("", str(cv_id)):
+            return False
+        if job_id is not None and data.get("job_id") not in (None, job_id, str(job_id)):
+            return False
+        return True
+
+    async def event_generator():
+        try:
+            yield {
+                "event": "status_update",
+                "data": json.dumps(
+                    {"message": "Connected to resume generation stream"},
+                    ensure_ascii=False,
+                ),
+            }
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.to_thread(q.get, True, 1.5)
+                except queue.Empty:
+                    yield {"event": "ping", "data": "{}"}
+                    continue
+                if item is tailor_stream.TAILOR_COMPLETE_SENTINEL:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                raw = item.get("data", "{}")
+                if item.get("event") in ("tailor_stage", "tailor_decision", "tailor_complete"):
+                    if not _matches_filter(raw):
+                        if item.get("event") == "tailor_complete":
+                            # Still stop if complete for another job? keep listening
+                            pass
+                        else:
+                            continue
+                yield {
+                    "event": item.get("event", "message"),
+                    "data": raw if isinstance(raw, str) else json.dumps(raw),
+                }
+                if item.get("event") == "tailor_complete" and _matches_filter(raw):
+                    break
+        finally:
+            tailor_stream.unsubscribe(user_id, q)
+
+    return EventSourceResponse(event_generator())
+
+
+@app.get("/api/tailor/runs/{run_id}")
+def tailor_run_status(
+    run_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Poll a live/finished tailor run snapshot (fallback when SSE is unavailable)."""
+    snap = tailor_stream.get_run(run_id)
+    if not snap:
+        raise HTTPException(status_code=404, detail="run not found")
+    if snap.get("user_id") and snap.get("user_id") != user["id"]:
+        raise HTTPException(status_code=404, detail="run not found")
+    return snap
+
+
 @app.get("/jobs/matches")
 def get_job_matches(
     latest: bool = False,
@@ -1631,6 +1725,19 @@ def _tailored_cv_response(
         "knowledge_base_summary": result.get("knowledge_base_summary") or {},
         "tailoring_report": result.get("tailoring_report") or {},
         "tailoring_strategy": result.get("tailoring_strategy") or {},
+        # Live-generation / interview-first audit (additive)
+        "decision_log": result.get("decision_log") or [],
+        "generation_report": result.get("generation_report") or {},
+        "top_interview_reasons": result.get("top_interview_reasons") or [],
+        "writing_report": result.get("writing_report") or {},
+        "recruiter_review": result.get("recruiter_review") or {},
+        "hiring_manager_feedback": result.get("hiring_manager_feedback") or {},
+        "agent_trace": result.get("agent_trace") or [],
+        "one_page": result.get("one_page") or {},
+        "sections_changed": (result.get("generation_report") or {}).get(
+            "sections_changed"
+        )
+        or [],
     }
 
 
@@ -1646,6 +1753,8 @@ def tailor_cv_endpoint(
 
     Pass ``?regenerate=true`` to deep-scan original source CVs against ATS gaps on
     the current best draft (score guard keeps only strictly better results).
+
+    Emits live progress on ``GET /api/tailor/stream`` while generation runs.
     """
     db.ensure_multi_cv_storage()
     _require_owned_cv(cv_id, user)
@@ -1657,12 +1766,33 @@ def tailor_cv_endpoint(
         raise HTTPException(status_code=404, detail="משרה לא נמצאה")
 
     force = (req.force if req else False) or regenerate
+    run_id = tailor_stream.begin_run(
+        user_id=user["id"], cv_id=cv_id, job_id=job_id
+    )
+    progress_cb = tailor_stream.make_progress_callback(
+        user_id=user["id"], cv_id=cv_id, job_id=job_id, run_id=run_id
+    )
+    started = time.time()
     try:
         result = tailor_cv_for_job(
-            cv_id, job, force=force, regenerate=regenerate, db_path=cv_db
+            cv_id,
+            job,
+            force=force,
+            regenerate=regenerate,
+            db_path=cv_db,
+            user_id=user["id"],
+            progress_callback=progress_cb,
         )
     except TailorCvError as exc:
+        tailor_stream.finish_run(
+            user_id=user["id"], run_id=run_id, error=exc.message
+        )
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except Exception as exc:  # noqa: BLE001
+        tailor_stream.finish_run(
+            user_id=user["id"], run_id=run_id, error=str(exc)
+        )
+        raise
 
     relative_path = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
     # Only bump tailored-CV metadata when content actually changed.
@@ -1674,13 +1804,24 @@ def tailor_cv_endpoint(
             db_path=cv_db,
         )
 
-    return _tailored_cv_response(
+    # Attach generation time to report for the live UI final card
+    gen_report = dict(result.get("generation_report") or {})
+    gen_report["generation_time_seconds"] = round(time.time() - started, 1)
+    gen_report.setdefault("run_id", run_id)
+    result["generation_report"] = gen_report
+    tailor_stream.finish_run(
+        user_id=user["id"], run_id=run_id, report=gen_report
+    )
+
+    response = _tailored_cv_response(
         cv_id=cv_id,
         job_id=job_id,
         job=job,
         result=result,
         relative_path=relative_path,
     )
+    response["run_id"] = run_id
+    return response
 
 
 class MatchReportRequest(BaseModel):
