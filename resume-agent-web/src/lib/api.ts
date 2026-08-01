@@ -430,6 +430,57 @@ export interface TailoredCvResponse {
     coverage?: Record<string, unknown>;
   } | null;
   tailoring_report?: Record<string, unknown> | null;
+  run_id?: string | null;
+  decision_log?: TailorDecision[];
+  generation_report?: GenerationReport | null;
+  top_interview_reasons?: string[];
+  writing_report?: Record<string, unknown> | null;
+  recruiter_review?: Record<string, unknown> | null;
+  hiring_manager_feedback?: Record<string, unknown> | null;
+  agent_trace?: Array<Record<string, unknown>>;
+  one_page?: Record<string, unknown> | null;
+  sections_changed?: string[];
+}
+
+export interface TailorDecision {
+  action?: string;
+  text: string;
+  target?: string;
+  reason?: string;
+  stage?: string;
+}
+
+export interface TailorStageEvent {
+  run_id?: string;
+  cv_id?: string;
+  job_id?: number;
+  stage?: string;
+  agent_id?: string;
+  status?: "started" | "running" | "completed" | "failed" | string;
+  message?: string;
+  index?: number;
+  total?: number;
+  decision?: TailorDecision;
+  event?: string;
+}
+
+export interface GenerationReport {
+  status?: string;
+  job_requirements_analyzed?: number;
+  candidate_strengths_identified?: number;
+  transferable_skills_inferred?: number;
+  resume_revisions?: number;
+  ats_optimization_completed?: boolean;
+  recruiter_review_completed?: boolean;
+  hiring_manager_review_completed?: boolean;
+  would_interview?: boolean;
+  top_interview_reasons?: string[];
+  review_cycles?: number | null;
+  hm_refine_pass?: boolean;
+  generation_time_seconds?: number | null;
+  pipeline_version?: string | null;
+  sections_changed?: string[];
+  run_id?: string;
 }
 
 export interface RequirementAssessment {
@@ -693,6 +744,20 @@ export function scanStreamUrl(): string {
   const token = getStoredToken() ?? "";
   const qs = token ? `?token=${encodeURIComponent(token)}` : "";
   return `${BASE_URL}/api/scan/stream${qs}`;
+}
+
+/** Build the SSE URL for live resume-generation progress. */
+export function tailorStreamUrl(options?: {
+  cvId?: string;
+  jobId?: number;
+}): string {
+  const token = getStoredToken() ?? "";
+  const params = new URLSearchParams();
+  if (token) params.set("token", token);
+  if (options?.cvId) params.set("cv_id", options.cvId);
+  if (options?.jobId != null) params.set("job_id", String(options.jobId));
+  const qs = params.toString();
+  return `${BASE_URL}/api/tailor/stream${qs ? `?${qs}` : ""}`;
 }
 
 export function getJobMatches(

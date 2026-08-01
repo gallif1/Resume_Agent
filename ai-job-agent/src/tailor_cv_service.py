@@ -1001,6 +1001,7 @@ def _evaluate(
     user_id: str | None,
     use_cache: bool,
     language: str | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Run Intelligent Resume Tailoring over all of the candidate's sources.
 
@@ -1017,6 +1018,7 @@ def _evaluate(
             use_cache=use_cache,
             source_documents=sources,
             language=language,
+            progress_callback=progress_callback,
         )
     except (IntelligentTailorError, MatchTailorError) as exc:
         message = getattr(exc, "message", str(exc))
@@ -1119,6 +1121,7 @@ def _regenerate_tailored_cv(
     use_cache: bool = False,
     user_id: str | None = None,
     db_path: Path | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Re-run the evaluation over all source documents and keep the better draft.
 
@@ -1148,6 +1151,7 @@ def _regenerate_tailored_cv(
         cv_profile=cv_profile,
         user_id=user_id,
         use_cache=use_cache,
+        progress_callback=progress_callback,
     )
     new_score = report_match_score(report)
     new_feedback = matcher_feedback_from_report(report)
@@ -1239,6 +1243,7 @@ def tailor_cv_for_job(
     regenerate: bool = False,
     user_id: str | None = None,
     db_path: Path | None = None,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     """Generate (or load) the tailored CV for one job.
 
@@ -1248,7 +1253,12 @@ def tailor_cv_for_job(
     """
     if regenerate:
         return _regenerate_tailored_cv(
-            cv_id, job, use_cache=False, user_id=user_id, db_path=db_path
+            cv_id,
+            job,
+            use_cache=False,
+            user_id=user_id,
+            db_path=db_path,
+            progress_callback=progress_callback,
         )
 
     job_id = int(job["id"])
@@ -1274,6 +1284,20 @@ def tailor_cv_for_job(
                     score=int(result["score_after"]),
                     db_path=db_path,
                 )
+            if progress_callback:
+                try:
+                    progress_callback(
+                        {
+                            "event": "stage",
+                            "stage": "final_polish",
+                            "status": "completed",
+                            "message": "Loaded saved tailored resume.",
+                            "index": 10,
+                            "total": 11,
+                        }
+                    )
+                except Exception:
+                    pass
             return result
 
     cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)
@@ -1285,6 +1309,7 @@ def tailor_cv_for_job(
         cv_profile=cv_profile,
         user_id=user_id,
         use_cache=effective_cache,
+        progress_callback=progress_callback,
     )
     score = report_match_score(report)
     score_before = latest_score if latest_score is not None else score
@@ -1332,6 +1357,14 @@ def tailor_cv_for_job(
                 },
                 "current": feedback,
             },
+            "decision_log": report.get("decision_log") or [],
+            "generation_report": report.get("generation_report") or {},
+            "top_interview_reasons": report.get("top_interview_reasons") or [],
+            "writing_report": report.get("writing_report") or {},
+            "recruiter_review": report.get("recruiter_review") or {},
+            "hiring_manager_feedback": report.get("hiring_manager_feedback") or {},
+            "agent_trace": report.get("agent_trace") or [],
+            "one_page": report.get("one_page") or {},
         },
         initial_match_score=initial,
         score_before=score_before,

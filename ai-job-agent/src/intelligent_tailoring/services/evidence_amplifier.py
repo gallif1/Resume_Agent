@@ -149,7 +149,13 @@ def build_highlight_plan(
     evidence_map: list[dict[str, Any]],
     skills_to_emphasize: list[str],
 ) -> dict[str, Any]:
-    """Decide which supported requirements must appear across sections."""
+    """Decide which supported requirements must appear across sections.
+
+    Interview-first: identify the strongest evidenced reasons to interview,
+    not maximum keyword coverage.
+    """
+    from intelligent_tailoring.interview_philosophy import select_top_interview_reasons
+
     support = score_requirement_support(evidence_map)
     must = [
         s
@@ -168,7 +174,7 @@ def build_highlight_plan(
         if skill and skill not in highlight_terms:
             highlight_terms.append(skill)
 
-    return {
+    plan = {
         "requirement_support": support,
         "must_highlight": [m["requirement"] for m in must if m.get("requirement")],
         "soft_highlight": [
@@ -181,6 +187,19 @@ def build_highlight_plan(
             if s.get("support") == "Unsupported" and s.get("importance") == "hard"
         ],
     }
+    plan["top_interview_reasons"] = select_top_interview_reasons(
+        highlight_plan=plan,
+        evidence_map=evidence_map,
+        strategy={"skills_to_emphasize": skills_to_emphasize},
+        limit=3,
+    )
+    # Lead propagate_terms with the top interview reasons
+    lead = list(plan["top_interview_reasons"])
+    for term in highlight_terms:
+        if term not in lead:
+            lead.append(term)
+    plan["propagate_terms"] = lead[:16]
+    return plan
 
 
 def expand_thin_projects_from_facts(
@@ -323,6 +342,7 @@ def apply_evidence_amplification(
         "highlight_plan": highlight,
         "must_highlight_in_summary": highlight.get("must_highlight") or [],
         "propagate_terms": highlight.get("propagate_terms") or [],
+        "top_interview_reasons": highlight.get("top_interview_reasons") or [],
         "thin_projects_expanded": inventory.get("thin_projects") or [],
     }
     return facts, enrichment

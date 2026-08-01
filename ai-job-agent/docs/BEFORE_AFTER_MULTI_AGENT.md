@@ -63,6 +63,16 @@ Same architecture; stronger premium-writer behavior + hard one-page default:
 - Stricter recruiter + hiring-manager critique loops
 - Denser premium ATS themes (readable fonts, balanced whitespace)
 
+## Interview-first + live generation UX (`multi_agent_v1_3`)
+
+Philosophy shift: every agent optimizes for interview probability, not document generation.
+
+- 15-second recruiter screen + strongest-evidence selection (`top_interview_reasons`)
+- Human-readable `decision_log` (no chain-of-thought)
+- Live SSE progress (`GET /api/tailor/stream`) with agent timeline + decisions
+- Final `generation_report` + section-change chips in the web preview
+- Same multi-agent architecture — no new agents
+
 ## Acceptance criteria mapping
 
 1. Different jobs → different resumes — strategy + evidence + company influence

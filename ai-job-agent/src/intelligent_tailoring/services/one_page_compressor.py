@@ -37,24 +37,28 @@ def _trim_words(text: str, maximum: int) -> str:
 
 
 def _bullet_score(bullet: str, emphasize: list[str]) -> int:
-    low = _norm(bullet)
-    score = min(len(low.split()), 28)  # prefer substance over stubs
-    for term in emphasize:
-        t = _norm(term)
-        if t and t in low:
-            score += 25
-    # Prefer value / design / tech signal
-    if re.search(
-        r"\b(designed|built|implemented|developed|configured|resolved|automated|"
-        r"scalable|postgres|fastapi|react|aws|docker|api|patient|forecast|quota)\b",
-        low,
-    ):
-        score += 8
-    if len(low.split()) < 6:
-        score -= 15
-    if re.match(r"^(worked on|helped with|responsible for|created database)\b", low):
-        score -= 12
-    return score
+    """Rank by interview probability for THIS role (quality over completeness)."""
+    try:
+        from intelligent_tailoring.interview_philosophy import bullet_interview_score
+
+        return bullet_interview_score(bullet, emphasize)
+    except Exception:
+        low = _norm(bullet)
+        score = min(len(low.split()), 28)
+        for term in emphasize:
+            t = _norm(term)
+            if t and t in low:
+                score += 25
+        if re.search(
+            r"\b(designed|built|implemented|developed|configured|resolved|automated)\b",
+            low,
+        ):
+            score += 8
+        if len(low.split()) < 6:
+            score -= 15
+        if re.match(r"^(worked on|helped with|responsible for|created database)\b", low):
+            score -= 12
+        return score
 
 
 def _dedupe_similar(bullets: list[str]) -> list[str]:
