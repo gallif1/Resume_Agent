@@ -49,7 +49,10 @@ class SeniorRecruiterReviewAgent(Agent[RecruiterReviewInput, RecruiterReviewOutp
             or 70
         ) >= 65
         communicates_value = interview_quality >= 65
-        would_interview = approved or (interview_quality >= 70 and human >= 65)
+        if "would_interview" in raw:
+            would_interview = bool(raw.get("would_interview"))
+        else:
+            would_interview = approved or (interview_quality >= 70 and human >= 65)
 
         output = RecruiterReviewOutput(
             would_interview=would_interview,
