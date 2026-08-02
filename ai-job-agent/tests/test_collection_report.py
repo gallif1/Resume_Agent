@@ -43,3 +43,6 @@ def test_emit_agent_warning_prints_prefix(capsys):
 def test_collection_outcome_ok_flag():
     assert CollectionOutcome(jobs=[{"title": "Dev"}]).ok is True
     assert CollectionOutcome(status="blocked").ok is False
+    assert CollectionOutcome(status="caught_up").ok is False
+    assert CollectionOutcome(status="caught_up").is_success is True
+    assert CollectionOutcome(status="empty").is_success is False

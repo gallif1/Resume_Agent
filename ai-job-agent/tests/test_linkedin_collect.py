@@ -108,6 +108,53 @@ def test_collect_linkedin_jobs_retries_on_429_with_backoff():
     assert mock_sleep.called
 
 
+def test_collect_linkedin_keeps_new_jobs_after_known_on_same_page():
+    """LinkedIn is relevance-ranked: a known card must not drop later new jobs."""
+    from job_identity import normalize_job_url
+
+    known = {normalize_job_url("https://www.linkedin.com/jobs/view/1111111")}
+    with patch(
+        "collect_jobs.requests.get",
+        return_value=MagicMock(status_code=200, text=SAMPLE_LINKEDIN_HTML),
+    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1):
+        outcome = collect_linkedin_jobs(
+            "Software Engineer",
+            max_pages=1,
+            known_job_urls=known,
+            stop_on_known=True,
+        )
+
+    assert outcome.status == "ok"
+    assert len(outcome.jobs) == 1
+    assert outcome.jobs[0]["job_url"].endswith("/2222222")
+    assert outcome.reason_he is None
+
+
+def test_collect_linkedin_returns_caught_up_when_all_known():
+    """All cards already in DB is catch-up success, not a 'no jobs found' failure."""
+    from job_identity import normalize_job_url
+
+    known = {
+        normalize_job_url("https://www.linkedin.com/jobs/view/1111111"),
+        normalize_job_url("https://www.linkedin.com/jobs/view/2222222"),
+    }
+    with patch(
+        "collect_jobs.requests.get",
+        return_value=MagicMock(status_code=200, text=SAMPLE_LINKEDIN_HTML),
+    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1):
+        outcome = collect_linkedin_jobs(
+            "Backend Developer",
+            max_pages=1,
+            known_job_urls=known,
+            stop_on_known=True,
+        )
+
+    assert outcome.status == "caught_up"
+    assert outcome.jobs == []
+    assert outcome.reason_he is None
+    assert "already known" in (outcome.reason or "").lower()
+
+
 def test_save_jobs_to_db_skips_known_urls_without_upsert():
     """Known job_url must be skipped before description persistence / upsert."""
     upsert_calls: list[str] = []

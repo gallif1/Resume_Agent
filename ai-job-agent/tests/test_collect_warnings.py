@@ -31,3 +31,29 @@ def test_finalize_site_warnings_when_no_jobs_found():
     warnings = _finalize_site_warnings(totals)
     assert warnings[0].startswith("דרושים:")
     assert "לא נמצאו משרות" in warnings[0]
+
+
+def test_finalize_site_warnings_skips_full_linkedin_catch_up():
+    """Incremental catch-up must not spam 'problems collecting jobs' warnings."""
+    totals = {
+        "linkedin": _SiteTotals(
+            raw=0,
+            queries=9,
+            caught_up_queries=9,
+        )
+    }
+    assert _finalize_site_warnings(totals) == []
+
+
+def test_finalize_site_warnings_keeps_real_linkedin_failures():
+    totals = {
+        "linkedin": _SiteTotals(
+            raw=0,
+            queries=2,
+            caught_up_queries=1,
+            issues=["לינקדאין חסם/הגביל בקשות (429)"],
+        )
+    }
+    warnings = _finalize_site_warnings(totals)
+    assert len(warnings) == 1
+    assert "429" in warnings[0]

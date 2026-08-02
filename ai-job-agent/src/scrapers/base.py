@@ -43,13 +43,31 @@ class BaseScraper(ABC):
         )
 
     @staticmethod
+    def caught_up_outcome(
+        *,
+        reason: str | None = None,
+        http_status: int | None = None,
+    ) -> CollectionOutcome:
+        """Listings existed but all were already known — not a collection failure."""
+        return CollectionOutcome(
+            jobs=[],
+            status="caught_up",
+            reason=reason or "All jobs already known (incremental)",
+            reason_he=None,
+            http_status=http_status,
+        )
+
+    @staticmethod
     def ok_outcome(
         jobs: list[dict[str, Any]],
         *,
         http_status: int | None = None,
+        caught_up: bool = False,
     ) -> CollectionOutcome:
         if jobs:
             return CollectionOutcome(jobs=jobs, status="ok", http_status=http_status)
+        if caught_up:
+            return BaseScraper.caught_up_outcome(http_status=http_status)
         return CollectionOutcome(
             jobs=[],
             status="empty",
