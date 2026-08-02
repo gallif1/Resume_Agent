@@ -275,6 +275,7 @@ class GeektimeScraper(BaseScraper):
         seen: set[str] = set()
         last_status: int | None = None
         blocked = False
+        hit_known = False
 
         for page in range(1, max(1, max_pages) + 1):
             page_jobs: list[dict[str, Any]] = []
@@ -356,6 +357,11 @@ class GeektimeScraper(BaseScraper):
                 status="blocked",
                 reason="Geektime Insider blocked by Cloudflare / auth",
                 reason_he="גיקטיים חסם את הגישה (Cloudflare)",
+                http_status=last_status,
+            )
+        if hit_known:
+            return self.caught_up_outcome(
+                reason="All Geektime jobs already known (incremental)",
                 http_status=last_status,
             )
         return self.empty_outcome(

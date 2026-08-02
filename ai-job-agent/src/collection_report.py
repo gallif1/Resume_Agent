@@ -15,7 +15,14 @@ STATUS_UPDATE_PREFIX = "STATUS_UPDATE:"
 
 @dataclass
 class CollectionOutcome:
-    """Result of one job-board search for a single query."""
+    """Result of one job-board search for a single query.
+
+    ``status`` values:
+    - ``ok``: new jobs were collected
+    - ``caught_up``: listings were found but all were already in the DB (incremental)
+    - ``empty``: the board returned no parseable listings for the query
+    - ``blocked`` / ``http_error`` / ``failed``: access or transport problems
+    """
 
     jobs: list[dict[str, Any]] = field(default_factory=list)
     status: str = "ok"
@@ -27,6 +34,11 @@ class CollectionOutcome:
     @property
     def ok(self) -> bool:
         return self.status == "ok" and bool(self.jobs)
+
+    @property
+    def is_success(self) -> bool:
+        """True when the search completed without a collection failure."""
+        return self.status in ("ok", "caught_up")
 
 
 def emit_agent_warning(message: str) -> None:

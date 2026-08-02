@@ -170,6 +170,7 @@ class SecretTelAvivScraper(BaseScraper):
         seen: set[str] = set()
         last_status: int | None = None
         blocked = False
+        hit_known = False
 
         for page in range(1, max(1, max_pages) + 1):
             url = build_secret_tel_aviv_search_url(query, page=page)
@@ -224,6 +225,11 @@ class SecretTelAvivScraper(BaseScraper):
                 status="blocked",
                 reason="Secret Tel Aviv blocked by Cloudflare",
                 reason_he="סיקרט תל אביב חסם את הגישה (Cloudflare)",
+                http_status=last_status,
+            )
+        if hit_known:
+            return self.caught_up_outcome(
+                reason="All Secret Tel Aviv jobs already known (incremental)",
                 http_status=last_status,
             )
         return self.empty_outcome(

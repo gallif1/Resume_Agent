@@ -136,6 +136,7 @@ class AllJobsScraper(BaseScraper):
         all_jobs: list[dict[str, Any]] = []
         seen: set[str] = set()
         last_status: int | None = None
+        hit_known = False
 
         # Warm session cookies (AllJobs often sets ASP.NET_SessionId + bot cookies).
         try:
@@ -191,6 +192,7 @@ class AllJobsScraper(BaseScraper):
                 break
 
             hit_known = False
+            page_count = len(page_jobs)
             if stop_on_known and (known_job_urls or known_identity_keys):
                 page_jobs, hit_known = trim_jobs_before_known_stop(
                     page_jobs,
@@ -212,10 +214,10 @@ class AllJobsScraper(BaseScraper):
                 all_jobs.append(job)
                 added += 1
 
-            print(f"  AllJobs page {page}: +{added} ({len(page_jobs)} on page)")
+            print(f"  AllJobs page {page}: +{added} ({page_count} on page)")
             if hit_known:
                 break
-            if len(page_jobs) < 10:
+            if page_count < 10:
                 break
             if page < max_pages:
                 time.sleep(0.8)
@@ -223,6 +225,11 @@ class AllJobsScraper(BaseScraper):
         print(f"  AllJobs returned {len(all_jobs)} job card(s) for '{query}'")
         if all_jobs:
             return self.ok_outcome(all_jobs, http_status=last_status)
+        if hit_known:
+            return self.caught_up_outcome(
+                reason="All AllJobs jobs already known (incremental)",
+                http_status=last_status,
+            )
         return self.empty_outcome(
             status="empty",
             reason=f"No AllJobs jobs for '{query}'",

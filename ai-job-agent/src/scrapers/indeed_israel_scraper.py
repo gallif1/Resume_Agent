@@ -217,6 +217,7 @@ class IndeedIsraelScraper(BaseScraper):
         seen: set[str] = set()
         last_status: int | None = None
         blocked = False
+        hit_known = False
 
         for page_index in range(max(1, max_pages)):
             start = page_index * page_size
@@ -235,6 +236,7 @@ class IndeedIsraelScraper(BaseScraper):
                 break
 
             hit_known = False
+            page_count = len(page_jobs)
             if stop_on_known and (known_job_urls or known_identity_keys):
                 page_jobs, hit_known = trim_jobs_before_known_stop(
                     page_jobs,
@@ -256,10 +258,10 @@ class IndeedIsraelScraper(BaseScraper):
                 all_jobs.append(job)
                 added += 1
 
-            print(f"  Indeed page {page_index + 1}: +{added} ({len(page_jobs)} on page)")
+            print(f"  Indeed page {page_index + 1}: +{added} ({page_count} on page)")
             if hit_known:
                 break
-            if len(page_jobs) < max(5, page_size // 2):
+            if page_count < max(5, page_size // 2):
                 break
             if page_index < max_pages - 1:
                 time.sleep(1.2)
@@ -272,6 +274,11 @@ class IndeedIsraelScraper(BaseScraper):
                 status="blocked",
                 reason="Indeed Israel blocked / security check",
                 reason_he="אינדיד חסם את הגישה (Security Check)",
+                http_status=last_status,
+            )
+        if hit_known:
+            return self.caught_up_outcome(
+                reason="All Indeed jobs already known (incremental)",
                 http_status=last_status,
             )
         return self.empty_outcome(

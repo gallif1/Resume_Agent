@@ -825,6 +825,11 @@ class GotfriendsScraper(BaseScraper):
                 reason_he="גוטפרנדס חסם את הגישה (Cloudflare / anti-bot)",
                 http_status=last_status,
             )
+        if hit_delta_stop or total_known_skipped > 0:
+            return self.caught_up_outcome(
+                reason="All GotFriends jobs already known (incremental)",
+                http_status=last_status,
+            )
         return self.empty_outcome(
             status="empty",
             reason=f"No GotFriends jobs for '{query}'",

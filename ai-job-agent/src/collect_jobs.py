@@ -83,6 +83,7 @@ from job_identity import (
     compute_candidate_strategy_hash,
     compute_job_identity_key,
     extract_linkedin_job_id,
+    job_is_already_known,
     normalize_job_url,
     trim_jobs_before_delta_stop,
     trim_jobs_before_known_stop,
@@ -138,6 +139,7 @@ class _SiteTotals:
     excluded: int = 0
     queries: int = 0
     queries_with_raw: int = 0
+    caught_up_queries: int = 0
     issues: list[str] = field(default_factory=list)
 
 
@@ -154,13 +156,26 @@ def _finalize_site_warnings(totals: dict[str, _SiteTotals]) -> list[str]:
         if site.queries == 0:
             continue
         if site.raw == 0:
+            # Incremental catch-up (listings seen, all already in DB) is success — not a failure.
+            if (
+                site.caught_up_queries > 0
+                and site.caught_up_queries >= site.queries
+                and not site.issues
+            ):
+                continue
             if site.issues:
                 warnings.append(f"{label}: לא נמצאו משרות. {site.issues[0]}")
+            elif site.caught_up_queries > 0:
+                # Mix of catch-up and silent empties — only warn when there are real issues.
+                continue
             else:
                 warnings.append(
                     f"{label}: לא נמצאו משרות בכל {site.queries} החיפושים. "
                     "ייתכן שהאתר חסם את הגישה או שאין תוצאות לשאילתות."
                 )
+            if site.issues:
+                for issue in site.issues[1:]:
+                    warnings.append(f"{label}: {issue}")
             continue
         if site.new == 0 and site.already_in_db > 0:
             warnings.append(
@@ -171,11 +186,12 @@ def _finalize_site_warnings(totals: dict[str, _SiteTotals]) -> list[str]:
             warnings.append(
                 f"{label}: נמצאו {site.raw} משרות, אך כולן סוננו לפי מילות מפתח שליליות."
             )
-        elif site.new == 0:
+        elif site.new == 0 and site.caught_up_queries == 0:
             warnings.append(
                 f"{label}: נמצאו {site.raw} משרות בחיפוש, אך לא נוספה אף משרה חדשה."
             )
-        for issue in site.issues[1:]:
+        for issue in site.issues:
+            # When raw > 0, surface every real issue (previously skipped issues[0]).
             warnings.append(f"{label}: {issue}")
     return warnings
 
@@ -513,9 +529,13 @@ def _apply_collect_filters(
     known_skipped = 0
     candidates: list[dict] = []
     for job in work_jobs:
-        if _is_known_job_url(job.get("job_url", ""), known_job_urls):
+        if job_is_already_known(
+            job,
+            known_job_urls=known_job_urls,
+            known_identity_keys=known_identity_keys,
+        ):
             known_skipped += 1
-            # Non-delta: skip known and continue. Delta path handled above.
+            # Skip known and continue — used by relevance-ranked boards (LinkedIn).
             continue
         candidates.append(job)
 
@@ -655,6 +675,13 @@ def collect_drushim_jobs_api(
         )
         return CollectionOutcome(jobs=all_jobs, status="ok", http_status=last_status)
 
+    if total_known_skipped > 0:
+        return CollectionOutcome(
+            status="caught_up",
+            reason="All Drushim API jobs already known (incremental)",
+            http_status=last_status,
+        )
+
     return CollectionOutcome(
         status="empty",
         reason="No job cards found in Drushim API response",
@@ -681,6 +708,8 @@ def collect_drushim_jobs_http(
         stop_on_known=stop_on_known,
     )
     if api_outcome.status == "ok" and api_outcome.jobs:
+        return api_outcome
+    if api_outcome.status == "caught_up":
         return api_outcome
 
     search_url = build_drushim_search_url(query)
@@ -727,7 +756,7 @@ def collect_drushim_jobs_http(
 
     jobs = parse_drushim_search_html(response.text)
     if jobs:
-        kept, age_skipped, known_skipped, all_old, _hit_delta = _apply_collect_filters(
+        kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
             jobs,
             **_known_filter_kwargs(
                 known_job_urls=known_job_urls,
@@ -749,6 +778,12 @@ def collect_drushim_jobs_http(
         if kept:
             print(f"  Drushim HTML extracted {len(kept)} job card(s) for '{query}'")
             return CollectionOutcome(jobs=kept, status="ok")
+        if known_skipped > 0 or hit_delta:
+            return CollectionOutcome(
+                status="caught_up",
+                reason="All Drushim HTML jobs already known (incremental)",
+                http_status=http_status,
+            )
 
     return api_outcome if api_outcome.status != "ok" else CollectionOutcome(
         status="empty",
@@ -1046,6 +1081,8 @@ class DrushimBrowserSession:
         )
         if api_outcome.status == "ok" and api_outcome.jobs:
             return api_outcome
+        if api_outcome.status == "caught_up":
+            return api_outcome
         return _collect_drushim_with_page(
             self.page,
             query,
@@ -1090,6 +1127,8 @@ def collect_drushim_jobs(
         stop_on_known=stop_on_known,
     )
     if http_outcome.status == "ok" and http_outcome.jobs:
+        return http_outcome
+    if http_outcome.status == "caught_up":
         return http_outcome
     if not DRUSHIM_BROWSER_FALLBACK:
         if http_outcome.reason_he:
@@ -1286,7 +1325,13 @@ def collect_linkedin_jobs(
     delta_stop_identity: dict | None = None,
     stop_on_known: bool = True,
 ) -> CollectionOutcome:
-    """Fetch job cards from LinkedIn's public guest search API with pagination."""
+    """Fetch job cards from LinkedIn's public guest search API with pagination.
+
+    LinkedIn guest search is relevance-ranked (not newest-first). Incremental mode
+    therefore skips already-known jobs without stopping at the first known listing,
+    and only ends pagination when a page yields zero new cards.
+    """
+    del delta_stop_identity  # LinkedIn uses the full known-index skip, not a watermark.
     location_label = LINKEDIN_LOCATION
     if LINKEDIN_GEO_ID:
         location_label = f"{LINKEDIN_LOCATION} (geoId={LINKEDIN_GEO_ID})"
@@ -1300,6 +1345,7 @@ def collect_linkedin_jobs(
     page_size = max(1, LINKEDIN_JOBS_PER_PAGE)
     last_status: int | None = None
     total_known_skipped = 0
+    cards_seen = 0
 
     for page_index in range(max_pages):
         start = page_index * page_size
@@ -1344,14 +1390,14 @@ def collect_linkedin_jobs(
         if page_index == 0:
             page_size = max(len(page_jobs), 1)
 
-        kept, _age_skipped, known_skipped, _all_old, hit_delta = _apply_collect_filters(
+        cards_seen += len(page_jobs)
+        # Relevance-ranked: skip known jobs, never trim at the first known listing.
+        kept, _age_skipped, known_skipped, _all_old, _hit_delta = _apply_collect_filters(
             page_jobs,
-            **_known_filter_kwargs(
-                known_job_urls=known_job_urls,
-                known_identity_keys=known_identity_keys,
-                delta_stop_identity=delta_stop_identity,
-                stop_on_known=stop_on_known,
-            ),
+            known_job_urls=known_job_urls,
+            known_identity_keys=known_identity_keys,
+            apply_age_filter=False,
+            stop_on_known=False,
         )
         total_known_skipped += known_skipped
 
@@ -1365,10 +1411,13 @@ def collect_linkedin_jobs(
             all_jobs.append(job)
             added += 1
 
-        print(f"  LinkedIn page {page_index + 1}: +{added} new ({len(page_jobs)} on page)")
-        if hit_delta:
+        print(
+            f"  LinkedIn page {page_index + 1}: +{added} new "
+            f"({len(page_jobs)} on page, {known_skipped} already known)"
+        )
+        if stop_on_known and known_skipped > 0 and added == 0:
             print(
-                "  LinkedIn: reached already-known job — incremental early break"
+                "  LinkedIn: page had only already-known jobs — stopping pagination"
             )
             break
         if len(page_jobs) < page_size:
@@ -1379,14 +1428,20 @@ def collect_linkedin_jobs(
     if total_known_skipped:
         print(f"  LinkedIn skipped {total_known_skipped} job(s) already in DB")
     print(f"  LinkedIn returned {len(all_jobs)} job card(s) for '{query}'")
-    if not all_jobs:
+    if all_jobs:
+        return CollectionOutcome(jobs=all_jobs, status="ok", http_status=last_status)
+    if cards_seen > 0 and total_known_skipped > 0:
         return CollectionOutcome(
-            status="empty",
-            reason="No LinkedIn job cards parsed",
-            reason_he=f"לינקדאין: לא נמצאו משרות לחיפוש '{query}'",
+            status="caught_up",
+            reason="All LinkedIn jobs already known (incremental)",
             http_status=last_status,
         )
-    return CollectionOutcome(jobs=all_jobs, status="ok", http_status=last_status)
+    return CollectionOutcome(
+        status="empty",
+        reason="No LinkedIn job cards parsed",
+        reason_he=f"לינקדאין: לא נמצאו משרות לחיפוש '{query}'",
+        http_status=last_status,
+    )
 
 
 def save_jobs_to_db(
@@ -1927,6 +1982,12 @@ def main() -> None:
                     total_queries += 1
                     site.queries += 1
 
+                    # LinkedIn guest search is relevance-ranked, not newest-first.
+                    # Its collector treats stop_on_known as page-level catch-up only;
+                    # save_jobs must not trim at the first known listing either.
+                    save_stop_on_known = (
+                        False if site_name == "linkedin" else incremental_mode
+                    )
                     collect_kwargs: dict[str, Any] = {
                         "known_job_urls": known_job_urls,
                         "known_identity_keys": known_db_keys,
@@ -1956,7 +2017,12 @@ def main() -> None:
                         )
                         continue
 
-                    if outcome and outcome.reason_he and outcome.status != "ok":
+                    if outcome and outcome.status == "caught_up":
+                        site.caught_up_queries += 1
+                        site_outcomes.setdefault(site_name, []).append(
+                            {"query": query, **outcome_to_dict(outcome)}
+                        )
+                    elif outcome and outcome.reason_he and outcome.status != "ok":
                         _note_site_issue(site_totals, site_name, outcome.reason_he)
                         site_outcomes.setdefault(site_name, []).append(
                             {"query": query, **outcome_to_dict(outcome)}
@@ -1996,7 +2062,7 @@ def main() -> None:
                         touched_job_keys=touched_job_keys,
                         known_job_urls=known_job_urls,
                         known_identity_keys=known_db_keys,
-                        stop_on_known=incremental_mode,
+                        stop_on_known=save_stop_on_known,
                         on_job_saved=on_job_saved,
                     )
                     total_raw_found += raw
@@ -2060,6 +2126,7 @@ def main() -> None:
             "excluded": site.excluded,
             "queries": site.queries,
             "queries_with_raw": site.queries_with_raw,
+            "caught_up_queries": site.caught_up_queries,
             "issues": site.issues,
             "outcomes": site_outcomes.get(site_name, []),
         }
