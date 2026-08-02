@@ -75,6 +75,14 @@ def test_deploy_recovers_when_the_injected_backend_cannot_import(workflow: str):
     assert "backend_imports_ok" in workflow
     assert "restore_backend" in workflow
     assert "install_backend_deps" in workflow
+    assert "import_check_missing_dep" in workflow
+    assert "ModuleNotFoundError" in workflow
+    # Do not treat a slow cold-import as a missing dependency.
+    assert "timeout 180s sudo docker exec" in workflow
+    # Aggressive 5s/2 keepalives dropped SSH mid-pip on the small EC2.
+    assert "ServerAliveInterval=30" in workflow
+    assert "ServerAliveCountMax=40" in workflow
+    assert "ServerAliveCountMax=2" not in workflow.split("Step 5:")[-1]
 
 
 def test_tailoring_modules_live_in_the_shipped_tree():
