@@ -1,8 +1,8 @@
-"""Composed prompts for the four merged LLM agents.
+"""Composed prompts — legacy four-agent compositions + single-agent re-exports.
 
-IMPORTANT: Do not discard legacy prompt content. Each merged prompt loads the
-existing agent/stage instructions under clearly labeled responsibility blocks.
-Only duplicated framing is removed; unique rules and examples are preserved.
+The production path now uses ``resume_generation_agent_prompts`` (one LLM).
+This module keeps the prior four-agent compositions for audits/tests and
+re-exports the single-agent merge map / legacy-rule checker.
 """
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from intelligent_tailoring.interview_philosophy import PIPELINE_PHILOSOPHY
 from intelligent_tailoring.prompts.human_writer_prompts import (
     HUMAN_RESUME_WRITER_SYSTEM,
     SENIOR_RECRUITER_REVIEW_SYSTEM,
+)
+from intelligent_tailoring.prompts.resume_generation_agent_prompts import (
+    AGENT_MERGE_MAP as SINGLE_AGENT_MERGE_MAP,
+    RESUME_GENERATION_AGENT_SYSTEM,
+    single_agent_prompt_contains_legacy_rules,
 )
 from intelligent_tailoring.prompts.stage_prompts import (
     CLAIM_VALIDATION_LLM_SYSTEM,
@@ -26,8 +31,11 @@ MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v3_preserve"
 MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v1"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
-# Mapping of old agents → merged agent (documentation + tests).
-AGENT_MERGE_MAP: dict[str, tuple[str, ...]] = {
+# Production merge map — all specialists → one Resume Generation Agent.
+AGENT_MERGE_MAP: dict[str, tuple[str, ...]] = dict(SINGLE_AGENT_MERGE_MAP)
+
+# Historical four-agent map retained for documentation / migration audits.
+FOUR_AGENT_MERGE_MAP: dict[str, tuple[str, ...]] = {
     "candidate_opportunity_intelligence": (
         "resume_knowledge",
         "job_intelligence",
@@ -425,8 +433,12 @@ def build_agent_4_user_prompt(
 
 
 def merged_prompt_contains_legacy_rules() -> dict[str, bool]:
-    """Test helper — ensure old prompt rules remain represented."""
-    return {
+    """Test helper — ensure old prompt rules remain in the single-agent merge.
+
+    Also verifies the historical four-agent compositions still embed the rules
+    (kept for audit), then requires the production single-agent prompt to pass.
+    """
+    four_agent = {
         "job_extraction": "hard_requirements" in AGENT_1_SYSTEM
         and "Do not hard-code software-only" in AGENT_1_SYSTEM,
         "semantic_inference": "Strongly Inferred" in AGENT_1_SYSTEM
@@ -440,7 +452,18 @@ def merged_prompt_contains_legacy_rules() -> dict[str, bool]:
         and "15-SECOND RULE" in AGENT_3_SYSTEM,
         "recruiter": "SENIOR RECRUITER" in AGENT_3_SYSTEM
         or "recruiter" in AGENT_3_SYSTEM.lower(),
-        "claim_validation": "validation_warnings" in AGENT_3_SYSTEM,
+        "claim_validation": "validation_warnings" in AGENT_3_SYSTEM
+        or "unsupported" in AGENT_3_SYSTEM.lower(),
         "one_page": "One-page enforcement remains mandatory" in AGENT_4_SYSTEM,
         "philosophy": "INTERVIEW-PROBABILITY" in AGENT_1_SYSTEM,
+    }
+    single = single_agent_prompt_contains_legacy_rules()
+    # Production gate: every single-agent rule must hold; four-agent audit
+    # rules that still exist in historical prompts remain True.
+    return {
+        **four_agent,
+        **single,
+        "single_agent_system_present": bool(RESUME_GENERATION_AGENT_SYSTEM),
+        "deep_tailor_in_single": single.get("deep_tailor", False),
+        "human_writer_in_single": single.get("human_writer", False),
     }

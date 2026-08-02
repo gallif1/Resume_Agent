@@ -205,7 +205,7 @@ def to_canonical_resume(data: dict[str, Any] | None) -> dict[str, Any]:
                     {
                         "canonical_id": atom.lower(),
                         "display_name": atom,
-                        "category": category.strip() or "Other Relevant Skills",
+                        "category": category.strip() or "Tools",
                         "source_fact_ids": [],
                         "relevance_score": 0,
                     }
@@ -215,7 +215,7 @@ def to_canonical_resume(data: dict[str, Any] | None) -> dict[str, Any]:
                 {
                     "canonical_id": text.lower(),
                     "display_name": text,
-                    "category": "Other Relevant Skills",
+                    "category": "Tools",
                     "source_fact_ids": [],
                     "relevance_score": 0,
                 }
@@ -242,7 +242,7 @@ def canonical_to_tailored(canonical: dict[str, Any]) -> dict[str, Any]:
     for skill in canonical.get("skills") or []:
         if not isinstance(skill, dict):
             continue
-        cat = str(skill.get("category") or "Other Relevant Skills")
+        cat = str(skill.get("category") or "Tools")
         name = str(skill.get("display_name") or "").strip()
         if not name:
             continue

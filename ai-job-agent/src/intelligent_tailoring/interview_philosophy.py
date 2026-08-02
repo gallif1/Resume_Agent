@@ -56,31 +56,23 @@ If not YES, regenerate the weak sections.
 Never invent facts. Stay profession-agnostic.
 """.strip()
 
-# Live UI stage catalog — four merged agents (legacy 11-agent ids map into these).
+# Live UI stage catalog — prepare (code) → one LLM agent → final validation (code).
 TAILOR_STAGES: list[dict[str, str]] = [
     {
-        "id": "candidate_opportunity_intelligence",
-        "agent_id": "candidate_opportunity_intelligence",
-        "label_en": "Analyzing your experience and the opportunity",
-        "label_he": "מנתח את הניסיון שלך ואת ההזדמנות",
-        "message_en": "Reading candidate profile, job, company, and evidence…",
-        "message_he": "קורא פרופיל מועמד, משרה, חברה וראיות…",
+        "id": "prepare_evidence",
+        "agent_id": "prepare_evidence",
+        "label_en": "Preparing candidate and job evidence",
+        "label_he": "מכין ראיות מועמד ומשרה",
+        "message_en": "Parsing resume, job description, and mapping evidence…",
+        "message_he": "מפרסר קורות חיים ומשרה וממפה ראיות…",
     },
     {
-        "id": "strategy_content_selection",
-        "agent_id": "strategy_content_selection",
-        "label_en": "Building the best resume strategy",
-        "label_he": "בונה את אסטרטגיית קורות החיים",
-        "message_en": "Selecting evidence and structuring the one-page narrative…",
-        "message_he": "בוחר ראיות ובונה נרטיב בעמוד אחד…",
-    },
-    {
-        "id": "human_writing_credibility",
-        "agent_id": "human_writing_credibility",
-        "label_en": "Writing and validating your resume",
-        "label_he": "כותב ומאמת את קורות החיים",
-        "message_en": "Validating claims and writing natural recruiter-ready prose…",
-        "message_he": "מאמת טענות ומנסח ניסוח טבעי למגייסים…",
+        "id": "resume_generation_agent",
+        "agent_id": "resume_generation_agent",
+        "label_en": "Generating your tailored resume",
+        "label_he": "מייצר את קורות החיים המותאמים",
+        "message_en": "One intelligent agent writing the full tailored resume…",
+        "message_he": "סוכן אחד חכם כותב את קורות החיים המלאים…",
     },
     {
         "id": "final_hiring_ats_page",
@@ -94,47 +86,44 @@ TAILOR_STAGES: list[dict[str, str]] = [
 
 STAGE_INDEX = {s["id"]: i for i, s in enumerate(TAILOR_STAGES)}
 
-# Legacy specialist / tool stage ids → merged UI stage
+# Legacy specialist / four-agent ids → current UI stages
 LEGACY_STAGE_TO_MERGED: dict[str, str] = {
-    "resume_knowledge": "candidate_opportunity_intelligence",
-    "job_intelligence": "candidate_opportunity_intelligence",
-    "company_intelligence": "candidate_opportunity_intelligence",
-    "evidence_mapping": "candidate_opportunity_intelligence",
-    "resume_strategy": "strategy_content_selection",
-    "resume_tailoring": "strategy_content_selection",
-    "claim_validation": "human_writing_credibility",
-    "human_writer": "human_writing_credibility",
-    "human_resume_writer": "human_writing_credibility",
-    "senior_recruiter": "human_writing_credibility",
-    "senior_recruiter_review": "human_writing_credibility",
+    "resume_knowledge": "prepare_evidence",
+    "job_intelligence": "prepare_evidence",
+    "company_intelligence": "prepare_evidence",
+    "evidence_mapping": "prepare_evidence",
+    "resume_strategy": "prepare_evidence",
+    "candidate_opportunity_intelligence": "prepare_evidence",
+    "strategy_content_selection": "prepare_evidence",
+    "prepare_evidence": "prepare_evidence",
+    "resume_tailoring": "resume_generation_agent",
+    "resume_generation_agent": "resume_generation_agent",
+    "claim_validation": "resume_generation_agent",
+    "human_writer": "resume_generation_agent",
+    "human_resume_writer": "resume_generation_agent",
+    "senior_recruiter": "resume_generation_agent",
+    "senior_recruiter_review": "resume_generation_agent",
+    "human_writing_credibility": "resume_generation_agent",
     "hiring_manager": "final_hiring_ats_page",
     "hiring_manager_simulation": "final_hiring_ats_page",
     "final_polish": "final_hiring_ats_page",
     "final_quality": "final_hiring_ats_page",
     "ats_scoring": "final_hiring_ats_page",
     "one_page_enforcement": "final_hiring_ats_page",
-    # Also accept already-merged ids
-    "candidate_opportunity_intelligence": "candidate_opportunity_intelligence",
-    "strategy_content_selection": "strategy_content_selection",
-    "human_writing_credibility": "human_writing_credibility",
     "final_hiring_ats_page": "final_hiring_ats_page",
 }
 
 STAGE_SUBSTEPS: dict[str, tuple[str, ...]] = {
-    "candidate_opportunity_intelligence": (
-        "Reading candidate profile",
-        "Analyzing job requirements",
-        "Reviewing company context",
-        "Mapping evidence",
+    "prepare_evidence": (
+        "Parsing resume",
+        "Parsing job description",
+        "Normalizing facts",
+        "Collecting supporting evidence",
     ),
-    "strategy_content_selection": (
-        "Selecting strongest evidence",
-        "Building tailored structure",
-    ),
-    "human_writing_credibility": (
-        "Validating claims",
+    "resume_generation_agent": (
+        "Selecting content",
         "Writing natural prose",
-        "Recruiter credibility review",
+        "Self-validating claims",
     ),
     "final_hiring_ats_page": (
         "Hiring manager simulation",

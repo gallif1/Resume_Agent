@@ -15,7 +15,7 @@ logger = logging.getLogger("intelligent_tailoring")
 
 DEFAULT_TEMPERATURE = 0.2
 
-# Per-generation primary LLM call accounting (four-agent pipeline).
+# Per-generation primary LLM call accounting (single-agent pipeline).
 _primary_calls: ContextVar[list[str] | None] = ContextVar(
     "intelligent_tailoring_primary_llm_calls", default=None
 )

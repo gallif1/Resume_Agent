@@ -11,8 +11,8 @@ from intelligent_tailoring.services.job_family import (
     infer_primary_role,
     infer_secondary_role,
 )
-from intelligent_tailoring.stages.job_requirement_extraction import (
-    extract_job_requirements,
+from intelligent_tailoring.stages.deterministic_job_extraction import (
+    extract_job_requirements_deterministic,
 )
 
 
@@ -25,8 +25,8 @@ def analyze_job(
 ) -> dict[str, Any]:
     """Understand the job from responsibilities — not title alone."""
     if requirements is None:
-        requirements = extract_job_requirements(
-            job, use_cache=use_cache, jd_snapshot=jd_snapshot
+        requirements = extract_job_requirements_deterministic(
+            job, jd_snapshot=jd_snapshot
         )
 
     title = str(job.get("title") or "")

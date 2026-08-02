@@ -20,8 +20,8 @@ from intelligent_tailoring.agents.schemas import (
 from intelligent_tailoring.hiring_intent import infer_hiring_intent
 from intelligent_tailoring.services.job_analyzer import analyze_job
 from intelligent_tailoring.services.job_family import detect_industry, detect_job_family
-from intelligent_tailoring.stages.job_requirement_extraction import (
-    extract_job_requirements,
+from intelligent_tailoring.stages.deterministic_job_extraction import (
+    extract_job_requirements_deterministic,
 )
 from match_tailor_service import build_job_payload
 from job_analyzer import parse_stored_job_profile
@@ -172,9 +172,8 @@ class JobIntelligenceAgent(Agent[JobIntelligenceInput, JobProfile]):
         job = payload.job or {}
         requirements = payload.existing_requirements
         if requirements is None:
-            requirements = extract_job_requirements(
+            requirements = extract_job_requirements_deterministic(
                 job,
-                use_cache=context.use_cache,
                 jd_snapshot=payload.jd_snapshot,
             )
 

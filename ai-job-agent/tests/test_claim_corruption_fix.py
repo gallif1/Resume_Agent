@@ -222,7 +222,7 @@ class TestSkillClassification:
         got = assert_skill_classification_examples()
         assert got["Laravel"] == "Backend"
         assert got["REST API"] == "Backend"
-        assert got["Git"] == "Tools & Version Control"
+        assert got["Git"] == "Version Control"
         assert got["React"] == "Frontend"
         assert got["Angular"] == "Frontend"
         assert got["HTML"] == "Frontend"

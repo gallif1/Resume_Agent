@@ -50,23 +50,19 @@ logger = logging.getLogger("intelligent_tailoring.orchestrator")
 
 # Avoid circular imports: pipeline imports attach_quality_intelligence from here.
 
-# Four merged LLM agents (legacy specialists remain as internal modules).
+# Single Resume Generation Agent (+ deterministic prepare / final stages).
 AGENT_CATALOG: tuple[tuple[str, str], ...] = (
     (
-        "candidate_opportunity_intelligence",
-        "Extract candidate facts, analyze job/company, map evidence",
+        "prepare_evidence",
+        "Parse resume/JD, normalize facts, collect supporting evidence (code)",
     ),
     (
-        "strategy_content_selection",
-        "Decide strategy and select one-page resume structure",
-    ),
-    (
-        "human_writing_credibility",
-        "Validate claims, write naturally, recruiter credibility review",
+        "resume_generation_agent",
+        "ONE LLM call — tailor, write, and self-validate the full resume",
     ),
     (
         "final_hiring_ats_page",
-        "Hiring-manager fit, ATS score, one-page enforcement",
+        "Hiring-manager fit, ATS score, one-page enforcement (code)",
     ),
 )
 

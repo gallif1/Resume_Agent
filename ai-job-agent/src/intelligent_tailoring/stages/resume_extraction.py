@@ -266,11 +266,9 @@ def extract_structured_resume(
     if not isinstance(projects, list):
         projects = []
 
-    education = cv_profile.get("education") or []
-    if isinstance(education, dict):
-        education = education.get("entries") or education.get("items") or [education]
-    if not isinstance(education, list):
-        education = []
+    from intelligent_tailoring.education_normalize import normalize_education_list
+
+    education = normalize_education_list(cv_profile.get("education") or [])
 
     skills_block = cv_profile.get("skills") or {}
     if isinstance(skills_block, dict):
@@ -308,23 +306,12 @@ def extract_structured_resume(
                 section_projects.extend(normalize_project_list([line.strip()]))
     projects = _merge_projects(normalized_projects, master_projects, section_projects)
 
-    # Education from master when profile education is only degree lists
+    # Education from master when profile education is sparse
     if master.get("education") and (
         not education
         or all(not isinstance(e, dict) or not e.get("institution") for e in education)
     ):
-        edu_out: list[dict[str, Any]] = []
-        for entry in master.get("education") or []:
-            if not isinstance(entry, dict):
-                continue
-            edu_out.append(
-                {
-                    "degree": str(entry.get("degree") or ""),
-                    "institution": str(entry.get("institution") or ""),
-                    "field": str(entry.get("field") or ""),
-                    "dates": str(entry.get("year") or entry.get("dates") or ""),
-                }
-            )
+        edu_out = normalize_education_list(master.get("education") or [])
         if edu_out:
             education = edu_out
 

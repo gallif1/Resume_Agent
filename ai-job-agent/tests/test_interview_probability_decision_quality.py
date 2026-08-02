@@ -35,8 +35,8 @@ from intelligent_tailoring.services.tailoring_strategy_builder import (
 from intelligent_tailoring.writing.resume_quality_score import evaluate_resume_quality
 
 
-def test_pipeline_version_bumped_to_four_agent_v2():
-    assert PIPELINE_VERSION == "four_agent_v2_0"
+def test_pipeline_version_bumped_to_single_agent():
+    assert PIPELINE_VERSION == "single_agent_v1_0"
 
 
 def test_hiring_intent_infers_person_not_just_keywords():
@@ -188,7 +188,7 @@ def test_job_intelligence_populates_hiring_intent(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements",
+        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements_deterministic",
         _fake_extract,
     )
     result = JobIntelligenceAgent().run(

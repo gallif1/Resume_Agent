@@ -1,7 +1,7 @@
 """Deterministic skill categorization — profession-agnostic taxonomy.
 
-The LLM must not invent category membership. Unknown items go to
-"Other Relevant Skills" rather than an incorrect bucket.
+The LLM must not invent category membership. Unknown verified items go to
+"Tools" rather than an incorrect or random bucket. Bare generics are dropped.
 """
 
 from __future__ import annotations
@@ -10,11 +10,12 @@ import re
 from typing import Any
 
 # Canonical tech/software categories (also usable as a domain pack).
+# Keep stable names — never invent buckets like "Other Relevant Skills" / "web".
 SOFTWARE_TAXONOMY: dict[str, tuple[str, ...]] = {
     "Languages": (
         "python", "javascript", "typescript", "java", "c++", "c#", "csharp",
         "kotlin", "swift", "go", "golang", "rust", "ruby", "php", "scala",
-        "r", "matlab",
+        "r", "matlab", "sql",
     ),
     "Frontend": (
         "react", "react native", "angular", "vue", "vue.js", "html", "css",
@@ -29,26 +30,41 @@ SOFTWARE_TAXONOMY: dict[str, tuple[str, ...]] = {
         "postgresql", "postgres", "mysql", "mongodb", "sqlite", "firebase",
         "redis", "dynamodb", "sql server", "oracle", "elasticsearch",
     ),
-    "Cloud & DevOps": (
-        "aws", "ec2", "rds", "s3", "azure", "gcp", "docker", "kubernetes",
-        "k8s", "terraform", "ci/cd", "jenkins", "github actions", "nginx",
+    "Cloud": (
+        "aws", "ec2", "rds", "s3", "azure", "gcp", "cloudflare",
+        "serverless", "lambda",
+    ),
+    "DevOps": (
+        "docker", "kubernetes", "k8s", "terraform", "ci/cd", "jenkins",
+        "github actions", "nginx", "ansible", "helm",
     ),
     "Testing": (
         "pytest", "jest", "selenium", "cypress", "integration testing",
         "integration tests", "unit testing", "automated testing",
     ),
-    "Tools & Version Control": (
-        "git", "github", "gitlab", "jira", "postman", "figma",
+    "Version Control": (
+        "git", "github", "gitlab", "bitbucket",
     ),
-    "AI-Assisted Development": (
+    "AI": (
         "cursor", "chatgpt", "claude", "github copilot", "copilot",
         "ai-assisted development", "ai assisted development",
         "ai coding tools", "ai pair programming",
-    ),
-    "AI & Data": (
         "machine learning", "llm", "llms", "generative ai", "openai",
         "pandas", "numpy", "tensorflow", "pytorch", "data analysis",
     ),
+    "Tools": (
+        "jira", "postman", "figma", "notion", "confluence", "slack",
+    ),
+}
+
+# Backward-compatible aliases for older category labels in cached resumes / tests.
+_CATEGORY_ALIASES = {
+    "Cloud & DevOps": "Cloud",
+    "Tools & Version Control": "Tools",
+    "AI-Assisted Development": "AI",
+    "AI & Data": "AI",
+    "Other Relevant Skills": "Tools",
+    "Other": "Tools",
 }
 
 # Bare / generic atoms that must never appear as standalone skill lines.
@@ -164,7 +180,8 @@ UNIVERSAL_TAXONOMY: dict[str, tuple[str, ...]] = {
     ),
 }
 
-OTHER = "Other Relevant Skills"
+# Unknown verified skills fall into Tools — never emit "Other Relevant Skills".
+OTHER = "Tools"
 
 _ALIAS_NORMALIZE = {
     "nodejs": "node.js",
@@ -206,16 +223,47 @@ def display_skill_name(skill: str) -> str:
     return atom
 
 
+def canonicalize_category_name(category: str) -> str:
+    """Map legacy / random category labels onto the stable taxonomy."""
+    text = (category or "").strip()
+    if not text:
+        return OTHER
+    if text in _CATEGORY_ALIASES:
+        return _CATEGORY_ALIASES[text]
+    # Reject invented buckets that are really bare generics
+    low = text.lower()
+    if low in {
+        "other relevant skills",
+        "other",
+        "misc",
+        "miscellaneous",
+        "architecture",
+        "web",
+        "api",
+        "apis",
+        "general",
+    }:
+        return OTHER
+    return text
+
+
 def categorize_skill(skill: str) -> str:
     """Return the canonical category for a skill atom."""
     # Strip existing category prefixes
-    atom = skill.split(":", 1)[-1].strip() if ":" in skill else skill.strip()
+    raw = skill or ""
+    if ":" in raw:
+        prefix, atom = raw.split(":", 1)
+        prefix = canonicalize_category_name(prefix)
+        atom = atom.strip()
+    else:
+        prefix = ""
+        atom = raw.strip()
     low = normalize_skill_name(atom)
 
     if should_drop_skill_atom(atom):
         return OTHER
 
-    # Check more specific categories first (AI-Assisted before Tools / AI & Data)
+    # Check more specific categories first (AI before Tools)
     ordered_software = list(SOFTWARE_TAXONOMY.items())
     for category, members in ordered_software:
         for member in members:
@@ -231,6 +279,9 @@ def categorize_skill(skill: str) -> str:
             if low == member or (len(member) >= 5 and member in low):
                 return category
 
+    # Honor a known prefix only when membership is unknown
+    if prefix and prefix in SOFTWARE_TAXONOMY:
+        return prefix
     return OTHER
 
 
@@ -256,40 +307,39 @@ def category_order_for_role(
     family = (job_family or "general").strip().lower()
     presets: dict[str, list[str]] = {
         "backend": [
-            "Backend", "Languages", "Databases", "Cloud & DevOps",
-            "AI-Assisted Development", "AI & Data",
-            "Frontend", "Testing", "Tools & Version Control",
+            "Backend", "Languages", "Databases", "Cloud", "DevOps",
+            "AI", "Frontend", "Testing", "Version Control", "Tools",
         ],
         "frontend": [
-            "Frontend", "Languages", "Backend", "Testing", "Cloud & DevOps",
-            "AI-Assisted Development", "Tools & Version Control", "Databases",
+            "Frontend", "Languages", "Backend", "Testing", "Cloud", "DevOps",
+            "AI", "Tools", "Version Control", "Databases",
         ],
         "devops": [
-            "Cloud & DevOps", "Languages", "Backend", "Databases", "Testing",
-            "AI-Assisted Development", "Tools & Version Control", "Frontend",
+            "DevOps", "Cloud", "Languages", "Backend", "Databases", "Testing",
+            "AI", "Version Control", "Tools", "Frontend",
         ],
         "qa": [
-            "Testing", "Languages", "Backend", "Frontend", "Tools & Version Control",
-            "Cloud & DevOps", "AI-Assisted Development", "Databases",
+            "Testing", "Languages", "Backend", "Frontend", "Version Control",
+            "Tools", "Cloud", "DevOps", "AI", "Databases",
         ],
         "support": [
-            "Tools & Version Control", "Cloud & DevOps", "Backend", "Databases",
+            "Tools", "Version Control", "Cloud", "DevOps", "Backend", "Databases",
             "Communication", "Customer Service", "Languages",
         ],
         "data": [
-            "AI & Data", "AI-Assisted Development", "Languages", "Databases",
-            "Cloud & DevOps", "Backend", "Tools & Version Control",
+            "AI", "Languages", "Databases", "Cloud", "DevOps",
+            "Backend", "Tools", "Version Control",
         ],
         "sales": [
             "Sales", "Communication", "Customer Service", "Leadership",
-            "Administration", "Tools & Version Control",
+            "Administration", "Tools", "Version Control",
         ],
         "marketing": [
-            "Communication", "Sales", "AI & Data", "Tools & Version Control",
+            "Communication", "Sales", "AI", "Tools", "Version Control",
             "Frontend", "Leadership",
         ],
         "finance": [
-            "Finance", "Administration", "AI & Data", "Tools & Version Control",
+            "Finance", "Administration", "AI", "Tools", "Version Control",
             "Communication", "Leadership",
         ],
         "healthcare": [
@@ -298,7 +348,7 @@ def category_order_for_role(
         ],
         "education": [
             "Communication", "Leadership", "Administration", "Customer Service",
-            "Tools & Version Control", "Certifications",
+            "Tools", "Version Control", "Certifications",
         ],
         "hospitality": [
             "Customer Service", "Communication", "Leadership", "Operations",
@@ -306,7 +356,7 @@ def category_order_for_role(
         ],
         "operations": [
             "Operations", "Leadership", "Administration", "Communication",
-            "Tools & Version Control",
+            "Tools", "Version Control",
         ],
         "customer_service": [
             "Customer Service", "Communication", "Sales", "Administration",
@@ -430,11 +480,16 @@ def normalize_skill_lines(
             cleaned = [a for a in atoms if not should_drop_skill_atom(a)]
             if cleaned:
                 result.append(f"{cat}: {', '.join(sorted(cleaned, key=_atom_rank))}")
-    # Final guard: never return "Other Relevant Skills: api" style lines
+    # Final guard: never return empty/generic-only category lines
     result = [
         line
         for line in result
-        if not re.match(rf"^{re.escape(OTHER)}:\s*(api|apis|web)\s*$", line, re.I)
+        if not re.match(
+            r"^(Tools|Other Relevant Skills):\s*(api|apis|web|architecture)\s*$",
+            line,
+            re.I,
+        )
+        and not re.match(r"^Other Relevant Skills\s*:", line, re.I)
     ]
     return result
 

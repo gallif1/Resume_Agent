@@ -299,6 +299,16 @@ def render_tailored_cv_markdown(
             project_name = str(entry.get("name") or "").strip()
             description = str(entry.get("description") or "").strip()
             bullets = _string_list(entry.get("bullets"), max_items=8)
+            # Drop description that duplicates a bullet (case-insensitive).
+            if description:
+                desc_l = description.lower().strip()
+                bullets = [
+                    b
+                    for b in bullets
+                    if b.lower().strip() != desc_l
+                    and desc_l not in b.lower()
+                    and b.lower() not in desc_l
+                ]
             # Never render title-only projects.
             if not description and not bullets:
                 continue
@@ -320,13 +330,18 @@ def render_tailored_cv_markdown(
         lines += ["", "## Skills", ""]
         lines += _skill_rows(skills)
 
-    education = [e for e in cv.get("education") or [] if isinstance(e, dict)]
+    from intelligent_tailoring.education_normalize import normalize_education_list
+
+    education = normalize_education_list(cv.get("education") or [])
     if education:
         lines += ["", "## Education"]
         for entry in education:
             degree = str(entry.get("degree") or "").strip()
             institution = str(entry.get("institution") or "").strip()
             dates = str(entry.get("dates") or "").strip()
+            # Never render raw JSON / dict dumps
+            if degree.startswith("{") or institution.startswith("{"):
+                continue
             heading = degree or institution
             if not heading:
                 continue

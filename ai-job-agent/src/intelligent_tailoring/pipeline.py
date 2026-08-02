@@ -1,21 +1,17 @@
-"""Intelligent Resume Tailoring — four merged LLM-agent pipeline.
+"""Intelligent Resume Tailoring — single Resume Generation Agent pipeline.
 
 Universal, profession-agnostic evidence-based flow:
 
-Merged Agent 1 — Candidate & Opportunity Intelligence
-  (Resume Knowledge + Job Intelligence + Company Intelligence + Evidence Mapping)
+1. Parse Resume (code)
+2. Parse Job Description (code)
+3. Normalize Facts (code)
+4. Collect Supporting Evidence (code)
+5. ONE LLM call — Resume Generation Agent (merged prompts from all prior agents)
+6. Structured Resume JSON → claim/ATS/one-page validation (code)
+7. HTML / PDF renderers
 
-Merged Agent 2 — Strategy & Content Selection
-  (Resume Strategy + Resume Tailoring; triage rules composed into the rewrite)
-
-Merged Agent 3 — Human Writing & Credibility Review
-  (Claim Validation + Human Resume Writer + Senior Recruiter Review)
-
-Merged Agent 4 — Final Hiring, ATS & One-Page Review
-  (Hiring Manager Simulation + Final Quality + ATS + One-page enforcement)
-
-Legacy specialist modules remain as internal helpers. Maximum four primary
-LLM calls under normal conditions. Deterministic work stays in code.
+Legacy specialist modules remain as internal helpers and validators.
+Normal generation budget: exactly 1 primary LLM call.
 """
 
 from __future__ import annotations
@@ -65,7 +61,9 @@ from intelligent_tailoring.stages.claim_validation import run_claim_validation
 from intelligent_tailoring.stages.content_triage import run_content_triage
 from intelligent_tailoring.stages.intelligence_bundle import (
     knowledge_base_compact_summary,
-    run_intelligence_bundle_llm,
+)
+from intelligent_tailoring.stages.deterministic_job_extraction import (
+    run_deterministic_intelligence_bundle,
 )
 from intelligent_tailoring.stages.merged_writing import run_merged_writing_review
 from intelligent_tailoring.stages.normalization import normalize_terms
@@ -195,7 +193,7 @@ def run_intelligent_tailoring_agents(
     from intelligent_tailoring.agents.schemas import ResumeKnowledgeInput
 
     progress.started(
-        "candidate_opportunity_intelligence",
+        "prepare_evidence",
         "Reading candidate profile…",
         agent_id="resume_knowledge",
     )
@@ -299,11 +297,10 @@ def run_intelligent_tailoring_agents(
     )
 
     try:
-        # ---- Merged Agent 1: Candidate & Opportunity Intelligence ----
-        # Deterministic company prep + one LLM call for job+inference.
+        # ---- Prepare evidence (code): parse JD + ontology inference ----
         progress.started(
-            "candidate_opportunity_intelligence",
-            "Analyzing job requirements and mapping evidence…",
+            "prepare_evidence",
+            "Parsing job description and mapping evidence…",
             agent_id="job_intelligence",
         )
         jd_hash = content_hash(jd_snapshot)
@@ -316,53 +313,47 @@ def run_intelligent_tailoring_agents(
         )
         kb_summary = knowledge_base_compact_summary(kb)
         if cached_job and cached_job.get("raw_requirements"):
-            bundle = {
-                "job_requirements": cached_job["raw_requirements"],
-                "inferred_competencies": [],
-                "primary_llm_calls": 0,
-                "_from_cache": True,
-            }
-            # Still need inference for this resume — run ontology-only path via
-            # intelligence bundle with cache on the job half by passing requirements.
             from intelligent_tailoring.stages.semantic_inference import (
                 _from_ontology_hits,
                 _dedupe_competencies,
             )
 
-            bundle["inferred_competencies"] = _dedupe_competencies(
-                _from_ontology_hits(
-                    str(resume_facts.get("raw_text") or ""),
-                    cached_job["raw_requirements"],
-                    ontology,
-                    language=output_language,
-                )
-            )
+            bundle = {
+                "job_requirements": cached_job["raw_requirements"],
+                "inferred_competencies": _dedupe_competencies(
+                    _from_ontology_hits(
+                        str(resume_facts.get("raw_text") or ""),
+                        cached_job["raw_requirements"],
+                        ontology,
+                        language=output_language,
+                    )
+                ),
+                "genuine_gaps": list(cached_job.get("genuine_gaps") or []),
+                "forbidden_claims": list(cached_job.get("forbidden_claims") or []),
+                "primary_llm_calls": 0,
+                "_from_cache": True,
+                "extraction_method": "deterministic_cached",
+            }
             job_cache_hit = True
         else:
-            bundle = run_intelligence_bundle_llm(
+            bundle = run_deterministic_intelligence_bundle(
                 job=job,
                 resume_facts=resume_facts,
-                knowledge_base_summary=kb_summary,
-                verified_company_metadata=json.dumps(
-                    {
-                        "company": job_company,
-                        "title": job_title,
-                        "location": job.get("location"),
-                    },
-                    ensure_ascii=False,
-                ),
-                language=output_language,
-                use_cache=use_cache,
                 ontology=ontology,
                 jd_snapshot=jd_snapshot,
+                language=output_language,
             )
-            job_cache_hit = bool(bundle.get("_from_cache"))
+            job_cache_hit = False
             if use_cache and bundle.get("job_requirements"):
                 set_cached_job_profile(
                     job_company,
                     job_title,
                     jd_hash,
-                    {"raw_requirements": bundle["job_requirements"]},
+                    {
+                        "raw_requirements": bundle["job_requirements"],
+                        "genuine_gaps": bundle.get("genuine_gaps") or [],
+                        "forbidden_claims": bundle.get("forbidden_claims") or [],
+                    },
                 )
 
         job_intel = JobIntelligenceAgent().run(
@@ -376,12 +367,14 @@ def run_intelligent_tailoring_agents(
         job_profile_obj = job_intel.output
         agent_trace.append(
             {
-                "agent_id": "candidate_opportunity_intelligence",
+                "agent_id": "prepare_evidence",
                 "legacy_agent_id": job_intel.agent_id,
                 "metrics": {
                     **job_intel.metrics,
                     "job_cache_hit": job_cache_hit,
                     "knowledge_cache_hit": knowledge_cache_hit,
+                    "extraction_method": bundle.get("extraction_method"),
+                    "primary_llm_calls": 0,
                 },
             }
         )
@@ -396,7 +389,7 @@ def run_intelligent_tailoring_agents(
             else None
         )
         progress.started(
-            "candidate_opportunity_intelligence",
+            "prepare_evidence",
             "Reviewing company context…",
             agent_id="company_intelligence",
         )
@@ -449,9 +442,9 @@ def run_intelligent_tailoring_agents(
         # Keep job profile raw requirements in sync after normalization
         job_profile_obj.raw_requirements = requirements
 
-        # Evidence Mapping — uses inferred competencies from Agent 1 bundle
+        # Evidence Mapping — uses ontology-inferred competencies from code prep
         progress.started(
-            "candidate_opportunity_intelligence",
+            "prepare_evidence",
             "Mapping evidence to requirements…",
             agent_id="evidence_mapping",
         )
@@ -491,9 +484,9 @@ def run_intelligent_tailoring_agents(
             if e.get("candidate_status") in ("MATCH", "PARTIAL")
         )
         progress.completed(
-            "candidate_opportunity_intelligence",
-            f"Opportunity intelligence ready ({matched_n} supported requirements).",
-            agent_id="candidate_opportunity_intelligence",
+            "prepare_evidence",
+            f"Evidence prepared ({matched_n} supported requirements).",
+            agent_id="prepare_evidence",
         )
 
         # Requirement ranking + deterministic triage (LLM triage folded into Agent 2)
@@ -525,7 +518,7 @@ def run_intelligent_tailoring_agents(
         from intelligent_tailoring.agents.schemas import ResumeStrategyInput
 
         progress.started(
-            "resume_strategy",
+            "prepare_evidence",
             "Selecting the strongest reasons to interview…",
             agent_id="resume_strategy",
         )
@@ -630,7 +623,7 @@ def run_intelligent_tailoring_agents(
                 },
             )
         progress.completed(
-            "resume_strategy",
+            "prepare_evidence",
             "Resume strategy locked around strongest interview evidence.",
             agent_id="resume_strategy",
         )
@@ -688,9 +681,9 @@ def run_intelligent_tailoring_agents(
         tailoring_agent = ResumeTailoringAgent()
         claim_agent = ClaimValidationAgent()
         progress.started(
-            "resume_tailoring",
-            "Building the tailored resume narrative…",
-            agent_id="resume_tailoring",
+            "resume_generation_agent",
+            "Generating the tailored resume (single agent)…",
+            agent_id="resume_generation_agent",
         )
         while True:
             try:
@@ -773,14 +766,14 @@ def run_intelligent_tailoring_agents(
                     strategy = enrich_strategy_with_missed_evidence(strategy, missed)
                     continue
 
-            # Agent 7 — Claim validation (sentence-level)
+            # Deterministic claim validation (sentence-level) after the single LLM call
             progress.completed(
-                "resume_tailoring",
-                "Tailored structure drafted from evidenced content.",
-                agent_id="resume_tailoring",
+                "resume_generation_agent",
+                "Tailored resume drafted by the Resume Generation Agent.",
+                agent_id="resume_generation_agent",
             )
             progress.started(
-                "claim_validation",
+                "resume_generation_agent",
                 "Validating every claim against evidence…",
                 agent_id="claim_validation",
             )
@@ -1011,42 +1004,31 @@ def run_intelligent_tailoring_agents(
             )
         )
 
-        # ---- Merged Agent 3: Human Writing & Credibility Review ----
+        # Writing polish is folded into the single Resume Generation Agent call.
+        # Post-LLM path is deterministic only (no second / third LLM call).
         progress.completed(
-            "claim_validation",
+            "resume_generation_agent",
             "Claim validation complete — only evidenced statements remain.",
             agent_id="claim_validation",
         )
         progress.started(
-            "human_writing_credibility",
-            "Writing and validating your resume…",
+            "resume_generation_agent",
+            "Applying deterministic writing polish…",
             agent_id="human_writing_credibility",
         )
         strategy_obj.legacy_strategy = strategy
-        evidence_compact = json.dumps(
-            [
-                {
-                    "requirement": e.get("requirement"),
-                    "status": e.get("candidate_status"),
-                    "strength": e.get("evidence_strength"),
-                    "evidence": str(e.get("supporting_evidence") or "")[:120],
-                }
-                for e in (evidence_map or [])[:40]
-            ],
-            ensure_ascii=False,
-        )
         writing_stage = run_merged_writing_review(
             validated_resume=cleaned_resume,
             strategy=strategy,
             knowledge_base=kb,
             output_language=output_language,
             use_cache=use_cache,
-            allow_llm=True,
+            allow_llm=False,  # prose already produced by the single generation agent
             rejected_claims=list(validation.get("rejected_statements") or []),
-            evidence_compact=evidence_compact,
+            evidence_compact="",
             highlight_plan=strategy.get("highlight_plan"),
             evidence_inventory=strategy.get("evidence_inventory"),
-            max_repair_passes=2,
+            max_repair_passes=0,
         )
         polished = writing_stage.get("tailored_resume") or cleaned_resume
         if not writing_stage.get("facts_unchanged", True):
@@ -1062,21 +1044,18 @@ def run_intelligent_tailoring_agents(
         )
         cleaned_resume["professional_summary"] = cleaned_resume["summary"]
 
-        # Build recruiter review from merged Agent 3 output + deterministic scans
-        # (no additional LLM call — review was composed into Agent 3).
+        # Deterministic recruiter / style / AI scans (no LLM)
         from intelligent_tailoring.agents.schemas import RecruiterReviewOutput
         from intelligent_tailoring.services.senior_recruiter_review import review_resume
         from intelligent_tailoring.writing.ai_detector import detect_ai_writing
         from intelligent_tailoring.writing.style_validator import evaluate_writing_quality
 
-        recruiter_dict = dict(writing_stage.get("recruiter_review") or {})
-        if not recruiter_dict:
-            recruiter_dict = review_resume(
-                resume=cleaned_resume,
-                output_language=output_language,
-                use_cache=use_cache,
-                allow_llm=False,
-            )
+        recruiter_dict = review_resume(
+            resume=cleaned_resume,
+            output_language=output_language,
+            use_cache=use_cache,
+            allow_llm=False,
+        )
         style_scan = evaluate_writing_quality(cleaned_resume)
         ai_scan = detect_ai_writing(cleaned_resume)
         interview_quality = int(
@@ -1127,23 +1106,23 @@ def run_intelligent_tailoring_agents(
         recruiter_dict = recruiter_review_obj.to_dict()
         agent_trace.append(
             {
-                "agent_id": "human_writing_credibility",
+                "agent_id": "resume_generation_agent",
                 "metrics": {
-                    "mode": writing_stage.get("mode"),
-                    "repair_passes": writing_stage.get("repair_passes"),
-                    "primary_llm_calls": writing_stage.get("primary_llm_calls"),
+                    "mode": writing_stage.get("mode") or "single_agent_plus_deterministic",
+                    "repair_passes": writing_stage.get("repair_passes") or 0,
+                    "primary_llm_calls": 1,
                 },
             }
         )
         progress.completed(
-            "human_writing_credibility",
+            "resume_generation_agent",
             (
                 "Writing validated — recruiter would interview."
                 if getattr(recruiter_review_obj, "would_interview", False)
                 or getattr(recruiter_review_obj, "approved", False)
                 else "Writing complete — review mode flags remain."
             ),
-            agent_id="human_writing_credibility",
+            agent_id="resume_generation_agent",
         )
 
         progress.started(
@@ -1181,80 +1160,16 @@ def run_intelligent_tailoring_agents(
             agent_id="hiring_manager_simulation",
         )
 
-        # Agent 4 may request at most ONE targeted Agent 3 section repair
+        # No secondary LLM refine passes — single-agent generation already
+        # performed internal self-review. Deterministic polish continues below.
         hm_dict = hiring_manager_obj.to_dict()
         quality_score = writing_stage.get("quality_score") or {}
-        quality_dims = dict(quality_score.get("dimensions") or {})
-        needs_hm_refine = (
-            int(hm_dict.get("overall_fit") or 0) < 70
-            or int(quality_score.get("overall_score") or 100) < 74
-            or int(quality_dims.get("interview_probability") or 100) < 70
-            or int(quality_dims.get("twenty_second_screen") or 100) < 70
-            or bool(hm_dict.get("weakest_sections"))
-        ) and (
-            not recruiter_review_obj.approved
-            or int(hm_dict.get("overall_fit") or 0) < 75
-            or int(quality_score.get("overall_score") or 100) < 74
-        )
-        if needs_hm_refine and rejected_claims.begin_revision("hiring_manager_review"):
-            weak_sections = list(hm_dict.get("weakest_sections") or [])[:3]
-            logger.info(
-                "intelligent_tailoring: Agent4→Agent3 targeted refine sections=%s",
-                weak_sections,
-            )
-            from intelligent_tailoring.services.human_resume_writer import (
-                write_human_resume,
-            )
-
-            refine_stage = write_human_resume(
-                validated_resume=rejected_claims.scrub_resume(cleaned_resume),
-                strategy=strategy,
-                knowledge_base=kb,
-                output_language=output_language,
-                hiring_manager_feedback=hm_dict,
-                sections=weak_sections or None,
-                use_cache=False,
-                allow_llm=True,
-            )
-            if refine_stage.get("facts_unchanged", True) and refine_stage.get(
-                "tailored_resume"
-            ):
-                cleaned_resume = rejected_claims.scrub_resume(
-                    refine_stage["tailored_resume"]
-                )
-                cleaned_resume["summary"] = str(
-                    cleaned_resume.get("professional_summary")
-                    or cleaned_resume.get("summary")
-                    or ""
-                )
-                cleaned_resume["professional_summary"] = cleaned_resume["summary"]
-                writing_stage = {
-                    **writing_stage,
-                    "hm_refine_pass": True,
-                    "prior_quality_score": quality_score,
-                    "targeted_retry": True,
-                }
-                # Re-score HM after refine (deterministic; no new primary LLM agent)
-                hm_result = HiringManagerSimulationAgent().run(
-                    HiringManagerInput(
-                        resume=cleaned_resume,
-                        job_profile=job_profile_obj,
-                        company_profile=company_profile_obj,
-                        evidence_map=evidence_map_obj,
-                        strategy=strategy_obj,
-                    ),
-                    AgentContext(use_cache=False, language=output_language),
-                )
-                hiring_manager_obj = hm_result.output
-                agent_trace.append(
-                    {
-                        "agent_id": hm_result.agent_id,
-                        "metrics": {
-                            **hm_result.metrics,
-                            "pass": "post_refine_targeted",
-                        },
-                    }
-                )
+        writing_stage = {
+            **writing_stage,
+            "hm_refine_pass": False,
+            "targeted_retry": False,
+            "single_agent_mode": True,
+        }
 
         # --- Premium polish: weave evidenced tech, then enforce one page ---
         from intelligent_tailoring.services.tech_weaver import weave_resume_technologies
@@ -1369,6 +1284,13 @@ def run_intelligent_tailoring_agents(
                     min_bullets_per_project=1,
                 )
         cleaned_resume = drop_empty_shell_entries(cleaned_resume)
+        from intelligent_tailoring.content_deduper import dedupe_resume_content
+        from intelligent_tailoring.education_normalize import normalize_education_list
+
+        cleaned_resume = dedupe_resume_content(cleaned_resume)
+        cleaned_resume["education"] = normalize_education_list(
+            cleaned_resume.get("education") or []
+        )
         cleaned_resume["skills"] = normalize_skill_lines(
             list(cleaned_resume.get("skills") or []),
             emphasize=list(
@@ -1433,58 +1355,14 @@ def run_intelligent_tailoring_agents(
                     "action": "rewrite",
                     "text": (
                         "20-second screen / interview probability below bar — "
-                        "refining "
+                        "noted weak sections (no extra LLM; single-agent mode): "
                         + ", ".join(post_polish_quality["weak_sections"][:3])
                     ),
                     "target": ",".join(post_polish_quality["weak_sections"][:3]),
                     "reason": "interview_probability",
                 },
             )
-            # Only one Agent-4-driven revise is allowed; skip if HM refine already ran
-            if not writing_stage.get("hm_refine_pass"):
-                from intelligent_tailoring.services.human_resume_writer import (
-                    write_human_resume as _write_human_resume,
-                )
-
-                final_refine = _write_human_resume(
-                    validated_resume=cleaned_resume,
-                    strategy=strategy,
-                    knowledge_base=kb,
-                    output_language=output_language,
-                    sections=list(post_polish_quality.get("weak_sections") or [])[:3]
-                    or None,
-                    use_cache=False,
-                    allow_llm=True,
-                )
-                if final_refine.get("facts_unchanged", True) and final_refine.get(
-                    "tailored_resume"
-                ):
-                    cleaned_resume = final_refine["tailored_resume"]
-                    if not allow_multi:
-                        cleaned_resume = compress_resume_to_one_page(
-                            cleaned_resume, strategy=strategy, aggressive=False
-                        )
-                    cleaned_resume["summary"] = str(
-                        cleaned_resume.get("professional_summary")
-                        or cleaned_resume.get("summary")
-                        or ""
-                    )
-                    cleaned_resume["professional_summary"] = cleaned_resume["summary"]
-                    cleaned_resume = weave_resume_technologies(cleaned_resume)
-                    post_polish_quality = evaluate_resume_quality(
-                        cleaned_resume,
-                        strategy=strategy,
-                        highlight_plan=strategy.get("highlight_plan"),
-                        evidence_inventory=strategy.get("evidence_inventory"),
-                        recruiter_review=recruiter_review_obj.to_dict(),
-                        hiring_manager=hiring_manager_obj.to_dict(),
-                        threshold=74,
-                    )
-                    writing_stage["quality_score"] = post_polish_quality
-                    writing_stage["post_polish_refine_pass"] = True
-                    post_dims = dict(post_polish_quality.get("dimensions") or {})
-                    interview_prob = int(post_dims.get("interview_probability") or 0)
-                    screen_20s = int(post_dims.get("twenty_second_screen") or 0)
+            writing_stage["post_polish_refine_pass"] = False
 
         # Rebuild deterministic change log against the polished wording
         deterministic_log = build_deterministic_change_log(

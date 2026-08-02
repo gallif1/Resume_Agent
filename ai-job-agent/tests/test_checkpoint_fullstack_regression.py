@@ -265,7 +265,7 @@ def test_skill_taxonomy_checkpoint_case():
     assert categorize_skill("FastAPI") == "Backend"
     assert categorize_skill("PostgreSQL") == "Databases"
     assert categorize_skill("pytest") == "Testing"
-    assert categorize_skill("Cursor") == "AI-Assisted Development"
+    assert categorize_skill("Cursor") == "AI"
     assert should_drop_skill_atom("api")
     lines = normalize_skill_lines(
         [
@@ -604,13 +604,13 @@ def test_checkpoint_pipeline_strips_unsafe_claims():
         "intelligent_tailoring.pipeline.is_ai_available",
         return_value=True,
     ), patch(
-        "intelligent_tailoring.agents.resume_tailoring_agent.rewrite_resume_with_strategy",
+        "intelligent_tailoring.agents.resume_tailoring_agent.generate_resume_single_agent",
         return_value=_unsafe_checkpoint_generation(),
     ), patch(
         "intelligent_tailoring.llm_utils.call_openai_json",
         side_effect=_llm_queue_side_effect(),
     ), patch(
-        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements",
+        "intelligent_tailoring.agents.job_intelligence_agent.extract_job_requirements_deterministic",
         side_effect=_stage_side_effect(),
     ), patch(
         "intelligent_tailoring.stages.semantic_inference.run_semantic_inference",

@@ -114,7 +114,7 @@ def test_skill_category_order_differs_by_role():
     sales = category_order_for_role("sales")
     assert backend[0] == "Backend"
     assert frontend[0] == "Frontend"
-    assert data[0] == "AI & Data"
+    assert data[0] == "AI"
     assert sales[0] == "Sales"
     assert backend != frontend
 
