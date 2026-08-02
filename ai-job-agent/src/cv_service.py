@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -251,6 +252,30 @@ def sync_parsed_profile(cv_id: str, db_path: Path = db.REGISTRY_DB_PATH) -> None
     )
 
 
+# Academic / coursework project titles that appear on resumes but are poor
+# LinkedIn/job-board search queries (e.g. "Capstone Project Lead").
+# Tutor/teacher titles are kept — they are valid search domains for education roles.
+_NON_SEARCHABLE_DOMAIN_RE = re.compile(
+    r"(?:"
+    r"\bcapstone\b|\bthesis\b|\bdissertation\b|\bfinal\s+project\b|"
+    r"\bcourse\s+project\b|\buniversity\s+project\b|\bacademic\b|"
+    r"\bstudent\s+project\b|\bclass\s+project\b|"
+    r"פרויקט\s*גמר|פרויקט\s*סיום"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_searchable_job_domain(title: str | None) -> bool:
+    """Return False for academic/project titles that should not drive scans."""
+    text = str(title or "").strip()
+    if len(text) < 3:
+        return False
+    if _NON_SEARCHABLE_DOMAIN_RE.search(text):
+        return False
+    return True
+
+
 def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
     """Build a de-duplicated list of suggested job domains/roles from a strategy.
 
@@ -266,7 +291,7 @@ def extract_recommended_domains(strategy: dict[str, Any] | None) -> list[str]:
 
     def _add(value: Any) -> None:
         text = str(value or "").strip()
-        if not text:
+        if not text or not is_searchable_job_domain(text):
             return
         key = text.casefold()
         if key in seen:
@@ -376,16 +401,19 @@ def analyze_cv(
     seen = {d.casefold() for d in domains}
     for role in profile.get("best_fit_roles") or []:
         text = str(role or "").strip()
-        if not text or text.casefold() in seen:
+        # Aggregator sometimes copies raw experience titles into best_fit_roles
+        # (e.g. "Capstone Project Lead") — never promote those as scan domains.
+        if (
+            not text
+            or not is_searchable_job_domain(text)
+            or text.casefold() in seen
+        ):
             continue
         domains.append(text)
         seen.add(text.casefold())
-    for title in (profile.get("experience") or {}).get("job_titles") or []:
-        text = str(title or "").strip()
-        if not text or text.casefold() in seen:
-            continue
-        domains.append(text)
-        seen.add(text.casefold())
+    # Do NOT merge experience.job_titles into search domains. Resume titles
+    # include academic/project/tutor labels that flood LinkedIn with empty
+    # queries; strategy + curated best_fit_roles already cover real tracks.
 
     return {
         "cv_id": cv_id,
