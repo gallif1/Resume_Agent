@@ -57,3 +57,68 @@ def test_finalize_site_warnings_keeps_real_linkedin_failures():
     warnings = _finalize_site_warnings(totals)
     assert len(warnings) == 1
     assert "429" in warnings[0]
+
+
+def test_finalize_site_warnings_consolidates_empty_query_spam():
+    """Many per-query empty notes must collapse to one site-level warning."""
+    empties = [
+        f"לינקדאין: לא נמצאו משרות לחיפוש '{title}'"
+        for title in (
+            "Backend Developer",
+            "Full Stack Developer",
+            "Capstone Project Lead",
+            "Python Programming Tutor",
+            "Frontend Developer",
+            "DevOps Engineer",
+            "Project Manager",
+            "Product Manager",
+            "Web Developer",
+        )
+    ]
+    totals = {
+        "linkedin": _SiteTotals(
+            raw=0,
+            queries=len(empties),
+            issues=empties,
+        )
+    }
+    warnings = _finalize_site_warnings(totals)
+    assert len(warnings) == 1
+    assert "לא נמצאו משרות בכל 9 החיפושים" in warnings[0]
+    assert "Capstone Project Lead" not in warnings[0]
+
+
+def test_finalize_site_warnings_prefers_hard_issue_over_empty_spam():
+    totals = {
+        "linkedin": _SiteTotals(
+            raw=0,
+            queries=4,
+            issues=[
+                "לינקדאין: לא נמצאו משרות לחיפוש 'Backend Developer'",
+                "לינקדאין: לא נמצאו משרות לחיפוש 'Frontend Developer'",
+                "לינקדאין החזיר תוצאות ריקות ברצף — מפסיקים חיפושים נוספים (ייתכן חסימה זמנית)",
+            ],
+        )
+    }
+    warnings = _finalize_site_warnings(totals)
+    assert len(warnings) == 1
+    assert "חסימה" in warnings[0]
+    assert "Backend Developer" not in "".join(warnings)
+
+
+def test_finalize_site_warnings_partial_empties_consolidated_when_raw_positive():
+    totals = {
+        "linkedin": _SiteTotals(
+            raw=5,
+            new=5,
+            queries=4,
+            queries_with_raw=1,
+            issues=[
+                "לינקדאין: לא נמצאו משרות לחיפוש 'Capstone Project Lead'",
+                "לינקדאין: לא נמצאו משרות לחיפוש 'Python Programming Tutor'",
+            ],
+        )
+    }
+    warnings = _finalize_site_warnings(totals)
+    assert len(warnings) == 1
+    assert "2 חיפושים לא החזירו משרות" in warnings[0]

@@ -149,12 +149,35 @@ def _note_site_issue(totals: dict[str, _SiteTotals], site_name: str, message: st
         site.issues.append(message)
 
 
+def _is_empty_query_issue(message: str) -> bool:
+    """True for per-query 'no jobs for search X' notes (not hard block/errors)."""
+    text = str(message or "")
+    return "לא נמצאו משרות לחיפוש" in text
+
+
+def _split_site_issues(issues: list[str]) -> tuple[list[str], list[str]]:
+    empty: list[str] = []
+    hard: list[str] = []
+    for issue in issues:
+        if _is_empty_query_issue(issue):
+            empty.append(issue)
+        else:
+            hard.append(issue)
+    return empty, hard
+
+
+# Stop LinkedIn after this many consecutive empty/blocked queries with zero cards
+# collected so far — usually means soft-block / guest API throttling.
+LINKEDIN_CONSECUTIVE_EMPTY_STOP = 3
+
+
 def _finalize_site_warnings(totals: dict[str, _SiteTotals]) -> list[str]:
     warnings: list[str] = []
     for site_name, site in totals.items():
         label = _site_label(site_name)
         if site.queries == 0:
             continue
+        empty_issues, hard_issues = _split_site_issues(site.issues)
         if site.raw == 0:
             # Incremental catch-up (listings seen, all already in DB) is success — not a failure.
             if (
@@ -163,19 +186,20 @@ def _finalize_site_warnings(totals: dict[str, _SiteTotals]) -> list[str]:
                 and not site.issues
             ):
                 continue
-            if site.issues:
-                warnings.append(f"{label}: לא נמצאו משרות. {site.issues[0]}")
+            if hard_issues:
+                # One summary + hard failures only (never dump every empty-query line).
+                warnings.append(f"{label}: לא נמצאו משרות. {hard_issues[0]}")
+                for issue in hard_issues[1:]:
+                    warnings.append(f"{label}: {issue}")
             elif site.caught_up_queries > 0:
                 # Mix of catch-up and silent empties — only warn when there are real issues.
                 continue
             else:
+                # Consolidate dozens of empty-query notes into a single UI warning.
                 warnings.append(
                     f"{label}: לא נמצאו משרות בכל {site.queries} החיפושים. "
                     "ייתכן שהאתר חסם את הגישה או שאין תוצאות לשאילתות."
                 )
-            if site.issues:
-                for issue in site.issues[1:]:
-                    warnings.append(f"{label}: {issue}")
             continue
         if site.new == 0 and site.already_in_db > 0:
             warnings.append(
@@ -190,9 +214,15 @@ def _finalize_site_warnings(totals: dict[str, _SiteTotals]) -> list[str]:
             warnings.append(
                 f"{label}: נמצאו {site.raw} משרות בחיפוש, אך לא נוספה אף משרה חדשה."
             )
-        for issue in site.issues:
-            # When raw > 0, surface every real issue (previously skipped issues[0]).
+        for issue in hard_issues:
             warnings.append(f"{label}: {issue}")
+        # Partial empties: one consolidated line instead of one warning per query.
+        if len(empty_issues) >= 2:
+            warnings.append(
+                f"{label}: {len(empty_issues)} חיפושים לא החזירו משרות."
+            )
+        elif len(empty_issues) == 1:
+            warnings.append(f"{label}: {empty_issues[0]}")
     return warnings
 
 EXTRACT_JOBS_JS = """
@@ -1928,6 +1958,8 @@ def main() -> None:
 
     try:
         searches = collection_searches(selected_sites, _job_collectors())
+        stopped_sites: set[str] = set()
+        linkedin_consecutive_empty = 0
         for entry in plan:
             category = entry.get("category", "")
             exclude_keywords = entry.get("exclude_keywords", [])
@@ -1946,6 +1978,12 @@ def main() -> None:
                 )
 
             for site_name, collect_fn in searches:
+                if site_name in stopped_sites:
+                    print(
+                        f"  [{site_name}] Skipping remaining queries "
+                        "(earlier consecutive empties suggested a soft-block)"
+                    )
+                    continue
                 queries = queries_for_board(
                     entry, site_name, max_items=args.max_queries
                 )
@@ -2022,11 +2060,15 @@ def main() -> None:
                         site_outcomes.setdefault(site_name, []).append(
                             {"query": query, **outcome_to_dict(outcome)}
                         )
+                        if site_name == "linkedin":
+                            linkedin_consecutive_empty = 0
                     elif outcome and outcome.reason_he and outcome.status != "ok":
                         _note_site_issue(site_totals, site_name, outcome.reason_he)
                         site_outcomes.setdefault(site_name, []).append(
                             {"query": query, **outcome_to_dict(outcome)}
                         )
+                        if site_name == "linkedin" and not jobs:
+                            linkedin_consecutive_empty += 1
                     elif not jobs:
                         empty_message = (
                             outcome.reason_he
@@ -2041,6 +2083,10 @@ def main() -> None:
                                 "reason_he": empty_message,
                             }
                         )
+                        if site_name == "linkedin":
+                            linkedin_consecutive_empty += 1
+                    elif site_name == "linkedin":
+                        linkedin_consecutive_empty = 0
 
                     (
                         raw,
@@ -2096,6 +2142,21 @@ def main() -> None:
                             f"  [{site_name}] Caught up for query '{query}' "
                             f"(first already-known job) — stopped this channel"
                         )
+
+                    if (
+                        site_name == "linkedin"
+                        and site_name not in stopped_sites
+                        and site.raw == 0
+                        and linkedin_consecutive_empty >= LINKEDIN_CONSECUTIVE_EMPTY_STOP
+                    ):
+                        stop_msg = (
+                            "לינקדאין החזיר תוצאות ריקות ברצף — "
+                            "מפסיקים חיפושים נוספים (ייתכן חסימה זמנית)"
+                        )
+                        print(f"  [linkedin] {stop_msg}")
+                        _note_site_issue(site_totals, site_name, stop_msg)
+                        stopped_sites.add("linkedin")
+                        break
     finally:
         if drushim_session is not None:
             drushim_session.__exit__(None, None, None)

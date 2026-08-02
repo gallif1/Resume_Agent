@@ -222,6 +222,32 @@ def test_extract_recommended_domains_includes_search_and_hebrew_titles():
     assert "IT Support" in domains
 
 
+def test_extract_recommended_domains_skips_academic_project_titles():
+    strategy = _sample_strategy()
+    strategy["best_fit_roles"].append({
+        "role": "Capstone Project Lead",
+        "score": 50,
+        "reason": "project",
+        "missing_skills": [],
+        "realistic_for_application": False,
+    })
+    strategy["collection_queries"][0]["search_queries"] = [
+        "Backend Developer",
+        "Final Project Mentor",
+    ]
+    domains = cv_service.extract_recommended_domains(strategy)
+    assert "Backend Developer" in domains
+    assert "Capstone Project Lead" not in domains
+    assert "Final Project Mentor" not in domains
+
+
+def test_is_searchable_job_domain():
+    assert cv_service.is_searchable_job_domain("Backend Developer")
+    assert cv_service.is_searchable_job_domain("Python Programming Tutor")
+    assert not cv_service.is_searchable_job_domain("Capstone Project Lead")
+    assert not cv_service.is_searchable_job_domain("")
+
+
 def test_filter_plan_by_domains_keeps_matches_and_adds_custom():
     plan = _sample_strategy()["collection_queries"]
     filtered = filter_plan_by_domains(plan, ["Fullstack Developer", "DevOps"])
