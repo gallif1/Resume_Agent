@@ -230,17 +230,36 @@ jobs:
 
           backend_imports_ok() {
             local cid="$1"
-            timeout 60s sudo docker exec "$cid" python -c \
-              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); import api_server' \
+            # Freshly injected trees have no __pycache__. Importing api_server on a
+            # small EC2 that is also serving traffic can take well over 60s — treat
+            # that as slow, not as a missing dependency.
+            timeout 180s sudo docker exec "$cid" python -c \
+              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True)' \
               >"$HOME/ra-import-check.log" 2>&1
+          }
+
+          import_check_missing_dep() {
+            # Only real missing-module failures should trigger pip on this host.
+            grep -qE 'ModuleNotFoundError|ImportError' "$HOME/ra-import-check.log" 2>/dev/null
           }
 
           install_backend_deps() {
             local cid="$1"
+            local pip_pid
             echo "Installing backend requirements inside $cid"
-            timeout 420s sudo docker exec "$cid" pip install --no-input \
-              --disable-pip-version-check -q -r /app/ai-job-agent/requirements.txt \
-              >"$HOME/ra-pip-install.log" 2>&1
+            # Cap pip tightly: a full requirements sync pegs this small EC2 and
+            # used to hang sshd. Heartbeats keep the SSH session alive.
+            (
+              timeout 180s sudo docker exec "$cid" pip install --no-input \
+                --disable-pip-version-check -r /app/ai-job-agent/requirements.txt \
+                >"$HOME/ra-pip-install.log" 2>&1
+            ) &
+            pip_pid=$!
+            while kill -0 "$pip_pid" 2>/dev/null; do
+              echo "pip still running ($(date -u +%H:%M:%S))..."
+              sleep 15
+            done
+            wait "$pip_pid"
           }
 
           restore_backend() {
@@ -337,19 +356,34 @@ jobs:
           inject_backend "$CID"
 
           echo "Step R7b: check the injected backend imports before restarting"
-          if ! backend_imports_ok "$CID"; then
-            echo "WARN: injected backend fails to import — installing requirements" >&2
+          IMPORT_OK=0
+          backend_imports_ok "$CID" && IMPORT_OK=1 || true
+          if [ "$IMPORT_OK" != "1" ]; then
+            echo "WARN: injected backend import check failed" >&2
             tail -n 40 "$HOME/ra-import-check.log" || true
-            install_backend_deps "$CID" || echo "WARN: pip install failed/timed out" >&2
-            tail -n 30 "$HOME/ra-pip-install.log" 2>/dev/null || true
-            if ! backend_imports_ok "$CID"; then
-              echo "::error::Injected backend fails to import even after installing requirements." >&2
+            if import_check_missing_dep; then
+              echo "WARN: missing dependency detected — installing requirements" >&2
+              install_backend_deps "$CID" || echo "WARN: pip install failed/timed out" >&2
+              tail -n 30 "$HOME/ra-pip-install.log" 2>/dev/null || true
+            else
+              echo "WARN: no ModuleNotFoundError — retrying import once (likely cold compile/timeout)" >&2
+              sleep 5
+            fi
+            IMPORT_OK=0
+            backend_imports_ok "$CID" && IMPORT_OK=1 || true
+            if [ "$IMPORT_OK" != "1" ]; then
+              echo "::error::Injected backend fails to import." >&2
               echo "Re-run this workflow with rebuild_image=true to rebuild the image from scratch." >&2
               tail -n 60 "$HOME/ra-import-check.log" || true
               restore_backend "$CID"
-              timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >/dev/null 2>&1 \
-                || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
-                || true
+              # Prefer image baseline over a possibly-corrupt in-place backup.
+              timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-recover.log" 2>&1 || true
+              CID="$(find_container_id)"
+              if [ -n "${CID:-}" ]; then
+                timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >/dev/null 2>&1 \
+                  || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
+                  || true
+              fi
               wait_for_health 30 || true
               exit 1
             fi
@@ -436,16 +470,19 @@ jobs:
             /tmp/ra-remote-deploy.sh \
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-remote-deploy.sh"
 
-          echo "Step 5: run remote deploy (max 10 minutes)"
-          timeout 600s ssh \
+          echo "Step 5: run remote deploy (max 14 minutes)"
+          # Keepalives must tolerate multi-minute docker/pip work on a small EC2.
+          # Interval=5/CountMax=2 previously dropped the session (~10s silence)
+          # during pip, leaving the host mid-inject with no rollback.
+          timeout 840s ssh \
             -i ~/.ssh/ec2.key \
             -o BatchMode=yes \
             -o ConnectTimeout=8 \
             -o ConnectionAttempts=1 \
             -o StrictHostKeyChecking=accept-new \
             -o UserKnownHostsFile=~/.ssh/known_hosts \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=2 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=40 \
             -o IdentitiesOnly=yes \
             "${EC2_USERNAME}@${EC2_HOST}" \
             "REBUILD_IMAGE=${REBUILD_IMAGE} bash /tmp/ra-remote-deploy.sh"
