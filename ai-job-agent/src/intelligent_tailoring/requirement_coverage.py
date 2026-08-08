@@ -588,35 +588,79 @@ def shared_technologies(
     return shared
 
 
+def _skill_atoms_from_line(line: str) -> list[str]:
+    text = str(line or "").strip()
+    if not text:
+        return []
+    if ":" in text:
+        text = text.split(":", 1)[1]
+    return [a.strip() for a in re.split(r"\s*[,;/|]\s*", text) if a.strip()]
+
+
 def prioritize_skill_lines(
     skill_lines: list[str],
     *,
     shared_tech: list[str],
     max_lines: int,
+    preserve_all_atoms: bool = False,
 ) -> list[str]:
-    """Cap skill lines while keeping categories that hold shared technologies."""
+    """Cap skill lines while keeping categories that hold shared technologies.
+
+    When ``preserve_all_atoms`` is True, atoms from dropped category lines are
+    redistributed into kept lines so weak-match jobs cannot erase the stack.
+    """
     lines = [str(s).strip() for s in skill_lines if str(s).strip()]
     if len(lines) <= max_lines:
-        return lines
-    shared_norm = {_norm(t) for t in shared_tech}
+        # Still inject shared tech when under the line cap
+        kept = list(lines)
+    else:
+        shared_norm = {_norm(t) for t in shared_tech}
 
-    def _line_score(line: str) -> int:
-        low = _norm(line)
-        score = 0
-        for term in shared_norm:
-            if term and term in low:
-                score += 10
-        return score
+        def _line_score(line: str) -> int:
+            low = _norm(line)
+            score = 0
+            for term in shared_norm:
+                if term and term in low:
+                    score += 10
+            return score
 
-    ranked = sorted(enumerate(lines), key=lambda pair: (-_line_score(pair[1]), pair[0]))
-    keep_idx = sorted(i for i, _ in ranked[:max_lines])
-    kept = [lines[i] for i in keep_idx]
+        ranked = sorted(
+            enumerate(lines), key=lambda pair: (-_line_score(pair[1]), pair[0])
+        )
+        keep_idx = sorted(i for i, _ in ranked[:max_lines])
+        kept = [lines[i] for i in keep_idx]
+        dropped = [lines[i] for i, _ in ranked[max_lines:]]
+
+        if preserve_all_atoms and dropped and kept:
+            orphan_atoms: list[str] = []
+            for line in dropped:
+                orphan_atoms.extend(_skill_atoms_from_line(line))
+            if orphan_atoms:
+                # Fold orphans into an Other/Tools line, or append a new one if room
+                target_idx = None
+                for i, line in enumerate(kept):
+                    if re.search(r"\b(other|tools|languages)\b", line, re.I):
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    target_idx = len(kept) - 1
+                base = kept[target_idx]
+                if ":" in base:
+                    cat, rest = base.split(":", 1)
+                    atoms = [a.strip() for a in rest.split(",") if a.strip()]
+                else:
+                    cat, atoms = "Other", [a.strip() for a in base.split(",") if a.strip()]
+                seen = {_norm(a) for a in atoms}
+                for atom in orphan_atoms:
+                    if _norm(atom) not in seen:
+                        atoms.append(atom)
+                        seen.add(_norm(atom))
+                kept[target_idx] = f"{cat.strip()}: {', '.join(atoms)}"
 
     # Ensure every shared tech still appears; inject into best-matching kept line
     blob = " ".join(kept).lower()
-    missing = [t for t in shared_tech if _norm(t) not in blob]
+    missing = [t for t in shared_tech if _norm(t) and _norm(t) not in blob]
     if missing and kept:
-        # Append missing atoms to the first kept line (or a Testing/Tools line)
         target_idx = 0
         for i, line in enumerate(kept):
             if re.search(r"\b(testing|tools|backend|languages)\b", line, re.I):

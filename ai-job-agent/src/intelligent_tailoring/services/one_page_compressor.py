@@ -262,30 +262,51 @@ def _rank_entries(
 
 
 def estimate_page_pressure(resume: dict[str, Any]) -> dict[str, Any]:
-    """Heuristic pressure score; higher means more likely to overflow one page."""
+    """Heuristic pressure score; higher means more likely to overflow one page.
+
+    Extra experience/project *entries* are cheap when bullets are already short —
+    the pipeline keeps every real role/project and fits the page by trimming
+    bullets, not by deleting whole entries.
+    """
     summary = str(resume.get("professional_summary") or resume.get("summary") or "")
     exp = [e for e in (resume.get("experience") or []) if isinstance(e, dict)]
     projects = [p for p in (resume.get("projects") or []) if isinstance(p, dict)]
     skills = list(resume.get("skills") or [])
     bullets = 0
+    thin_roles = 0
     for e in exp:
-        bullets += len([b for b in (e.get("bullets") or []) if str(b).strip()])
+        n = len([b for b in (e.get("bullets") or []) if str(b).strip()])
+        bullets += n
+        if n <= 1:
+            thin_roles += 1
+    thin_projects = 0
     for p in projects:
-        bullets += len([b for b in (p.get("bullets") or []) if str(b).strip()])
+        n = len([b for b in (p.get("bullets") or []) if str(b).strip()])
+        bullets += n
         if str(p.get("description") or "").strip():
             bullets += 1
+        if n <= 1 and not str(p.get("description") or "").strip():
+            thin_projects += 1
+        elif n <= 1:
+            thin_projects += 1
     words = len(summary.split()) + sum(
         len(str(b).split())
         for e in exp + projects
         for b in (e.get("bullets") or [])
     )
-    # Empirically: ~14 bullets + ~60-word summary + 3 roles + 2 projects ≈ one page
+    # Empirically: ~14 bullets + ~60-word summary fits one page even with
+    # additional short (1-bullet) roles/projects kept for completeness.
     pressure = 0
     pressure += max(0, bullets - DEFAULT_MAX_TOTAL_BULLETS) * 8
-    pressure += max(0, len(exp) - DEFAULT_MAX_EXPERIENCE_ROLES) * 12
-    pressure += max(0, len(projects) - DEFAULT_MAX_PROJECTS) * 10
+    fat_roles = max(0, len(exp) - thin_roles)
+    fat_projects = max(0, len(projects) - thin_projects)
+    # Only multi-bullet entries beyond the soft budget cost significant pressure.
+    # Thin extras are heading+1-line and nearly free on a modern ATS layout.
+    pressure += max(0, fat_roles - DEFAULT_MAX_EXPERIENCE_ROLES) * 8
+    pressure += max(0, fat_projects - DEFAULT_MAX_PROJECTS) * 6
+    pressure += max(0, (thin_roles + thin_projects) - 6) * 1
     pressure += max(0, len(summary.split()) - DEFAULT_SUMMARY_MAX_WORDS) * 1
-    pressure += max(0, len(skills) - DEFAULT_MAX_SKILL_LINES) * 4
+    pressure += max(0, len(skills) - max(DEFAULT_MAX_SKILL_LINES, 6)) * 3
     pressure += max(0, words - 380) // 20
     return {
         "pressure": pressure,
@@ -367,12 +388,14 @@ def compress_resume_to_one_page(
 
     from intelligent_tailoring.requirement_coverage import select_bullets_with_coverage
 
+    # Soft budgets: used to decide how many bullets each entry keeps.
+    # Entries themselves are never dropped (minimum-content guarantee).
     summary_max = 48 if aggressive else DEFAULT_SUMMARY_MAX_WORDS
     max_roles = 2 if aggressive else DEFAULT_MAX_EXPERIENCE_ROLES
     max_projects = 1 if aggressive else DEFAULT_MAX_PROJECTS
     bullets_top = 2 if aggressive else DEFAULT_BULLETS_TOP_ROLE
-    bullets_other = 2 if aggressive else DEFAULT_BULLETS_OTHER_ROLE
-    bullets_proj = 2 if aggressive else DEFAULT_BULLETS_PROJECT
+    bullets_other = 1 if aggressive else DEFAULT_BULLETS_OTHER_ROLE
+    bullets_proj = 1 if aggressive else DEFAULT_BULLETS_PROJECT
     max_skills = 4 if aggressive else DEFAULT_MAX_SKILL_LINES
     max_total = 10 if aggressive else DEFAULT_MAX_TOTAL_BULLETS
 
@@ -396,7 +419,8 @@ def compress_resume_to_one_page(
             must_keep=must_keep,
         )
 
-    # Experience — rank (boost roles with protected bullets), cap roles, cap bullets
+    # Experience — rank by relevance, but NEVER drop a real role entirely.
+    # Low-relevance entries are shortened (fewer bullets), not omitted.
     roles = [e for e in (out.get("experience") or []) if isinstance(e, dict)]
     ranked_roles = _rank_entries(
         roles,
@@ -408,27 +432,39 @@ def compress_resume_to_one_page(
     )
     compressed_roles: list[dict[str, Any]] = []
     total_bullets = 0
-    for i, role in enumerate(ranked_roles[:max_roles]):
+    for i, role in enumerate(ranked_roles):
         entry = dict(role)
         raw_bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
         raw_bullets = _dedupe_similar(raw_bullets)
-        limit = bullets_top if i == 0 else bullets_other
+        if i == 0:
+            limit = bullets_top
+        elif i < max_roles:
+            limit = bullets_other
+        else:
+            # Beyond soft role budget: keep the entry with a single strongest bullet
+            limit = 1
+        # Reserve at least 1 bullet per remaining role so none are emptied by budget
+        remaining_roles = len(ranked_roles) - i
+        room = max(0, max_total - total_bullets)
+        limit = min(limit, max(1, room - max(0, remaining_roles - 1))) if room else 1
         kept = select_bullets_with_coverage(
             raw_bullets,
-            limit=limit,
+            limit=limit if raw_bullets else 0,
             requirement_terms=req_terms,
             phrases=req_phrases,
             score_fn=_score_bullet,
         )
+        # Guarantee: if source had bullets, keep at least one
+        if not kept and raw_bullets:
+            kept = [raw_bullets[0]]
         entry["bullets"] = kept
-        # Never keep title-only experience shells on the page
         if not kept:
             continue
         total_bullets += len(kept)
         compressed_roles.append(entry)
     out["experience"] = compressed_roles
 
-    # Projects — prefer entries carrying requirement-matched bullets
+    # Projects — reorder by relevance; never drop a whole project entry.
     projects = [p for p in (out.get("projects") or []) if isinstance(p, dict)]
     ranked_projects = _rank_entries(
         projects,
@@ -439,16 +475,18 @@ def compress_resume_to_one_page(
         must_keep=must_keep,
     )
     compressed_projects: list[dict[str, Any]] = []
-    for project in ranked_projects[:max_projects]:
-        if total_bullets >= max_total and compressed_projects:
-            break
+    for i, project in enumerate(ranked_projects):
         entry = dict(project)
         raw_bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
         raw_bullets = _dedupe_similar(raw_bullets)
         room = max(0, max_total - total_bullets)
-        # Always keep at least 1 project bullet when evidence exists, even near budget.
-        # Coverage selection reserves requirement-matching bullets inside that budget.
-        keep_n = min(bullets_proj, room if room > 0 else 1)
+        remaining_projects = len(ranked_projects) - i
+        # Soft project budget: full bullets for top projects, 1 for the rest
+        base_limit = bullets_proj if i < max_projects else 1
+        keep_n = min(base_limit, room if room > 0 else 1)
+        # Reserve 1 slot per remaining project when possible
+        if remaining_projects > 1 and room > 0:
+            keep_n = min(keep_n, max(1, room - (remaining_projects - 1)))
         kept = select_bullets_with_coverage(
             raw_bullets,
             limit=keep_n if raw_bullets else 0,
@@ -456,6 +494,8 @@ def compress_resume_to_one_page(
             phrases=req_phrases,
             score_fn=_score_bullet,
         )
+        if not kept and raw_bullets:
+            kept = [raw_bullets[0]]
         entry["bullets"] = kept
         desc = str(entry.get("description") or "").strip()
         if desc and len(desc.split()) > 28:
@@ -465,30 +505,46 @@ def compress_resume_to_one_page(
         if desc and kept and any(texts_are_near_duplicates(desc, b) for b in kept):
             entry["description"] = ""
             desc = ""
+        # Aggressive / over-budget: prefer bullets over description to save lines
+        if desc and kept and (aggressive or i >= max_projects or total_bullets >= max_total):
+            entry["description"] = ""
+            desc = ""
         entry = scrub_duplicate_entry_content(entry)
         kept = list(entry.get("bullets") or [])
         desc = str(entry.get("description") or "").strip()
-        # Never keep title-only project shells
+        # Keep description-only projects rather than dropping the entry
         if not kept and not desc:
-            continue
+            # Last resort: restore a truncated original description if present
+            orig_desc = str(project.get("description") or "").strip()
+            if orig_desc:
+                entry["description"] = _trim_words(orig_desc, 28)
+                desc = entry["description"]
+            elif raw_bullets:
+                entry["bullets"] = [raw_bullets[0]]
+                kept = entry["bullets"]
+            else:
+                continue
         total_bullets += len(kept) + (1 if desc else 0)
         compressed_projects.append(entry)
     out["projects"] = compressed_projects
 
-    # Skills — keep shared technologies when capping category lines
+    # Skills — keep shared technologies; preserve atoms from dropped category lines
     from intelligent_tailoring.requirement_coverage import prioritize_skill_lines
 
     skills = [str(s).strip() for s in (out.get("skills") or []) if str(s).strip()]
-    keep_skills = max(max_skills, 3) if len(skills) >= 3 else max_skills
+    # Allow more skill lines so weak-match jobs don't erase the candidate's stack
+    keep_skills = max(max_skills, 6) if len(skills) >= 3 else max_skills
     out["skills"] = prioritize_skill_lines(
         skills,
         shared_tech=shared_tech or emphasize,
         max_lines=keep_skills,
+        preserve_all_atoms=True,
     )
 
-    # Education / certs — keep but don't explode
-    education = [e for e in (out.get("education") or []) if isinstance(e, dict)]
-    out["education"] = education[:2]
+    # Education / certs — normalize + keep but don't explode
+    from intelligent_tailoring.canonical_resume import normalize_education_entries
+
+    out["education"] = normalize_education_entries(out.get("education"))[:2]
     certs = list(out.get("certifications") or [])[:3]
     out["certifications"] = certs
 

@@ -79,10 +79,19 @@ def test_compress_resume_fits_one_page_pressure():
     )
     est = estimate_page_pressure(compressed)
     assert est["likely_fits_one_page"]
-    assert est["experience_count"] <= 3
-    assert est["project_count"] <= 2
+    # Minimum-content guarantee: every source role/project is kept; fit is
+    # achieved by shortening bullets on lower-ranked entries, not deletion.
+    assert est["experience_count"] == 5
+    assert est["project_count"] == 3
     assert est["bullet_count"] <= 14
     assert len(compressed["professional_summary"].split()) <= 58
+    # Lower-ranked roles should be de-emphasized (≤1 bullet)
+    role_bullet_counts = [
+        len([b for b in (e.get("bullets") or []) if str(b).strip()])
+        for e in compressed["experience"]
+    ]
+    assert min(role_bullet_counts) >= 1
+    assert role_bullet_counts[-1] <= 1
 
 
 def test_compress_prefers_relevant_bullets():

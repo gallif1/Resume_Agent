@@ -394,7 +394,133 @@ def _lead_sentence(role_phrase: str, comps: list[str], family: str) -> str:
     return f"{role} with hands-on experience in {joined}."
 
 
-def _compose_english(plan: dict[str, Any], *, resume_text: str = "") -> str:
+def _token_overlap_ratio(a: str, b: str) -> float:
+    ta = {t for t in re.findall(r"[a-z0-9+#.]{3,}", (a or "").lower())}
+    tb = {t for t in re.findall(r"[a-z0-9+#.]{3,}", (b or "").lower())}
+    if not ta or not tb:
+        na = re.sub(r"\s+", " ", (a or "").strip().lower())
+        nb = re.sub(r"\s+", " ", (b or "").strip().lower())
+        if na and nb and na == nb:
+            return 1.0
+        return 0.0
+    return len(ta & tb) / max(len(ta | tb), 1)
+
+
+def _paraphrase_evidence_for_summary(evidence: str) -> str:
+    """Rewrite a bullet-like evidence phrase into high-level summary prose."""
+    text = re.sub(r"\s+", " ", (evidence or "").strip()).rstrip(".")
+    if not text:
+        return ""
+    rewrites = (
+        (r"^Implemented\b", "Experience includes"),
+        (r"^Developed\b", "Background includes"),
+        (r"^Built\b", "Work includes"),
+        (r"^Created\b", "Work includes"),
+        (r"^Designed\b", "Experience includes"),
+        (r"^Led\b", "Experience includes leading"),
+        (r"^Wrote\b", "Background includes"),
+        (r"^Added\b", "Experience includes"),
+        (r"^Maintained\b", "Background includes maintaining"),
+        (r"^Tutored\b", "Experience includes tutoring"),
+        (r"^Helped\b", "Background includes helping"),
+        (r"^Coordinated\b", "Experience includes coordinating"),
+    )
+    for pat, repl in rewrites:
+        if re.match(pat, text, flags=re.I):
+            rest = re.sub(pat, "", text, count=1, flags=re.I).strip(" ,;")
+            words = rest.split()
+            if len(words) > 12:
+                rest = " ".join(words[:12])
+            if rest:
+                return f"{repl} {rest}."
+    words = text.split()
+    clipped = " ".join(words[:12]).rstrip(",;")
+    if clipped and clipped[0].isupper():
+        clipped = clipped[0].lower() + clipped[1:]
+    return f"Background includes {clipped}."
+
+
+def _evidence_sentence(evidence: str, *, bullet_texts: list[str] | None = None) -> str:
+    """Return a summary sentence that does not copy an Experience/Project bullet."""
+    text = (evidence or "").strip().rstrip(".")
+    if not text:
+        return ""
+    bullets = bullet_texts or []
+    overlaps = any(_token_overlap_ratio(text, b) >= 0.80 for b in bullets)
+    # Also treat long evidence phrases as bullet-like even without an explicit list
+    if overlaps or len(text.split()) >= 12:
+        return _paraphrase_evidence_for_summary(text)
+    if text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text + "."
+
+
+def dedupe_summary_against_bullets(
+    summary: str,
+    bullet_texts: list[str],
+    *,
+    overlap_threshold: float = 0.80,
+) -> str:
+    """Rephrase any summary sentence that nearly matches an Experience/Project bullet."""
+    text = _cleanup_summary_text(summary or "")
+    if not text or not bullet_texts:
+        return text
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    out: list[str] = []
+    for sent in sentences:
+        if len(sent.split()) >= 6 and any(
+            _token_overlap_ratio(sent, b) >= overlap_threshold for b in bullet_texts
+        ):
+            rewritten = _paraphrase_evidence_for_summary(sent)
+            # Avoid regenerating something still too close
+            if rewritten and not any(
+                _token_overlap_ratio(rewritten, b) >= overlap_threshold
+                for b in bullet_texts
+            ):
+                out.append(rewritten)
+            elif rewritten:
+                # Strip to a shorter capability clause
+                techs = re.findall(
+                    r"\b(?:pytest|python|fastapi|react|aws|sql|typescript|nodejs|go)\b",
+                    sent,
+                    flags=re.I,
+                )
+                if techs:
+                    out.append(
+                        f"Brings practical strengths with {_join(list(dict.fromkeys(techs))[:3])}."
+                    )
+                # else drop the duplicate sentence entirely
+            continue
+        out.append(sent if sent.endswith((".", "!", "?")) else sent + ".")
+    return _cleanup_summary_text(" ".join(out))
+
+
+def _collect_plan_bullet_texts(resume_facts: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for role in resume_facts.get("experience_roles") or resume_facts.get("experience") or []:
+        if not isinstance(role, dict):
+            continue
+        for b in role.get("bullets") or []:
+            if str(b).strip():
+                texts.append(str(b).strip())
+    for proj in resume_facts.get("projects") or []:
+        if not isinstance(proj, dict):
+            continue
+        desc = str(proj.get("description") or "").strip()
+        if desc:
+            texts.append(desc)
+        for b in proj.get("bullets") or []:
+            if str(b).strip():
+                texts.append(str(b).strip())
+    return texts
+
+
+def _compose_english(
+    plan: dict[str, Any],
+    *,
+    resume_text: str = "",
+    bullet_texts: list[str] | None = None,
+) -> str:
     family = str(plan.get("job_family") or "")
     role = _safe_role_label(str(plan.get("target_role") or ""), resume_text)
     role_phrase = _natural_role_phrase(role, family)
@@ -405,29 +531,31 @@ def _compose_english(plan: dict[str, Any], *, resume_text: str = "") -> str:
     ]
     evidence = str(plan.get("strongest_evidence") or "").strip().rstrip(".")
     secondary = str(plan.get("secondary_evidence") or "").strip().rstrip(".")
+    bullets = bullet_texts or []
 
     # Sentence 1 — specialization + core strengths (why fit)
     lead = _lead_sentence(role_phrase, comps, family)
 
     sentences = [lead]
 
-    # Sentence 2 — concrete evidence (business/technical value)
+    # Sentence 2 — concrete evidence at a high level (never a verbatim bullet)
     if evidence and evidence.lower() not in lead.lower():
-        if evidence[0].islower():
-            evidence = evidence[0].upper() + evidence[1:]
-        sentences.append(evidence + ".")
+        sent = _evidence_sentence(evidence, bullet_texts=bullets)
+        if sent and sent.lower().rstrip(".") not in lead.lower():
+            sentences.append(sent)
     elif secondary:
-        if secondary[0].islower():
-            secondary = secondary[0].upper() + secondary[1:]
-        sentences.append(secondary + ".")
+        sent = _evidence_sentence(secondary, bullet_texts=bullets)
+        if sent and sent.lower().rstrip(".") not in lead.lower():
+            sentences.append(sent)
 
     # Sentence 3 — learning / breadth without filler clichés
     if len(sentences) < 3 and comps:
         extras = [c for c in comps if c.lower() not in lead.lower()][:3]
-        if extras and secondary and secondary.lower() not in " ".join(sentences).lower():
-            bit = secondary[0].upper() + secondary[1:] if secondary else ""
-            if bit:
-                sentences.append(bit + ".")
+        joined_sents = " ".join(sentences).lower()
+        if extras and secondary and secondary.lower() not in joined_sents:
+            bit = _evidence_sentence(secondary, bullet_texts=bullets)
+            if bit and bit.lower() not in joined_sents:
+                sentences.append(bit)
         elif extras:
             sentences.append(
                 f"Comfortable working across {_join(extras)} when the work requires it."
@@ -435,6 +563,7 @@ def _compose_english(plan: dict[str, Any], *, resume_text: str = "") -> str:
 
     text = " ".join(sentences)
     text = _cleanup_summary_text(text)
+    text = dedupe_summary_against_bullets(text, bullets)
     # Final ban on banned lead-ins
     for pat in _BANNED_LEAD_INS:
         if re.search(pat, text, re.I):
@@ -502,7 +631,12 @@ def _trim_words(text: str, maximum: int) -> str:
     return _cleanup_summary_text(trimmed)
 
 
-def summary_passes_checks(summary: str, *, resume_text: str) -> tuple[bool, list[str]]:
+def summary_passes_checks(
+    summary: str,
+    *,
+    resume_text: str,
+    bullet_texts: list[str] | None = None,
+) -> tuple[bool, list[str]]:
     errors: list[str] = []
     text = (summary or "").strip()
     if not text:
@@ -545,6 +679,17 @@ def summary_passes_checks(summary: str, *, resume_text: str) -> tuple[bool, list
     ling = validate_claim_linguistics(text, allow_summary_style=True)
     if not ling["passed"]:
         errors.extend(ling["detected_patterns"])
+    # Verbatim / near-verbatim overlap with Experience or Project bullets
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        sent = sent.strip()
+        if len(sent.split()) < 6:
+            continue
+        for bullet in bullet_texts or []:
+            if _token_overlap_ratio(sent, bullet) >= 0.80:
+                errors.append("summary_duplicates_bullet")
+                break
+        if "summary_duplicates_bullet" in errors:
+            break
     errors = list(dict.fromkeys(errors))
     return len(errors) == 0, errors
 
@@ -556,11 +701,23 @@ def build_professional_summary(
     resume_text: str,
     output_language: str = "en",
     existing_summary: str = "",
+    tailored_resume: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a validated summary, preferring a clean existing one when possible."""
+    bullet_texts = _collect_plan_bullet_texts(resume_facts)
+    if isinstance(tailored_resume, dict):
+        from intelligent_tailoring.canonical_resume import collect_resume_bullet_texts
+
+        for b in collect_resume_bullet_texts(tailored_resume):
+            if b not in bullet_texts:
+                bullet_texts.append(b)
+
     existing = _cleanup_summary_text(existing_summary or "")
     if existing:
-        ok, errs = summary_passes_checks(existing, resume_text=resume_text)
+        existing = dedupe_summary_against_bullets(existing, bullet_texts)
+        ok, errs = summary_passes_checks(
+            existing, resume_text=resume_text, bullet_texts=bullet_texts
+        )
         if ok:
             return {
                 "summary": existing,
@@ -578,9 +735,14 @@ def build_professional_summary(
     if plan.get("output_language") == "he":
         draft = _compose_hebrew(plan)
     else:
-        draft = _compose_english(plan, resume_text=resume_text)
+        draft = _compose_english(
+            plan, resume_text=resume_text, bullet_texts=bullet_texts
+        )
+    draft = dedupe_summary_against_bullets(draft, bullet_texts)
 
-    ok, errs = summary_passes_checks(draft, resume_text=resume_text)
+    ok, errs = summary_passes_checks(
+        draft, resume_text=resume_text, bullet_texts=bullet_texts
+    )
     if ok:
         return {
             "summary": draft,
@@ -602,22 +764,31 @@ def build_professional_summary(
         evidence = _clean_evidence_token(
             str(plan.get("strongest_evidence") or "")
         ).rstrip(".")
+        # Never splice a near-verbatim bullet into the fallback
+        if evidence and any(
+            _token_overlap_ratio(evidence, b) >= 0.80 for b in bullet_texts
+        ):
+            evidence = ""
         joined = _join(list(comps)[:4])
         if joined:
             minimal = (
                 f"{role} focused on {joined}. "
                 f"Practical delivery grounded in completed work"
-                + (f", including {evidence.lower()}." if evidence else ".")
+                + (f" involving {evidence.lower()}." if evidence else ".")
             )
         else:
             minimal = (
                 f"{role} with practical delivery experience across completed "
                 f"roles and projects."
             )
-        minimal = _cleanup_summary_text(minimal)
+        minimal = dedupe_summary_against_bullets(
+            _cleanup_summary_text(minimal), bullet_texts
+        )
         if not minimal.endswith("."):
             minimal += "."
-        ok2, errs2 = summary_passes_checks(minimal, resume_text=resume_text)
+        ok2, errs2 = summary_passes_checks(
+            minimal, resume_text=resume_text, bullet_texts=bullet_texts
+        )
         if ok2:
             return {
                 "summary": minimal,
@@ -643,24 +814,27 @@ def build_professional_summary(
                 f"roles and projects."
             )
         return {
-            "summary": _cleanup_summary_text(safe),
+            "summary": dedupe_summary_against_bullets(
+                _cleanup_summary_text(safe), bullet_texts
+            ),
             "repair_method": "safe_fallback",
             "plan": plan,
             "errors": errs2,
         }
 
     evidence = str(plan.get("strongest_evidence") or "").strip()
-    if evidence:
-        if evidence[0].islower():
-            evidence = evidence[0].upper() + evidence[1:]
-        if not evidence.endswith("."):
-            evidence += "."
+    if evidence and not any(
+        _token_overlap_ratio(evidence, b) >= 0.80 for b in bullet_texts
+    ):
+        sent = _evidence_sentence(evidence, bullet_texts=bullet_texts)
         safe = (
             f"{role if role.lower() != 'professional' else 'Contributor'} "
-            f"with practical delivery experience. {evidence}"
+            f"with practical delivery experience. {sent}"
         )
         return {
-            "summary": _trim_words(safe, 75),
+            "summary": dedupe_summary_against_bullets(
+                _trim_words(safe, 75), bullet_texts
+            ),
             "repair_method": "evidence_fallback",
             "plan": plan,
             "errors": errs,

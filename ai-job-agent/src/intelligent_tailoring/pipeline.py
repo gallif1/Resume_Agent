@@ -873,6 +873,7 @@ def run_intelligent_tailoring_agents(
                     or cleaned_resume.get("summary")
                     or ""
                 ),
+                tailored_resume=cleaned_resume,
             )
             if summary_result.get("summary"):
                 cleaned_resume["professional_summary"] = summary_result["summary"]
@@ -1323,10 +1324,13 @@ def run_intelligent_tailoring_agents(
             build_source_coverage_report,
             completeness_failures as canonical_completeness_failures,
             drop_empty_shell_entries,
+            ensure_minimum_content_from_source,
             estimate_content_density,
+            find_raw_data_leaks,
             inventory_from_facts,
             log_stage_inventory,
             restore_missing_content_from_source,
+            sanitize_raw_data_fields,
         )
 
         generation_id = str(
@@ -1345,15 +1349,24 @@ def run_intelligent_tailoring_agents(
             cleaned_resume,
             resume_facts=resume_facts,
         )
+        # Hard guarantee: every source Experience/Project title survives, even
+        # when the JD is a weak match (tailor by emphasis, never by deletion).
+        cleaned_resume = ensure_minimum_content_from_source(
+            cleaned_resume,
+            resume_facts=resume_facts,
+            min_bullets_per_role=1,
+            min_bullets_per_project=1,
+        )
+        cleaned_resume = sanitize_raw_data_fields(cleaned_resume)
         density = estimate_content_density(cleaned_resume)
         if density.get("underfilled"):
             # Pull additional high-value source content rather than leaving
-            # half a page empty.
+            # half a page empty. Keep ALL roles/projects (max_*=0).
             cleaned_resume = restore_missing_content_from_source(
                 cleaned_resume,
                 resume_facts=resume_facts,
-                max_roles=3,
-                max_projects=2,
+                max_roles=0,
+                max_projects=0,
                 min_bullets_per_role=2,
                 min_bullets_per_project=2,
             )
@@ -1368,7 +1381,12 @@ def run_intelligent_tailoring_agents(
                     min_bullets_per_role=1,
                     min_bullets_per_project=1,
                 )
+                cleaned_resume = ensure_minimum_content_from_source(
+                    cleaned_resume,
+                    resume_facts=resume_facts,
+                )
         cleaned_resume = drop_empty_shell_entries(cleaned_resume)
+        cleaned_resume = sanitize_raw_data_fields(cleaned_resume)
 
         def _finalize_skills_and_projects(resume_obj: dict[str, Any]) -> dict[str, Any]:
             """Re-normalize skills + scrub/repair structural dupes after late passes."""
@@ -1403,7 +1421,7 @@ def run_intelligent_tailoring_agents(
                 job_family=str(strategy.get("job_family") or ""),
                 category_order=list(strategy.get("skill_category_order") or []),
             )
-            # Cap lines without dropping shared JD technologies
+            # Cap lines without dropping shared JD technologies or source atoms
             polished["skills"] = prioritize_skill_lines(
                 list(polished.get("skills") or []),
                 shared_tech=list(
@@ -1411,7 +1429,8 @@ def run_intelligent_tailoring_agents(
                     or strategy.get("must_keep_skills")
                     or emphasize_skills
                 ),
-                max_lines=5,
+                max_lines=6,
+                preserve_all_atoms=True,
             )
             return polished
 
@@ -1463,6 +1482,10 @@ def run_intelligent_tailoring_agents(
                     source_facts=resume_facts,
                     requirement_phrases=req_phrases,
                     requirement_terms=req_terms,
+                )
+                cleaned_resume = ensure_minimum_content_from_source(
+                    cleaned_resume,
+                    resume_facts=resume_facts,
                 )
                 cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
             req_coverage = validate_requirement_coverage(
@@ -1530,6 +1553,7 @@ def run_intelligent_tailoring_agents(
                 cleaned_resume,
                 source_inventory=source_inv,
                 coverage=coverage_report,
+                resume_facts=resume_facts,
             ),
             extra={
                 "density": density,
@@ -1684,12 +1708,25 @@ def run_intelligent_tailoring_agents(
                 or cleaned_resume.get("summary")
                 or ""
             ),
+            tailored_resume=cleaned_resume,
         )
         if final_summary.get("summary"):
             # Never reintroduce a previously rejected summary
             if not rejected_claims.contains(final_summary["summary"]):
                 cleaned_resume["professional_summary"] = final_summary["summary"]
                 cleaned_resume["summary"] = final_summary["summary"]
+
+        # Final raw-data / minimum-content repair before gates and render
+        if find_raw_data_leaks(cleaned_resume):
+            cleaned_resume = sanitize_raw_data_fields(cleaned_resume)
+            cleaned_resume = ensure_minimum_content_from_source(
+                cleaned_resume,
+                resume_facts=resume_facts,
+            )
+        cleaned_resume = ensure_minimum_content_from_source(
+            cleaned_resume,
+            resume_facts=resume_facts,
+        )
 
         narrative_test = evaluate_professional_narrative(
             cleaned_resume,
@@ -1755,6 +1792,7 @@ def run_intelligent_tailoring_agents(
                     or cleaned_resume.get("summary")
                     or ""
                 ),
+                tailored_resume=cleaned_resume,
             )
             if final_summary.get("summary") and not rejected_claims.contains(
                 final_summary["summary"]

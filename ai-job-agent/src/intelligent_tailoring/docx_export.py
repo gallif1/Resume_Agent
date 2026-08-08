@@ -116,18 +116,43 @@ def build_tailored_cv_docx(
         for row in skills:
             _add_line(doc, row)
 
-    education = [e for e in (cv.get("education") or []) if isinstance(e, dict)]
+    try:
+        from intelligent_tailoring.canonical_resume import (
+            format_education_entry,
+            looks_like_raw_data,
+            normalize_education_entries,
+        )
+
+        education = normalize_education_entries(cv.get("education"))
+    except Exception:
+        education = [e for e in (cv.get("education") or []) if isinstance(e, dict)]
+        looks_like_raw_data = lambda t: False  # noqa: E731
+        format_education_entry = None  # type: ignore
+
     if education:
-        _add_heading(doc, "Education", level=2)
+        rendered_any = False
         for entry in education:
-            degree = str(entry.get("degree") or "").strip()
-            institution = str(entry.get("institution") or "").strip()
-            dates = str(entry.get("dates") or "").strip()
-            heading = degree or institution
-            if heading:
-                _add_line(doc, heading, bold=True)
+            if format_education_entry is not None:
+                formatted = format_education_entry(entry)
+                degree = formatted.get("degree") or ""
+                institution = formatted.get("institution") or ""
+                dates = formatted.get("dates") or ""
+                heading = formatted.get("heading") or degree or institution
+            else:
+                degree = str(entry.get("degree") or "").strip()
+                institution = str(entry.get("institution") or "").strip()
+                dates = str(entry.get("dates") or "").strip()
+                heading = degree or institution
+            if not heading or looks_like_raw_data(heading):
+                continue
+            if looks_like_raw_data(degree) or looks_like_raw_data(institution):
+                continue
+            if not rendered_any:
+                _add_heading(doc, "Education", level=2)
+                rendered_any = True
+            _add_line(doc, heading, bold=True)
             meta = " | ".join(x for x in (institution if degree else "", dates) if x)
-            if meta:
+            if meta and not looks_like_raw_data(meta):
                 _add_line(doc, meta)
 
     certs = cv.get("certifications") or []
