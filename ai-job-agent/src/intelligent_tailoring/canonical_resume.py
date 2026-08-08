@@ -472,6 +472,23 @@ def completeness_failures(
     ):
         failures.append("high_relevance_facts_silently_omitted")
 
+    # Structural malformations (duplicate entries, cross-contam, markers)
+    try:
+        from intelligent_tailoring.structural_integrity import structural_failures
+
+        for item in structural_failures(resume):
+            if item.startswith(
+                (
+                    "duplicate_experience",
+                    "duplicate_project",
+                    "misplaced_entry_heading",
+                    "embedded_bullet_marker",
+                )
+            ):
+                failures.append(item)
+    except Exception:
+        pass
+
     return list(dict.fromkeys(failures))
 
 
@@ -719,17 +736,35 @@ def normalize_project_list(projects: list[Any]) -> list[dict[str, Any]]:
 
 
 def _match_role(entry: dict[str, Any], source_roles: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Match by title/company identity only — never by array position.
+
+    Avoids restoring Tutor bullets onto Capstone (and vice versa) when a
+    soft/fallback match would cross entry boundaries.
+    """
     title = str(entry.get("title") or "").strip().lower()
     company = str(entry.get("company") or "").strip().lower()
+    # Prefer exact title matches first
+    exact = [
+        role
+        for role in source_roles
+        if title and title == str(role.get("title") or "").strip().lower()
+    ]
+    if exact:
+        if company:
+            for role in exact:
+                rc = str(role.get("company") or "").strip().lower()
+                if rc == company or company in rc or rc in company:
+                    return role
+        return exact[0]
     for role in source_roles:
         rt = str(role.get("title") or "").strip().lower()
         rc = str(role.get("company") or "").strip().lower()
-        if title and title == rt:
-            return role
-        if company and company == rc and (not title or not rt or title in rt or rt in title):
-            return role
         if title and rt and (title in rt or rt in title):
+            if not company or not rc or company == rc or company in rc or rc in company:
+                return role
+        if company and company == rc and title and rt and (title in rt or rt in title):
             return role
+    # Only fall back when a single source role exists (unambiguous).
     return source_roles[0] if len(source_roles) == 1 else None
 
 

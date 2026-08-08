@@ -193,7 +193,7 @@ def normalize_status(value: Any) -> str:
     return "MISSING"
 
 
-_BULLET_PREFIX_RE = re.compile(r"^\s*[-*•]\s+")
+_BULLET_PREFIX_RE = re.compile(r"^\s*[-*•●▪◦\u2022]\s+")
 
 
 def _flatten_item(item: Any) -> str:
@@ -204,6 +204,9 @@ def _flatten_item(item: Any) -> str:
     Rendering ``str(dict)`` would put Python syntax on the resume, so grouped
     shapes are flattened into the ``"Category: a, b"`` row form the renderer
     already understands.
+
+    Leading bullet markers are stripped repeatedly so content that already
+    embeds ``•`` / ``-`` does not render as ``- • text`` or ``• • text``.
     """
     if isinstance(item, dict):
         label = next(
@@ -227,7 +230,13 @@ def _flatten_item(item: Any) -> str:
         return body or label
     if isinstance(item, (list, tuple)):
         return ", ".join(text for text in (_flatten_item(entry) for entry in item) if text)
-    return _BULLET_PREFIX_RE.sub("", str(item)).strip()
+    text = str(item).strip()
+    for _ in range(4):
+        cleaned = _BULLET_PREFIX_RE.sub("", text).strip()
+        if cleaned == text:
+            break
+        text = cleaned
+    return text
 
 
 def _string_list(value: Any, *, max_items: int = 20) -> list[str]:

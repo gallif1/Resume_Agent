@@ -1371,15 +1371,24 @@ def run_intelligent_tailoring_agents(
         cleaned_resume = drop_empty_shell_entries(cleaned_resume)
 
         def _finalize_skills_and_projects(resume_obj: dict[str, Any]) -> dict[str, Any]:
-            """Re-normalize skills + scrub project dupes after any late writer pass."""
+            """Re-normalize skills + scrub/repair structural dupes after late passes."""
             from intelligent_tailoring.services.one_page_compressor import (
                 scrub_resume_duplicate_content,
             )
             from intelligent_tailoring.requirement_coverage import (
                 prioritize_skill_lines,
             )
+            from intelligent_tailoring.structural_integrity import (
+                validate_and_repair_resume_structure,
+            )
 
-            polished = scrub_resume_duplicate_content(resume_obj)
+            # Entry-level dedupe + marker strip + cross-contam repair first,
+            # then within-entry near-dedupe. Order matters: consolidating
+            # duplicate Capstone entries must happen before bullet scrub.
+            polished = validate_and_repair_resume_structure(resume_obj)
+            polished = scrub_resume_duplicate_content(polished)
+            # Second structural pass catches description↔bullet collapse leftovers
+            polished = validate_and_repair_resume_structure(polished)
             emphasize_skills = list(
                 dict.fromkeys(
                     list(strategy.get("shared_technologies") or [])

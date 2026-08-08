@@ -182,10 +182,24 @@ def _dedupe_similar(bullets: list[str]) -> list[str]:
 
 def scrub_duplicate_entry_content(entry: dict[str, Any]) -> dict[str, Any]:
     """Collapse description↔bullet and near-duplicate bullets inside one entry."""
+    from intelligent_tailoring.structural_integrity import strip_bullet_markers
+
     out = dict(entry)
-    raw_bullets = [str(b).strip() for b in (out.get("bullets") or []) if str(b).strip()]
+    title = str(out.get("title") or out.get("name") or "").strip()
+    raw_bullets = [
+        strip_bullet_markers(str(b))
+        for b in (out.get("bullets") or [])
+        if str(b).strip()
+    ]
+    # Drop bullets that merely restate the entry title/name
+    if title:
+        raw_bullets = [
+            b for b in raw_bullets if not texts_are_near_duplicates(b, title)
+        ]
     kept = _dedupe_similar(raw_bullets)
-    desc = str(out.get("description") or "").strip()
+    desc = strip_bullet_markers(str(out.get("description") or ""))
+    if desc and title and texts_are_near_duplicates(desc, title):
+        desc = ""
     if desc and kept and any(texts_are_near_duplicates(desc, b) for b in kept):
         desc = ""
     out["bullets"] = kept

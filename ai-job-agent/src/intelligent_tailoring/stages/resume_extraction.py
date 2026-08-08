@@ -175,8 +175,15 @@ def _merge_roles(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 order.append(key)
             else:
                 existing = by_key[key]
-                if len(bullets) > len(existing.get("bullets") or []):
-                    existing["bullets"] = bullets
+                # Union unique bullets across sources (not prefer-richer-only),
+                # so master_profile + section text both contribute without dupes.
+                merged_bullets = list(existing.get("bullets") or [])
+                seen = {b.lower() for b in merged_bullets}
+                for b in bullets:
+                    if b.lower() not in seen:
+                        merged_bullets.append(b)
+                        seen.add(b.lower())
+                existing["bullets"] = merged_bullets
                 if not existing.get("dates") and role.get("dates"):
                     existing["dates"] = str(role.get("dates") or "")
                 if not existing.get("title") and role.get("title"):
@@ -213,8 +220,13 @@ def _merge_projects(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 order.append(key)
             else:
                 existing = by_key[key]
-                if len(bullets) > len(existing.get("bullets") or []):
-                    existing["bullets"] = bullets
+                merged_bullets = list(existing.get("bullets") or [])
+                seen = {b.lower() for b in merged_bullets}
+                for b in bullets:
+                    if b.lower() not in seen:
+                        merged_bullets.append(b)
+                        seen.add(b.lower())
+                existing["bullets"] = merged_bullets
                 if len(desc) > len(str(existing.get("description") or "")):
                     existing["description"] = desc
                 merged_tech = list(existing.get("technologies") or [])
