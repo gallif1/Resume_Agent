@@ -546,7 +546,7 @@ class TailoredStructure:
         }
 
     def as_resume_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "professional_title": self.professional_title,
             "professional_summary": self.professional_summary,
             "summary": self.professional_summary,
@@ -556,6 +556,13 @@ class TailoredStructure:
             "education": list(self.education),
             "certifications": list(self.certifications),
         }
+        # Preserve contact when the raw generation / structure carried it.
+        raw = self.raw_generation if isinstance(self.raw_generation, dict) else {}
+        raw_resume = raw.get("tailored_resume") if isinstance(raw.get("tailored_resume"), dict) else {}
+        contact = raw_resume.get("contact") if isinstance(raw_resume.get("contact"), dict) else None
+        if contact:
+            data["contact"] = dict(contact)
+        return data
 
 
 @dataclass

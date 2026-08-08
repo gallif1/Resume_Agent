@@ -110,7 +110,7 @@ def test_bullhorn_form_fill(playwright_page, tmp_path):
     cv_file.write_bytes(b"%PDF-1.4")
 
     html = (FIXTURES / "bullhorn_apply_form.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
 
     profile = {
         "contact": {
@@ -133,7 +133,7 @@ def test_extract_external_apply_url(playwright_page):
     from application_providers.provider_utils import extract_external_apply_url
 
     html = (FIXTURES / "linkedin_external_apply.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
     url = extract_external_apply_url(playwright_page)
     assert url == "https://apply.test.example/jobs/backend-dev"
 
@@ -151,7 +151,7 @@ def test_linkedin_external_apply_navigation(playwright_page, tmp_path):
     playwright_page.route("**/apply.test.example/**", handle_route)
 
     linkedin_html = (FIXTURES / "linkedin_external_apply.html").read_text(encoding="utf-8")
-    playwright_page.set_content(linkedin_html)
+    playwright_page.set_content(linkedin_html, wait_until="domcontentloaded")
 
     profile = {
         "contact": {
@@ -346,26 +346,28 @@ def playwright_page():
 
 def test_captcha_detection(playwright_page):
     html = (FIXTURES / "captcha_page.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
     assert detect_captcha(playwright_page) is True
 
 
 def test_hidden_recaptcha_script_does_not_trigger_captcha(playwright_page):
     """Job pages often embed reCAPTCHA scripts without a visible challenge."""
     html = (FIXTURES / "job_page_with_hidden_recaptcha.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    # Do not wait for "load" — the fixture references google.com/recaptcha which
+    # can hang set_content in CI when egress is slow or blocked.
+    playwright_page.set_content(html, wait_until="commit")
     assert detect_captcha(playwright_page) is False
 
 
 def test_login_required_detection(playwright_page):
     html = (FIXTURES / "login_page.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
     assert detect_login_required(playwright_page) is True
 
 
 def test_submission_success_detection(playwright_page):
     html = (FIXTURES / "success_confirmation.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
     ok, snippet = detect_submission_success(playwright_page)
     assert ok is True
     assert "thank you" in snippet.lower() or "successfully" in snippet.lower()
@@ -378,7 +380,7 @@ def test_generic_form_fill_and_validate(playwright_page, tmp_path):
     cv_file.write_bytes(b"%PDF-1.4")
 
     html = (FIXTURES / "generic_apply_form.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
 
     profile = {
         "contact": {
@@ -403,7 +405,7 @@ def test_missing_required_field_blocks_validation(playwright_page):
     from application_providers.generic_provider import GenericProvider
 
     html = (FIXTURES / "generic_apply_form.html").read_text(encoding="utf-8")
-    playwright_page.set_content(html)
+    playwright_page.set_content(html, wait_until="domcontentloaded")
     provider = GenericProvider()
     validation = provider.validate_before_submit(playwright_page)
     assert validation.valid is False

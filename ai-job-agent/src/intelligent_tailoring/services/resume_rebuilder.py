@@ -95,12 +95,24 @@ def rebuild_resume_structure(
     strategy: dict[str, Any],
 ) -> dict[str, Any]:
     """Reorder skills, bullets, and projects without rewriting text yet."""
+    from intelligent_tailoring.structured_resume import assign_stable_ids, stamp_ids_on_resume
+
     job_family = str(strategy.get("job_family") or "general")
     category_order = list(strategy.get("skill_category_order") or ["Skills", "Other"])
 
-    roles = deepcopy(resume_facts.get("experience_roles") or [])
-    projects = normalize_project_list(deepcopy(resume_facts.get("projects") or []))
-    skills = [str(s) for s in (resume_facts.get("display_skills") or resume_facts.get("skills") or [])]
+    stamped_facts = assign_stable_ids(resume_facts)
+    roles = deepcopy(stamped_facts.get("experience_roles") or [])
+    projects = normalize_project_list(deepcopy(stamped_facts.get("projects") or []))
+    skills = [
+        str(s)
+        for s in (
+            stamped_facts.get("display_skills")
+            or stamped_facts.get("skills")
+            or resume_facts.get("display_skills")
+            or resume_facts.get("skills")
+            or []
+        )
+    ]
 
     bullet_scores = scores.get("experience_bullets") or []
     project_scores = scores.get("projects") or []
@@ -152,9 +164,14 @@ def rebuild_resume_structure(
         "professional_title": professional_title,
         "professional_summary": "",  # filled by rewriter
         "summary": "",
+        "contact": dict(stamped_facts.get("contact") or {}),
         "skills": grouped_skills,
         "experience": [
             {
+                "id": str(r.get("id") or r.get("source_entry_id") or f"role_{idx}"),
+                "source_entry_id": str(
+                    r.get("source_entry_id") or r.get("id") or f"role_{idx}"
+                ),
                 "company": str(r.get("company") or ""),
                 "title": str(r.get("title") or ""),
                 "dates": str(r.get("dates") or ""),
@@ -162,7 +179,7 @@ def rebuild_resume_structure(
                     str(b).strip() for b in (r.get("bullets") or []) if str(b).strip()
                 ],
             }
-            for r in roles
+            for idx, r in enumerate(roles)
             if isinstance(r, dict)
             and [
                 str(b).strip() for b in (r.get("bullets") or []) if str(b).strip()
@@ -170,6 +187,10 @@ def rebuild_resume_structure(
         ],
         "projects": [
             {
+                "id": str(p.get("id") or p.get("source_entry_id") or f"project_{idx}"),
+                "source_entry_id": str(
+                    p.get("source_entry_id") or p.get("id") or f"project_{idx}"
+                ),
                 "name": str(p.get("name") or ""),
                 "description": str(p.get("description") or ""),
                 "bullets": [
@@ -177,15 +198,17 @@ def rebuild_resume_structure(
                 ],
                 "technologies": list(p.get("technologies") or []),
             }
-            for p in projects
+            for idx, p in enumerate(projects)
             if isinstance(p, dict)
             and (
                 str(p.get("description") or "").strip()
                 or [str(b).strip() for b in (p.get("bullets") or []) if str(b).strip()]
             )
         ],
-        "education": list(resume_facts.get("education") or []),
-        "certifications": list(resume_facts.get("certifications") or []),
+        "education": list(stamped_facts.get("education") or resume_facts.get("education") or []),
+        "certifications": list(
+            stamped_facts.get("certifications") or resume_facts.get("certifications") or []
+        ),
         "section_order": list(strategy.get("top_resume_sections") or []),
     }
-    return rebuilt
+    return stamp_ids_on_resume(rebuilt, source_facts=stamped_facts)

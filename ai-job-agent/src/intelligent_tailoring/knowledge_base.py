@@ -1120,15 +1120,30 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
             if f.original_text not in bucket:
                 bucket.append(f.original_text)
 
-    # Preserve role order by source_entry_id
-    roles = [roles_map[k] for k in sorted(roles_map.keys())]
-    projects = [projects_map[k] for k in sorted(projects_map.keys())]
+    # Preserve role order by source_entry_id and stamp stable ids onto entries.
+    roles = []
+    for key in sorted(roles_map.keys()):
+        entry = dict(roles_map[key])
+        sid = str(key or "").strip() or str(entry.get("source_entry_id") or "")
+        if sid:
+            entry["id"] = sid
+            entry["source_entry_id"] = sid
+        roles.append(entry)
+    projects = []
+    for key in sorted(projects_map.keys()):
+        entry = dict(projects_map[key])
+        sid = str(key or "").strip() or str(entry.get("source_entry_id") or "")
+        if sid:
+            entry["id"] = sid
+            entry["source_entry_id"] = sid
+        projects.append(entry)
 
     years = estimate_years_from_text(kb.raw_text)
 
     from intelligent_tailoring.canonical_resume import normalize_education_entries
+    from intelligent_tailoring.structured_resume import assign_stable_ids
 
-    return {
+    facts = {
         "raw_text": kb.raw_text,
         "candidate_payload": kb.raw_text,
         "contact": kb.candidate_identity,
@@ -1148,6 +1163,7 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
         "knowledge_base": kb.to_dict(),
         "fact_ids": [f.id for f in kb.facts],
     }
+    return assign_stable_ids(facts)
 
 
 def score_facts_for_job(

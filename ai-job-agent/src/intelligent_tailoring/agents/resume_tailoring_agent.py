@@ -58,6 +58,9 @@ class ResumeTailoringAgent(Agent[TailoringAgentInput, TailoredStructure]):
         )
 
         resume = dict(generated.get("tailored_resume") or {})
+        # Ensure contact survives into TailoredStructure.raw_generation
+        if isinstance(resume.get("contact"), dict):
+            generated = {**generated, "tailored_resume": resume}
         # Strip only No Evidence claims from skills.
         # Transferable / Weak Inference with supporting text may still surface.
         no_evidence_reqs = {
