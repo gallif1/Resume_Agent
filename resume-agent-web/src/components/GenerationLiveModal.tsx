@@ -159,6 +159,7 @@ export default function GenerationLiveModal({
             decisions={decisions}
             statusMessage={statusMessage}
             generationReport={generationReport}
+            fromCache={Boolean(result?.from_cache)}
             originalBaseline={originalBaseline}
             scoreBreakdown={score}
             showCompletion={showCompletion}

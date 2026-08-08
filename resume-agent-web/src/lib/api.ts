@@ -527,6 +527,8 @@ export interface GenerationReport {
   agents_completed?: number | null;
   agents_total?: number | null;
   overall_progress?: number | null;
+  /** True when the API served a saved draft instead of running the pipeline. */
+  from_cache?: boolean;
 }
 
 export interface RequirementAssessment {

@@ -1066,6 +1066,56 @@ def saved_draft_is_current(cv_id: str, job_id: int) -> bool:
     return bool(markdown) and version == TAILOR_PIPELINE_VERSION
 
 
+def _emit_cached_draft_progress(progress_callback: Any | None) -> None:
+    """Mark all live-UI stages completed when serving a saved draft."""
+    if not progress_callback:
+        return
+    try:
+        from intelligent_tailoring.interview_philosophy import TAILOR_STAGES
+    except Exception:  # noqa: BLE001
+        TAILOR_STAGES = [
+            {"id": "candidate_opportunity_intelligence"},
+            {"id": "strategy_content_selection"},
+            {"id": "human_writing_credibility"},
+            {"id": "final_hiring_ats_page"},
+        ]
+    total = len(TAILOR_STAGES)
+    for index, stage in enumerate(TAILOR_STAGES):
+        try:
+            progress_callback(
+                {
+                    "event": "stage",
+                    "stage": stage["id"],
+                    "status": "completed",
+                    "message": "Loaded saved tailored resume.",
+                    "index": index,
+                    "total": total,
+                }
+            )
+        except Exception:
+            pass
+
+
+def _generation_report_for_cached_draft(result: dict[str, Any]) -> dict[str, Any]:
+    """Build a completion report that does not pretend a new pipeline ran."""
+    report = dict(result.get("generation_report") or {})
+    change_log = result.get("change_log") or []
+    if report.get("resume_revisions") is None and change_log:
+        report["resume_revisions"] = len(change_log)
+    report["from_cache"] = True
+    report.setdefault("status", "cached")
+    report.setdefault("agents_total", 4)
+    report.setdefault("agents_completed", 4)
+    report.setdefault("overall_progress", 100)
+    # Instant cache loads must not show "0 seconds" as if generation ran.
+    report["generation_time_seconds"] = None
+    if result.get("score_breakdown") and not report.get("score_breakdown"):
+        report["score_breakdown"] = result["score_breakdown"]
+    if result.get("top_interview_reasons") and not report.get("top_interview_reasons"):
+        report["top_interview_reasons"] = result["top_interview_reasons"]
+    return report
+
+
 def save_tailored_cv(cv_id: str, job_id: int, markdown: str) -> Path:
     directory = tailored_cv_dir(cv_id)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1513,16 +1563,8 @@ def tailor_cv_for_job(
     effective_cache = bool(use_cache) and not force
 
     if not force and saved_draft_is_current(cv_id, job_id):
-        cached = load_saved_tailored_cv(cv_id, job_id)
-        if cached:
-            result = _enrich_cached_result_with_db_scores(
-                _result_from_saved_markdown(
-                    cached, saved_path=str(tailored_cv_path(cv_id, job_id))
-                ),
-                cv_id=cv_id,
-                job_id=job_id,
-                db_path=db_path,
-            )
+        result = load_saved_tailored_result(cv_id, job_id, db_path=db_path)
+        if result:
             if result.get("score_after") is not None:
                 _publish_score(
                     _match_scope_id(cv_id, user_id),
@@ -1530,20 +1572,9 @@ def tailor_cv_for_job(
                     score=int(result["score_after"]),
                     db_path=db_path,
                 )
-            if progress_callback:
-                try:
-                    progress_callback(
-                        {
-                            "event": "stage",
-                            "stage": "final_hiring_ats_page",
-                            "status": "completed",
-                            "message": "Loaded saved tailored resume.",
-                            "index": 3,
-                            "total": 4,
-                        }
-                    )
-                except Exception:
-                    pass
+            _emit_cached_draft_progress(progress_callback)
+            result["from_cache"] = True
+            result["generation_report"] = _generation_report_for_cached_draft(result)
             return result
 
     cv_profile = _load_cv_profile_or_raise(cv_id, user_id=user_id)

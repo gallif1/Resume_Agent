@@ -1817,9 +1817,19 @@ def tailor_cv_endpoint(
             db_path=cv_db,
         )
 
-    # Attach generation time to report for the live UI final card
+    # Attach generation time to report for the live UI final card.
+    # Cache hits must keep from_cache metadata and must not report "0 seconds"
+    # as if the pipeline just ran.
     gen_report = dict(result.get("generation_report") or {})
-    gen_report["generation_time_seconds"] = round(time.time() - started, 1)
+    if result.get("from_cache") or gen_report.get("from_cache"):
+        gen_report["from_cache"] = True
+        gen_report.setdefault("status", "cached")
+        gen_report.setdefault("agents_total", 4)
+        gen_report.setdefault("agents_completed", 4)
+        gen_report.setdefault("overall_progress", 100)
+        gen_report["generation_time_seconds"] = None
+    else:
+        gen_report["generation_time_seconds"] = round(time.time() - started, 1)
     gen_report.setdefault("run_id", run_id)
     result["generation_report"] = gen_report
     tailor_stream.finish_run(
