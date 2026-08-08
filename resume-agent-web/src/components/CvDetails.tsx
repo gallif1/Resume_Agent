@@ -41,6 +41,10 @@ import GenerationLiveModal, { type CloseChoice } from "./GenerationLiveModal";
 import ProfileSettings from "./ProfileSettings";
 import type { CSSProperties } from "react";
 import {
+  isTailorGenerating,
+  resolveActiveTailoredCv,
+} from "../lib/generationProgress";
+import {
   buildScoreBreakdown,
   formatScoreProgression,
   getPreviousTailoredScore,
@@ -345,10 +349,8 @@ export default function CvDetails({
     result: TailoredCvResponse;
   } | null>(null);
   const running = scanStatus?.running ?? false;
-  const isGenerating =
-    regenerating ||
-    (tailoringId != null &&
-      (tailoredCv == null || tailoringId === tailoredCv.job_id));
+  const isGenerating = isTailorGenerating({ regenerating, tailoringId });
+  const activeTailoredCv = resolveActiveTailoredCv(tailoredCv, tailoringId);
 
   useEffect(() => {
     if (!isGenerating || generationStartedAt == null) {
@@ -720,6 +722,12 @@ export default function CvDetails({
       tailorAbortRef.current.abort();
     }
     tailorAbortRef.current = new AbortController();
+    // Drop a draft from a different job so the modal never flashes the old
+    // completion screen when starting tailor for another match.
+    setTailoredCv((prev) => (prev?.job_id === jobId ? prev : null));
+    if (bestSessionRef.current?.jobId !== jobId) {
+      bestSessionRef.current = null;
+    }
     setResultModalOpen(false);
     setGenerationUiOpen(true);
     setGenerationBackground(false);
@@ -1615,10 +1623,10 @@ export default function CvDetails({
             (tailoringId != null
               ? matches.find((m) => m.job_id === tailoringId)
               : null) ||
-            (tailoredCv
+            (activeTailoredCv
               ? {
-                  title: tailoredCv.title,
-                  company: tailoredCv.company,
+                  title: activeTailoredCv.title,
+                  company: activeTailoredCv.company,
                 }
               : null);
           if (!activeJob) return null;
@@ -1628,13 +1636,13 @@ export default function CvDetails({
         decisions={
           tailorDecisions.length
             ? tailorDecisions
-            : tailoredCv?.decision_log || []
+            : activeTailoredCv?.decision_log || []
         }
         statusMessage={tailorStatusMessage}
         generationReport={
-          generationReport || tailoredCv?.generation_report || null
+          generationReport || activeTailoredCv?.generation_report || null
         }
-        result={tailoredCv}
+        result={activeTailoredCv}
         originalBaseline={activeMatchBaseline}
         elapsedSeconds={elapsedSeconds}
         supportsBackground

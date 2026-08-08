@@ -3,7 +3,9 @@ import {
   applyStageEventToAgents,
   buildProgressSnapshot,
   computeWeightedProgress,
+  isTailorGenerating,
   localizeAgentMessage,
+  resolveActiveTailoredCv,
   resolveMergedStage,
   STAGE_ORDER,
   STAGE_WEIGHTS,
@@ -65,5 +67,27 @@ describe("generation progress source of truth (4 stages)", () => {
     expect(list[0].status).toBe("running");
     expect(list[0].id).toBe("candidate_opportunity_intelligence");
     expect(list[0].progress).toBe(0); // indeterminate — no fake percent
+  });
+});
+
+describe("cross-job tailor session state", () => {
+  it("treats any in-flight tailoringId as generating", () => {
+    expect(
+      isTailorGenerating({ regenerating: false, tailoringId: 2 })
+    ).toBe(true);
+    expect(
+      isTailorGenerating({ regenerating: true, tailoringId: null })
+    ).toBe(true);
+    expect(
+      isTailorGenerating({ regenerating: false, tailoringId: null })
+    ).toBe(false);
+  });
+
+  it("hides a stale draft from another job while a new tailor runs", () => {
+    const draftA = { job_id: 1 };
+    expect(resolveActiveTailoredCv(draftA, 2)).toBeNull();
+    expect(resolveActiveTailoredCv(draftA, 1)).toEqual(draftA);
+    expect(resolveActiveTailoredCv(draftA, null)).toEqual(draftA);
+    expect(resolveActiveTailoredCv(null, 2)).toBeNull();
   });
 });

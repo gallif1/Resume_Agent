@@ -183,3 +183,24 @@ export function applyStageEventToAgents(
   }
   return next;
 }
+
+/** True while a tailor POST or regenerate is in flight. */
+export function isTailorGenerating(options: {
+  regenerating: boolean;
+  tailoringId: number | null;
+}): boolean {
+  return options.regenerating || options.tailoringId != null;
+}
+
+/**
+ * Draft to show in the live/result UI. Hide a saved draft from another job
+ * while a new tailor session is in flight for `tailoringId`.
+ */
+export function resolveActiveTailoredCv<T extends { job_id: number }>(
+  tailoredCv: T | null,
+  tailoringId: number | null
+): T | null {
+  if (tailoredCv == null) return null;
+  if (tailoringId != null && tailoredCv.job_id !== tailoringId) return null;
+  return tailoredCv;
+}
