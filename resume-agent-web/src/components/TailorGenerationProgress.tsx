@@ -16,6 +16,7 @@ import {
   applyStageEventToAgents,
   buildProgressSnapshot,
   localizeAgentMessage,
+  markAgentsCompletedIfIdle,
   type AgentUiStatus,
   type TailorAgentState,
 } from "../lib/generationProgress";
@@ -318,6 +319,7 @@ interface Props {
   decisions: TailorDecision[];
   statusMessage?: string | null;
   generationReport?: GenerationReport | null;
+  fromCache?: boolean;
   compact?: boolean;
   originalBaseline?: number | null;
   scoreBreakdown?: ScoreBreakdown | null;
@@ -335,6 +337,7 @@ export default function TailorGenerationProgress({
   decisions,
   statusMessage,
   generationReport,
+  fromCache = false,
   compact = false,
   originalBaseline = null,
   scoreBreakdown = null,
@@ -374,8 +377,12 @@ export default function TailorGenerationProgress({
       ...a,
       details: byStage.get(a.id)?.slice(-6) || [],
     }));
+    next = markAgentsCompletedIfIdle(next, {
+      active,
+      complete: showCompletion,
+    });
     setAgents(next);
-  }, [stages, decisions]);
+  }, [stages, decisions, active, showCompletion]);
 
   useEffect(() => {
     if (!active) return;
@@ -385,13 +392,16 @@ export default function TailorGenerationProgress({
     return () => window.clearInterval(hintTimer);
   }, [active]);
 
+  const loadedFromCache =
+    fromCache || Boolean(generationReport?.from_cache);
+
   const snapshot = useMemo(
     () =>
       buildProgressSnapshot(agents, {
         active,
-        complete: !active && !!generationReport,
+        complete: !active && (showCompletion || !!generationReport),
       }),
-    [agents, active, generationReport]
+    [agents, active, generationReport, showCompletion]
   );
 
   const score =
@@ -415,6 +425,16 @@ export default function TailorGenerationProgress({
   const completionReady = showCompletion && !active;
 
   if (completionReady) {
+    const totalAgents =
+      generationReport?.agents_total ?? snapshot.totalAgents;
+    const completedAgents =
+      generationReport?.agents_completed ?? snapshot.completedCount;
+    const creationTimeLabel = loadedFromCache
+      ? "נטען מהשמור"
+      : generationReport?.generation_time_seconds != null
+        ? `${generationReport.generation_time_seconds} שניות`
+        : "—";
+
     return (
       <div
         className={`tailor-live tailor-live-complete ${compact ? "tailor-live-compact" : ""}`}
@@ -423,7 +443,11 @@ export default function TailorGenerationProgress({
       >
         <div className="tailor-complete-hero">
           <Sparkles size={22} aria-hidden="true" />
-          <h3>קורות החיים מוכנים</h3>
+          <h3>
+            {loadedFromCache
+              ? "נטענו קורות חיים שמורים"
+              : "קורות החיים מוכנים"}
+          </h3>
         </div>
         <ScoreLifecyclePanel score={score} active={false} />
         <ul className="tailor-complete-stats">
@@ -431,7 +455,7 @@ export default function TailorGenerationProgress({
             <span>שלבים שהושלמו</span>
             <strong>
               {snapshot.stageOfLabel ||
-                `${snapshot.completedCount}/${snapshot.totalAgents}`}
+                `${completedAgents}/${totalAgents}`}
             </strong>
           </li>
           <li>
@@ -440,11 +464,7 @@ export default function TailorGenerationProgress({
           </li>
           <li>
             <span>זמן יצירה</span>
-            <strong>
-              {generationReport?.generation_time_seconds != null
-                ? `${generationReport.generation_time_seconds} שניות`
-                : "—"}
-            </strong>
+            <strong>{creationTimeLabel}</strong>
           </li>
         </ul>
         {!!generationReport?.top_interview_reasons?.length && (

@@ -103,6 +103,26 @@ export function buildProgressSnapshot(
   };
 }
 
+/**
+ * When a tailor POST finishes but SSE stages never arrived (cache hit / race),
+ * treat every agent as completed so the summary never shows a fake 0/4.
+ */
+export function markAgentsCompletedIfIdle(
+  agents: TailorAgentState[],
+  options: { active: boolean; complete: boolean }
+): TailorAgentState[] {
+  if (options.active || !options.complete) return agents;
+  const anyProgress = agents.some(
+    (a) => a.status === "completed" || a.status === "running" || a.status === "failed"
+  );
+  if (anyProgress) return agents;
+  return agents.map((a) => ({
+    ...a,
+    status: "completed" as const,
+    progress: 100,
+  }));
+}
+
 /** Prefer Hebrew catalog messages over raw English SSE text when possible. */
 const EN_TO_HE_HINTS: Array<[RegExp, string]> = [
   [/reading candidate|candidate profile|original resume/i, "קורא את פרופיל המועמד…"],

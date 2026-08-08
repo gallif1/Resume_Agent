@@ -728,6 +728,11 @@ export default function CvDetails({
     if (bestSessionRef.current?.jobId !== jobId) {
       bestSessionRef.current = null;
     }
+    // Clear prior run chrome immediately (openTailorStream also resets these).
+    setTailorStages([]);
+    setTailorDecisions([]);
+    setGenerationReport(null);
+    setTailorStatusMessage("מתחבר לצוות ה-AI…");
     setResultModalOpen(false);
     setGenerationUiOpen(true);
     setGenerationBackground(false);
@@ -911,7 +916,11 @@ export default function CvDetails({
         setTailorDecisions(result.decision_log);
       }
       applyTailoredResult(result, { resetSession: true });
-      setTailorStatusMessage("קורות החיים נוצרו בהצלחה");
+      setTailorStatusMessage(
+        result.from_cache
+          ? "נטענו קורות חיים שמורים למשרה זו"
+          : "קורות החיים נוצרו בהצלחה"
+      );
       setGenerationUiOpen(true);
       setGenerationBackground(false);
     } catch (e) {
@@ -1304,7 +1313,7 @@ export default function CvDetails({
               type="button"
               className={`btn btn-ghost btn-sm ${busyTailor ? "btn-loading" : ""}`}
               disabled={busyTailor}
-              onClick={() => handleTailorCv(m)}
+              onClick={() => handleTailorCv(m, /* force */ true)}
               aria-busy={busyTailor}
             >
               {busyTailor ? (

@@ -204,6 +204,50 @@ describe("GenerationLiveModal mobile close UX", () => {
       0
     );
   });
+
+  it("cache load shows saved-draft copy and not a fake 0/4 run", () => {
+    render(
+      <GenerationLiveModal
+        open
+        active={false}
+        stages={[]}
+        decisions={[]}
+        generationReport={{
+          from_cache: true,
+          agents_completed: 4,
+          agents_total: 4,
+          resume_revisions: 3,
+          generation_time_seconds: null,
+          score_breakdown: {
+            original_score: 70,
+            tailored_score: 77,
+            score_delta: 7,
+            calculation_status: "complete",
+          },
+        }}
+        result={{
+          cv_id: "cv1",
+          job_id: 7,
+          title: "Backend Engineer",
+          company: "TARC",
+          markdown: "# CV",
+          highlights: [],
+          caveats: [],
+          from_cache: true,
+          saved_path: "x.md",
+        }}
+        originalBaseline={70}
+        onRequestClose={vi.fn()}
+        onConfirmClose={vi.fn()}
+        onPreview={vi.fn()}
+        onViewPdf={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/נטענו קורות חיים שמורים/)).toBeInTheDocument();
+    expect(screen.getByText("4/4")).toBeInTheDocument();
+    expect(screen.getByText("נטען מהשמור")).toBeInTheDocument();
+    expect(screen.queryByText(/0 שניות/)).not.toBeInTheDocument();
+  });
 });
 
 describe("expandable agent cards", () => {

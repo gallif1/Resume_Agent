@@ -5,12 +5,13 @@ import {
   computeWeightedProgress,
   isTailorGenerating,
   localizeAgentMessage,
+  markAgentsCompletedIfIdle,
   resolveActiveTailoredCv,
   resolveMergedStage,
   STAGE_ORDER,
   STAGE_WEIGHTS,
+  type TailorAgentState,
 } from "./generationProgress";
-import type { TailorAgentState } from "./generationProgress";
 
 function agents(status: TailorAgentState["status"][] = []): TailorAgentState[] {
   return STAGE_ORDER.map((id, i) => ({
@@ -89,5 +90,23 @@ describe("cross-job tailor session state", () => {
     expect(resolveActiveTailoredCv(draftA, 1)).toEqual(draftA);
     expect(resolveActiveTailoredCv(draftA, null)).toEqual(draftA);
     expect(resolveActiveTailoredCv(null, 2)).toBeNull();
+  });
+
+  it("marks idle agents completed when a run finished without SSE stages", () => {
+    const idle: TailorAgentState[] = STAGE_ORDER.map((id) => ({
+      id,
+      label: id,
+      message: "",
+      status: "pending",
+      progress: 0,
+    }));
+    const done = markAgentsCompletedIfIdle(idle, {
+      active: false,
+      complete: true,
+    });
+    expect(done.every((a) => a.status === "completed")).toBe(true);
+    expect(
+      markAgentsCompletedIfIdle(idle, { active: true, complete: false })
+    ).toEqual(idle);
   });
 });
