@@ -80,6 +80,49 @@ class ResumeKnowledgeAgent(Agent[ResumeKnowledgeInput, ResumeKnowledgeOutput]):
         ):
             resume_facts["skills"] = list(classic.get("skills") or [])
             resume_facts["display_skills"] = list(classic.get("skills") or [])
+
+        # Education: prefer classic normalized entries (never stringified dicts)
+        from intelligent_tailoring.canonical_resume import (
+            looks_like_raw_data,
+            normalize_education_entries,
+        )
+
+        classic_edu = normalize_education_entries(classic.get("education"))
+        kb_edu = normalize_education_entries(resume_facts.get("education"))
+        kb_leaks = any(
+            looks_like_raw_data(str(e.get("degree") or ""))
+            or looks_like_raw_data(str(e.get("institution") or ""))
+            for e in kb_edu
+        )
+        if classic_edu and (not kb_edu or kb_leaks or len(classic_edu) >= len(kb_edu)):
+            resume_facts["education"] = classic_edu
+        else:
+            resume_facts["education"] = kb_edu
+
+        # Contact: merge classic so GitHub/LinkedIn are never lost at Agent 1
+        classic_contact = classic.get("contact") if isinstance(classic.get("contact"), dict) else {}
+        kb_contact = (
+            resume_facts.get("contact")
+            if isinstance(resume_facts.get("contact"), dict)
+            else {}
+        )
+        merged_contact = dict(kb_contact)
+        for field in (
+            "name",
+            "email",
+            "phone",
+            "linkedin",
+            "github",
+            "portfolio",
+            "location",
+        ):
+            if str(classic_contact.get(field) or "").strip() and not str(
+                merged_contact.get(field) or ""
+            ).strip():
+                merged_contact[field] = classic_contact[field]
+        if merged_contact:
+            resume_facts["contact"] = merged_contact
+
         resume_facts["extraction_meta"] = classic.get("extraction_meta") or {}
 
         warnings: list[str] = []

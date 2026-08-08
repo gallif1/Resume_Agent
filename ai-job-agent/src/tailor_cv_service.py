@@ -358,20 +358,44 @@ def render_tailored_cv_markdown(
         lines += ["", "## Skills", ""]
         lines += _skill_rows(skills)
 
-    education = [e for e in cv.get("education") or [] if isinstance(e, dict)]
+    # Education — always normalize; never render stringified dicts/lists
+    try:
+        from intelligent_tailoring.canonical_resume import (
+            format_education_entry,
+            looks_like_raw_data,
+            normalize_education_entries,
+        )
+
+        education = normalize_education_entries(cv.get("education"))
+    except Exception:
+        education = [e for e in cv.get("education") or [] if isinstance(e, dict)]
+        looks_like_raw_data = lambda t: "{" in str(t) and ":" in str(t)  # noqa: E731
+        format_education_entry = None  # type: ignore
+
     if education:
-        lines += ["", "## Education"]
+        edu_lines: list[str] = []
         for entry in education:
-            degree = str(entry.get("degree") or "").strip()
-            institution = str(entry.get("institution") or "").strip()
-            dates = str(entry.get("dates") or "").strip()
-            heading = degree or institution
-            if not heading:
+            if format_education_entry is not None:
+                formatted = format_education_entry(entry)
+                degree = formatted.get("degree") or ""
+                institution = formatted.get("institution") or ""
+                dates = formatted.get("dates") or ""
+                heading = formatted.get("heading") or degree or institution
+            else:
+                degree = str(entry.get("degree") or "").strip()
+                institution = str(entry.get("institution") or "").strip()
+                dates = str(entry.get("dates") or "").strip()
+                heading = degree or institution
+            if not heading or looks_like_raw_data(heading):
                 continue
-            lines += ["", f"### {heading}"]
+            if looks_like_raw_data(degree) or looks_like_raw_data(institution):
+                continue
+            edu_lines += ["", f"### {heading}"]
             meta = _entry_meta_line(institution if degree else "", dates)
-            if meta:
-                lines += ["", meta]
+            if meta and not looks_like_raw_data(meta):
+                edu_lines += ["", meta]
+        if edu_lines:
+            lines += ["", "## Education"] + edu_lines
 
     certifications = list(cv.get("certifications") or [])
     if certifications:
@@ -532,6 +556,22 @@ def _document_caveats(report: dict[str, Any]) -> list[str]:
     return caveats
 
 
+def _markdown_has_raw_data(markdown: str) -> bool:
+    """Detect Python/JSON structure leakage in rendered resume markdown."""
+    try:
+        from intelligent_tailoring.canonical_resume import looks_like_raw_data
+    except Exception:
+        looks_like_raw_data = lambda t: "{" in t and ":" in t and ("'" in t or '"' in t)  # noqa: E731
+
+    for line in (markdown or "").splitlines():
+        if looks_like_raw_data(line):
+            return True
+        # Extra patterns that often appear mid-line in Education headings
+        if re.search(r"\{['\"]?\w+['\"]?\s*:\s*\[", line):
+            return True
+    return False
+
+
 def build_tailor_document(
     report: dict[str, Any],
     *,
@@ -542,6 +582,22 @@ def build_tailor_document(
 ) -> dict[str, Any]:
     """Turn an evaluation report into the saved/displayed tailored-CV document."""
     tailored_payload = report.get("tailored_cv") or {}
+    if isinstance(tailored_payload, dict):
+        try:
+            from intelligent_tailoring.canonical_resume import (
+                normalize_education_entries,
+                sanitize_raw_data_fields,
+            )
+
+            tailored_payload = sanitize_raw_data_fields(tailored_payload)
+            tailored_payload["education"] = normalize_education_entries(
+                tailored_payload.get("education")
+            )
+            # Reflect sanitization back onto the report so exports stay clean
+            if isinstance(report.get("tailored_cv"), dict):
+                report = {**report, "tailored_cv": tailored_payload}
+        except Exception:
+            pass
     name, contact_line, target_role = build_resume_header(
         cv_profile,
         job,
@@ -553,6 +609,35 @@ def build_tailor_document(
         contact_line=contact_line,
         target_role=target_role,
     )
+    # Hard render guard: if raw structures still leaked, sanitize and re-render
+    if _markdown_has_raw_data(cv_markdown) and isinstance(tailored_payload, dict):
+        try:
+            from intelligent_tailoring.canonical_resume import (
+                normalize_education_entries,
+                sanitize_raw_data_fields,
+            )
+
+            tailored_payload = sanitize_raw_data_fields(tailored_payload)
+            tailored_payload["education"] = normalize_education_entries(
+                tailored_payload.get("education")
+            )
+            cv_markdown = render_tailored_cv_markdown(
+                tailored_payload,
+                name=name,
+                contact_line=contact_line,
+                target_role=target_role,
+            )
+            # Strip any remaining suspicious lines rather than ship them
+            if _markdown_has_raw_data(cv_markdown):
+                cleaned_lines = [
+                    ln
+                    for ln in cv_markdown.splitlines()
+                    if not _markdown_has_raw_data(ln)
+                    and not re.search(r"\{['\"]?\w+['\"]?\s*:\s*\[", ln)
+                ]
+                cv_markdown = "\n".join(cleaned_lines).strip() + "\n"
+        except Exception:
+            pass
     if not cv_markdown.strip():
         raise TailorCvError("המנוע החזיר קורות חיים ריקים", status_code=502)
 

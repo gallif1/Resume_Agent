@@ -15,6 +15,605 @@ logger = logging.getLogger("intelligent_tailoring.canonical_resume")
 
 CANONICAL_SCHEMA_VERSION = "canonical_resume_v1"
 
+# Aggregator / analyzer education shape (lists, not resume entries).
+_AGGREGATOR_EDU_KEYS = frozenset(
+    {
+        "degrees",
+        "institutions",
+        "fields_of_study",
+        "fieldsofstudy",
+        "fields",
+        "entries",
+        "items",
+    }
+)
+
+# Patterns typical of Python/JSON dict/list repr leaking into resume text.
+_RAW_DATA_PATTERNS = (
+    re.compile(r"^\s*\{['\"]?\w+['\"]?\s*:"),
+    re.compile(r"['\"]:\s*\["),
+    re.compile(r"\{['\"]degrees['\"]"),
+    re.compile(r"\{['\"]institutions['\"]"),
+    re.compile(r"\{['\"]fields_?of_?study['\"]"),
+    re.compile(r"\[['\"][^'\"]{1,40}['\"]\s*,\s*['\"]"),
+)
+
+
+def looks_like_raw_data(text: str) -> bool:
+    """True when text looks like a stringified dict/list, not human resume prose."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if ("{" in t and "}" in t) and (":" in t) and ("'" in t or '"' in t):
+        for pat in _RAW_DATA_PATTERNS:
+            if pat.search(t):
+                return True
+        # Generic Python-repr dict: {'key': ...}
+        if re.search(r"\{['\"][\w_]+['\"]\s*:", t):
+            return True
+    if t.startswith("{'") or t.startswith('{"') or t.startswith("[{"):
+        return True
+    return False
+
+
+def _as_str_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _try_parse_education_dict_repr(text: str) -> dict[str, Any] | None:
+    """Best-effort recovery when a dict was stringified into a degree field."""
+    raw = (text or "").strip()
+    if not looks_like_raw_data(raw):
+        return None
+    try:
+        import ast
+
+        parsed = ast.literal_eval(raw)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, dict):
+        return parsed
+    # Loose regex fallback for the common aggregator shape
+    degrees = re.findall(r"['\"]degrees['\"]\s*:\s*\[([^\]]*)\]", raw, flags=re.I)
+    institutions = re.findall(
+        r"['\"]institutions['\"]\s*:\s*\[([^\]]*)\]", raw, flags=re.I
+    )
+    fields = re.findall(
+        r"['\"]fields_?of_?study['\"]\s*:\s*\[([^\]]*)\]", raw, flags=re.I
+    )
+    if not (degrees or institutions or fields):
+        return None
+
+    def _items(blob: str) -> list[str]:
+        return [m.strip() for m in re.findall(r"['\"]([^'\"]+)['\"]", blob) if m.strip()]
+
+    return {
+        "degrees": _items(degrees[0]) if degrees else [],
+        "institutions": _items(institutions[0]) if institutions else [],
+        "fields_of_study": _items(fields[0]) if fields else [],
+    }
+
+
+def _education_entry_from_parts(
+    *,
+    degree: str = "",
+    institution: str = "",
+    field: str = "",
+    dates: str = "",
+) -> dict[str, str]:
+    deg = (degree or "").strip()
+    inst = (institution or "").strip()
+    fld = (field or "").strip()
+    # Avoid "B.Sc in Computer Science" when degree already embeds the field
+    if deg and fld and fld.lower() not in deg.lower():
+        deg_out = f"{deg} in {fld}"
+    else:
+        deg_out = deg or (f"Degree in {fld}" if fld else "")
+    return {
+        "degree": deg_out,
+        "institution": inst,
+        "field": fld if fld and fld.lower() not in deg_out.lower() else "",
+        "dates": (dates or "").strip(),
+    }
+
+
+def normalize_education_entries(education: Any) -> list[dict[str, Any]]:
+    """Normalize aggregator dicts / mixed lists into renderable education entries.
+
+    Accepts:
+    - list of entry dicts: {degree, institution, field, dates}
+    - aggregator dict: {degrees: [], institutions: [], fields_of_study: []}
+    - a single aggregator dict accidentally wrapped as a list item
+    Never returns stringified dicts as degree/institution text.
+    """
+    if education is None:
+        return []
+
+    # Aggregator object at the top level
+    if isinstance(education, dict):
+        keys = {str(k).lower() for k in education.keys()}
+        if education.get("entries") or education.get("items"):
+            return normalize_education_entries(
+                education.get("entries") or education.get("items")
+            )
+        if keys & {"degrees", "institutions", "fields_of_study", "fieldsofstudy", "fields"}:
+            degrees = _as_str_list(education.get("degrees"))
+            institutions = _as_str_list(education.get("institutions"))
+            fields = _as_str_list(
+                education.get("fields_of_study")
+                or education.get("fieldsofstudy")
+                or education.get("fields")
+            )
+            n = max(len(degrees), len(institutions), len(fields), 0)
+            if n == 0:
+                return []
+            # If only one of each, pair into a single entry; else zip by index
+            out: list[dict[str, Any]] = []
+            for i in range(n):
+                out.append(
+                    _education_entry_from_parts(
+                        degree=degrees[i] if i < len(degrees) else (degrees[0] if len(degrees) == 1 and n > 1 else ""),
+                        institution=institutions[i]
+                        if i < len(institutions)
+                        else (institutions[0] if len(institutions) == 1 and n > 1 else ""),
+                        field=fields[i]
+                        if i < len(fields)
+                        else (fields[0] if len(fields) == 1 and n > 1 else ""),
+                    )
+                )
+            # Collapse identical zip artifacts when one degree + one institution
+            if len(degrees) == 1 and len(institutions) == 1 and len(fields) <= 1:
+                return [
+                    _education_entry_from_parts(
+                        degree=degrees[0],
+                        institution=institutions[0],
+                        field=fields[0] if fields else "",
+                    )
+                ]
+            # Dedupe empty-ish
+            cleaned = [
+                e
+                for e in out
+                if str(e.get("degree") or "").strip()
+                or str(e.get("institution") or "").strip()
+            ]
+            return cleaned
+        # Single entry-shaped dict
+        if any(education.get(k) for k in ("degree", "institution", "field", "school")):
+            return [
+                _education_entry_from_parts(
+                    degree=str(education.get("degree") or ""),
+                    institution=str(
+                        education.get("institution") or education.get("school") or ""
+                    ),
+                    field=str(education.get("field") or ""),
+                    dates=str(
+                        education.get("dates")
+                        or education.get("year")
+                        or education.get("graduation_year")
+                        or ""
+                    ),
+                )
+            ]
+        # Unknown dict — do not stringify
+        return []
+
+    if not isinstance(education, list):
+        text = str(education).strip()
+        if not text or looks_like_raw_data(text):
+            recovered = _try_parse_education_dict_repr(text)
+            return normalize_education_entries(recovered) if recovered else []
+        return [{"degree": text, "institution": "", "field": "", "dates": ""}]
+
+    out: list[dict[str, Any]] = []
+    for entry in education:
+        if isinstance(entry, dict):
+            keys = {str(k).lower() for k in entry.keys()}
+            # Aggregator blob as a list item
+            if keys & {"degrees", "institutions", "fields_of_study", "fieldsofstudy"} and not (
+                entry.get("degree") or entry.get("institution")
+            ):
+                out.extend(normalize_education_entries(entry))
+                continue
+            degree = str(entry.get("degree") or "").strip()
+            institution = str(
+                entry.get("institution") or entry.get("school") or ""
+            ).strip()
+            field = str(entry.get("field") or "").strip()
+            dates = str(
+                entry.get("dates")
+                or entry.get("year")
+                or entry.get("graduation_year")
+                or ""
+            ).strip()
+            # Recover when degree itself is a stringified aggregator dict
+            if looks_like_raw_data(degree):
+                recovered = _try_parse_education_dict_repr(degree)
+                if recovered:
+                    out.extend(normalize_education_entries(recovered))
+                    continue
+                degree = ""
+            if looks_like_raw_data(institution):
+                recovered = _try_parse_education_dict_repr(institution)
+                if recovered:
+                    out.extend(normalize_education_entries(recovered))
+                    continue
+                institution = ""
+            if not degree and not institution and not field:
+                continue
+            out.append(
+                _education_entry_from_parts(
+                    degree=degree,
+                    institution=institution,
+                    field=field,
+                    dates=dates,
+                )
+            )
+        else:
+            text = str(entry).strip()
+            if not text:
+                continue
+            if looks_like_raw_data(text):
+                recovered = _try_parse_education_dict_repr(text)
+                if recovered:
+                    out.extend(normalize_education_entries(recovered))
+                continue
+            out.append(
+                {"degree": text, "institution": "", "field": "", "dates": ""}
+            )
+
+    # Dedupe by (degree, institution)
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for entry in out:
+        key = f"{str(entry.get('degree') or '').lower()}|{str(entry.get('institution') or '').lower()}"
+        if key in seen or key == "|":
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
+
+
+def format_education_entry(entry: dict[str, Any]) -> dict[str, str]:
+    """Return safe display fields for one education entry (never raw structures)."""
+    if not isinstance(entry, dict):
+        text = str(entry or "").strip()
+        if looks_like_raw_data(text):
+            recovered = normalize_education_entries(text)
+            return format_education_entry(recovered[0]) if recovered else {
+                "degree": "",
+                "institution": "",
+                "field": "",
+                "dates": "",
+                "heading": "",
+            }
+        return {
+            "degree": text,
+            "institution": "",
+            "field": "",
+            "dates": "",
+            "heading": text,
+        }
+    normalized = normalize_education_entries([entry])
+    if not normalized:
+        return {
+            "degree": "",
+            "institution": "",
+            "field": "",
+            "dates": "",
+            "heading": "",
+        }
+    e = normalized[0]
+    degree = str(e.get("degree") or "").strip()
+    institution = str(e.get("institution") or "").strip()
+    field = str(e.get("field") or "").strip()
+    dates = str(e.get("dates") or "").strip()
+    if looks_like_raw_data(degree) or looks_like_raw_data(institution):
+        return {
+            "degree": "",
+            "institution": "",
+            "field": "",
+            "dates": "",
+            "heading": "",
+        }
+    heading = degree or institution
+    return {
+        "degree": degree,
+        "institution": institution,
+        "field": field,
+        "dates": dates,
+        "heading": heading,
+    }
+
+
+def collect_resume_bullet_texts(resume: dict[str, Any] | None) -> list[str]:
+    """All experience/project bullet (+ description) strings from a resume dict."""
+    data = resume if isinstance(resume, dict) else {}
+    texts: list[str] = []
+    for entry in list(data.get("experience") or []) + list(data.get("projects") or []):
+        if not isinstance(entry, dict):
+            continue
+        for b in entry.get("bullets") or []:
+            t = str(b).strip()
+            if t:
+                texts.append(t)
+        desc = str(entry.get("description") or "").strip()
+        if desc:
+            texts.append(desc)
+    return texts
+
+
+def text_overlap_ratio(a: str, b: str) -> float:
+    """Jaccard token overlap for near-duplicate detection (0–1)."""
+    ta = {t for t in re.findall(r"[a-z0-9+#.]{3,}", (a or "").lower())}
+    tb = {t for t in re.findall(r"[a-z0-9+#.]{3,}", (b or "").lower())}
+    if not ta or not tb:
+        na, nb = re.sub(r"\s+", " ", (a or "").strip().lower()), re.sub(
+            r"\s+", " ", (b or "").strip().lower()
+        )
+        if not na or not nb:
+            return 0.0
+        if na == nb:
+            return 1.0
+        return 0.0
+    return len(ta & tb) / max(len(ta | tb), 1)
+
+
+def find_raw_data_leaks(resume: dict[str, Any] | None) -> list[str]:
+    """Locate user-visible fields that still contain stringified structures."""
+    data = resume if isinstance(resume, dict) else {}
+    leaks: list[str] = []
+    summary = str(data.get("professional_summary") or data.get("summary") or "")
+    if looks_like_raw_data(summary):
+        leaks.append("summary")
+    for i, line in enumerate(data.get("skills") or []):
+        if looks_like_raw_data(str(line)):
+            leaks.append(f"skills[{i}]")
+    for i, entry in enumerate(data.get("experience") or []):
+        if not isinstance(entry, dict):
+            continue
+        for key in ("title", "company", "dates"):
+            if looks_like_raw_data(str(entry.get(key) or "")):
+                leaks.append(f"experience[{i}].{key}")
+        for j, b in enumerate(entry.get("bullets") or []):
+            if looks_like_raw_data(str(b)):
+                leaks.append(f"experience[{i}].bullets[{j}]")
+    for i, entry in enumerate(data.get("projects") or []):
+        if not isinstance(entry, dict):
+            continue
+        for key in ("name", "description"):
+            if looks_like_raw_data(str(entry.get(key) or "")):
+                leaks.append(f"projects[{i}].{key}")
+        for j, b in enumerate(entry.get("bullets") or []):
+            if looks_like_raw_data(str(b)):
+                leaks.append(f"projects[{i}].bullets[{j}]")
+    for i, entry in enumerate(data.get("education") or []):
+        if not isinstance(entry, dict):
+            if looks_like_raw_data(str(entry)):
+                leaks.append(f"education[{i}]")
+            continue
+        for key in ("degree", "institution", "field", "dates"):
+            if looks_like_raw_data(str(entry.get(key) or "")):
+                leaks.append(f"education[{i}].{key}")
+    return leaks
+
+
+def sanitize_raw_data_fields(resume: dict[str, Any]) -> dict[str, Any]:
+    """Strip/repair stringified structures from all user-visible resume fields."""
+    out = deepcopy(resume) if isinstance(resume, dict) else {}
+    summary = str(out.get("professional_summary") or out.get("summary") or "")
+    if looks_like_raw_data(summary):
+        out["professional_summary"] = ""
+        out["summary"] = ""
+
+    skills_clean = []
+    for line in out.get("skills") or []:
+        text = str(line).strip()
+        if text and not looks_like_raw_data(text):
+            skills_clean.append(text)
+    out["skills"] = skills_clean
+
+    for section in ("experience", "projects"):
+        cleaned_section = []
+        for entry in out.get(section) or []:
+            if not isinstance(entry, dict):
+                continue
+            fixed = dict(entry)
+            for key in ("title", "company", "name", "dates", "description"):
+                if key in fixed and looks_like_raw_data(str(fixed.get(key) or "")):
+                    fixed[key] = ""
+            bullets = []
+            for b in fixed.get("bullets") or []:
+                text = str(b).strip()
+                if text and not looks_like_raw_data(text):
+                    bullets.append(text)
+            fixed["bullets"] = bullets
+            cleaned_section.append(fixed)
+        out[section] = cleaned_section
+
+    out["education"] = normalize_education_entries(out.get("education"))
+    return out
+
+
+def ensure_minimum_content_from_source(
+    tailored: dict[str, Any],
+    *,
+    resume_facts: dict[str, Any],
+    min_bullets_per_role: int = 1,
+    min_bullets_per_project: int = 1,
+) -> dict[str, Any]:
+    """Guarantee every source Experience role and Project appears by title.
+
+    Tailoring may shorten bullets and reorder entries, but must never omit a
+    real position or project from the base resume. Skills atoms from the source
+    are also restored into the Skills section when missing.
+    """
+    out = sanitize_raw_data_fields(deepcopy(tailored) if isinstance(tailored, dict) else {})
+    source_roles = [
+        r for r in (resume_facts.get("experience_roles") or resume_facts.get("experience") or [])
+        if isinstance(r, dict)
+        and (
+            str(r.get("title") or "").strip()
+            or str(r.get("company") or "").strip()
+        )
+        and [str(b).strip() for b in (r.get("bullets") or []) if str(b).strip()]
+    ]
+    source_projects = normalize_project_list(resume_facts.get("projects") or [])
+    source_projects = [
+        p
+        for p in source_projects
+        if isinstance(p, dict)
+        and str(p.get("name") or "").strip()
+        and (
+            str(p.get("description") or "").strip()
+            or [str(b).strip() for b in (p.get("bullets") or []) if str(b).strip()]
+        )
+    ]
+
+    tailored_exp = [e for e in (out.get("experience") or []) if isinstance(e, dict)]
+    # Index existing by normalized title
+    present_titles = {
+        str(e.get("title") or "").strip().lower()
+        for e in tailored_exp
+        if str(e.get("title") or "").strip()
+    }
+    present_companies = {
+        (
+            str(e.get("title") or "").strip().lower(),
+            str(e.get("company") or "").strip().lower(),
+        )
+        for e in tailored_exp
+    }
+
+    merged_exp = list(tailored_exp)
+    for role in source_roles:
+        title = str(role.get("title") or "").strip()
+        company = str(role.get("company") or "").strip()
+        t_key = title.lower()
+        pair = (t_key, company.lower())
+        already = False
+        if t_key and t_key in present_titles:
+            already = True
+        elif pair in present_companies:
+            already = True
+        else:
+            # Fuzzy: title contained
+            for e in merged_exp:
+                et = str(e.get("title") or "").strip().lower()
+                if t_key and et and (t_key == et or t_key in et or et in t_key):
+                    already = True
+                    # Ensure it has at least one bullet
+                    bullets = [
+                        str(b).strip() for b in (e.get("bullets") or []) if str(b).strip()
+                    ]
+                    if len(bullets) < min_bullets_per_role:
+                        src_b = [
+                            str(b).strip()
+                            for b in (role.get("bullets") or [])
+                            if str(b).strip()
+                        ]
+                        if src_b:
+                            e["bullets"] = src_b[: max(min_bullets_per_role, 1)]
+                    break
+        if already:
+            continue
+        bullets = [str(b).strip() for b in (role.get("bullets") or []) if str(b).strip()]
+        if not bullets:
+            continue
+        merged_exp.append(
+            {
+                "title": title,
+                "company": company,
+                "dates": str(role.get("dates") or ""),
+                "bullets": bullets[: max(min_bullets_per_role, 1)],
+            }
+        )
+        present_titles.add(t_key)
+    out["experience"] = merged_exp
+
+    tailored_proj = [p for p in (out.get("projects") or []) if isinstance(p, dict)]
+    present_names = {
+        str(p.get("name") or "").strip().lower()
+        for p in tailored_proj
+        if str(p.get("name") or "").strip()
+    }
+    merged_proj = list(tailored_proj)
+    for proj in source_projects:
+        name = str(proj.get("name") or "").strip()
+        n_key = name.lower()
+        already = False
+        if n_key and n_key in present_names:
+            already = True
+            # Ensure content
+            for e in merged_proj:
+                en = str(e.get("name") or "").strip().lower()
+                if n_key and en and (n_key == en or n_key in en or en in n_key):
+                    bullets = [
+                        str(b).strip() for b in (e.get("bullets") or []) if str(b).strip()
+                    ]
+                    desc = str(e.get("description") or "").strip()
+                    if len(bullets) < min_bullets_per_project and not desc:
+                        src_b = [
+                            str(b).strip()
+                            for b in (proj.get("bullets") or [])
+                            if str(b).strip()
+                        ]
+                        src_d = str(proj.get("description") or "").strip()
+                        if src_b:
+                            e["bullets"] = src_b[: max(min_bullets_per_project, 1)]
+                        elif src_d:
+                            e["description"] = src_d
+                    break
+        else:
+            for e in merged_proj:
+                en = str(e.get("name") or "").strip().lower()
+                if n_key and en and (n_key == en or n_key in en or en in n_key):
+                    already = True
+                    break
+        if already:
+            continue
+        bullets = [str(b).strip() for b in (proj.get("bullets") or []) if str(b).strip()]
+        desc = str(proj.get("description") or "").strip()
+        if not bullets and not desc:
+            continue
+        merged_proj.append(
+            {
+                "name": name,
+                "description": desc,
+                "bullets": bullets[: max(min_bullets_per_project, 1)] if bullets else [],
+                "technologies": list(proj.get("technologies") or []),
+            }
+        )
+        present_names.add(n_key)
+    out["projects"] = merged_proj
+
+    # Skills: restore every source atom into categorized lines
+    source_skills = [
+        str(s).strip()
+        for s in (resume_facts.get("display_skills") or resume_facts.get("skills") or [])
+        if str(s).strip()
+    ]
+    if source_skills:
+        from intelligent_tailoring.skill_taxonomy import normalize_skill_lines
+
+        current = [str(s).strip() for s in (out.get("skills") or []) if str(s).strip()]
+        # Merge source + current then normalize — preserves atoms, reorders by JD later
+        out["skills"] = normalize_skill_lines(
+            list(dict.fromkeys(current + source_skills))
+        )
+
+    # Education: always normalize from tailored or source facts
+    edu = normalize_education_entries(out.get("education"))
+    if not edu:
+        edu = normalize_education_entries(resume_facts.get("education"))
+    out["education"] = edu
+
+    return drop_empty_shell_entries(out)
+
 
 def content_inventory(resume: dict[str, Any] | None) -> dict[str, Any]:
     """Count structured content without logging personal prose."""
@@ -411,6 +1010,7 @@ def completeness_failures(
     *,
     source_inventory: dict[str, Any] | None = None,
     coverage: dict[str, Any] | None = None,
+    resume_facts: dict[str, Any] | None = None,
 ) -> list[str]:
     """Hard completeness failures for empty shells / silent loss."""
     failures: list[str] = []
@@ -433,6 +1033,24 @@ def completeness_failures(
     if inv["empty_projects"]:
         failures.append("empty_project_entries")
 
+    # Raw structured data must never reach the user-facing resume
+    for leak in find_raw_data_leaks(resume):
+        failures.append(f"raw_data_leak:{leak}")
+
+    # Summary must not copy experience/project bullets verbatim
+    bullets = collect_resume_bullet_texts(resume)
+    if summary and bullets:
+        for sent in re.split(r"(?<=[.!?])\s+", summary):
+            sent = sent.strip()
+            if len(sent.split()) < 6:
+                continue
+            for bullet in bullets:
+                if text_overlap_ratio(sent, bullet) >= 0.80:
+                    failures.append("summary_duplicates_bullet")
+                    break
+            if "summary_duplicates_bullet" in failures:
+                break
+
     src = source_inventory or {}
     if src.get("experience_bullets", 0) >= 1 and inv["experience_entries"] > 0:
         if inv["experience_bullets"] < 1:
@@ -444,6 +1062,41 @@ def completeness_failures(
             failures.append("project_shown_without_content")
     if src.get("skill_atoms", 0) >= 8 and inv["skill_atoms"] < 4:
         failures.append("skills_severely_underfilled")
+
+    # Minimum content guarantee: every source role/project title must appear
+    facts = resume_facts if isinstance(resume_facts, dict) else {}
+    if facts:
+        source_titles = {
+            str(r.get("title") or "").strip().lower()
+            for r in (facts.get("experience_roles") or facts.get("experience") or [])
+            if isinstance(r, dict) and str(r.get("title") or "").strip()
+            and [str(b).strip() for b in (r.get("bullets") or []) if str(b).strip()]
+        }
+        tailored_titles = {
+            str(e.get("title") or "").strip().lower()
+            for e in (resume.get("experience") or [])
+            if isinstance(e, dict) and str(e.get("title") or "").strip()
+        }
+        for title in source_titles:
+            if title and not any(
+                title == t or title in t or t in title for t in tailored_titles if t
+            ):
+                failures.append(f"missing_source_experience:{title[:48]}")
+        source_projects = {
+            str(p.get("name") or "").strip().lower()
+            for p in normalize_project_list(facts.get("projects") or [])
+            if isinstance(p, dict) and str(p.get("name") or "").strip()
+        }
+        tailored_projects = {
+            str(p.get("name") or "").strip().lower()
+            for p in (resume.get("projects") or [])
+            if isinstance(p, dict) and str(p.get("name") or "").strip()
+        }
+        for name in source_projects:
+            if name and not any(
+                name == n or name in n or n in name for n in tailored_projects if n
+            ):
+                failures.append(f"missing_source_project:{name[:48]}")
 
     # Generic one-word Other skills
     for line in resume.get("skills") or []:
@@ -517,25 +1170,31 @@ def restore_missing_content_from_source(
     tailored: dict[str, Any],
     *,
     resume_facts: dict[str, Any],
-    max_roles: int = 3,
-    max_projects: int = 2,
+    max_roles: int = 0,
+    max_projects: int = 0,
     min_bullets_per_role: int = 1,
     min_bullets_per_project: int = 2,
 ) -> dict[str, Any]:
-    """Preservation-first repair: refill empty shells from verified source facts."""
+    """Preservation-first repair: refill empty shells from verified source facts.
+
+    ``max_roles`` / ``max_projects`` of 0 means keep *all* source entries
+    (minimum-content guarantee). Positive caps remain for callers that need them.
+    """
     out = drop_empty_shell_entries(deepcopy(tailored))
     source_roles = [
         r for r in (resume_facts.get("experience_roles") or []) if isinstance(r, dict)
     ]
     source_projects = normalize_project_list(resume_facts.get("projects") or [])
+    role_cap = len(source_roles) if max_roles <= 0 else max_roles
+    project_cap = len(source_projects) if max_projects <= 0 else max_projects
 
-    # If tailored experience empty/thin, restore top source roles with bullets
+    # If tailored experience empty/thin, restore source roles with bullets
     tailored_exp = [e for e in (out.get("experience") or []) if isinstance(e, dict)]
     if not tailored_exp or sum(
         len([b for b in (e.get("bullets") or []) if str(b).strip()]) for e in tailored_exp
     ) < 1:
         restored = []
-        for role in source_roles[:max_roles]:
+        for role in source_roles[:role_cap]:
             bullets = [str(b).strip() for b in (role.get("bullets") or []) if str(b).strip()]
             if not bullets:
                 continue
@@ -575,7 +1234,7 @@ def restore_missing_content_from_source(
         for p in tailored_proj
     ):
         restored_p = []
-        for proj in source_projects[:max_projects]:
+        for proj in source_projects[:project_cap]:
             bullets = [str(b).strip() for b in (proj.get("bullets") or []) if str(b).strip()]
             desc = str(proj.get("description") or "").strip()
             if not bullets and not desc:
@@ -637,6 +1296,13 @@ def restore_missing_content_from_source(
 
         out["skills"] = normalize_skill_lines(source_skills)
 
+    # Always enforce 100% source role/project title coverage + education normalize
+    out = ensure_minimum_content_from_source(
+        out,
+        resume_facts=resume_facts,
+        min_bullets_per_role=min_bullets_per_role,
+        min_bullets_per_project=max(1, min(min_bullets_per_project, 2)),
+    )
     return drop_empty_shell_entries(out)
 
 

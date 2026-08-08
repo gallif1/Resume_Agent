@@ -8,7 +8,10 @@ from typing import Any
 
 from ai_client import truncate_text
 from config import OPENAI_CV_MAX_CHARS
-from intelligent_tailoring.canonical_resume import normalize_project_list
+from intelligent_tailoring.canonical_resume import (
+    normalize_education_entries,
+    normalize_project_list,
+)
 from intelligent_tailoring.experience_math import (
     estimate_years_from_text,
     years_from_experience_entries,
@@ -278,11 +281,7 @@ def extract_structured_resume(
     if not isinstance(projects, list):
         projects = []
 
-    education = cv_profile.get("education") or []
-    if isinstance(education, dict):
-        education = education.get("entries") or education.get("items") or [education]
-    if not isinstance(education, list):
-        education = []
+    education = normalize_education_entries(cv_profile.get("education"))
 
     skills_block = cv_profile.get("skills") or {}
     if isinstance(skills_block, dict):
@@ -320,25 +319,23 @@ def extract_structured_resume(
                 section_projects.extend(normalize_project_list([line.strip()]))
     projects = _merge_projects(normalized_projects, master_projects, section_projects)
 
-    # Education from master when profile education is only degree lists
-    if master.get("education") and (
+    # Prefer master_profile education entries when richer / when aggregator lists
+    # produced nothing usable.
+    master_edu = normalize_education_entries(master.get("education"))
+    if master_edu and (
         not education
-        or all(not isinstance(e, dict) or not e.get("institution") for e in education)
+        or all(
+            not str(e.get("institution") or "").strip()
+            and not str(e.get("degree") or "").strip()
+            for e in education
+        )
     ):
-        edu_out: list[dict[str, Any]] = []
-        for entry in master.get("education") or []:
-            if not isinstance(entry, dict):
-                continue
-            edu_out.append(
-                {
-                    "degree": str(entry.get("degree") or ""),
-                    "institution": str(entry.get("institution") or ""),
-                    "field": str(entry.get("field") or ""),
-                    "dates": str(entry.get("year") or entry.get("dates") or ""),
-                }
-            )
-        if edu_out:
-            education = edu_out
+        education = master_edu
+    elif master_edu and education:
+        # Fill missing institution/degree from master when aggregator was partial
+        if not any(str(e.get("institution") or "").strip() for e in education):
+            education = master_edu
+    education = normalize_education_entries(education)
 
     years = years_from_experience_entries(
         [

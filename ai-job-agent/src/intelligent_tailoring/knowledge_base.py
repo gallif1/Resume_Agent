@@ -720,27 +720,30 @@ def build_knowledge_base(
             )
 
     # --- Education (also mine soft evidence from degree/field/notes) ---
-    for e_idx, edu in enumerate(structured.get("education") or []):
-        if isinstance(edu, dict):
-            text = " — ".join(
-                str(edu.get(k) or "")
-                for k in ("institution", "degree", "field", "dates", "specialization")
-                if edu.get(k)
-            ) or str(edu)
-            extra_bits = [
-                str(edu.get(k) or "").strip()
-                for k in ("description", "notes", "achievements", "honors", "details")
-                if edu.get(k)
-            ]
-        else:
-            text = str(edu)
-            extra_bits = []
-        text = text.strip()
-        if not text:
+    # Never fall back to str(dict) — aggregator shapes must be normalized first.
+    from intelligent_tailoring.canonical_resume import (
+        format_education_entry,
+        looks_like_raw_data,
+        normalize_education_entries,
+    )
+
+    normalized_edu = normalize_education_entries(structured.get("education"))
+    for e_idx, edu in enumerate(normalized_edu):
+        formatted = format_education_entry(edu)
+        degree = formatted.get("degree") or ""
+        institution = formatted.get("institution") or ""
+        dates = formatted.get("dates") or ""
+        text = " — ".join(p for p in (degree, institution, dates) if p)
+        if not text or looks_like_raw_data(text):
             continue
+        extra_bits = [
+            str(edu.get(k) or "").strip()
+            for k in ("description", "notes", "achievements", "honors", "details")
+            if isinstance(edu, dict) and edu.get(k) and not looks_like_raw_data(str(edu.get(k)))
+        ]
         order += 1
         edu_id = f"edu_{e_idx}"
-        org = str(edu.get("institution") or "") if isinstance(edu, dict) else ""
+        org = institution
         facts.append(
             ResumeFact(
                 id=_fact_id("edu", str(e_idx), text),
@@ -1077,7 +1080,25 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
             )
             entry["bullets"].append(f.original_text)
         elif f.fact_type == "education":
-            education.append({"institution": f.organization, "degree": f.original_text})
+            # original_text is "degree — institution — dates"; keep degree readable
+            parts = [
+                p.strip()
+                for p in re.split(r"\s+[—–-]\s+", f.original_text or "")
+                if p.strip()
+            ]
+            degree = parts[0] if parts else (f.original_text or "")
+            institution = f.organization or (parts[1] if len(parts) > 1 else "")
+            dates = parts[2] if len(parts) > 2 else ""
+            # Avoid duplicating institution into degree when join order was institution-first
+            if institution and degree == institution and len(parts) > 1:
+                degree = parts[0]
+            education.append(
+                {
+                    "institution": institution,
+                    "degree": degree,
+                    "dates": dates,
+                }
+            )
         elif f.fact_type == "certification":
             certifications.append(f.original_text)
 
@@ -1105,6 +1126,8 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
 
     years = estimate_years_from_text(kb.raw_text)
 
+    from intelligent_tailoring.canonical_resume import normalize_education_entries
+
     return {
         "raw_text": kb.raw_text,
         "candidate_payload": kb.raw_text,
@@ -1113,7 +1136,7 @@ def knowledge_base_to_resume_facts(kb: ResumeKnowledgeBase) -> dict[str, Any]:
         "display_skills": skills,
         "experience_roles": roles,
         "projects": projects,
-        "education": education,
+        "education": normalize_education_entries(education),
         "certifications": certifications,
         "years_of_experience": years,
         "soft_competencies": soft_competencies[:24],
