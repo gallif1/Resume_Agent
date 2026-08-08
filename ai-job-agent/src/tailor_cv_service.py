@@ -206,15 +206,30 @@ def _assemble_structured_markdown(
 
 
 def build_resume_header(
-    cv_profile: dict[str, Any], job: dict[str, Any]
+    cv_profile: dict[str, Any],
+    job: dict[str, Any],
+    *,
+    tailored_cv: dict[str, Any] | None = None,
 ) -> tuple[str, str, str]:
     """Return (name, contact_line, target_role) from verified profile facts.
 
     The model never supplies header facts, so contact details and the candidate's
     name cannot be invented — they are copied from the parsed profile.
+    When ``tailored_cv`` carries a preserved ``contact`` block (email/phone/
+    LinkedIn/GitHub/portfolio), any fields missing from the profile are filled
+    from it so links are never silently dropped.
     """
-    contact = cv_profile.get("contact")
-    contact = contact if isinstance(contact, dict) else {}
+    contact = dict(cv_profile.get("contact") or {}) if isinstance(
+        cv_profile.get("contact"), dict
+    ) else {}
+    tailored_contact = {}
+    if isinstance(tailored_cv, dict) and isinstance(tailored_cv.get("contact"), dict):
+        tailored_contact = tailored_cv.get("contact") or {}
+    for field in ("name",) + CONTACT_FIELD_ORDER:
+        if not str(contact.get(field) or "").strip() and str(
+            tailored_contact.get(field) or ""
+        ).strip():
+            contact[field] = tailored_contact[field]
     try:
         from parse_cv import sanitize_person_name
 
@@ -526,9 +541,14 @@ def build_tailor_document(
     initial_match_score: int | None = None,
 ) -> dict[str, Any]:
     """Turn an evaluation report into the saved/displayed tailored-CV document."""
-    name, contact_line, target_role = build_resume_header(cv_profile, job)
+    tailored_payload = report.get("tailored_cv") or {}
+    name, contact_line, target_role = build_resume_header(
+        cv_profile,
+        job,
+        tailored_cv=tailored_payload if isinstance(tailored_payload, dict) else None,
+    )
     cv_markdown = render_tailored_cv_markdown(
-        report.get("tailored_cv") or {},
+        tailored_payload,
         name=name,
         contact_line=contact_line,
         target_role=target_role,

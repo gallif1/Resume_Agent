@@ -3,6 +3,9 @@
 Default policy: every tailored resume must fit on a single A4 page.
 Compress by prioritizing relevance, removing repetition, and capping bullets
 while preserving professional readability (no micro-fonts).
+
+Requirement-coverage rule: bullets that directly match stated job requirements
+are high-priority and must not be silently dropped when trimming.
 """
 
 from __future__ import annotations
@@ -36,12 +39,54 @@ def _trim_words(text: str, maximum: int) -> str:
     return trimmed
 
 
+def _coverage_context(strategy: dict[str, Any]) -> tuple[set[str], list[str]]:
+    """Resolve requirement terms/phrases from strategy (or derive lightly)."""
+    from intelligent_tailoring.requirement_coverage import (
+        collect_requirement_phrases,
+        requirement_term_set,
+    )
+
+    phrases = [
+        str(p).strip()
+        for p in (strategy.get("requirement_phrases") or [])
+        if str(p).strip()
+    ]
+    if not phrases:
+        phrases = collect_requirement_phrases(strategy=strategy)
+    terms: set[str] = set()
+    for t in strategy.get("requirement_terms") or []:
+        if str(t).strip():
+            terms.add(str(t).strip().lower())
+    # Always include emphasize / propagate / must-keep skills as terms
+    for key in (
+        "propagate_terms",
+        "skills_to_emphasize",
+        "must_keep_skills",
+        "shared_technologies",
+        "must_keep_bullets",
+    ):
+        for item in strategy.get(key) or []:
+            text = str(item).strip().lower()
+            if text:
+                terms.add(text)
+                for tok in re.findall(r"[a-z0-9+#./-]{3,}", text):
+                    terms.add(tok)
+    if not terms:
+        terms = requirement_term_set(phrases)
+    else:
+        terms |= requirement_term_set(phrases)
+    return terms, phrases
+
+
 def _bullet_score(
     bullet: str,
     emphasize: list[str],
     *,
     strongest: list[str] | None = None,
     weaker: list[str] | None = None,
+    requirement_terms: set[str] | None = None,
+    requirement_phrases: list[str] | None = None,
+    must_keep: list[str] | None = None,
 ) -> int:
     """Rank by interview probability for THIS role (quality over completeness)."""
     low = _norm(bullet)
@@ -74,6 +119,30 @@ def _bullet_score(
         if frag and frag in low:
             score -= 18
             break
+    # Hard boost for requirement-matching / must-keep bullets
+    if must_keep:
+        for mk in must_keep:
+            frag = _norm(str(mk))[:64]
+            if frag and (frag in low or low in frag):
+                score += 60
+                break
+    if requirement_terms:
+        try:
+            from intelligent_tailoring.requirement_coverage import (
+                bullet_matches_requirements,
+            )
+
+            info = bullet_matches_requirements(
+                bullet,
+                requirement_terms,
+                phrases=requirement_phrases,
+            )
+            if info.get("direct"):
+                score += 55
+            else:
+                score += min(int(info.get("score") or 0), 40)
+        except Exception:
+            pass
     return score
 
 
@@ -145,17 +214,34 @@ def _rank_entries(
     emphasize: list[str],
     *,
     name_keys: tuple[str, ...],
+    requirement_terms: set[str] | None = None,
+    requirement_phrases: list[str] | None = None,
+    must_keep: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for idx, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
+        bullets = [str(b) for b in (entry.get("bullets") or []) if str(b).strip()]
         blob = " ".join(
             [str(entry.get(k) or "") for k in name_keys]
             + [str(entry.get("description") or "")]
-            + [str(b) for b in (entry.get("bullets") or [])]
+            + bullets
         )
-        score = _bullet_score(blob, emphasize)
+        score = _bullet_score(
+            blob,
+            emphasize,
+            requirement_terms=requirement_terms,
+            requirement_phrases=requirement_phrases,
+            must_keep=must_keep,
+        )
+        # Strong boost when the entry contains a must-keep / direct-match bullet
+        if must_keep:
+            for mk in must_keep:
+                mk_low = _norm(mk)[:64]
+                if mk_low and any(mk_low in _norm(b) or _norm(b) in mk_low for b in bullets):
+                    score += 80
+                    break
         scored.append((score, -idx, entry))  # stable: prefer original order on ties
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return [e for _, __, e in scored]
@@ -224,6 +310,7 @@ def compress_resume_to_one_page(
             or strategy.get("skills_to_emphasize")
             or strategy.get("must_highlight_in_summary")
             or strategy.get("top_interview_reasons")
+            or strategy.get("shared_technologies")
             or []
         )
         if str(s).strip()
@@ -233,10 +320,11 @@ def compress_resume_to_one_page(
         for s in (
             strategy.get("strongest_evidence")
             or strategy.get("facts_to_expand")
+            or strategy.get("must_keep_bullets")
             or []
         )
         if str(s).strip()
-    ][:12]
+    ][:16]
     weaker = [
         str(s)
         for s in (
@@ -247,6 +335,23 @@ def compress_resume_to_one_page(
         )
         if str(s).strip()
     ][:16]
+    must_keep = [
+        str(s).strip()
+        for s in (strategy.get("must_keep_bullets") or [])
+        if str(s).strip()
+    ]
+    req_terms, req_phrases = _coverage_context(strategy)
+    shared_tech = [
+        str(s).strip()
+        for s in (
+            strategy.get("shared_technologies")
+            or strategy.get("must_keep_skills")
+            or []
+        )
+        if str(s).strip()
+    ]
+
+    from intelligent_tailoring.requirement_coverage import select_bullets_with_coverage
 
     summary_max = 48 if aggressive else DEFAULT_SUMMARY_MAX_WORDS
     max_roles = 2 if aggressive else DEFAULT_MAX_EXPERIENCE_ROLES
@@ -266,9 +371,27 @@ def compress_resume_to_one_page(
     out["professional_summary"] = summary
     out["summary"] = summary
 
-    # Experience — rank, cap roles, cap bullets
+    def _score_bullet(b: str) -> int:
+        return _bullet_score(
+            b,
+            emphasize,
+            strongest=strongest,
+            weaker=weaker,
+            requirement_terms=req_terms,
+            requirement_phrases=req_phrases,
+            must_keep=must_keep,
+        )
+
+    # Experience — rank (boost roles with protected bullets), cap roles, cap bullets
     roles = [e for e in (out.get("experience") or []) if isinstance(e, dict)]
-    ranked_roles = _rank_entries(roles, emphasize, name_keys=("company", "title"))
+    ranked_roles = _rank_entries(
+        roles,
+        emphasize,
+        name_keys=("company", "title"),
+        requirement_terms=req_terms,
+        requirement_phrases=req_phrases,
+        must_keep=must_keep,
+    )
     compressed_roles: list[dict[str, Any]] = []
     total_bullets = 0
     for i, role in enumerate(ranked_roles[:max_roles]):
@@ -276,15 +399,13 @@ def compress_resume_to_one_page(
         raw_bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
         raw_bullets = _dedupe_similar(raw_bullets)
         limit = bullets_top if i == 0 else bullets_other
-        scored = sorted(
+        kept = select_bullets_with_coverage(
             raw_bullets,
-            key=lambda b: _bullet_score(
-                b, emphasize, strongest=strongest, weaker=weaker
-            ),
-            reverse=True,
+            limit=limit,
+            requirement_terms=req_terms,
+            phrases=req_phrases,
+            score_fn=_score_bullet,
         )
-        # Prefer strongest evidence order for interview probability
-        kept = scored[:limit]
         entry["bullets"] = kept
         # Never keep title-only experience shells on the page
         if not kept:
@@ -293,9 +414,16 @@ def compress_resume_to_one_page(
         compressed_roles.append(entry)
     out["experience"] = compressed_roles
 
-    # Projects
+    # Projects — prefer entries carrying requirement-matched bullets
     projects = [p for p in (out.get("projects") or []) if isinstance(p, dict)]
-    ranked_projects = _rank_entries(projects, emphasize, name_keys=("name",))
+    ranked_projects = _rank_entries(
+        projects,
+        emphasize,
+        name_keys=("name",),
+        requirement_terms=req_terms,
+        requirement_phrases=req_phrases,
+        must_keep=must_keep,
+    )
     compressed_projects: list[dict[str, Any]] = []
     for project in ranked_projects[:max_projects]:
         if total_bullets >= max_total and compressed_projects:
@@ -303,17 +431,17 @@ def compress_resume_to_one_page(
         entry = dict(project)
         raw_bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
         raw_bullets = _dedupe_similar(raw_bullets)
-        scored = sorted(
-            raw_bullets,
-            key=lambda b: _bullet_score(
-                b, emphasize, strongest=strongest, weaker=weaker
-            ),
-            reverse=True,
-        )
         room = max(0, max_total - total_bullets)
-        # Always keep at least 1 project bullet when evidence exists, even near budget
+        # Always keep at least 1 project bullet when evidence exists, even near budget.
+        # Coverage selection reserves requirement-matching bullets inside that budget.
         keep_n = min(bullets_proj, room if room > 0 else 1)
-        kept = scored[:keep_n] if scored else []
+        kept = select_bullets_with_coverage(
+            raw_bullets,
+            limit=keep_n if raw_bullets else 0,
+            requirement_terms=req_terms,
+            phrases=req_phrases,
+            score_fn=_score_bullet,
+        )
         entry["bullets"] = kept
         desc = str(entry.get("description") or "").strip()
         if desc and len(desc.split()) > 28:
@@ -333,10 +461,16 @@ def compress_resume_to_one_page(
         compressed_projects.append(entry)
     out["projects"] = compressed_projects
 
-    # Skills — keep role-ordered lines, cap count (but not below 3 lines when available)
+    # Skills — keep shared technologies when capping category lines
+    from intelligent_tailoring.requirement_coverage import prioritize_skill_lines
+
     skills = [str(s).strip() for s in (out.get("skills") or []) if str(s).strip()]
     keep_skills = max(max_skills, 3) if len(skills) >= 3 else max_skills
-    out["skills"] = skills[:keep_skills]
+    out["skills"] = prioritize_skill_lines(
+        skills,
+        shared_tech=shared_tech or emphasize,
+        max_lines=keep_skills,
+    )
 
     # Education / certs — keep but don't explode
     education = [e for e in (out.get("education") or []) if isinstance(e, dict)]

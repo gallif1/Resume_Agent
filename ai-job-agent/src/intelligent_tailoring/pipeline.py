@@ -1375,21 +1375,132 @@ def run_intelligent_tailoring_agents(
             from intelligent_tailoring.services.one_page_compressor import (
                 scrub_resume_duplicate_content,
             )
+            from intelligent_tailoring.requirement_coverage import (
+                prioritize_skill_lines,
+            )
 
             polished = scrub_resume_duplicate_content(resume_obj)
+            emphasize_skills = list(
+                dict.fromkeys(
+                    list(strategy.get("shared_technologies") or [])
+                    + list(strategy.get("must_keep_skills") or [])
+                    + list(strategy.get("propagate_terms") or [])
+                    + list(strategy.get("skills_to_emphasize") or [])
+                )
+            )
             polished["skills"] = normalize_skill_lines(
                 list(polished.get("skills") or []),
-                emphasize=list(
-                    strategy.get("propagate_terms")
-                    or strategy.get("skills_to_emphasize")
-                    or []
-                ),
+                emphasize=emphasize_skills,
                 job_family=str(strategy.get("job_family") or ""),
                 category_order=list(strategy.get("skill_category_order") or []),
+            )
+            # Cap lines without dropping shared JD technologies
+            polished["skills"] = prioritize_skill_lines(
+                list(polished.get("skills") or []),
+                shared_tech=list(
+                    strategy.get("shared_technologies")
+                    or strategy.get("must_keep_skills")
+                    or emphasize_skills
+                ),
+                max_lines=5,
             )
             return polished
 
         cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
+
+        # Requirement-coverage self-check: restore any dropped JD-matching bullets
+        # before final gates. Cuts lowest-relevance content first, never matches.
+        from intelligent_tailoring.requirement_coverage import (
+            collect_requirement_phrases,
+            contact_preservation_report,
+            preserve_contact,
+            requirement_term_set,
+            restore_requirement_matched_bullets,
+            sanitize_professional_title,
+            validate_requirement_coverage,
+        )
+
+        req_phrases = list(
+            strategy.get("requirement_phrases")
+            or collect_requirement_phrases(
+                strategy=strategy,
+                job_requirements=strategy.get("job_requirements"),
+                evidence_map=evidence_map,
+            )
+        )
+        req_terms = requirement_term_set(req_phrases)
+        req_coverage = validate_requirement_coverage(
+            source_facts=resume_facts,
+            tailored_resume=cleaned_resume,
+            requirement_phrases=req_phrases,
+            requirement_terms=req_terms,
+        )
+        if not req_coverage.get("passed"):
+            cleaned_resume = restore_requirement_matched_bullets(
+                cleaned_resume,
+                source_facts=resume_facts,
+                requirement_phrases=req_phrases,
+                requirement_terms=req_terms,
+            )
+            cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
+            if not allow_multi:
+                # Re-fit after restore, then restore again so compression cannot
+                # re-drop the protected bullets.
+                cleaned_resume = compress_resume_to_one_page(
+                    cleaned_resume, strategy=strategy, aggressive=False
+                )
+                cleaned_resume = restore_requirement_matched_bullets(
+                    cleaned_resume,
+                    source_facts=resume_facts,
+                    requirement_phrases=req_phrases,
+                    requirement_terms=req_terms,
+                )
+                cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
+            req_coverage = validate_requirement_coverage(
+                source_facts=resume_facts,
+                tailored_resume=cleaned_resume,
+                requirement_phrases=req_phrases,
+                requirement_terms=req_terms,
+            )
+        strategy["requirement_coverage_check"] = req_coverage
+
+        # Contact / links always carried through from the base resume
+        source_contact = {}
+        if isinstance(resume_facts.get("contact"), dict):
+            source_contact = dict(resume_facts.get("contact") or {})
+        if isinstance((cv_profile or {}).get("contact"), dict):
+            for k, v in (cv_profile.get("contact") or {}).items():
+                if str(v or "").strip() and not str(source_contact.get(k) or "").strip():
+                    source_contact[k] = v
+        cleaned_resume = preserve_contact(
+            cleaned_resume,
+            source_contact=source_contact,
+            resume_facts=resume_facts,
+        )
+        contact_report = contact_preservation_report(
+            source_contact=source_contact,
+            tailored=cleaned_resume,
+        )
+        strategy["contact_preservation"] = contact_report
+
+        # Neutralize unwarranted seniority labels when the JD is silent
+        cleaned_resume["professional_title"] = sanitize_professional_title(
+            str(cleaned_resume.get("professional_title") or ""),
+            job_title=str(
+                job.get("title")
+                or strategy.get("job_title")
+                or strategy.get("primary_role")
+                or ""
+            ),
+            job_text=str(job.get("description") or job.get("raw_text") or ""),
+            seniority_level=str(
+                strategy.get("seniority")
+                or (strategy.get("job_requirements") or {}).get("seniority_level")
+                or ""
+            ),
+            base_resume_title=str(resume_facts.get("professional_title") or ""),
+        )
+
         cleaned_resume["summary"] = str(
             cleaned_resume.get("professional_summary")
             or cleaned_resume.get("summary")
@@ -1411,7 +1522,12 @@ def run_intelligent_tailoring_agents(
                 source_inventory=source_inv,
                 coverage=coverage_report,
             ),
-            extra={"density": density, "coverage_score": coverage_report.get("coverage_score")},
+            extra={
+                "density": density,
+                "coverage_score": coverage_report.get("coverage_score"),
+                "requirement_coverage_passed": bool(req_coverage.get("passed")),
+                "dropped_requirement_bullets": int(req_coverage.get("dropped_count") or 0),
+            },
         )
 
         # Final 20-second interview simulation after compress/weave
@@ -1675,6 +1791,28 @@ def run_intelligent_tailoring_agents(
                     if failure not in quality_gates.setdefault("failures", []):
                         quality_gates["failures"].append(failure)
         quality_gates["one_page_enforcement"] = one_page_meta
+        quality_gates["requirement_coverage"] = dict(
+            strategy.get("requirement_coverage_check") or {}
+        )
+        quality_gates["contact_preservation"] = dict(
+            strategy.get("contact_preservation") or {}
+        )
+        if strategy.get("requirement_coverage_check") and not (
+            strategy["requirement_coverage_check"].get("passed", True)
+        ):
+            failure = "requirement_matching_bullet_dropped"
+            if failure not in quality_gates.setdefault("failures", []):
+                quality_gates["failures"].append(failure)
+            # Soft warning — preview still allowed; restore pass usually clears this
+            quality_gates.setdefault("warnings", []).append(failure)
+        if strategy.get("contact_preservation") and not (
+            strategy["contact_preservation"].get("passed", True)
+        ):
+            failure = "contact_fields_missing:" + ",".join(
+                strategy["contact_preservation"].get("missing_fields") or []
+            )
+            if failure not in quality_gates.setdefault("failures", []):
+                quality_gates["failures"].append(failure)
 
         quality_gates["writing_quality"] = {
             "passed": bool(writing_stage.get("passed")),

@@ -45,6 +45,8 @@ WARNING_PREFIXES: tuple[str, ...] = (
     "weak_wording",
     "low_ats",
     "change_log_text_missing",
+    "requirement_matching_bullet_dropped",
+    "contact_fields_missing",
 )
 
 

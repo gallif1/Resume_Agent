@@ -22,7 +22,7 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v3_preserve"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v4_coverage"
 MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v1"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
@@ -184,7 +184,25 @@ PRESERVATION-FIRST RULES (mandatory):
 - Prefer 2 complete projects with bullets over 1 title-only project.
 - Prefer 2 roles with 1–3 bullets each over 3 empty roles.
 - Do not silently drop verified high-value technologies from Skills.
-- Remove content that does not help win an interview for THIS job.
+- REQUIREMENT COVERAGE (before any Remove/Condense):
+  * Cross-check every bullet against stated job requirements/qualifications.
+  * Any bullet that directly matches a stated requirement (skill, tool,
+    responsibility, or keyword) is HIGH-PRIORITY and must NOT be removed.
+  * If length forces cuts, remove zero-overlap content first — never
+    drop the strongest requirement matches.
+  * Technologies present in BOTH the resume and the job posting must remain
+    in Skills (and preferably in a bullet). Only truly irrelevant tech may
+    be de-emphasized.
+- Contact / links (email, phone, LinkedIn, GitHub, portfolio) are never
+  authored or removed here — leave them untouched for the header renderer.
+- SENIORITY / TITLE LANGUAGE:
+  * If the job posting does not specify seniority (no Junior/Senior/etc.),
+    use a neutral title matching the job's own title (e.g. "Backend Engineer").
+  * Do not label the candidate "Junior" unless the JD uses that language or
+    the base resume's own title requires it for honesty.
+  * Never fabricate seniority, titles, or experience.
+- Remove content that does not help win an interview for THIS job — but only
+  after protecting requirement-matched bullets.
 - Expand only when the original resume already contains supporting detail.
 - Preserve the selected output language.
 """.strip()
@@ -225,7 +243,9 @@ Strategy rules preserved:
 - Choose the most persuasive project for THIS job.
 - Record facts_omitted and omission_reasons.
 - Propagate genuine_gaps and forbidden_claims — never invent coverage.
-- Prefer five excellent bullets over twelve average ones.
+- Prefer five excellent bullets over twelve average ones — BUT never omit
+  a bullet that is a direct match to a stated job requirement.
+- Honor strategy.must_keep_bullets and strategy.shared_technologies when present.
 """,
         ),
         """
@@ -264,7 +284,12 @@ def build_agent_2_user_prompt(
     return (
         f"Output language: {language}\n"
         "Build the tailored resume structure + triage decisions for this job.\n"
-        "Follow strategy; do not invent facts; keep one-page budget in mind.\n\n"
+        "Follow strategy; do not invent facts; keep one-page budget in mind.\n"
+        "Before removing any bullet, confirm it does NOT match a ranked "
+        "requirement or strategy.must_keep_bullets entry.\n"
+        "Keep every strategy.shared_technologies item in Skills.\n"
+        "Use a neutral professional_title matching the job title when the JD "
+        "does not specify seniority — do not invent Junior/Senior labels.\n\n"
         f"=== STRATEGY ===\n{strategy_json}\n\n"
         f"=== PRE-REBUILT STRUCTURE ===\n{rebuilt_resume_json}\n\n"
         f"=== RANKED REQUIREMENTS ===\n{ranked_requirements_json}\n\n"

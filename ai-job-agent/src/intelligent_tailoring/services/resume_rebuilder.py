@@ -133,8 +133,23 @@ def rebuild_resume_structure(
 
     grouped_skills = _group_skills(skills, skill_scores, category_order, job_family)
 
+    from intelligent_tailoring.requirement_coverage import sanitize_professional_title
+
+    raw_title = str(
+        strategy.get("primary_role")
+        or strategy.get("job_title")
+        or resume_facts.get("professional_title")
+        or ""
+    )
+    professional_title = sanitize_professional_title(
+        raw_title,
+        job_title=str(strategy.get("job_title") or strategy.get("primary_role") or ""),
+        seniority_level=str(strategy.get("seniority") or ""),
+        base_resume_title=str(resume_facts.get("professional_title") or ""),
+    )
+
     rebuilt = {
-        "professional_title": str(strategy.get("primary_role") or ""),
+        "professional_title": professional_title,
         "professional_summary": "",  # filled by rewriter
         "summary": "",
         "skills": grouped_skills,
