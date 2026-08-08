@@ -569,6 +569,71 @@ def test_build_coverage_strategy_fields_promotes_matches():
     assert any("pytest" in s.lower() for s in updated.get("shared_technologies") or [])
 
 
+def test_restore_does_not_leak_tech_across_projects():
+    """Server Monitor ThreadPoolExecutor must never land on Capstone."""
+    source = {
+        "experience_roles": [],
+        "projects": [
+            {
+                "name": "Capstone Project",
+                "bullets": [
+                    "Designed backend architecture using FastAPI and PostgreSQL",
+                    "Added pytest integration testing",
+                ],
+                "technologies": ["FastAPI", "PostgreSQL", "pytest"],
+            },
+            {
+                "name": "Server Monitor",
+                "bullets": [
+                    "Implemented FastAPI service with ThreadPoolExecutor "
+                    "for concurrent health checks",
+                ],
+                "technologies": ["FastAPI", "ThreadPoolExecutor", "AWS"],
+            },
+        ],
+        "skills": ["FastAPI", "pytest", "AWS"],
+        "raw_text": "Capstone FastAPI pytest Server Monitor ThreadPoolExecutor AWS",
+    }
+    # Capstone kept; Server Monitor dropped by compression — restore must
+    # recreate Server Monitor, not inject its bullet into Capstone.
+    tailored = {
+        "experience": [],
+        "projects": [
+            {
+                "name": "Capstone Project",
+                "bullets": [
+                    "Designed backend architecture using FastAPI and PostgreSQL",
+                ],
+            }
+        ],
+        "skills": ["Backend: FastAPI"],
+    }
+    phrases = [
+        "Write automated tests with pytest",
+        "Build monitoring services with concurrent health checks",
+        "AWS deployment",
+    ]
+    terms = requirement_term_set(phrases)
+    restored = restore_requirement_matched_bullets(
+        tailored,
+        source_facts=source,
+        requirement_phrases=phrases,
+        requirement_terms=terms,
+    )
+    capstone = next(
+        p
+        for p in restored["projects"]
+        if "capstone" in str(p.get("name") or "").lower()
+    )
+    capstone_blob = " ".join(capstone.get("bullets") or []).lower()
+    assert "threadpool" not in capstone_blob
+    # Protected Capstone testing bullet should still be restorable onto Capstone
+    assert "pytest" in capstone_blob or any(
+        "pytest" in " ".join(p.get("bullets") or []).lower()
+        for p in restored["projects"]
+    )
+
+
 def test_compressor_still_respects_one_page_budget():
     strategy = build_tailoring_strategy(
         job_analysis={

@@ -863,22 +863,46 @@ def _find_entry(
     title: str = "",
     name: str = "",
 ) -> dict[str, Any] | None:
+    """Match a resume entry by identity fields only.
+
+    Never fall back to ``entries[0]`` — that caused cross-entry tech leaks
+    (e.g. Server Monitor ThreadPoolExecutor restored onto Capstone).
+    """
     c = _norm(company)
     t = _norm(title)
     n = _norm(name)
-    for entry in entries:
-        if n and n in _norm(str(entry.get("name") or "")):
-            return entry
-        if c and c == _norm(str(entry.get("company") or "")):
-            return entry
-        if t and t == _norm(str(entry.get("title") or "")):
-            return entry
-    # Soft name contains
-    for entry in entries:
-        en = _norm(str(entry.get("name") or ""))
-        if n and en and (n in en or en in n):
-            return entry
-    return entries[0] if entries else None
+    if not (c or t or n):
+        return None
+
+    # Exact / contains match on project name
+    if n:
+        for entry in entries:
+            en = _norm(str(entry.get("name") or ""))
+            if en and (n == en or n in en or en in n):
+                return entry
+
+    # Exact company + optional title
+    if c:
+        company_hits = [
+            e
+            for e in entries
+            if c == _norm(str(e.get("company") or ""))
+        ]
+        if t and company_hits:
+            for entry in company_hits:
+                if t == _norm(str(entry.get("title") or "")):
+                    return entry
+        if len(company_hits) == 1:
+            return company_hits[0]
+
+    if t:
+        title_hits = [
+            e for e in entries if t == _norm(str(e.get("title") or ""))
+        ]
+        if len(title_hits) == 1:
+            return title_hits[0]
+
+    return None
 
 
 def _insert_protected(
