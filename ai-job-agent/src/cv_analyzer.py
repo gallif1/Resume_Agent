@@ -147,6 +147,15 @@ def _normalize_contact(value: Any) -> dict[str, str]:
         return contact
     for field in fields:
         contact[field] = str(value.get(field, "") or "").strip()
+    # Drop filename/version junk the model sometimes copies as a name
+    # (e.g. "מתן 1 .HRZ", "cv_final.pdf").
+    try:
+        from parse_cv import sanitize_person_name
+
+        contact["name"] = sanitize_person_name(contact.get("name") or "")
+    except Exception:
+        if any(ch.isdigit() for ch in contact.get("name", "")):
+            contact["name"] = ""
     return contact
 
 

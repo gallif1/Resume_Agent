@@ -64,14 +64,24 @@ MAX_BULLETS_PER_ENTRY = 3
 MAX_SUMMARY_SENTENCES = 3
 
 # Known tool → preferred skill category (for taxonomy cleanup).
+# Keep display labels stable for PDF themes while correcting membership.
 SKILL_CATEGORY_HINTS: dict[str, str] = {
     "sqlalchemy": "Backend & Frameworks",
+    "sql/alchemy": "Backend & Frameworks",
     "fastapi": "Backend & Frameworks",
     "django": "Backend & Frameworks",
     "flask": "Backend & Frameworks",
     "node.js": "Backend & Frameworks",
     "nodejs": "Backend & Frameworks",
     "express": "Backend & Frameworks",
+    "rest": "Backend & Frameworks",
+    "rest api": "Backend & Frameworks",
+    "rest apis": "Backend & Frameworks",
+    "restful api": "Backend & Frameworks",
+    "restful apis": "Backend & Frameworks",
+    "websocket": "Backend & Frameworks",
+    "websockets": "Backend & Frameworks",
+    "graphql": "Backend & Frameworks",
     "expo": "Frontend",
     "react native": "Frontend",
     "react": "Frontend",
@@ -80,6 +90,7 @@ SKILL_CATEGORY_HINTS: dict[str, str] = {
     "vue.js": "Frontend",
     "html": "Frontend",
     "css": "Frontend",
+    "ajax": "Frontend",
     "next.js": "Frontend",
     "nextjs": "Frontend",
     "postgresql": "Databases & Caching",
@@ -88,6 +99,8 @@ SKILL_CATEGORY_HINTS: dict[str, str] = {
     "sqlite": "Databases & Caching",
     "mongodb": "Databases & Caching",
     "redis": "Databases & Caching",
+    "elasticsearch": "Databases & Caching",
+    "lucene": "Databases & Caching",
     "docker": "Cloud & DevOps",
     "kubernetes": "Cloud & DevOps",
     "aws": "Cloud & DevOps",
@@ -100,6 +113,19 @@ SKILL_CATEGORY_HINTS: dict[str, str] = {
     "typescript": "Languages",
     "sql": "Languages",
     "c++": "Languages",
+}
+
+# Map canonical taxonomy buckets → PDF display labels.
+_TAXONOMY_TO_PDF_CATEGORY = {
+    "Backend": "Backend & Frameworks",
+    "Frontend": "Frontend",
+    "Databases": "Databases & Caching",
+    "Cloud & DevOps": "Cloud & DevOps",
+    "Languages": "Languages",
+    "Testing": "Testing",
+    "Tools & Version Control": "Tools",
+    "AI-Assisted Development": "AI-Assisted Development",
+    "AI & Data": "AI & Data",
 }
 CLOUD_CATEGORY_RE = re.compile(
     r"cloud|devops|infrastructure|ops\b",
@@ -157,13 +183,27 @@ class ParsedResume:
     sections: list[ResumeSection] = field(default_factory=list)
 
 
+def _sanitize_resume_name(name: str) -> str:
+    """Accept only plausible person names for the PDF header."""
+    text = re.sub(r"[*_`]+", "", str(name or "")).strip()
+    if not text:
+        return ""
+    try:
+        from parse_cv import sanitize_person_name
+
+        return sanitize_person_name(text)
+    except Exception:
+        if "@" in text or any(ch.isdigit() for ch in text):
+            return ""
+        return text
+
+
 def extract_candidate_name(markdown: str) -> str | None:
     """Return the first Markdown H1 as the candidate name, if present."""
     match = NAME_FROM_H1_RE.search(markdown or "")
     if not match:
         return None
-    name = match.group(1).strip()
-    name = re.sub(r"[*_`]+", "", name).strip()
+    name = _sanitize_resume_name(match.group(1))
     return name or None
 
 
@@ -358,8 +398,10 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
             level = len(heading.group(1))
             text = _strip_md_inline(heading.group(2))
             if level == 1 and not resume.name:
-                resume.name = text
-                continue
+                resume.name = _sanitize_resume_name(text)
+                if resume.name:
+                    continue
+                # Junk H1 (filename / role) — treat as a section title instead.
             # H1 after the name (or any H2) is a section title — LLMs often use # Skills.
             if level <= 2:
                 section_title = _looks_like_section_title(text) or text
@@ -396,10 +438,13 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
             if _looks_like_contact_line(line) and not resume.contact:
                 resume.contact = _strip_md_inline(line)
                 continue
-            # First non-meta line becomes the name when H1 was missing.
+            # First plausible person-name line becomes the name when H1 was missing.
+            # Never promote professional titles / Target Role into the name slot.
             if not resume.name:
-                resume.name = plain_for_title
-                continue
+                candidate = _sanitize_resume_name(plain_for_title)
+                if candidate:
+                    resume.name = candidate
+                    continue
             # Name already set — remaining body starts a summary section rather
             # than being silently dropped (this caused blank PDFs).
             ensure_section("Summary")
@@ -498,10 +543,56 @@ def _dedupe_strings(items: list[str]) -> list[str]:
     return out
 
 
+def _dedupe_entry_bullets(items: list[str]) -> list[str]:
+    """Exact + near-duplicate collapse for project/experience bullets."""
+    exact = _dedupe_strings(items)
+    try:
+        from intelligent_tailoring.services.one_page_compressor import (
+            _dedupe_similar,
+        )
+
+        return _dedupe_similar(exact)
+    except Exception:
+        return exact
+
+
+def _pdf_category_for_skill(skill: str, fallback_category: str) -> str:
+    """Resolve a skill atom to a PDF display category via hints + taxonomy."""
+    low = skill.lower().strip()
+    hint = SKILL_CATEGORY_HINTS.get(low)
+    if hint:
+        return hint
+    try:
+        from intelligent_tailoring.skill_taxonomy import (
+            categorize_skill,
+            display_skill_name,
+            OTHER,
+        )
+
+        canonical = categorize_skill(skill)
+        if canonical != OTHER:
+            return _TAXONOMY_TO_PDF_CATEGORY.get(canonical, canonical)
+        # Prefer canonical display spelling even when category stays Other.
+        _ = display_skill_name(skill)
+    except Exception:
+        pass
+    if CLOUD_CATEGORY_RE.search(fallback_category) and low in {
+        "sqlalchemy",
+        "sql/alchemy",
+        "fastapi",
+        "django",
+        "flask",
+        "rest apis",
+        "websockets",
+    }:
+        return "Backend & Frameworks"
+    return fallback_category.strip() or "Tools"
+
+
 def _rebalance_skill_lines(
     skill_lines: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    """Move mis-categorized tools (e.g. SQLAlchemy under Cloud) to better buckets."""
+    """Move mis-categorized tools (e.g. REST APIs under Database) to better buckets."""
     buckets: dict[str, list[str]] = {}
     order: list[str] = []
 
@@ -510,6 +601,12 @@ def _rebalance_skill_lines(
         skill = skill.strip()
         if not skill:
             return
+        try:
+            from intelligent_tailoring.skill_taxonomy import display_skill_name
+
+            skill = display_skill_name(skill)
+        except Exception:
+            pass
         if cat not in buckets:
             buckets[cat] = []
             order.append(cat)
@@ -523,21 +620,7 @@ def _rebalance_skill_lines(
             skill = raw.strip()
             if not skill:
                 continue
-            hint = SKILL_CATEGORY_HINTS.get(skill.lower())
-            if hint:
-                add(hint, skill)
-            elif CLOUD_CATEGORY_RE.search(category) and skill.lower() in {
-                "sqlalchemy",
-                "fastapi",
-                "django",
-                "flask",
-            }:
-                add(
-                    SKILL_CATEGORY_HINTS.get(skill.lower(), "Backend & Frameworks"),
-                    skill,
-                )
-            else:
-                add(category, skill)
+            add(_pdf_category_for_skill(skill, category), skill)
 
     return [(cat, ", ".join(buckets[cat])) for cat in order if buckets[cat]]
 
@@ -558,7 +641,9 @@ def _normalize_parsed_resume(resume: ParsedResume) -> ParsedResume:
             section.skill_lines = _rebalance_skill_lines(section.skill_lines)
 
         for entry in section.entries:
-            entry.bullets = _dedupe_strings(entry.bullets)[:MAX_BULLETS_PER_ENTRY]
+            entry.bullets = _dedupe_entry_bullets(entry.bullets)[
+                :MAX_BULLETS_PER_ENTRY
+            ]
 
         section.paragraphs = _dedupe_strings(section.paragraphs)
 

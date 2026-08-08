@@ -1369,16 +1369,27 @@ def run_intelligent_tailoring_agents(
                     min_bullets_per_project=1,
                 )
         cleaned_resume = drop_empty_shell_entries(cleaned_resume)
-        cleaned_resume["skills"] = normalize_skill_lines(
-            list(cleaned_resume.get("skills") or []),
-            emphasize=list(
-                strategy.get("propagate_terms")
-                or strategy.get("skills_to_emphasize")
-                or []
-            ),
-            job_family=str(strategy.get("job_family") or ""),
-            category_order=list(strategy.get("skill_category_order") or []),
-        )
+
+        def _finalize_skills_and_projects(resume_obj: dict[str, Any]) -> dict[str, Any]:
+            """Re-normalize skills + scrub project dupes after any late writer pass."""
+            from intelligent_tailoring.services.one_page_compressor import (
+                scrub_resume_duplicate_content,
+            )
+
+            polished = scrub_resume_duplicate_content(resume_obj)
+            polished["skills"] = normalize_skill_lines(
+                list(polished.get("skills") or []),
+                emphasize=list(
+                    strategy.get("propagate_terms")
+                    or strategy.get("skills_to_emphasize")
+                    or []
+                ),
+                job_family=str(strategy.get("job_family") or ""),
+                category_order=list(strategy.get("skill_category_order") or []),
+            )
+            return polished
+
+        cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
         cleaned_resume["summary"] = str(
             cleaned_resume.get("professional_summary")
             or cleaned_resume.get("summary")
@@ -1464,6 +1475,7 @@ def run_intelligent_tailoring_agents(
                         cleaned_resume = compress_resume_to_one_page(
                             cleaned_resume, strategy=strategy, aggressive=False
                         )
+                    cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
                     cleaned_resume["summary"] = str(
                         cleaned_resume.get("professional_summary")
                         or cleaned_resume.get("summary")
@@ -1606,6 +1618,7 @@ def run_intelligent_tailoring_agents(
                 cleaned_resume = rejected_claims.scrub_resume(
                     narrative_refine["tailored_resume"]
                 )
+                cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
             # Rebuild summary again after narrative refine
             final_summary = build_professional_summary(
                 strategy=strategy,

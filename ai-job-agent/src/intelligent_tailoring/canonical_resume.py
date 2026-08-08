@@ -588,11 +588,23 @@ def restore_missing_content_from_source(
                             if str(b).strip()
                         ]
                         if src_b:
-                            bullets = list(dict.fromkeys(bullets + src_b))[
-                                : max(min_bullets_per_project, len(bullets))
+                            from intelligent_tailoring.services.one_page_compressor import (
+                                _dedupe_similar,
+                                texts_are_near_duplicates,
+                            )
+
+                            bullets = _dedupe_similar(bullets + src_b)[
+                                : max(min_bullets_per_project, len(bullets), 3)
                             ]
                         if not desc:
                             desc = str(match.get("description") or "").strip()
+                if desc and bullets:
+                    from intelligent_tailoring.services.one_page_compressor import (
+                        texts_are_near_duplicates,
+                    )
+
+                    if any(texts_are_near_duplicates(desc, b) for b in bullets):
+                        desc = ""
                 fixed_p.append({**entry, "bullets": bullets, "description": desc})
         out["projects"] = fixed_p
 
