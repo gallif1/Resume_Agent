@@ -42,6 +42,12 @@ final formatting:
 5. **Contact links** — github / linkedin / email / phone present when in base resume
 6. **Summary grammar** — complete sentences; reject competing lead-ins / fragment merges
 7. **Content fullness** — tailored content units must be ≥ ~80% of base bullet volume
+8. **Job-posting contamination** — reject Summary/bullet text that reuses JD n-grams
+   (5+ words) or employer voice (second-person / motivational slogans). See
+   `jd_contamination.py`. JD text may guide emphasis/keywords only — never become
+   candidate claims. Prompts wrap inputs in `<candidate_facts>` vs `<job_posting>`.
+9. **Summary candidate-only sanity** — summary must describe what the candidate
+   did/knows; instructional/opinion fragments directed at someone else fail.
 
 ## Regeneration on failure
 

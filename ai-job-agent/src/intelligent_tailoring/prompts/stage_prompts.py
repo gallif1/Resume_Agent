@@ -181,6 +181,13 @@ Optimize for interview probability. Recruiters spend 15–20 seconds on first sc
 Sell the strongest truthful evidence — not keyword density.
 Prefer quality over completeness. Tell a coherent professional story.
 
+SOURCE SEPARATION (honest maximal tailoring):
+- Only <candidate_facts> may generate claims about the candidate.
+- <job_posting> / strategy / ranked requirements guide emphasis and keywords ONLY.
+- Never copy second-person or motivational JD phrases ("You are the best",
+  "We demand a lot", "NOW is the time") into Summary, titles, or bullets.
+- Closing fit gaps is done by truthful rewording of what the candidate actually did.
+
 You receive a pre-reordered resume structure, a TailoringStrategy, relevance scores, ranked requirements, and evidence.
 
 Your job is NOT light editing. Rebuild the professional narrative for THIS job from the candidate's evidence:
@@ -337,15 +344,21 @@ def build_deep_tailor_rewrite_user_prompt(
         f"Output language: {language}\n"
         f"Job family tailoring — attempt {regeneration_attempt + 1}\n"
         f"{regen_note}\n"
-        "=== TAILORING STRATEGY (follow this) ===\n"
-        f"{strategy_json}\n\n"
-        "=== RELEVANCE SCORES (higher = emphasize more) ===\n"
-        f"{scores_json}\n\n"
+        "SOURCE SEPARATION: Only <candidate_facts> may generate claims about the "
+        "candidate. <job_posting> is for emphasis/keywords only — never copy "
+        "second-person or motivational JD phrases into Summary/bullets.\n\n"
+        f"<candidate_facts>\n"
         "=== PRE-REORDERED RESUME STRUCTURE ===\n"
         f"{rebuilt_resume_json}\n\n"
         "=== ORIGINAL RESUME FACTS ===\n"
-        f"{resume_facts}\n\n"
-        "=== RANKED JOB REQUIREMENTS ===\n"
+        f"{resume_facts}\n"
+        f"</candidate_facts>\n\n"
+        f"<job_posting>\n"
+        "=== TAILORING STRATEGY (emphasis only — NOT candidate facts) ===\n"
+        f"{strategy_json}\n\n"
+        "=== RELEVANCE SCORES (higher = emphasize more) ===\n"
+        f"{scores_json}\n\n"
+        "=== RANKED JOB REQUIREMENTS (keyword targets only) ===\n"
         f"{ranked_requirements_json}\n\n"
         "=== STRONGLY INFERRED COMPETENCIES ===\n"
         f"{inferred_json}\n\n"
@@ -353,6 +366,11 @@ def build_deep_tailor_rewrite_user_prompt(
         f"{triage_json}\n\n"
         "=== EVIDENCE MAP ===\n"
         f"{evidence_map_json}\n"
+        f"</job_posting>\n\n"
+        "Rule: Only text inside <candidate_facts> may be used to generate claims "
+        "about the candidate. Text inside <job_posting> may only be used to decide "
+        "what to emphasize and which skill/keyword tokens to echo — never copied "
+        "or paraphrased as a first/second-person claim about the candidate.\n"
     )
 
 

@@ -138,8 +138,12 @@ def _content_validate_agent2(
     raw: dict[str, Any],
     *,
     source_facts: dict[str, Any],
+    jd_text: str = "",
 ):
     resume = raw.get("tailored_resume") if isinstance(raw, dict) else {}
+    jd_blob = (jd_text or "").strip()
+    if not jd_blob and isinstance(source_facts, dict):
+        jd_blob = str(source_facts.get("jd_text") or "").strip()
     return validate_structured_resume(
         resume if isinstance(resume, dict) else {},
         source_facts=source_facts,
@@ -147,6 +151,7 @@ def _content_validate_agent2(
         # Agent 2 may leave summary thin; Agent 3 polishes prose. Still catch
         # broken/competing lead-ins when a summary is present.
         require_summary=False,
+        jd_text=jd_blob,
     )
 
 
@@ -222,6 +227,15 @@ def rewrite_resume_with_strategy(
     so preview generation cannot hard-fail on a missing tailored_resume key.
     """
     source_facts = assign_stable_ids(resume_facts)
+    # Carry JD snapshot for contamination checks / repair (not for LLM claims).
+    jd_blob = str(
+        (strategy or {}).get("jd_text")
+        or (strategy or {}).get("job_description")
+        or source_facts.get("jd_text")
+        or ""
+    ).strip()
+    if jd_blob:
+        source_facts["jd_text"] = jd_blob
     rebuilt_resume = stamp_ids_on_resume(
         rebuilt_resume if isinstance(rebuilt_resume, dict) else {},
         source_facts=source_facts,
@@ -231,10 +245,17 @@ def rewrite_resume_with_strategy(
         rebuilt_resume["contact"] = dict(source_facts["contact"])
 
     cache_suffix = f"|regen{regeneration_attempt}" if regeneration_attempt else ""
+    # Strategy for the LLM: keep emphasis fields, drop raw JD blob so employer
+    # voice cannot be copied into candidate claims (jd_blob stays for validation).
+    from intelligent_tailoring.prompts.human_writer_prompts import (
+        sanitize_strategy_for_writer,
+    )
+
+    strategy_for_prompt = sanitize_strategy_for_writer(strategy or {})
     user_prompt = build_deep_tailor_rewrite_user_prompt(
         resume_facts=resume_facts_for_prompt(source_facts),
         rebuilt_resume_json=json.dumps(rebuilt_resume, ensure_ascii=False, indent=2),
-        strategy_json=json.dumps(strategy, ensure_ascii=False, indent=2),
+        strategy_json=json.dumps(strategy_for_prompt, ensure_ascii=False, indent=2),
         scores_json=json.dumps(scores, ensure_ascii=False, indent=2),
         ranked_requirements_json=json.dumps(
             ranked_requirements, ensure_ascii=False, indent=2
@@ -253,7 +274,9 @@ def rewrite_resume_with_strategy(
     )
 
     def _validate_content(payload: dict[str, Any]):
-        return _content_validate_agent2(payload, source_facts=source_facts)
+        return _content_validate_agent2(
+            payload, source_facts=source_facts, jd_text=jd_blob
+        )
 
     raw: dict[str, Any] | None = None
     try:
@@ -334,12 +357,13 @@ def rewrite_resume_with_strategy(
 
     resume_dict = stamp_ids_on_resume(resume_dict, source_facts=source_facts)
 
-    # Deterministic validation + repair after merge (IDs / contact / fullness)
+    # Deterministic validation + repair after merge (IDs / contact / fullness / JD leak)
     post_report = validate_structured_resume(
         resume_dict,
         source_facts=source_facts,
         enforce_fullness=True,
         require_summary=False,
+        jd_text=jd_blob,
     )
     if not post_report.passed:
         logger.warning(
@@ -353,6 +377,7 @@ def rewrite_resume_with_strategy(
             source_facts=source_facts,
             enforce_fullness=True,
             require_summary=False,
+            jd_text=jd_blob,
         )
         if post_report.passed or post_report.structured:
             try:

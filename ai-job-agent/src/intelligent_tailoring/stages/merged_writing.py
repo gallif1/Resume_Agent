@@ -145,6 +145,17 @@ def run_merged_writing_review(
     elif source_facts:
         source_facts = assign_stable_ids(source_facts)
 
+    # Carry JD snapshot for contamination checks (never as candidate claims).
+    jd_blob = ""
+    if isinstance(strategy, dict):
+        jd_blob = str(
+            strategy.get("jd_text") or strategy.get("job_description") or ""
+        ).strip()
+    if not jd_blob and isinstance(source_facts, dict):
+        jd_blob = str(source_facts.get("jd_text") or "").strip()
+    if jd_blob and isinstance(source_facts, dict):
+        source_facts["jd_text"] = jd_blob
+
     baseline = _sync(baseline_input)
     deterministic = polish_resume_deterministic(baseline)
     locked = enforce_fact_lock(baseline, deterministic)
@@ -166,6 +177,7 @@ def run_merged_writing_review(
             source_facts=source_facts or baseline,
             enforce_fullness=True,
             require_summary=True,
+            jd_text=jd_blob,
         )
 
     if allow_llm and is_ai_available():
@@ -343,6 +355,7 @@ def run_merged_writing_review(
         source_facts=source_facts or baseline,
         enforce_fullness=True,
         require_summary=True,
+        jd_text=jd_blob,
     )
     if not final_report.passed:
         logger.warning(
@@ -363,6 +376,7 @@ def run_merged_writing_review(
             source_facts=source_facts or baseline,
             enforce_fullness=True,
             require_summary=False,
+            jd_text=jd_blob,
         )
     structured_validation = final_report.to_dict()
     working = stamp_ids_on_resume(working, source_facts=source_facts or baseline)

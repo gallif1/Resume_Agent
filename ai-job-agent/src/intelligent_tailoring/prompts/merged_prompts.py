@@ -8,6 +8,10 @@ Only duplicated framing is removed; unique rules and examples are preserved.
 from __future__ import annotations
 
 from intelligent_tailoring.interview_philosophy import PIPELINE_PHILOSOPHY
+from intelligent_tailoring.jd_contamination import (
+    SOURCE_SEPARATION_INSTRUCTION,
+    SOURCE_SEPARATION_RULES,
+)
 from intelligent_tailoring.prompts.human_writer_prompts import (
     HUMAN_RESUME_WRITER_SYSTEM,
     SENIOR_RECRUITER_REVIEW_SYSTEM,
@@ -22,8 +26,8 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v5_structured"
-MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v2_structured"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v6_source_sep"
+MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v3_source_sep"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
 # Mapping of old agents → merged agent (documentation + tests).
@@ -238,6 +242,13 @@ AGENT_2_SYSTEM = "\n".join(
         "",
         PIPELINE_PHILOSOPHY,
         "",
+        SOURCE_SEPARATION_RULES,
+        "",
+        "HONEST MAXIMAL TAILORING:",
+        "- Maximize relevance using ONLY true candidate facts.",
+        "- Never omit real experience/projects; never invent or borrow JD language.",
+        "- Job posting text may guide emphasis/keywords — never become candidate claims.",
+        "",
         _block(
             "RESPONSIBILITY BLOCK — CONTENT TRIAGE RULES "
             "(from Content Triage stage — apply internally, do not emit triage JSON)",
@@ -336,13 +347,22 @@ def build_agent_2_user_prompt(
         "requirement or strategy.must_keep_bullets entry.\n"
         "Keep every strategy.shared_technologies item in Skills.\n"
         "Use a neutral professional_title matching the job title when the JD "
-        "does not specify seniority — do not invent Junior/Senior labels.\n\n"
-        f"=== STRATEGY ===\n{strategy_json}\n\n"
+        "does not specify seniority — do not invent Junior/Senior labels.\n"
+        "NEVER copy second-person/motivational JD phrases into Summary/bullets "
+        '(e.g. "You are the best", "We demand", "NOW is the time").\n\n'
+        f"<candidate_facts>\n"
         f"=== PRE-REBUILT STRUCTURE (stable ids — preserve all) ===\n"
         f"{rebuilt_resume_json}\n\n"
-        f"=== RANKED REQUIREMENTS ===\n{ranked_requirements_json}\n\n"
-        f"=== EVIDENCE MAP (compact) ===\n{evidence_map_compact}\n\n"
         f"=== RESUME FACTS (compact) ===\n{resume_facts_compact}\n"
+        f"</candidate_facts>\n\n"
+        f"<job_posting>\n"
+        f"=== STRATEGY (emphasis targets only — NOT candidate facts) ===\n"
+        f"{strategy_json}\n\n"
+        f"=== RANKED REQUIREMENTS (keyword/emphasis targets only) ===\n"
+        f"{ranked_requirements_json}\n\n"
+        f"=== EVIDENCE MAP (compact) ===\n{evidence_map_compact}\n"
+        f"</job_posting>\n\n"
+        f"{SOURCE_SEPARATION_INSTRUCTION}\n"
     )
 
 
@@ -365,6 +385,8 @@ AGENT_3_SYSTEM = "\n".join(
         "",
         PIPELINE_PHILOSOPHY,
         "",
+        SOURCE_SEPARATION_RULES,
+        "",
         _block(
             "RESPONSIBILITY BLOCK — CLAIM VALIDATION (from Claim Validation Agent)",
             CLAIM_VALIDATION_LLM_SYSTEM,
@@ -386,6 +408,8 @@ WRITING FULLNESS RULES:
 - Keep contact links unaltered.
 - Summary must be 2–4 complete, well-formed sentences — never concatenated
   competing lead-ins, never raw data structures.
+- Summary describes ONLY what the candidate did/knows from candidate facts —
+  never employer instructions, opinions, or second-person JD slogans.
 - No duplicated bullets/sentences across the document.
 
 Return STRICT JSON only:
@@ -428,13 +452,20 @@ def build_agent_3_user_prompt(
         "Validate claims, rewrite naturally, review as a recruiter, repair failed sections.\n"
         "Facts are locked. Do not invent metrics, seniority, or technologies.\n"
         "Keep every experience/project id. Write full bullet sentences. "
-        "Return a complete, full-looking resume — never a sparse half-page.\n\n"
+        "Return a complete, full-looking resume — never a sparse half-page.\n"
+        "Never adopt the job posting's voice or copy its motivational/second-person lines.\n\n"
         f"Sections to focus (optional): {sections or 'all'}\n"
         f"Prior review feedback:\n{review_feedback or '(none)'}\n\n"
         f"Rejected claims registry:\n{rejected_claims or '(empty)'}\n\n"
+        f"<candidate_facts>\n"
         f"=== VALIDATED RESUME ===\n{validated_resume_json}\n\n"
-        f"=== STRATEGY (compact) ===\n{strategy_compact}\n\n"
         f"=== EVIDENCE (compact) ===\n{evidence_compact}\n"
+        f"</candidate_facts>\n\n"
+        f"<job_posting>\n"
+        f"=== STRATEGY (emphasis only — NOT candidate facts) ===\n"
+        f"{strategy_compact}\n"
+        f"</job_posting>\n\n"
+        f"{SOURCE_SEPARATION_INSTRUCTION}\n"
     )
 
 
