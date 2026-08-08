@@ -10,8 +10,9 @@
     <input name="email" type="email" />
     <button type="submit">Submit</button>
   </form>
-  <!-- Invisible reCAPTCHA loaded on many sites — should NOT block automation -->
-  <script src="https://www.google.com/recaptcha/api.js"></script>
+  <!-- Invisible reCAPTCHA loaded on many sites — should NOT block automation.
+       Use async so Playwright set_content does not hang waiting for Google in CI. -->
+  <script src="https://www.google.com/recaptcha/api.js" async defer></script>
   <div class="g-recaptcha" data-sitekey="test" style="display:none"></div>
 </body>
 </html>
