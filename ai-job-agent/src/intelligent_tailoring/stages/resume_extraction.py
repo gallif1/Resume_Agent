@@ -380,7 +380,10 @@ def extract_structured_resume(
             "used_master_profile": bool(master),
         },
     }
-    return facts
+    # Stable ids are assigned once at parse time and carried through every agent.
+    from intelligent_tailoring.structured_resume import assign_stable_ids
+
+    return assign_stable_ids(facts)
 
 
 def resume_facts_for_prompt(facts: dict[str, Any]) -> str:

@@ -232,6 +232,11 @@ def run_intelligent_tailoring_agents(
     knowledge = knowledge_result.output
     kb = knowledge.knowledge_base
     resume_facts = dict(knowledge.resume_facts)
+    # Stable entry ids assigned once at parse and carried through every agent.
+    from intelligent_tailoring.structured_resume import assign_stable_ids
+
+    resume_facts = assign_stable_ids(resume_facts)
+    knowledge.resume_facts = resume_facts
     display_skills = list(
         resume_facts.get("display_skills") or resume_facts.get("skills") or []
     )
@@ -1515,6 +1520,58 @@ def run_intelligent_tailoring_agents(
         )
         strategy["contact_preservation"] = contact_report
 
+        # Deterministic structured-resume validation gate (non-LLM).
+        # Reject/repair missing ids, raw data, duplicates, contact gaps, and
+        # content-volume regressions before formatting/export.
+        from intelligent_tailoring.structured_resume import stamp_ids_on_resume
+        from intelligent_tailoring.structured_validation import (
+            repair_structured_resume,
+            validate_structured_resume,
+        )
+
+        cleaned_resume = stamp_ids_on_resume(
+            cleaned_resume, source_facts=resume_facts
+        )
+        structured_report = validate_structured_resume(
+            cleaned_resume,
+            source_facts=resume_facts,
+            enforce_fullness=True,
+            require_summary=True,
+        )
+        if not structured_report.passed:
+            logger.warning(
+                "structured validation failed before format (%s) — repairing",
+                structured_report.error_codes(),
+            )
+            cleaned_resume = repair_structured_resume(
+                cleaned_resume, source_facts=resume_facts
+            )
+            # Keep the best available summary after repair
+            if not str(
+                cleaned_resume.get("professional_summary")
+                or cleaned_resume.get("summary")
+                or ""
+            ).strip() and structured_report.structured.get("summary"):
+                cleaned_resume["professional_summary"] = str(
+                    structured_report.structured.get("summary") or ""
+                )
+                cleaned_resume["summary"] = cleaned_resume["professional_summary"]
+            cleaned_resume = preserve_contact(
+                cleaned_resume,
+                source_contact=source_contact,
+                resume_facts=resume_facts,
+            )
+            cleaned_resume = stamp_ids_on_resume(
+                cleaned_resume, source_facts=resume_facts
+            )
+            structured_report = validate_structured_resume(
+                cleaned_resume,
+                source_facts=resume_facts,
+                enforce_fullness=True,
+                require_summary=True,
+            )
+        strategy["structured_validation"] = structured_report.to_dict()
+
         # Neutralize unwarranted seniority labels when the JD is silent
         cleaned_resume["professional_title"] = sanitize_professional_title(
             str(cleaned_resume.get("professional_title") or ""),
@@ -1844,6 +1901,9 @@ def run_intelligent_tailoring_agents(
         quality_gates["contact_preservation"] = dict(
             strategy.get("contact_preservation") or {}
         )
+        quality_gates["structured_validation"] = dict(
+            strategy.get("structured_validation") or {}
+        )
         if strategy.get("requirement_coverage_check") and not (
             strategy["requirement_coverage_check"].get("passed", True)
         ):
@@ -1860,6 +1920,14 @@ def run_intelligent_tailoring_agents(
             )
             if failure not in quality_gates.setdefault("failures", []):
                 quality_gates["failures"].append(failure)
+        if strategy.get("structured_validation") and not (
+            strategy["structured_validation"].get("passed", True)
+        ):
+            for code in strategy["structured_validation"].get("error_codes") or []:
+                failure = f"structured_validation:{code}"
+                if failure not in quality_gates.setdefault("failures", []):
+                    quality_gates["failures"].append(failure)
+                quality_gates.setdefault("warnings", []).append(failure)
 
         quality_gates["writing_quality"] = {
             "passed": bool(writing_stage.get("passed")),

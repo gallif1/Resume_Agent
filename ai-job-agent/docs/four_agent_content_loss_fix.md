@@ -37,3 +37,10 @@ merge/render boundaries:
 ## Tests
 
 `tests/test_four_agent_content_preservation.py` freezes the screenshot failure mode.
+
+## Follow-on: structured validation layer
+
+Prompt-only repairs kept regressing. The pipeline now enforces a structured
+resume schema with stable entry ids and a deterministic (non-LLM) validation
+gate after Agents 2 and 3 — see `docs/structured_validation_layer.md` and
+`tests/test_structured_validation_layer.py`.

@@ -6,7 +6,10 @@ import json
 import logging
 from typing import Any
 
-from intelligent_tailoring.llm_utils import call_stage_json
+from intelligent_tailoring.llm_utils import (
+    call_stage_json,
+    call_stage_json_with_content_validation,
+)
 from intelligent_tailoring.prompts.merged_prompts import (
     AGENT_2_SYSTEM,
     MERGED_AGENT_2_PROMPT_VERSION,
@@ -24,6 +27,16 @@ from intelligent_tailoring.schemas import (
     validate_tailored_resume,
 )
 from intelligent_tailoring.stages.resume_extraction import resume_facts_for_prompt
+from intelligent_tailoring.structured_resume import (
+    assign_stable_ids,
+    stamp_ids_on_resume,
+    structured_to_pipeline_resume,
+    to_structured_resume,
+)
+from intelligent_tailoring.structured_validation import (
+    repair_structured_resume,
+    validate_structured_resume,
+)
 
 logger = logging.getLogger("intelligent_tailoring.resume_rewriter")
 
@@ -39,10 +52,102 @@ def _validate(data: dict[str, Any]) -> None:
                 break
     if "tailored_resume" not in data:
         raise SchemaValidationError("missing tailored_resume")
+    # Accept structured schema aliases (position/organization/skills dict)
+    resume = data["tailored_resume"]
+    if isinstance(resume, dict):
+        data["tailored_resume"] = _coerce_llm_resume_to_pipeline(resume)
     validate_tailored_resume(data["tailored_resume"])
     data["change_log"] = sanitize_change_log_raw(data.get("change_log"))
     for i, item in enumerate(data["change_log"]):
         validate_change_log_item(item, index=i)
+
+
+def _coerce_llm_resume_to_pipeline(resume: dict[str, Any]) -> dict[str, Any]:
+    """Accept structured-schema fields from the LLM and map to pipeline shape."""
+    out = dict(resume)
+    # Title aliases
+    if not out.get("professional_title") and out.get("title"):
+        out["professional_title"] = out.get("title")
+    if not out.get("professional_summary") and out.get("summary"):
+        out["professional_summary"] = out.get("summary")
+    # Skills dict → categorized lines
+    if isinstance(out.get("skills"), dict):
+        from intelligent_tailoring.structured_resume import skills_dict_to_list
+
+        out["skills"] = skills_dict_to_list(out["skills"])
+    # Experience field aliases
+    exp = []
+    for entry in out.get("experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        fixed = dict(entry)
+        if not fixed.get("title"):
+            fixed["title"] = fixed.get("position") or ""
+        if not fixed.get("company"):
+            fixed["company"] = fixed.get("organization") or ""
+        if not fixed.get("dates"):
+            fixed["dates"] = fixed.get("dateRange") or fixed.get("date_range") or ""
+        sid = str(fixed.get("id") or fixed.get("source_entry_id") or "").strip()
+        if sid:
+            fixed["id"] = sid
+            fixed["source_entry_id"] = sid
+        exp.append(fixed)
+    out["experience"] = exp
+    # Projects field aliases
+    projects = []
+    for entry in out.get("projects") or []:
+        if not isinstance(entry, dict):
+            continue
+        fixed = dict(entry)
+        if not fixed.get("name"):
+            fixed["name"] = fixed.get("title") or ""
+        sid = str(fixed.get("id") or fixed.get("source_entry_id") or "").strip()
+        if sid:
+            fixed["id"] = sid
+            fixed["source_entry_id"] = sid
+        projects.append(fixed)
+    out["projects"] = projects
+    # Education field aliases
+    edu = []
+    for entry in out.get("education") or []:
+        if not isinstance(entry, dict):
+            continue
+        fixed = dict(entry)
+        if not fixed.get("field"):
+            fixed["field"] = fixed.get("fieldOfStudy") or fixed.get("field_of_study") or ""
+        if not fixed.get("dates"):
+            fixed["dates"] = fixed.get("dateRange") or fixed.get("date_range") or ""
+        edu.append(fixed)
+    if edu:
+        out["education"] = edu
+    # Ensure required keys exist for validate_tailored_resume
+    for key in (
+        "professional_summary",
+        "skills",
+        "experience",
+        "projects",
+        "education",
+        "certifications",
+    ):
+        if key not in out:
+            out[key] = [] if key != "professional_summary" else ""
+    return out
+
+
+def _content_validate_agent2(
+    raw: dict[str, Any],
+    *,
+    source_facts: dict[str, Any],
+):
+    resume = raw.get("tailored_resume") if isinstance(raw, dict) else {}
+    return validate_structured_resume(
+        resume if isinstance(resume, dict) else {},
+        source_facts=source_facts,
+        enforce_fullness=True,
+        # Agent 2 may leave summary thin; Agent 3 polishes prose. Still catch
+        # broken/competing lead-ins when a summary is present.
+        require_summary=False,
+    )
 
 
 def _fallback_from_rebuilt(
@@ -52,17 +157,18 @@ def _fallback_from_rebuilt(
     strategy: dict[str, Any],
 ) -> dict[str, Any]:
     """Deterministic structure when the LLM omits tailored_resume."""
-    resume = dict(rebuilt_resume or {})
+    facts = assign_stable_ids(resume_facts)
+    resume = stamp_ids_on_resume(dict(rebuilt_resume or {}), source_facts=facts)
     if not resume.get("skills"):
         resume["skills"] = list(
-            resume_facts.get("display_skills") or resume_facts.get("skills") or []
+            facts.get("display_skills") or facts.get("skills") or []
         )
     if not resume.get("experience"):
-        resume["experience"] = list(resume_facts.get("experience_roles") or [])
+        resume["experience"] = list(facts.get("experience_roles") or [])
     if not resume.get("projects"):
-        resume["projects"] = list(resume_facts.get("projects") or [])
+        resume["projects"] = list(facts.get("projects") or [])
     if not resume.get("education"):
-        resume["education"] = list(resume_facts.get("education") or [])
+        resume["education"] = list(facts.get("education") or [])
     summary = str(
         resume.get("professional_summary")
         or resume.get("summary")
@@ -74,10 +180,13 @@ def _fallback_from_rebuilt(
     if not resume.get("professional_title"):
         resume["professional_title"] = str(
             strategy.get("target_title")
-            or resume_facts.get("professional_title")
+            or facts.get("professional_title")
             or ""
         )
+    resume = repair_structured_resume(resume, source_facts=facts)
     validated = validate_tailored_resume(resume).to_dict()
+    if isinstance(resume.get("contact"), dict):
+        validated["contact"] = dict(resume["contact"])
     return {
         "tailored_resume": validated,
         "change_log": [],
@@ -112,9 +221,18 @@ def rewrite_resume_with_strategy(
     Falls back to the legacy deep-tailor prompt, then to rebuilt structure,
     so preview generation cannot hard-fail on a missing tailored_resume key.
     """
+    source_facts = assign_stable_ids(resume_facts)
+    rebuilt_resume = stamp_ids_on_resume(
+        rebuilt_resume if isinstance(rebuilt_resume, dict) else {},
+        source_facts=source_facts,
+    )
+    # Ensure contact from base is visible to the model
+    if source_facts.get("contact") and not rebuilt_resume.get("contact"):
+        rebuilt_resume["contact"] = dict(source_facts["contact"])
+
     cache_suffix = f"|regen{regeneration_attempt}" if regeneration_attempt else ""
     user_prompt = build_deep_tailor_rewrite_user_prompt(
-        resume_facts=resume_facts_for_prompt(resume_facts),
+        resume_facts=resume_facts_for_prompt(source_facts),
         rebuilt_resume_json=json.dumps(rebuilt_resume, ensure_ascii=False, indent=2),
         strategy_json=json.dumps(strategy, ensure_ascii=False, indent=2),
         scores_json=json.dumps(scores, ensure_ascii=False, indent=2),
@@ -131,20 +249,25 @@ def rewrite_resume_with_strategy(
     )
     cache_payload = (
         f"{language}|{strategy.get('job_family')}|"
-        f"{resume_facts_for_prompt(resume_facts)[:2500]}{cache_suffix}"
+        f"{resume_facts_for_prompt(source_facts)[:2500]}{cache_suffix}"
     )
+
+    def _validate_content(payload: dict[str, Any]):
+        return _content_validate_agent2(payload, source_facts=source_facts)
 
     raw: dict[str, Any] | None = None
     try:
-        raw = call_stage_json(
+        raw = call_stage_json_with_content_validation(
             system_prompt=AGENT_2_SYSTEM,
             user_prompt=user_prompt,
             validate=_validate,
+            content_validate=_validate_content,
             use_cache=use_cache and regeneration_attempt == 0,
             cache_namespace=f"{MERGED_AGENT_2_PROMPT_VERSION}_strategy_content",
             cache_payload=cache_payload,
             temperature=0.25 if regeneration_attempt else 0.2,
             count_as_primary="strategy_content_selection",
+            max_content_retries=1,
         )
     except SchemaValidationError as composed_error:
         logger.warning(
@@ -152,15 +275,17 @@ def rewrite_resume_with_strategy(
             composed_error,
         )
         try:
-            raw = call_stage_json(
+            raw = call_stage_json_with_content_validation(
                 system_prompt=DEEP_TAILOR_REWRITE_SYSTEM,
                 user_prompt=user_prompt,
                 validate=_validate,
+                content_validate=_validate_content,
                 use_cache=False,
                 cache_namespace=f"{PIPELINE_VERSION}_deep_rewrite_fallback",
                 cache_payload=f"fallback|{cache_payload}",
                 temperature=0.2,
                 # Already counted the composed primary call; do not double-count
+                max_content_retries=1,
             )
         except SchemaValidationError as fallback_error:
             logger.warning(
@@ -169,13 +294,18 @@ def rewrite_resume_with_strategy(
             )
             return _fallback_from_rebuilt(
                 rebuilt_resume=rebuilt_resume,
-                resume_facts=resume_facts,
+                resume_facts=source_facts,
                 strategy=strategy,
             )
 
     assert raw is not None
     resume = validate_tailored_resume(raw["tailored_resume"])
     resume_dict = resume.to_dict()
+    # Preserve contact from LLM or source
+    if isinstance(raw["tailored_resume"], dict) and isinstance(
+        raw["tailored_resume"].get("contact"), dict
+    ):
+        resume_dict["contact"] = dict(raw["tailored_resume"]["contact"])
 
     # Keep LLM skill selection when present — overwriting with the rebuilder
     # list erased job-specific emphasis (always the same source skill set).
@@ -201,6 +331,47 @@ def rewrite_resume_with_strategy(
         _merge_experience_order(resume_dict, rebuilt_resume)
     if rebuilt_resume.get("projects"):
         _merge_project_order(resume_dict, rebuilt_resume)
+
+    resume_dict = stamp_ids_on_resume(resume_dict, source_facts=source_facts)
+
+    # Deterministic validation + repair after merge (IDs / contact / fullness)
+    post_report = validate_structured_resume(
+        resume_dict,
+        source_facts=source_facts,
+        enforce_fullness=True,
+        require_summary=False,
+    )
+    if not post_report.passed:
+        logger.warning(
+            "Agent 2 post-merge validation failed (%s) — applying deterministic repair",
+            post_report.error_codes(),
+        )
+        resume_dict = repair_structured_resume(resume_dict, source_facts=source_facts)
+        # Re-check; keep repaired output even if soft summary issues remain
+        post_report = validate_structured_resume(
+            resume_dict,
+            source_facts=source_facts,
+            enforce_fullness=True,
+            require_summary=False,
+        )
+        if post_report.passed or post_report.structured:
+            try:
+                resume_dict = structured_to_pipeline_resume(
+                    to_structured_resume(resume_dict, source_facts=source_facts)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    from intelligent_tailoring.requirement_coverage import preserve_contact
+
+    resume_dict = preserve_contact(
+        resume_dict,
+        source_contact=source_facts.get("contact")
+        if isinstance(source_facts.get("contact"), dict)
+        else {},
+        resume_facts=source_facts,
+    )
+    resume_dict = stamp_ids_on_resume(resume_dict, source_facts=source_facts)
 
     raw["change_log"] = sanitize_change_log_raw(raw.get("change_log"))
     change_log = [
@@ -231,6 +402,8 @@ def rewrite_resume_with_strategy(
             if str(x).strip()
         ],
         "_from_cache": bool(raw.get("_from_cache")),
+        "_content_validation": raw.get("_content_validation"),
+        "_structured_validation": post_report.to_dict(),
     }
 
 

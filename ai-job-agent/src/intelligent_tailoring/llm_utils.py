@@ -15,6 +15,13 @@ logger = logging.getLogger("intelligent_tailoring")
 
 DEFAULT_TEMPERATURE = 0.2
 
+CONTENT_VALIDATION_RETRY_NOTE = (
+    "Your previous structured resume failed DETERMINISTIC validation. "
+    "Fix ONLY the listed issues. Return STRICT JSON matching the required "
+    "schema. Do not drop base experience/project ids. Do not emit raw "
+    "dicts/lists inside string fields."
+)
+
 # Per-generation primary LLM call accounting (four-agent pipeline).
 _primary_calls: ContextVar[list[str] | None] = ContextVar(
     "intelligent_tailoring_primary_llm_calls", default=None
@@ -120,3 +127,107 @@ def call_stage_json(
             raise SchemaValidationError(
                 f"Stage {cache_namespace} failed after retry: {retry_error}"
             ) from retry_error
+
+
+def call_stage_json_with_content_validation(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    validate: Callable[[dict[str, Any]], Any] | None = None,
+    content_validate: Callable[[dict[str, Any]], Any],
+    use_cache: bool = True,
+    cache_namespace: str,
+    cache_payload: str,
+    temperature: float = DEFAULT_TEMPERATURE,
+    model: str | None = None,
+    count_as_primary: str | None = None,
+    max_content_retries: int = 1,
+) -> dict[str, Any]:
+    """Call JSON stage, then run deterministic content validation with feedback regen.
+
+    ``content_validate`` must return an object with ``.passed`` and
+    ``.feedback_for_agent()`` (see ``structured_validation.ValidationReport``).
+    On failure, re-invokes the LLM once with the specific validation errors.
+    """
+    raw = call_stage_json(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        validate=validate,
+        use_cache=use_cache,
+        cache_namespace=cache_namespace,
+        cache_payload=cache_payload,
+        temperature=temperature,
+        model=model,
+        count_as_primary=count_as_primary,
+    )
+    report = content_validate(raw)
+    if getattr(report, "passed", False):
+        raw["_content_validation"] = (
+            report.to_dict() if hasattr(report, "to_dict") else {"passed": True}
+        )
+        return raw
+
+    stats = _token_stats.get()
+    attempts = max(0, int(max_content_retries))
+    last_report = report
+    for attempt in range(1, attempts + 1):
+        feedback = ""
+        if hasattr(last_report, "feedback_for_agent"):
+            feedback = str(last_report.feedback_for_agent() or "")
+        if not feedback:
+            feedback = "Content validation failed. Return corrected structured JSON."
+        logger.warning(
+            "intelligent_tailoring stage %s content validation failed "
+            "(attempt %d/%d): %s",
+            cache_namespace,
+            attempt,
+            attempts,
+            getattr(last_report, "error_codes", lambda: [])(),
+        )
+        if stats is not None:
+            stats["stage_json_retries"] = int(stats.get("stage_json_retries") or 0) + 1
+            stats["content_validation_retries"] = (
+                int(stats.get("content_validation_retries") or 0) + 1
+            )
+        try:
+            raw = call_stage_json(
+                system_prompt=(
+                    f"{system_prompt}\n\n{CONTENT_VALIDATION_RETRY_NOTE}\n\n"
+                    f"{feedback}"
+                ),
+                user_prompt=(
+                    f"{user_prompt}\n\n=== VALIDATION FEEDBACK (fix these) ===\n"
+                    f"{feedback}\n"
+                ),
+                validate=validate,
+                use_cache=False,
+                cache_namespace=f"{cache_namespace}_content_retry",
+                cache_payload=f"content_retry{attempt}|{cache_payload}",
+                temperature=min(0.35, temperature + 0.05),
+                model=model,
+                count_as_primary=None,
+            )
+        except SchemaValidationError as exc:
+            logger.warning(
+                "content validation regen schema-failed for %s: %s",
+                cache_namespace,
+                exc,
+            )
+            break
+        last_report = content_validate(raw)
+        if getattr(last_report, "passed", False):
+            raw["_content_validation"] = (
+                last_report.to_dict()
+                if hasattr(last_report, "to_dict")
+                else {"passed": True}
+            )
+            raw["_content_validation_repaired"] = True
+            return raw
+
+    raw["_content_validation"] = (
+        last_report.to_dict()
+        if hasattr(last_report, "to_dict")
+        else {"passed": False}
+    )
+    raw["_content_validation_failed"] = True
+    return raw

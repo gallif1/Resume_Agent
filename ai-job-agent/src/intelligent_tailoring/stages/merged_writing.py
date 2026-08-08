@@ -12,7 +12,10 @@ import logging
 from typing import Any
 
 from ai_client import is_ai_available
-from intelligent_tailoring.llm_utils import call_stage_json, record_primary_llm_call
+from intelligent_tailoring.llm_utils import (
+    call_stage_json_with_content_validation,
+    record_primary_llm_call,
+)
 from intelligent_tailoring.prompts.merged_prompts import (
     AGENT_3_SYSTEM,
     MERGED_AGENT_3_PROMPT_VERSION,
@@ -46,15 +49,32 @@ from intelligent_tailoring.writing.style_validator import (
     DEFAULT_THRESHOLD,
     evaluate_writing_quality,
 )
+from intelligent_tailoring.structured_resume import (
+    assign_stable_ids,
+    stamp_ids_on_resume,
+)
+from intelligent_tailoring.structured_validation import (
+    repair_structured_resume,
+    validate_structured_resume,
+)
 
 logger = logging.getLogger("intelligent_tailoring.merged_writing")
 
 MAX_INTERNAL_REPAIR_PASSES = 2
 
 
+def _coerce_writer_resume(resume: dict[str, Any]) -> dict[str, Any]:
+    """Normalize structured-schema aliases from Agent 3 into pipeline shape."""
+    from intelligent_tailoring.services.resume_rewriter import _coerce_llm_resume_to_pipeline
+
+    return _coerce_llm_resume_to_pipeline(resume if isinstance(resume, dict) else {})
+
+
 def _validate_merged_writer(data: dict[str, Any]) -> None:
     if not isinstance(data, dict) or "tailored_resume" not in data:
         raise SchemaValidationError("merged writer missing tailored_resume")
+    if isinstance(data.get("tailored_resume"), dict):
+        data["tailored_resume"] = _coerce_writer_resume(data["tailored_resume"])
     validate_tailored_resume(data["tailored_resume"])
 
 
@@ -95,10 +115,41 @@ def run_merged_writing_review(
     evidence_inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One primary LLM call for write+recruiter; deterministic gates afterward."""
-    baseline = _sync(validated_resume)
+    # Resolve source facts for stable-id / contact / fullness checks
+    source_facts: dict[str, Any] = {}
+    if knowledge_base is not None:
+        try:
+            from intelligent_tailoring.knowledge_base import knowledge_base_to_resume_facts
+
+            source_facts = knowledge_base_to_resume_facts(knowledge_base) or {}
+        except Exception:  # noqa: BLE001
+            source_facts = {}
+    if not source_facts and isinstance(strategy, dict):
+        source_facts = strategy.get("resume_facts") or {}
+    # Prefer ids/contact already on the validated resume as the source of truth
+    baseline_input = stamp_ids_on_resume(
+        validated_resume if isinstance(validated_resume, dict) else {},
+        source_facts=source_facts or None,
+    )
+    if isinstance(baseline_input.get("contact"), dict):
+        source_facts = assign_stable_ids(
+            {
+                **(source_facts or {}),
+                "contact": baseline_input.get("contact"),
+                "experience_roles": baseline_input.get("experience") or [],
+                "projects": baseline_input.get("projects") or [],
+                "education": baseline_input.get("education") or [],
+                "skills": baseline_input.get("skills") or [],
+            }
+        )
+    elif source_facts:
+        source_facts = assign_stable_ids(source_facts)
+
+    baseline = _sync(baseline_input)
     deterministic = polish_resume_deterministic(baseline)
     locked = enforce_fact_lock(baseline, deterministic)
     working = _sync(locked["resume"])
+    working = stamp_ids_on_resume(working, source_facts=source_facts or None)
 
     recruiter_review: dict[str, Any] = {}
     validation_warnings: list[dict[str, Any]] = []
@@ -106,6 +157,16 @@ def run_merged_writing_review(
     mode = "deterministic"
     primary_calls = 0
     repair_passes = 0
+    structured_validation: dict[str, Any] = {}
+
+    def _validate_content(payload: dict[str, Any]):
+        resume = payload.get("tailored_resume") if isinstance(payload, dict) else {}
+        return validate_structured_resume(
+            resume if isinstance(resume, dict) else {},
+            source_facts=source_facts or baseline,
+            enforce_fullness=True,
+            require_summary=True,
+        )
 
     if allow_llm and is_ai_available():
         try:
@@ -113,7 +174,7 @@ def run_merged_writing_review(
             primary_calls = 1
             safe_strategy = sanitize_strategy_for_writer(strategy or {})
             focus_sections = ",".join(_normalize_sections(sections or []))
-            raw = call_stage_json(
+            raw = call_stage_json_with_content_validation(
                 system_prompt=AGENT_3_SYSTEM,
                 user_prompt=build_agent_3_user_prompt(
                     language=output_language or "en",
@@ -127,6 +188,7 @@ def run_merged_writing_review(
                     ],
                 ),
                 validate=_validate_merged_writer,
+                content_validate=_validate_content,
                 use_cache=use_cache and not review_feedback and not sections,
                 cache_namespace=f"{MERGED_AGENT_3_PROMPT_VERSION}_write_review",
                 cache_payload=(
@@ -134,11 +196,18 @@ def run_merged_writing_review(
                     f"{focus_sections}|{json.dumps(rejected[:10])}"
                 ),
                 temperature=0.35,
+                max_content_retries=1,
             )
             polished = validate_tailored_resume(raw["tailored_resume"]).to_dict()
+            if isinstance(raw["tailored_resume"], dict) and isinstance(
+                raw["tailored_resume"].get("contact"), dict
+            ):
+                polished["contact"] = dict(raw["tailored_resume"]["contact"])
             fact_locked = enforce_fact_lock(baseline, polished)
             working = _sync(fact_locked["resume"])
+            working = stamp_ids_on_resume(working, source_facts=source_facts or baseline)
             mode = "merged_llm"
+            structured_validation = raw.get("_content_validation") or {}
             recruiter_review = (
                 raw.get("recruiter_review")
                 if isinstance(raw.get("recruiter_review"), dict)
@@ -153,6 +222,10 @@ def run_merged_writing_review(
                 text = str(claim).strip()
                 if text and text not in rejected:
                     rejected.append(text)
+            if raw.get("_content_validation_failed"):
+                working = repair_structured_resume(
+                    working, source_facts=source_facts or baseline
+                )
         except (SchemaValidationError, Exception) as exc:  # noqa: BLE001
             logger.warning("merged writing LLM failed (%s) — falling back", exc)
             fallback = write_human_resume(
@@ -166,6 +239,7 @@ def run_merged_writing_review(
                 allow_llm=allow_llm,
             )
             working = _sync(fallback.get("tailored_resume") or baseline)
+            working = stamp_ids_on_resume(working, source_facts=source_facts or baseline)
             mode = "fallback_writer"
             # Recruiter via heuristic only to avoid a second primary LLM call
             recruiter_review = review_resume(
@@ -263,6 +337,46 @@ def run_merged_writing_review(
     if not fact_cmp.get("unchanged", True):
         working = baseline
 
+    # Final structured validation before handoff to Agent 4 / formatting
+    final_report = validate_structured_resume(
+        working,
+        source_facts=source_facts or baseline,
+        enforce_fullness=True,
+        require_summary=True,
+    )
+    if not final_report.passed:
+        logger.warning(
+            "Agent 3 final structured validation failed (%s) — repairing",
+            final_report.error_codes(),
+        )
+        working = repair_structured_resume(
+            working, source_facts=source_facts or baseline
+        )
+        # Preserve polished summary when repair cleared it incorrectly
+        if not str(working.get("professional_summary") or working.get("summary") or "").strip():
+            working["professional_summary"] = str(
+                baseline.get("professional_summary") or baseline.get("summary") or ""
+            )
+            working["summary"] = working["professional_summary"]
+        final_report = validate_structured_resume(
+            working,
+            source_facts=source_facts or baseline,
+            enforce_fullness=True,
+            require_summary=False,
+        )
+    structured_validation = final_report.to_dict()
+    working = stamp_ids_on_resume(working, source_facts=source_facts or baseline)
+
+    from intelligent_tailoring.requirement_coverage import preserve_contact
+
+    working = preserve_contact(
+        working,
+        source_contact=(source_facts or {}).get("contact")
+        if isinstance((source_facts or {}).get("contact"), dict)
+        else baseline.get("contact") if isinstance(baseline.get("contact"), dict) else {},
+        resume_facts=source_facts or baseline,
+    )
+
     return {
         "tailored_resume": working,
         "recruiter_review": recruiter_review,
@@ -274,9 +388,11 @@ def run_merged_writing_review(
         "repair_passes": repair_passes,
         "quality_score": quality_report,
         "cycles": cycles,
-        "passed": bool(quality_report.get("passed", True)),
+        "passed": bool(quality_report.get("passed", True)) and final_report.passed,
         "export_ready": bool(quality_report.get("passed", True)),
         "primary_llm_calls": primary_calls,
-        "quality_gate_failures": list(quality_report.get("failures") or []),
+        "quality_gate_failures": list(quality_report.get("failures") or [])
+        + ([] if final_report.passed else final_report.error_codes()),
         "merged_agent": "human_writing_credibility",
+        "structured_validation": structured_validation,
     }

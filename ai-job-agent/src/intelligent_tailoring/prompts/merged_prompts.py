@@ -22,8 +22,8 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v4_coverage"
-MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v1"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v5_structured"
+MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v2_structured"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
 # Mapping of old agents → merged agent (documentation + tests).
@@ -176,33 +176,47 @@ Remove low-value duty language that does not raise interview probability.
 
 PRESERVATION-FIRST RULES (mandatory):
 - Never invent facts.
+- 100% CONTENT RULE: every Experience position and every Project from the
+  base resume MUST appear in tailored_resume, identified by the same stable
+  ``id`` / ``source_entry_id``. Relevance may reorder, reword, shorten, or
+  expand — it must NEVER exclude a whole entry.
 - A selected Experience entry MUST include at least one meaningful bullet.
 - A selected Project MUST include a description OR at least one bullet.
 - Never emit a project as a title-only shell.
 - Never emit an experience role as a title-only shell.
-- If content is too weak to keep bullets, omit the entire entry.
-- Prefer 2 complete projects with bullets over 1 title-only project.
-- Prefer 2 roles with 1–3 bullets each over 3 empty roles.
+- Prefer complete entries with full bullets over empty shells. Never omit
+  an entry to save space — condense bullets instead.
 - Do not silently drop verified high-value technologies from Skills.
+- WEAK-MATCH FULLNESS:
+  * Relevance score influences ordering, emphasis, and bullet phrasing —
+    never inclusion/exclusion of whole entries.
+  * When the job is a weak overall match, work harder to find honest
+    connective tissue (e.g. generalize FastAPI as "production backend
+    services and REST APIs") rather than omitting content.
+  * Write full bullet sentences (context + action + outcome/tech where the
+    base resume supports it) — never clipped fragments, never fabricated
+    claims. Fuller honest content fills the page.
 - REQUIREMENT COVERAGE (before any Remove/Condense):
   * Cross-check every bullet against stated job requirements/qualifications.
   * Any bullet that directly matches a stated requirement (skill, tool,
     responsibility, or keyword) is HIGH-PRIORITY and must NOT be removed.
-  * If length forces cuts, remove zero-overlap content first — never
-    drop the strongest requirement matches.
+  * If length forces cuts, shorten low-overlap bullets — never drop an
+    entire base experience/project id, and never drop the strongest
+    requirement matches.
   * Technologies present in BOTH the resume and the job posting must remain
     in Skills (and preferably in a bullet). Only truly irrelevant tech may
     be de-emphasized.
-- Contact / links (email, phone, LinkedIn, GitHub, portfolio) are never
-  authored or removed here — leave them untouched for the header renderer.
+- Contact / links (email, phone, LinkedIn, GitHub, portfolio) MUST be copied
+  unaltered from the base resume into tailored_resume.contact.
 - SENIORITY / TITLE LANGUAGE:
   * If the job posting does not specify seniority (no Junior/Senior/etc.),
     use a neutral title matching the job's own title (e.g. "Backend Engineer").
   * Do not label the candidate "Junior" unless the JD uses that language or
     the base resume's own title requires it for honesty.
   * Never fabricate seniority, titles, or experience.
-- Remove content that does not help win an interview for THIS job — but only
-  after protecting requirement-matched bullets.
+- All string fields must be plain human-readable text — never dict/list/JSON
+  reprs inside strings.
+- No duplicated entries, bullets, or sentences.
 - Expand only when the original resume already contains supporting detail.
 - Preserve the selected output language.
 """.strip()
@@ -238,13 +252,15 @@ AGENT_2_SYSTEM = "\n".join(
             "RESPONSIBILITY BLOCK — STRATEGY RULES (from Resume Strategy Agent)",
             """
 Strategy rules preserved:
-- Decide what evidence deserves space and what appears first.
-- Decide what is removed or condensed for the one-page budget.
-- Choose the most persuasive project for THIS job.
-- Record facts_omitted and omission_reasons.
+- Decide what evidence deserves emphasis and what appears first.
+- Condense low-value wording for the one-page budget — do NOT drop whole
+  base experience/project ids.
+- Choose which project leads for THIS job (ordering), but keep all projects.
+- Record facts_omitted only for low-value duty phrases inside bullets —
+  never for entire positions/projects from the base resume.
 - Propagate genuine_gaps and forbidden_claims — never invent coverage.
-- Prefer five excellent bullets over twelve average ones — BUT never omit
-  a bullet that is a direct match to a stated job requirement.
+- Prefer excellent bullets — BUT never omit a bullet that is a direct match
+  to a stated job requirement, and never omit a base entry id.
 - Honor strategy.must_keep_bullets and strategy.shared_technologies when present.
 """,
         ),
@@ -252,11 +268,36 @@ Strategy rules preserved:
 MANDATORY FINAL SCHEMA (override any earlier schema snippets):
 {
   "tailored_resume": {
+    "name": "string",
+    "contact": {
+      "location": "string",
+      "phone": "string",
+      "email": "string",
+      "github": "string|null",
+      "linkedin": "string|null"
+    },
     "professional_title": "string",
     "professional_summary": "string",
-    "skills": [],
-    "experience": [],
-    "projects": [],
+    "skills": ["Category: atom, atom", "..."] OR {"Category": ["atom"]},
+    "experience": [
+      {
+        "id": "role_N (stable from rebuilt_resume — never invent new ids)",
+        "source_entry_id": "role_N",
+        "title": "string",
+        "company": "string",
+        "dates": "string",
+        "bullets": ["full sentence", "..."]
+      }
+    ],
+    "projects": [
+      {
+        "id": "project_N (stable)",
+        "source_entry_id": "project_N",
+        "name": "string",
+        "description": "string",
+        "bullets": ["full sentence", "..."]
+      }
+    ],
     "education": [],
     "certifications": []
   },
@@ -267,6 +308,8 @@ MANDATORY FINAL SCHEMA (override any earlier schema snippets):
   "ats_keywords_added": []
 }
 Output JSON only. tailored_resume is required.
+Every base experience/project id from PRE-REBUILT STRUCTURE must appear.
+All string values must be plain prose — no dict/list/JSON fragments.
 """.strip(),
     ]
 )
@@ -283,15 +326,20 @@ def build_agent_2_user_prompt(
 ) -> str:
     return (
         f"Output language: {language}\n"
-        "Build the tailored resume structure + triage decisions for this job.\n"
-        "Follow strategy; do not invent facts; keep one-page budget in mind.\n"
-        "Before removing any bullet, confirm it does NOT match a ranked "
+        "Build the tailored resume structure for this job as STRICT structured JSON.\n"
+        "Follow strategy; do not invent facts; keep a full, professional page.\n"
+        "Carry every experience/project id from PRE-REBUILT STRUCTURE unchanged.\n"
+        "Copy contact (email/phone/github/linkedin) from the base resume unaltered.\n"
+        "Relevance may reorder and rephrase — never drop a whole base entry.\n"
+        "On weak matches, emphasize transferable skills with honest fuller bullets.\n"
+        "Before shortening any bullet, confirm it does NOT match a ranked "
         "requirement or strategy.must_keep_bullets entry.\n"
         "Keep every strategy.shared_technologies item in Skills.\n"
         "Use a neutral professional_title matching the job title when the JD "
         "does not specify seniority — do not invent Junior/Senior labels.\n\n"
         f"=== STRATEGY ===\n{strategy_json}\n\n"
-        f"=== PRE-REBUILT STRUCTURE ===\n{rebuilt_resume_json}\n\n"
+        f"=== PRE-REBUILT STRUCTURE (stable ids — preserve all) ===\n"
+        f"{rebuilt_resume_json}\n\n"
         f"=== RANKED REQUIREMENTS ===\n{ranked_requirements_json}\n\n"
         f"=== EVIDENCE MAP (compact) ===\n{evidence_map_compact}\n\n"
         f"=== RESUME FACTS (compact) ===\n{resume_facts_compact}\n"
@@ -330,9 +378,29 @@ AGENT_3_SYSTEM = "\n".join(
             SENIOR_RECRUITER_REVIEW_SYSTEM,
         ),
         """
+WRITING FULLNESS RULES:
+- Preserve every experience/project id from the validated resume — never drop,
+  merge, or invent entries at this stage.
+- Write full, complete bullet sentences (context + action + outcome/tech when
+  supported by the base facts). Do not clip into fragments.
+- Keep contact links unaltered.
+- Summary must be 2–4 complete, well-formed sentences — never concatenated
+  competing lead-ins, never raw data structures.
+- No duplicated bullets/sentences across the document.
+
 Return STRICT JSON only:
 {
-  "tailored_resume": { ... same schema as Human Writer ... },
+  "tailored_resume": {
+    "name": "string",
+    "contact": {"location":"","phone":"","email":"","github":null,"linkedin":null},
+    "professional_title": "string",
+    "professional_summary": "string",
+    "skills": [],
+    "experience": [{"id":"role_N","title":"","company":"","dates":"","bullets":[]}],
+    "projects": [{"id":"project_N","name":"","description":"","bullets":[]}],
+    "education": [],
+    "certifications": []
+  },
   "validation_warnings": [],
   "rejected_claims": [],
   "safe_rewrites": [],
@@ -358,7 +426,9 @@ def build_agent_3_user_prompt(
     return (
         f"Output language: {language}\n"
         "Validate claims, rewrite naturally, review as a recruiter, repair failed sections.\n"
-        "Facts are locked. Do not invent metrics, seniority, or technologies.\n\n"
+        "Facts are locked. Do not invent metrics, seniority, or technologies.\n"
+        "Keep every experience/project id. Write full bullet sentences. "
+        "Return a complete, full-looking resume — never a sparse half-page.\n\n"
         f"Sections to focus (optional): {sections or 'all'}\n"
         f"Prior review feedback:\n{review_feedback or '(none)'}\n\n"
         f"Rejected claims registry:\n{rejected_claims or '(empty)'}\n\n"
