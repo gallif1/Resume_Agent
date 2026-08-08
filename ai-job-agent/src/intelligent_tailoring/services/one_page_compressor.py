@@ -159,8 +159,21 @@ def texts_are_near_duplicates(a: str, b: str, *, overlap_threshold: float = 0.55
         return True
     # One line is essentially a stub/prefix of the other.
     shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
-    if len(shorter) >= 24 and shorter in longer:
-        return True
+    # Short titles (e.g. project names) often leak into description — treat
+    # exact containment as a duplicate even below the 24-char stub threshold
+    # when the shorter string is a complete multi-word label.
+    if shorter in longer:
+        if len(shorter) >= 24:
+            return True
+        if len(shorter.split()) >= 2 and (
+            longer == shorter
+            or longer.startswith(shorter + " ")
+            or longer.startswith(shorter + ":")
+            or longer.startswith(shorter + " -")
+            or longer.startswith(shorter + " —")
+            or longer.startswith(shorter + " –")
+        ):
+            return True
     if " ".join(na.split()[:4]) == " ".join(nb.split()[:4]) and len(na.split()) >= 4:
         return True
     tokens_a, tokens_b = _significant_tokens(a), _significant_tokens(b)

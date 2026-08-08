@@ -91,6 +91,92 @@ def test_markdown_render_skips_duplicate_project_description():
     assert md.count(MONITOR_BULLET) == 1
 
 
+def test_markdown_and_pdf_drop_title_echoed_as_description():
+    """Screenshot regression: project name must not render twice as a heading."""
+    resume = {
+        "projects": [
+            {
+                "name": "Server Monitor System",
+                "description": "Server Monitor System",
+                "bullets": [MONITOR_BULLET, SCHEMA_BULLET, SCHEMA_BULLET],
+            },
+            {
+                "name": "Restaurant Menu Ordering App",
+                "description": "Restaurant Menu Ordering App",
+                "bullets": [
+                    "Android application for offline menu ordering with Firebase sync.",
+                    "Android application for offline menu ordering with Firebase sync.",
+                ],
+            },
+        ]
+    }
+    md = tailor.render_tailored_cv_markdown(resume, name="Gal Lifshitz")
+    assert md.count("### Server Monitor System") == 1
+    # Description line that only restates the title must be omitted.
+    body_after_heading = md.split("### Server Monitor System", 1)[1]
+    assert not body_after_heading.lstrip().startswith("Server Monitor System\n")
+    assert md.count(MONITOR_BULLET) == 1
+    assert md.count(SCHEMA_BULLET) == 1
+    assert md.count("Android application for offline menu ordering") == 1
+
+    parsed = pdf.parse_resume_markdown(md)
+    projects = next(s for s in parsed.sections if s.kind == "projects")
+    monitor = next(e for e in projects.entries if "Server Monitor" in (e.title or ""))
+    assert (monitor.subtitle or "").strip().lower() != "server monitor system"
+    assert MONITOR_BULLET in " ".join(monitor.bullets)
+    assert " ".join(monitor.bullets).count("Designed database schema") == 1
+
+
+def test_repair_scrubs_restored_title_and_bullet_dupes():
+    from intelligent_tailoring.structured_validation import repair_structured_resume
+
+    broken = {
+        "professional_summary": (
+            "Full-stack engineer with experience building monitoring systems "
+            "and mobile ordering applications."
+        ),
+        "contact": {"email": "gal@example.com", "github": "https://github.com/g"},
+        "experience": [
+            {
+                "id": "role_0",
+                "title": "Capstone Project Lead",
+                "company": "SCE",
+                "dates": "2024 – 2025",
+                "bullets": ["Led a multi-page client application integrating REST APIs."],
+            }
+        ],
+        "projects": [
+            {
+                "id": "project_0",
+                "name": "Server Monitor System",
+                "description": "Server Monitor System",
+                "bullets": [MONITOR_BULLET, MONITOR_BULLET, SCHEMA_BULLET],
+            }
+        ],
+        "skills": ["Languages: Python"],
+        "education": [],
+    }
+    facts = {
+        "contact": broken["contact"],
+        "experience_roles": broken["experience"],
+        "projects": [
+            {
+                "id": "project_0",
+                "name": "Server Monitor System",
+                "description": "Server Monitor System",
+                "bullets": [MONITOR_BULLET, SCHEMA_BULLET],
+            }
+        ],
+        "skills": ["Python"],
+        "education": [],
+    }
+    repaired = repair_structured_resume(broken, source_facts=facts)
+    project = repaired["projects"][0]
+    assert project["description"] in {"", None}
+    assert project["bullets"].count(MONITOR_BULLET) == 1
+    assert project["bullets"].count(SCHEMA_BULLET) == 1
+
+
 def test_rest_and_websockets_categorize_as_backend():
     assert categorize_skill("REST APIs") == "Backend"
     assert categorize_skill("WebSockets") == "Backend"

@@ -321,22 +321,32 @@ def render_tailored_cv_markdown(
             project_name = str(entry.get("name") or "").strip()
             description = str(entry.get("description") or "").strip()
             bullets = _string_list(entry.get("bullets"), max_items=8)
-            # Collapse description when it duplicates a bullet (common agent bug).
-            if description and bullets:
-                try:
-                    from intelligent_tailoring.services.one_page_compressor import (
-                        texts_are_near_duplicates,
-                        _dedupe_similar,
-                    )
+            # Collapse description when it duplicates the title or a bullet.
+            # Title↔description leaks render as a doubled project heading in PDF.
+            try:
+                from intelligent_tailoring.services.one_page_compressor import (
+                    texts_are_near_duplicates,
+                    _dedupe_similar,
+                )
 
-                    bullets = _dedupe_similar(bullets)
+                bullets = _dedupe_similar(bullets)
+                if description and project_name and texts_are_near_duplicates(
+                    description, project_name
+                ):
+                    description = ""
+                if description and bullets:
                     if any(texts_are_near_duplicates(description, b) for b in bullets):
                         description = ""
-                except Exception:
-                    low_desc = description.strip().lower()
-                    bullets = list(dict.fromkeys(bullets))
-                    if any(low_desc == str(b).strip().lower() for b in bullets):
-                        description = ""
+            except Exception:
+                low_desc = description.strip().lower()
+                low_name = project_name.strip().lower()
+                bullets = list(dict.fromkeys(bullets))
+                if low_desc and low_name and (
+                    low_desc == low_name or low_desc.startswith(low_name + ":")
+                ):
+                    description = ""
+                if low_desc and any(low_desc == str(b).strip().lower() for b in bullets):
+                    description = ""
             # Never render title-only projects.
             if not description and not bullets:
                 continue

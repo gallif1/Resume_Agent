@@ -105,9 +105,25 @@ def build_tailored_cv_docx(
             pname = str(entry.get("name") or "").strip() or "Project"
             _add_line(doc, pname, bold=True)
             desc = str(entry.get("description") or "").strip()
+            bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
+            try:
+                from intelligent_tailoring.services.one_page_compressor import (
+                    _dedupe_similar,
+                    texts_are_near_duplicates,
+                )
+
+                bullets = _dedupe_similar(bullets)
+                if desc and texts_are_near_duplicates(desc, pname):
+                    desc = ""
+                if desc and any(texts_are_near_duplicates(desc, b) for b in bullets):
+                    desc = ""
+            except Exception:
+                bullets = list(dict.fromkeys(bullets))
+                if desc and desc.strip().lower() == pname.strip().lower():
+                    desc = ""
             if desc:
                 _add_line(doc, desc)
-            for bullet in entry.get("bullets") or []:
+            for bullet in bullets:
                 _add_bullet(doc, str(bullet))
 
     skills = [str(s).strip() for s in (cv.get("skills") or []) if str(s).strip()]

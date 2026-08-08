@@ -494,13 +494,29 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
                 or (not current_entry.subtitle and not current_entry.dates)
             )
         ):
+            # Project description that merely restates the title must not become
+            # a second title-styled subtitle row in the PDF.
+            title_norm = re.sub(r"\s+", " ", (current_entry.title or "").strip().lower())
+            plain_norm = re.sub(r"\s+", " ", plain.strip().lower())
+            if (
+                title_norm
+                and plain_norm
+                and (
+                    plain_norm == title_norm
+                    or plain_norm.startswith(title_norm + ":")
+                    or plain_norm.startswith(title_norm + " -")
+                )
+            ):
+                continue
             company, dates = _split_company_and_dates(plain)
             # Second meta line may be location.
             if current_entry.subtitle and not current_entry.location and not dates:
                 current_entry.location = company or plain
             else:
                 if company and not current_entry.subtitle:
-                    current_entry.subtitle = company
+                    # Also skip company/subtitle equal to the title
+                    if re.sub(r"\s+", " ", company.strip().lower()) != title_norm:
+                        current_entry.subtitle = company
                 if dates and not current_entry.dates:
                     current_entry.dates = dates
                 if company and current_entry.subtitle and dates and not current_entry.location:
@@ -514,8 +530,13 @@ def parse_resume_markdown(markdown: str) -> ParsedResume:
             current_section.paragraphs.append(rich_line)
             continue
 
-        # Free text under an entry → treat as a soft bullet.
+        # Free text under an entry → treat as a soft bullet (never if it
+        # restates the entry title — that creates a duplicated heading).
         if current_entry is not None:
+            title_norm = re.sub(r"\s+", " ", (current_entry.title or "").strip().lower())
+            plain_norm = re.sub(r"\s+", " ", plain.strip().lower())
+            if title_norm and plain_norm == title_norm:
+                continue
             current_entry.bullets.append(rich_line)
         else:
             current_section.paragraphs.append(rich_line)
