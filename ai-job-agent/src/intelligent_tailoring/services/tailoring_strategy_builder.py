@@ -220,7 +220,7 @@ def build_tailoring_strategy(
         if r.get("support_tier") == "Transferable Evidence" and r.get("requirement")
     ][:8]
 
-    return {
+    base_strategy = {
         "target_positioning": value_prop,
         "target_job_family": job_family,
         "target_industry": industry,
@@ -282,7 +282,27 @@ def build_tailoring_strategy(
             f"Missing hard requirement: {m}" for m in missing_reqs[:5]
         ],
         "success_metric": "interview_probability",
+        "job_requirements": requirements,
+        "job_title": str(
+            job_analysis.get("job_title")
+            or job_analysis.get("primary_role")
+            or ""
+        ),
     }
+
+    # Requirement-coverage fields: must-keep bullets / shared technologies.
+    # Computed after the base strategy so preserve/emphasize lists can be promoted.
+    from intelligent_tailoring.requirement_coverage import (
+        build_coverage_strategy_fields,
+    )
+
+    return build_coverage_strategy_fields(
+        resume_facts=resume_facts,
+        strategy=base_strategy,
+        job_requirements=requirements,
+        evidence_map=evidence_map,
+        ranked_requirements=ranked_requirements,
+    )
 
 
 def _rank_projects(
