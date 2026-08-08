@@ -77,27 +77,67 @@ def _bullet_score(
     return score
 
 
+def _significant_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9+]{3,}", _norm(text)))
+
+
+def texts_are_near_duplicates(a: str, b: str, *, overlap_threshold: float = 0.55) -> bool:
+    """True when two resume lines express the same claim (exact, nest, or overlap)."""
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    # One line is essentially a stub/prefix of the other.
+    shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+    if len(shorter) >= 24 and shorter in longer:
+        return True
+    if " ".join(na.split()[:4]) == " ".join(nb.split()[:4]) and len(na.split()) >= 4:
+        return True
+    tokens_a, tokens_b = _significant_tokens(a), _significant_tokens(b)
+    if not tokens_a or not tokens_b:
+        return False
+    overlap = len(tokens_a & tokens_b) / max(len(tokens_a | tokens_b), 1)
+    return overlap >= overlap_threshold
+
+
 def _dedupe_similar(bullets: list[str]) -> list[str]:
     """Drop near-duplicate bullets (shared opening + high token overlap)."""
     kept: list[str] = []
     for bullet in bullets:
-        tokens = set(re.findall(r"[a-z0-9+]{3,}", _norm(bullet)))
-        duplicate = False
-        for prior in kept:
-            prior_tokens = set(re.findall(r"[a-z0-9+]{3,}", _norm(prior)))
-            if not tokens or not prior_tokens:
-                continue
-            overlap = len(tokens & prior_tokens) / max(len(tokens | prior_tokens), 1)
-            if overlap >= 0.72:
-                duplicate = True
-                break
-            # Same first 4 words
-            if " ".join(_norm(bullet).split()[:4]) == " ".join(_norm(prior).split()[:4]):
-                duplicate = True
-                break
-        if not duplicate:
-            kept.append(bullet)
+        if any(texts_are_near_duplicates(bullet, prior) for prior in kept):
+            continue
+        kept.append(bullet)
     return kept
+
+
+def scrub_duplicate_entry_content(entry: dict[str, Any]) -> dict[str, Any]:
+    """Collapse description↔bullet and near-duplicate bullets inside one entry."""
+    out = dict(entry)
+    raw_bullets = [str(b).strip() for b in (out.get("bullets") or []) if str(b).strip()]
+    kept = _dedupe_similar(raw_bullets)
+    desc = str(out.get("description") or "").strip()
+    if desc and kept and any(texts_are_near_duplicates(desc, b) for b in kept):
+        desc = ""
+    out["bullets"] = kept
+    out["description"] = desc
+    return out
+
+
+def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
+    """Apply near-dedupe across experience/project entries before export."""
+    out = deepcopy(resume)
+    out["experience"] = [
+        scrub_duplicate_entry_content(e)
+        for e in (out.get("experience") or [])
+        if isinstance(e, dict)
+    ]
+    out["projects"] = [
+        scrub_duplicate_entry_content(p)
+        for p in (out.get("projects") or [])
+        if isinstance(p, dict)
+    ]
+    return out
 
 
 def _rank_entries(
@@ -279,11 +319,13 @@ def compress_resume_to_one_page(
         if desc and len(desc.split()) > 28:
             entry["description"] = _trim_words(desc, 28)
             desc = entry["description"]
-        # Drop stub description if bullets already cover it
-        if desc and kept:
-            if _norm(desc)[:40] in _norm(kept[0]):
-                entry["description"] = ""
-                desc = ""
+        # Drop description when any kept bullet already covers the same claim
+        if desc and kept and any(texts_are_near_duplicates(desc, b) for b in kept):
+            entry["description"] = ""
+            desc = ""
+        entry = scrub_duplicate_entry_content(entry)
+        kept = list(entry.get("bullets") or [])
+        desc = str(entry.get("description") or "").strip()
         # Never keep title-only project shells
         if not kept and not desc:
             continue

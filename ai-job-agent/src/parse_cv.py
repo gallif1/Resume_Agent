@@ -245,16 +245,38 @@ LOCATION_HINTS = [
 ]
 
 
+_FILE_LIKE_NAME_RE = re.compile(
+    r"(?i)\.(pdf|docx?|txt|rtf|png|jpe?g|webp|hrz|csv|json)\b"
+)
+_ROLE_LIKE_NAME_RE = re.compile(
+    r"(?i)\b(full\s*-?\s*stack|fullstack|software|backend|frontend|developer|"
+    r"engineer|student|intern|curriculum\s*vitae|resume|target\s*role)\b"
+)
+
+
 def _looks_like_name(line: str) -> bool:
     """A name line is short, has no digits/@, and is 1-4 words."""
     if not line or "@" in line or any(ch.isdigit() for ch in line):
         return False
-    words = line.split()
+    cleaned = line.strip().strip(".-_|")
+    if not cleaned or _FILE_LIKE_NAME_RE.search(cleaned):
+        return False
+    if _ROLE_LIKE_NAME_RE.search(cleaned):
+        return False
+    words = cleaned.split()
     if not (1 <= len(words) <= 4):
         return False
     # Mostly letters (allow Hebrew, Latin, dots, hyphens).
-    letters = sum(ch.isalpha() for ch in line)
-    return letters >= max(2, len(line) - len(words) - 2)
+    letters = sum(ch.isalpha() for ch in cleaned)
+    return letters >= max(2, len(cleaned) - len(words) - 2)
+
+
+def sanitize_person_name(name: str) -> str:
+    """Return a plausible person name, or empty string when the value is junk."""
+    text = re.sub(r"\s+", " ", str(name or "").strip())
+    if not text:
+        return ""
+    return text if _looks_like_name(text) else ""
 
 
 def extract_contact(text: str, header: str) -> dict:
@@ -297,8 +319,9 @@ def extract_contact(text: str, header: str) -> dict:
 
     # Name: first plausible line from the header.
     for line in header.split("\n"):
-        if _looks_like_name(line):
-            contact["name"] = line.strip()
+        cleaned = sanitize_person_name(line)
+        if cleaned:
+            contact["name"] = cleaned
             break
 
     # Location: first hint found in the header (fallback to whole text).

@@ -183,6 +183,19 @@ def rewrite_resume_with_strategy(
     if not (resume_dict.get("skills") or []):
         if rebuilt_resume.get("skills"):
             resume_dict["skills"] = rebuilt_resume["skills"]
+    # Never trust LLM category prefixes (REST/WebSockets under Database, etc.).
+    from intelligent_tailoring.skill_taxonomy import normalize_skill_lines
+
+    resume_dict["skills"] = normalize_skill_lines(
+        list(resume_dict.get("skills") or []),
+        emphasize=list(
+            strategy.get("propagate_terms")
+            or strategy.get("skills_to_emphasize")
+            or []
+        ),
+        job_family=str(strategy.get("job_family") or ""),
+        category_order=list(strategy.get("skill_category_order") or []),
+    )
     if rebuilt_resume.get("experience"):
         # Merge: keep LLM bullet text but enforce score-based order per role
         _merge_experience_order(resume_dict, rebuilt_resume)

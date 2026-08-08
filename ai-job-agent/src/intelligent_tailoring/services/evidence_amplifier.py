@@ -355,10 +355,19 @@ def expand_thin_projects_from_facts(
             bullets.append(text)
             existing.add(_norm(text))
         project["bullets"] = bullets
-        # Strengthen stub descriptions from first bullet when thin
+        # Never mirror bullet[0] into description — the renderer prints both,
+        # which produces visible duplicate lines in the Projects section.
         desc = str(project.get("description") or "").strip()
-        if (not desc or len(desc.split()) <= 4) and bullets:
-            project["description"] = bullets[0].rstrip(".") + "."
+        if desc and bullets:
+            from intelligent_tailoring.services.one_page_compressor import (
+                texts_are_near_duplicates,
+            )
+
+            if any(texts_are_near_duplicates(desc, b) for b in bullets):
+                project["description"] = ""
+        elif desc and len(desc.split()) <= 4 and bullets:
+            # Drop ultra-thin stubs when real bullets already exist.
+            project["description"] = ""
     facts["projects"] = projects
     return facts
 
