@@ -572,6 +572,35 @@ def check_content_fullness(
     return issues
 
 
+def check_jd_contamination(
+    structured: dict[str, Any],
+    *,
+    jd_text: str = "",
+) -> list[ValidationIssue]:
+    """Reject candidate claims that reuse job-posting wording or employer voice."""
+    from intelligent_tailoring.jd_contamination import validate_resume_against_jd
+    from intelligent_tailoring.structured_resume import structured_to_pipeline_resume
+
+    # validate_resume_against_jd expects pipeline field names
+    try:
+        pipeline = structured_to_pipeline_resume(structured)
+    except Exception:  # noqa: BLE001
+        pipeline = structured if isinstance(structured, dict) else {}
+    report = validate_resume_against_jd(pipeline, jd_text=jd_text or "")
+    issues: list[ValidationIssue] = []
+    for raw in report.get("issues") or []:
+        if not isinstance(raw, dict):
+            continue
+        issues.append(
+            ValidationIssue(
+                code=str(raw.get("code") or "jd_contamination"),
+                message=str(raw.get("message") or "Job-posting language leaked into resume."),
+                path=str(raw.get("path") or ""),
+            )
+        )
+    return issues
+
+
 def validate_structured_resume(
     resume: dict[str, Any] | None,
     *,
@@ -579,6 +608,7 @@ def validate_structured_resume(
     enforce_fullness: bool = True,
     require_summary: bool = True,
     already_structured: bool = False,
+    jd_text: str = "",
 ) -> ValidationReport:
     """Run all deterministic checks. Returns a report (never raises for soft fails).
 
@@ -666,6 +696,45 @@ def validate_structured_resume(
         fullness_issues = []
     checks["content_fullness"] = not fullness_issues
     issues.extend(fullness_issues)
+
+    # Prefer explicit jd_text; fall back to source_facts snapshot when callers
+    # wired JD onto resume facts / strategy for repair + contamination checks.
+    jd_blob = (jd_text or "").strip()
+    if not jd_blob and isinstance(source_facts, dict):
+        jd_blob = str(
+            source_facts.get("jd_text")
+            or source_facts.get("job_description")
+            or (source_facts.get("job") or {}).get("description")
+            or ""
+        ).strip()
+    jd_issues = check_jd_contamination(structured, jd_text=jd_blob)
+    checks["no_jd_contamination"] = not jd_issues
+    issues.extend(jd_issues)
+
+    # Summary must read as candidate facts — not employer instructions/opinions.
+    from intelligent_tailoring.jd_contamination import summary_describes_candidate_only
+
+    summary_text = str(structured.get("summary") or "").strip()
+    if summary_text:
+        ok_candidate, sanity_codes = summary_describes_candidate_only(summary_text)
+        if not ok_candidate:
+            for code in sanity_codes:
+                issues.append(
+                    ValidationIssue(
+                        code=f"summary_not_candidate:{code}",
+                        message=(
+                            "Summary must describe things the candidate did/knows "
+                            "from candidate facts only — no JD instructions, "
+                            "opinions, or second-person employer voice."
+                        ),
+                        path="summary",
+                    )
+                )
+            checks["summary_candidate_only"] = False
+        else:
+            checks["summary_candidate_only"] = True
+    else:
+        checks["summary_candidate_only"] = not require_summary
 
     return ValidationReport(
         passed=len(issues) == 0,
@@ -854,8 +923,25 @@ def repair_structured_resume(
     from intelligent_tailoring.services.one_page_compressor import (
         scrub_resume_duplicate_content,
     )
+    from intelligent_tailoring.jd_contamination import strip_jd_contaminated_sentences
 
     pipeline = scrub_resume_duplicate_content(pipeline)
     pipeline = validate_and_repair_resume_structure(pipeline)
+    # Strip employer/JD voice from summary if it leaked through.
+    jd_blob = ""
+    if isinstance(source_facts, dict):
+        jd_blob = str(
+            source_facts.get("jd_text")
+            or (source_facts.get("job") or {}).get("description")
+            or ""
+        )
+    summary = str(
+        pipeline.get("professional_summary") or pipeline.get("summary") or ""
+    ).strip()
+    if summary:
+        cleaned_summary = strip_jd_contaminated_sentences(summary, jd_text=jd_blob)
+        if cleaned_summary:
+            pipeline["professional_summary"] = cleaned_summary
+            pipeline["summary"] = cleaned_summary
     pipeline = stamp_ids_on_resume(pipeline, source_facts=facts)
     return pipeline

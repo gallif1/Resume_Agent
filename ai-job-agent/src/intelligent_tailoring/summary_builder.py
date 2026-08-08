@@ -164,7 +164,10 @@ def build_summary_plan(
                         evidenced.append(p)
         evidenced = evidenced[:5]
 
-    # Strongest evidence — prefer strategy-ranked evidence, then resume bullets
+    # Strongest evidence — prefer strategy-ranked evidence, then resume bullets.
+    # Never accept employer/JD voice as "evidence" (e.g. "You are the best").
+    from intelligent_tailoring.jd_contamination import looks_like_jd_voice
+
     strongest_bits: list[str] = []
     for bit in list(strategy.get("strongest_evidence") or []) + list(
         strategy.get("top_interview_reasons") or []
@@ -173,14 +176,32 @@ def build_summary_plan(
         # Skip JD crumb tokens that are not real evidence sentences/phrases
         if not text or len(text.split()) < 2 and text.lower() in _JD_JUNK_TOKENS:
             continue
-        if text and text not in strongest_bits and (
-            text.lower() in source_l
-            or any(
-                len(t) > 3 and re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", source_l)
-                for t in text.lower().split()
+        if looks_like_jd_voice(text):
+            continue
+        # Require phrase-level evidence in the resume — not "any token >3 chars"
+        # (that let "You are the best in your team" pass via "team"/"best").
+        text_l = text.lower()
+        phrase_ok = text_l in source_l
+        if not phrase_ok and len(text.split()) >= 4:
+            # Allow high token overlap with a real resume bullet/sentence
+            resume_chunks = re.split(r"[.\n•]", source_l)
+            phrase_ok = any(
+                _token_overlap_ratio(text_l, chunk) >= 0.75
+                for chunk in resume_chunks
+                if len(chunk.split()) >= 4
             )
-        ):
-            # Prefer full resume bullets over lone JD crumbs
+        elif not phrase_ok and len(text.split()) <= 3:
+            # Short skill-like phrases: every distinctive token must appear
+            tokens = [
+                t
+                for t in text_l.split()
+                if len(t) > 3 and t not in _JD_JUNK_TOKENS
+            ]
+            phrase_ok = bool(tokens) and all(
+                re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", source_l)
+                for t in tokens
+            )
+        if text and text not in strongest_bits and phrase_ok:
             if len(text.split()) == 1 and text.lower() in _JD_JUNK_TOKENS:
                 continue
             strongest_bits.append(text)
@@ -636,6 +657,7 @@ def summary_passes_checks(
     *,
     resume_text: str,
     bullet_texts: list[str] | None = None,
+    jd_text: str = "",
 ) -> tuple[bool, list[str]]:
     errors: list[str] = []
     text = (summary or "").strip()
@@ -690,6 +712,23 @@ def summary_passes_checks(
                 break
         if "summary_duplicates_bullet" in errors:
             break
+    # Job-posting contamination (employer voice / n-gram reuse)
+    from intelligent_tailoring.jd_contamination import (
+        find_jd_contamination,
+        summary_describes_candidate_only,
+    )
+
+    jd_report = find_jd_contamination(text, jd_text=jd_text or "", min_ngram=5)
+    for code in jd_report.get("issues") or []:
+        errors.append(f"jd_contamination:{code}")
+        if code == "jd_ngram_overlap" and jd_report.get("shared_ngrams"):
+            errors.append(
+                "jd_overlap:" + ",".join(jd_report["shared_ngrams"][:2])
+            )
+    ok_candidate, sanity_codes = summary_describes_candidate_only(text)
+    if not ok_candidate:
+        for code in sanity_codes:
+            errors.append(f"summary_not_candidate:{code}")
     errors = list(dict.fromkeys(errors))
     return len(errors) == 0, errors
 
@@ -702,8 +741,11 @@ def build_professional_summary(
     output_language: str = "en",
     existing_summary: str = "",
     tailored_resume: dict[str, Any] | None = None,
+    jd_text: str = "",
 ) -> dict[str, Any]:
     """Return a validated summary, preferring a clean existing one when possible."""
+    from intelligent_tailoring.jd_contamination import strip_jd_contaminated_sentences
+
     bullet_texts = _collect_plan_bullet_texts(resume_facts)
     if isinstance(tailored_resume, dict):
         from intelligent_tailoring.canonical_resume import collect_resume_bullet_texts
@@ -712,11 +754,21 @@ def build_professional_summary(
             if b not in bullet_texts:
                 bullet_texts.append(b)
 
+    # Prefer explicit arg; fall back to strategy-carried JD snapshot when present.
+    jd_blob = (
+        jd_text
+        or str(strategy.get("jd_text") or strategy.get("job_description") or "")
+    ).strip()
+
     existing = _cleanup_summary_text(existing_summary or "")
     if existing:
         existing = dedupe_summary_against_bullets(existing, bullet_texts)
+        existing = strip_jd_contaminated_sentences(existing, jd_text=jd_blob)
         ok, errs = summary_passes_checks(
-            existing, resume_text=resume_text, bullet_texts=bullet_texts
+            existing,
+            resume_text=resume_text,
+            bullet_texts=bullet_texts,
+            jd_text=jd_blob,
         )
         if ok:
             return {
@@ -739,9 +791,13 @@ def build_professional_summary(
             plan, resume_text=resume_text, bullet_texts=bullet_texts
         )
     draft = dedupe_summary_against_bullets(draft, bullet_texts)
+    draft = strip_jd_contaminated_sentences(draft, jd_text=jd_blob)
 
     ok, errs = summary_passes_checks(
-        draft, resume_text=resume_text, bullet_texts=bullet_texts
+        draft,
+        resume_text=resume_text,
+        bullet_texts=bullet_texts,
+        jd_text=jd_blob,
     )
     if ok:
         return {
@@ -784,10 +840,14 @@ def build_professional_summary(
         minimal = dedupe_summary_against_bullets(
             _cleanup_summary_text(minimal), bullet_texts
         )
+        minimal = strip_jd_contaminated_sentences(minimal, jd_text=jd_blob)
         if not minimal.endswith("."):
             minimal += "."
         ok2, errs2 = summary_passes_checks(
-            minimal, resume_text=resume_text, bullet_texts=bullet_texts
+            minimal,
+            resume_text=resume_text,
+            bullet_texts=bullet_texts,
+            jd_text=jd_blob,
         )
         if ok2:
             return {

@@ -665,6 +665,7 @@ def build_honest_professional_title(
     """Fallback title when the model overclaims a role the hard score does not support.
 
     Profession-agnostic: never defaults to a tech title like \"Software Engineer\".
+    Never title-cases JD motivational/second-person crumbs (e.g. \"You Are Best\").
     """
     matched = [
         r["requirement"]
@@ -678,11 +679,30 @@ def build_honest_professional_title(
     ]
     # Prefer a short matched skill noun for the honest framing.
     highlight = ""
+    try:
+        from intelligent_tailoring.jd_contamination import (
+            extract_skill_highlight_tokens,
+            looks_like_jd_voice,
+        )
+    except Exception:  # noqa: BLE001
+        extract_skill_highlight_tokens = None  # type: ignore[assignment]
+        looks_like_jd_voice = None  # type: ignore[assignment]
+
     for candidate in matched + partial:
-        words = [
-            w for w in _TOKEN_RE.findall(candidate.lower())
-            if len(w) >= 3 and w not in _GENERIC_TITLE_WORDS
-        ]
+        req = str(candidate or "").strip()
+        if not req:
+            continue
+        # Never mine slogans / second-person JD lines for title crumbs.
+        if looks_like_jd_voice is not None and looks_like_jd_voice(req):
+            continue
+        if extract_skill_highlight_tokens is not None:
+            words = extract_skill_highlight_tokens(req, max_tokens=3)
+        else:
+            words = [
+                w
+                for w in _TOKEN_RE.findall(req.lower())
+                if len(w) >= 3 and w not in _GENERIC_TITLE_WORDS
+            ]
         if words:
             highlight = " ".join(words[:3]).title()
             break

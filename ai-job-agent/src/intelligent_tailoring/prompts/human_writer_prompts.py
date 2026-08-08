@@ -76,6 +76,10 @@ SUMMARY (critical — written last from validated evidence only):
 - Cover: primary specialization, relevant experience, core strengths that matter for the role.
 - Technologies may appear naturally inside complete sentences — never keyword-stuff.
 - Sound like a senior recruiter wrote it — intentional, specific, human.
+- The job posting describes what the EMPLOYER wants / how the EMPLOYER talks —
+  it is NEVER a source of facts about the candidate. Do not copy or title-case
+  JD slogans ("You are the best", "We demand a lot", "NOW is the time") into
+  the Summary — even if they seem to fit "Professional with X experience".
 - Example safer Full Stack positioning (use only supported facts):
   "Computer Science graduate with hands-on experience building real-time applications across
    mobile, backend, database, and cloud layers. Developed client-facing features, REST APIs,
@@ -192,16 +196,28 @@ def build_human_writer_user_prompt(
     parts = [
         "Polish this validated resume. Improve writing only. Facts are locked.",
         "Make it sound like a premium human-written resume — never AI filler.",
+        "SOURCE SEPARATION: only <candidate_facts> may generate claims about the "
+        "candidate. Strategy emphasis targets are NOT candidate facts — never "
+        "copy second-person/motivational JD phrases into Summary/bullets.",
         f"Output language: {output_language}",
         "",
+        "<candidate_facts>",
         "Validated TailoredResume JSON:",
         validated_resume_json,
         "",
-        "TailoringStrategy (positioning guidance only — do NOT invent from this):",
-        strategy_json,
-        "",
         "ResumeKnowledgeBase facts (source of truth — do not contradict):",
         knowledge_facts_json,
+        "</candidate_facts>",
+        "",
+        "<job_posting>",
+        "TailoringStrategy (positioning/emphasis only — do NOT invent or copy voice):",
+        strategy_json,
+        "</job_posting>",
+        "",
+        "Rule: Only text inside <candidate_facts> may be used to generate claims "
+        "about the candidate. Text inside <job_posting> may only be used to decide "
+        "what to emphasize and which skill/keyword tokens to echo — never copied "
+        "or paraphrased as a first/second-person claim about the candidate.",
     ]
     if sections:
         parts.extend(
@@ -249,9 +265,11 @@ def build_recruiter_review_user_prompt(*, resume_json: str, output_language: str
 
 
 def sanitize_strategy_for_writer(strategy: dict) -> dict:
-    """Strip JD text / raw requirements so the writer cannot keyword-stuff from JD."""
+    """Strip JD text / raw requirement slogans so the writer cannot copy employer voice."""
     if not isinstance(strategy, dict):
         return {}
+    from intelligent_tailoring.jd_contamination import looks_like_jd_voice
+
     blocked = {
         "jd_text",
         "job_description",
@@ -260,9 +278,36 @@ def sanitize_strategy_for_writer(strategy: dict) -> dict:
         "description",
         "keywords_to_insert",  # avoid stuffing; emphasis already reflected in resume
     }
+    # Fields that often carry raw JD requirement sentences into the writer.
+    phrase_list_keys = {
+        "must_highlight_in_summary",
+        "strongest_evidence",
+        "top_interview_reasons",
+        "top_reasons_to_interview",
+        "propagate_terms",
+        "skills_to_emphasize",
+        "summary_focus",
+        "professional_story",
+        "candidate_value_proposition",
+        "narrative_themes",
+        "facts_to_expand",
+    }
     clean = {}
     for key, value in strategy.items():
         if key in blocked or str(key).startswith("_"):
+            continue
+        if key in phrase_list_keys:
+            if isinstance(value, list):
+                clean[key] = [
+                    item
+                    for item in value
+                    if str(item).strip() and not looks_like_jd_voice(str(item))
+                ]
+            elif isinstance(value, str):
+                # Drop whole meta-strings that embed employer voice
+                clean[key] = "" if looks_like_jd_voice(value) else value
+            else:
+                clean[key] = value
             continue
         clean[key] = value
     return clean

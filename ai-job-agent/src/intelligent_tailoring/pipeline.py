@@ -549,6 +549,11 @@ def run_intelligent_tailoring_agents(
         )
         strategy_obj = strategy_result.output
         strategy = strategy_obj.to_legacy()
+        # Persist JD snapshot for contamination checks / summary builders.
+        # Agents must never treat this as candidate-fact text.
+        strategy["jd_text"] = jd_snapshot
+        if isinstance(resume_facts, dict):
+            resume_facts["jd_text"] = jd_snapshot
         agent_trace.append(
             {
                 "agent_id": strategy_result.agent_id,
@@ -879,6 +884,7 @@ def run_intelligent_tailoring_agents(
                     or ""
                 ),
                 tailored_resume=cleaned_resume,
+                jd_text=jd_snapshot,
             )
             if summary_result.get("summary"):
                 cleaned_resume["professional_summary"] = summary_result["summary"]
@@ -1537,6 +1543,7 @@ def run_intelligent_tailoring_agents(
             source_facts=resume_facts,
             enforce_fullness=True,
             require_summary=True,
+            jd_text=jd_snapshot,
         )
         if not structured_report.passed:
             logger.warning(
@@ -1571,6 +1578,7 @@ def run_intelligent_tailoring_agents(
                 source_facts=resume_facts,
                 enforce_fullness=True,
                 require_summary=True,
+                jd_text=jd_snapshot,
             )
         else:
             # Even on pass, collapse any title↔description leaks before format.
@@ -1771,6 +1779,7 @@ def run_intelligent_tailoring_agents(
                 or ""
             ),
             tailored_resume=cleaned_resume,
+            jd_text=jd_snapshot,
         )
         if final_summary.get("summary"):
             # Never reintroduce a previously rejected summary
@@ -1855,6 +1864,7 @@ def run_intelligent_tailoring_agents(
                     or ""
                 ),
                 tailored_resume=cleaned_resume,
+                jd_text=jd_snapshot,
             )
             if final_summary.get("summary") and not rejected_claims.contains(
                 final_summary["summary"]
