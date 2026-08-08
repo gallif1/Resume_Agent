@@ -333,7 +333,19 @@ def check_near_duplicate_bullets(structured: dict[str, Any]) -> list[ValidationI
             continue
         sid = str(entry.get("id") or idx)
         local = []
+        title = str(entry.get("title") or "").strip()
         desc = str(entry.get("description") or "").strip()
+        if title and desc and _near_dup(title, desc):
+            issues.append(
+                ValidationIssue(
+                    code="project_description_duplicates_title",
+                    message=(
+                        "Project description restates the title and would render as "
+                        "a duplicated heading. Clear description or rewrite it."
+                    ),
+                    path=f"projects[{idx}/id={sid}].description",
+                )
+            )
         for bi, bullet in enumerate(entry.get("bullets") or []):
             text = str(bullet or "").strip()
             if not text:
@@ -354,6 +366,14 @@ def check_near_duplicate_bullets(structured: dict[str, Any]) -> list[ValidationI
                     ValidationIssue(
                         code="near_duplicate_bullet",
                         message="Bullet near-duplicates the project description.",
+                        path=path,
+                    )
+                )
+            if title and _near_dup(text, title):
+                issues.append(
+                    ValidationIssue(
+                        code="near_duplicate_bullet",
+                        message="Bullet restates the project title.",
                         path=path,
                     )
                 )
@@ -655,13 +675,37 @@ def validate_structured_resume(
     )
 
 
+def _merge_bullets_without_dupes(preferred: list[str], fallback: list[str]) -> list[str]:
+    """Keep preferred wording; fill gaps from fallback; near-dedupe at render threshold."""
+    from intelligent_tailoring.services.one_page_compressor import (
+        _dedupe_similar,
+        texts_are_near_duplicates,
+    )
+
+    merged: list[str] = []
+    for text in list(preferred) + list(fallback):
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            continue
+        if any(texts_are_near_duplicates(cleaned, prior) for prior in merged):
+            continue
+        if any(_near_dup(cleaned, prior, threshold=0.85) for prior in merged):
+            continue
+        merged.append(cleaned)
+    return _dedupe_similar(merged)
+
+
 def _restore_full_source_bullets(
     resume: dict[str, Any],
     *,
     source_facts: dict[str, Any],
 ) -> dict[str, Any]:
-    """Merge all source bullets back into matching entries (fullness repair)."""
+    """Merge source bullets into matching entries without reintroducing duplicates."""
     from copy import deepcopy
+
+    from intelligent_tailoring.services.one_page_compressor import (
+        texts_are_near_duplicates,
+    )
 
     out = deepcopy(resume) if isinstance(resume, dict) else {}
     facts = assign_stable_ids(source_facts)
@@ -688,15 +732,7 @@ def _restore_full_source_bullets(
                 str(b).strip() for b in (src.get("bullets") or []) if str(b).strip()
             ]
             cur = [str(b).strip() for b in (fixed.get("bullets") or []) if str(b).strip()]
-            # Prefer current wording order, then append any missing source bullets
-            merged = list(cur)
-            for b in src_bullets:
-                if b not in merged and not any(_near_dup(b, m, threshold=0.9) for m in merged):
-                    merged.append(b)
-            if len(merged) < len(src_bullets):
-                # Still short — take source order as authority
-                merged = src_bullets
-            fixed["bullets"] = merged
+            fixed["bullets"] = _merge_bullets_without_dupes(cur, src_bullets)
             if not fixed.get("title"):
                 fixed["title"] = str(src.get("title") or "")
             if not fixed.get("company"):
@@ -718,18 +754,20 @@ def _restore_full_source_bullets(
                 str(b).strip() for b in (src.get("bullets") or []) if str(b).strip()
             ]
             cur = [str(b).strip() for b in (fixed.get("bullets") or []) if str(b).strip()]
-            merged = list(cur)
-            for b in src_bullets:
-                if b not in merged and not any(_near_dup(b, m, threshold=0.9) for m in merged):
-                    merged.append(b)
-            if len(merged) < max(1, len(src_bullets) - 0):
-                if src_bullets:
-                    merged = src_bullets
-            fixed["bullets"] = merged
-            if not str(fixed.get("description") or "").strip():
-                fixed["description"] = str(src.get("description") or "")
+            fixed["bullets"] = _merge_bullets_without_dupes(cur, src_bullets)
+            name = str(fixed.get("name") or src.get("name") or "").strip()
+            desc = str(fixed.get("description") or "").strip()
+            src_desc = str(src.get("description") or "").strip()
+            if not desc and src_desc:
+                desc = src_desc
+            # Never keep a description that restates the project title.
+            if desc and name and texts_are_near_duplicates(desc, name):
+                desc = ""
+            if desc and any(texts_are_near_duplicates(desc, b) for b in fixed["bullets"]):
+                desc = ""
+            fixed["description"] = desc
             if not fixed.get("name"):
-                fixed["name"] = str(src.get("name") or "")
+                fixed["name"] = name
         projects.append(fixed)
     out["projects"] = projects
     return out
@@ -786,7 +824,8 @@ def repair_structured_resume(
         source_contact=facts.get("contact") if isinstance(facts.get("contact"), dict) else {},
         resume_facts=facts,
     )
-    # If still thin, restore more source bullets per entry
+    # If still thin, restore more source bullets per entry — then re-scrub so
+    # restore cannot ship title/description/bullet duplicates downstream.
     report = validate_structured_resume(
         pipeline, source_facts=facts, enforce_fullness=True, require_summary=False
     )
@@ -798,6 +837,7 @@ def repair_structured_resume(
             min_bullets_per_project=2,
         )
         pipeline = _restore_full_source_bullets(pipeline, source_facts=facts)
+        pipeline = validate_and_repair_resume_structure(pipeline)
 
     if kept_summary and not str(
         pipeline.get("professional_summary") or pipeline.get("summary") or ""
@@ -810,5 +850,12 @@ def repair_structured_resume(
         pipeline["professional_summary"] = kept_summary
         pipeline["summary"] = kept_summary
 
+    # Final scrub always — renderers must never see doubled titles/bullets.
+    from intelligent_tailoring.services.one_page_compressor import (
+        scrub_resume_duplicate_content,
+    )
+
+    pipeline = scrub_resume_duplicate_content(pipeline)
+    pipeline = validate_and_repair_resume_structure(pipeline)
     pipeline = stamp_ids_on_resume(pipeline, source_facts=facts)
     return pipeline

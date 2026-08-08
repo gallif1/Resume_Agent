@@ -1564,12 +1564,17 @@ def run_intelligent_tailoring_agents(
             cleaned_resume = stamp_ids_on_resume(
                 cleaned_resume, source_facts=resume_facts
             )
+            # Re-scrub after repair — restore must not leave title/bullet doubles.
+            cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
             structured_report = validate_structured_resume(
                 cleaned_resume,
                 source_facts=resume_facts,
                 enforce_fullness=True,
                 require_summary=True,
             )
+        else:
+            # Even on pass, collapse any title↔description leaks before format.
+            cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
         strategy["structured_validation"] = structured_report.to_dict()
 
         # Neutralize unwarranted seniority labels when the JD is silent
