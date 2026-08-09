@@ -201,6 +201,29 @@ def evaluate_quality_gates(
                 continue
             failures.append(f"unknown_skill:{tech}")
 
+    # Employer / school / date identity must stay locked to the source resume.
+    from intelligent_tailoring.claim_validator import (
+        dates_supported,
+        extract_organization_phrases,
+        organization_supported,
+    )
+
+    for section, text in _iter_claim_texts(resume):
+        for org in extract_organization_phrases(text):
+            if not organization_supported(org, source):
+                failures.append(f"unsupported_entity:{section}:unsupported_organization:{org}")
+    for entry in list(resume.get("experience") or []) + list(
+        resume.get("education") or []
+    ):
+        if not isinstance(entry, dict):
+            continue
+        company = str(entry.get("company") or entry.get("institution") or "").strip()
+        if company and not organization_supported(company, source):
+            failures.append(f"unsupported_entity:identity:unsupported_organization:{company}")
+        dates = str(entry.get("dates") or entry.get("date") or "").strip()
+        if dates and not dates_supported(dates, source):
+            failures.append(f"invalid_dates:{dates}")
+
     # Change log must only describe final resume content
     log_failures = change_log_matches_resume(change_log, resume)
     failures.extend(log_failures)

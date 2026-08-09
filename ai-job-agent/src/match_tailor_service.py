@@ -468,6 +468,12 @@ class SourceEvidence:
 
 def _alias_forms(skill: str) -> set[str]:
     forms = {skill.strip().lower()}
+    # Synonym expansion is for skill atoms, not full prose bullets. Expanding
+    # "Managed a team of 5 engineers" into developer/engineer aliases creates
+    # false positives against ordinary resume wording.
+    token_count = len(_TOKEN_RE.findall(skill or ""))
+    if token_count > 4 or len((skill or "").strip()) > 48:
+        return {re.sub(r"\s+", " ", f).strip() for f in forms if len(f.strip()) >= 2}
     canonical = to_canonical(skill) or normalize_skill(skill)
     if canonical:
         forms.add(canonical.lower())

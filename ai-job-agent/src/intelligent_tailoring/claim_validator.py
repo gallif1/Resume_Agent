@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any, Iterable
 
 from intelligent_tailoring.experience_math import (
@@ -16,6 +17,7 @@ from intelligent_tailoring.experience_math import (
     estimate_years_from_text,
     extract_years_claims,
     has_inflated_years_claim,
+    parse_date_range,
     years_from_experience_entries,
 )
 from intelligent_tailoring.schemas import (
@@ -29,6 +31,13 @@ from intelligent_tailoring.schemas import (
 from match_tailor_service import SourceEvidence, skill_supported_by_source
 
 _TOKEN_RE = re.compile(r"[a-z0-9#+.]{2,}|[\u0590-\u05FF]{2,}", re.IGNORECASE)
+_YEAR_RE = re.compile(r"(?:19|20)\d{2}")
+_RANGE_FIND_RE = re.compile(
+    r"((?:[A-Za-z]{3,9}\.?\s+)?(?:19|20)\d{2})"
+    r"\s*[-–—to]+\s*"
+    r"((?:[A-Za-z]{3,9}\.?\s+)?(?:19|20)\d{2}|present|current|now|today|היום|כיום)",
+    re.IGNORECASE,
+)
 
 # Hard-reject patterns — regression cases that must never reach export.
 _HARD_REJECT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -65,7 +74,120 @@ _HARD_REJECT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "inflated_years_with_title",
     ),
+    (
+        re.compile(
+            r"\b(?:managed|led|supervised|oversaw|headed)\s+"
+            r"(?:a\s+)?(?:team|group|squad|crew)\s+of\s+"
+            r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\b",
+            re.I,
+        ),
+        "unsupported_team_headcount",
+    ),
 ]
+
+# Organization / school suffixes used to detect invented employers in prose.
+_ORG_SUFFIX = (
+    r"University|College|Institute|School|Ltd|Inc|Corp|Corporation|Labs|"
+    r"Laboratory|Technologies|Hospital|Center|Centre|אוניברסיטת|מכללת"
+)
+_ORG_PHRASE_RE = re.compile(
+    rf"\b((?:[A-Z][\w&'’.-]+|[\u0590-\u05FF][\w\u0590-\u05FF&'’.-]*)"
+    rf"(?:\s+(?:[A-Z][\w&'’.-]+|[\u0590-\u05FF][\w\u0590-\u05FF&'’.-]*|of|and|&)){{0,6}}"
+    rf"\s+(?:{_ORG_SUFFIX}))\b"
+)
+_ORG_GENERIC_TOKENS = frozenset(
+    {
+        "university",
+        "college",
+        "institute",
+        "school",
+        "ltd",
+        "inc",
+        "corp",
+        "corporation",
+        "labs",
+        "laboratory",
+        "technologies",
+        "hospital",
+        "center",
+        "centre",
+        "the",
+        "of",
+        "and",
+        "company",
+        "group",
+        "אוניברסיטת",
+        "מכללת",
+    }
+)
+_TITLE_GENERIC_TOKENS = frozenset(
+    {
+        "project",
+        "lead",
+        "senior",
+        "junior",
+        "engineer",
+        "developer",
+        "manager",
+        "specialist",
+        "analyst",
+        "intern",
+        "assistant",
+        "coordinator",
+        "tutor",
+        "programming",
+        "software",
+        "backend",
+        "frontend",
+        "fullstack",
+        "full",
+        "stack",
+        "technical",
+        "support",
+        "student",
+        "research",
+        "associate",
+        "principal",
+        "staff",
+        "head",
+        "director",
+        "consultant",
+        "architect",
+        "capstone",
+        "platform",
+        "team",
+        "member",
+        "members",
+    }
+)
+_PROJECT_GENERIC_TOKENS = frozenset(
+    {
+        "project",
+        "projects",
+        "app",
+        "application",
+        "system",
+        "systems",
+        "platform",
+        "service",
+        "services",
+        "tool",
+        "tools",
+        "api",
+        "apis",
+        "rest",
+        "development",
+        "backend",
+        "frontend",
+        "web",
+        "mobile",
+        "software",
+        "solution",
+        "solutions",
+        "demo",
+        "prototype",
+    }
+)
 
 # Outcome nouns that require explicit source support (not feature intent).
 _UNSUPPORTED_OUTCOME_NOUNS = re.compile(
@@ -141,23 +263,218 @@ def _entity_tokens(text: str) -> set[str]:
     """Tokens that look like proper nouns / tech / employers (stricter).
 
     Sentence-start capitalization of ordinary English verbs/nouns is ignored.
-    We only keep ALLCAPS acronyms, CamelCase products, and tech-like tokens.
+    We keep ALLCAPS acronyms, CamelCase products, tech-like tokens, and
+    multi-word Title-Case organization phrases (e.g. Tel Aviv University).
     """
     tokens = set()
     for raw in re.findall(
         r"\b(?:[A-Z]{2,}[a-z0-9+]*)\b|"  # AWS, PostgreSQL-ish acronyms
         r"\b[A-Z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9+#.]*\b|"  # CamelCase / FastAPI
-        r"\b[a-z0-9]*[#++][a-z0-9]*\b|"  # C++, C#
         r"\b(?:[A-Z][a-z]+(?:\.[A-Za-z]+)+)\b",  # Node.js style
         text or "",
     ):
         low = raw.lower()
         if low not in _STOP and len(low) > 1:
             tokens.add(low)
+    # C++ / C# — word-boundary after "+" is unreliable, so match explicitly.
+    for raw in re.findall(r"\b[cC]\s*(?:\+\+|\#)\b", text or ""):
+        tokens.add(re.sub(r"\s+", "", raw.lower()))
+    # Multi-word Title Case spans (employers / products), plus each distinctive part.
+    for raw in re.findall(
+        r"\b(?:[A-Z][a-zA-Z0-9&'’.-]+(?:\s+[A-Z][a-zA-Z0-9&'’.-]+)+)\b",
+        text or "",
+    ):
+        low = raw.lower()
+        if low not in _STOP:
+            tokens.add(low)
+        for part in re.findall(r"[a-z0-9]{2,}", low):
+            if part not in _STOP and part not in _ORG_GENERIC_TOKENS:
+                tokens.add(part)
+    for org in extract_organization_phrases(text or ""):
+        tokens.add(org.lower())
+        for part in _tokens(org):
+            if part not in _ORG_GENERIC_TOKENS:
+                tokens.add(part)
     # Hebrew multi-char tokens length>=3 kept as soft entities
     for he in re.findall(r"[\u0590-\u05FF]{3,}", text or ""):
         tokens.add(he.lower())
     return tokens
+
+
+def _norm_date_text(text: str) -> str:
+    return re.sub(
+        r"\s+",
+        " ",
+        (text or "").lower().replace("–", "-").replace("—", "-").replace("−", "-"),
+    ).strip()
+
+
+def extract_organization_phrases(text: str) -> list[str]:
+    """Return employer/school-like phrases from free text."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _ORG_PHRASE_RE.finditer(text or ""):
+        phrase = re.sub(r"\s+", " ", match.group(1)).strip()
+        key = phrase.lower()
+        if key and key not in seen:
+            seen.add(key)
+            found.append(phrase)
+    return found
+
+
+def organization_supported(name: str, source_text: str) -> bool:
+    """True when an employer/school identity is grounded in the source resume.
+
+    Shared generic tokens (``university``, ``college``, …) are not enough —
+    distinctive tokens such as ``Hai`` vs ``Aviv`` must match.
+    """
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return True
+    source = source_text or ""
+    if not source.strip():
+        return False
+    if name.lower() in source.lower():
+        return True
+
+    distinctive = {t for t in _tokens(name) if t not in _ORG_GENERIC_TOKENS}
+    if not distinctive:
+        return name.lower() in source.lower()
+
+    source_l = source.lower()
+    # Prefer matching against organization phrases extracted from the source.
+    source_orgs = extract_organization_phrases(source)
+    if not source_orgs:
+        # Fall back to any multi-word Title-Case spans and pipe/meta segments.
+        source_orgs = re.findall(
+            r"\b(?:[A-Z][a-zA-Z0-9&'’.-]+(?:\s+[A-Z][a-zA-Z0-9&'’.-]+)+)\b",
+            source,
+        )
+        source_orgs += re.findall(
+            r"([\u0590-\u05FF][\w\u0590-\u05FF&'’.-]*(?:\s+[\u0590-\u05FF][\w\u0590-\u05FF&'’.-]*)+)",
+            source,
+        )
+
+    for org in source_orgs:
+        org_tokens = {t for t in _tokens(org) if t not in _ORG_GENERIC_TOKENS}
+        if distinctive and distinctive == org_tokens:
+            return True
+        if distinctive and distinctive.issubset(org_tokens) and len(distinctive) >= 2:
+            return True
+        # Single-token companies ("Acme", "Google") — exact token match in org/source
+        if len(distinctive) == 1:
+            token = next(iter(distinctive))
+            if token in org_tokens or re.search(rf"\b{re.escape(token)}\b", source_l):
+                # Avoid matching only the generic half of a different school.
+                if token in _ORG_GENERIC_TOKENS:
+                    continue
+                # Require the token to appear in an org-like context or exact.
+                if token in org_tokens or name.lower() in source_l:
+                    return True
+
+    # Last resort: every distinctive token appears, and they co-occur near each other.
+    if not distinctive.issubset(_tokens(source)):
+        return False
+    if len(distinctive) == 1:
+        token = next(iter(distinctive))
+        return bool(re.search(rf"\b{re.escape(token)}\b", source_l))
+
+    # Multi-token invented orgs like "Tel Aviv" must not pass via scattered "Tel"+"University".
+    span = re.search(
+        rf"\b{re.escape(next(iter(sorted(distinctive))))}\b.{{0,40}}\b",
+        source_l,
+    )
+    if not span:
+        return False
+    window = source_l[max(0, span.start() - 20) : span.end() + 40]
+    return all(re.search(rf"\b{re.escape(t)}\b", window) for t in distinctive)
+
+
+def dates_supported(dates: str, source_text: str) -> bool:
+    """True when a dates field matches an explicit range/year span in the source."""
+    dates = re.sub(r"\s+", " ", (dates or "").strip())
+    if not dates:
+        return True
+    source = source_text or ""
+    if not source.strip():
+        return False
+    if _norm_date_text(dates) in _norm_date_text(source):
+        return True
+
+    years = _YEAR_RE.findall(dates)
+    if not years:
+        return True
+    source_years = set(_YEAR_RE.findall(source))
+    if not set(years).issubset(source_years):
+        return False
+
+    start, end = parse_date_range(dates)
+    if start is None:
+        return set(years).issubset(source_years)
+
+    source_ranges: list[tuple[date | None, date | None]] = []
+    for match in _RANGE_FIND_RE.finditer(source):
+        source_ranges.append(parse_date_range(match.group(0)))
+    # Also accept year-only anchors listed next to roles ("2024 – 2025").
+    for match in re.finditer(
+        r"(?:19|20)\d{2}\s*[-–—]\s*(?:(?:19|20)\d{2}|present|current)",
+        source,
+        flags=re.I,
+    ):
+        source_ranges.append(parse_date_range(match.group(0)))
+
+    for s_start, s_end in source_ranges:
+        if s_start is None:
+            continue
+        if s_start.year != start.year:
+            continue
+        if end is None or s_end is None:
+            return True
+        if end.year == s_end.year:
+            return True
+    return False
+
+
+def role_title_supported(title: str, source_text: str) -> bool:
+    """True when an experience title is grounded (not a near-miss rewrite)."""
+    title = re.sub(r"\s+", " ", (title or "").strip())
+    if not title:
+        return True
+    source = source_text or ""
+    if title.lower() in source.lower():
+        return True
+    distinctive = {
+        t for t in _tokens(title) if t not in _TITLE_GENERIC_TOKENS and t not in _STOP
+    }
+    if not distinctive:
+        title_tokens = _tokens(title)
+        if not title_tokens:
+            return True
+        shared = title_tokens & _tokens(source)
+        return len(shared) / max(len(title_tokens), 1) >= 0.7
+    return distinctive.issubset(_tokens(source))
+
+
+def project_name_supported(name: str, source_text: str) -> bool:
+    """True when a project title is grounded in the source resume.
+
+    Generic titles like ``REST API Development`` require an exact/near-exact
+    source phrase — token overlap on ``api``/``development`` alone is not enough.
+    """
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return True
+    source = source_text or ""
+    if name.lower() in source.lower():
+        return True
+    distinctive = {
+        t
+        for t in _tokens(name)
+        if t not in _PROJECT_GENERIC_TOKENS and t not in _STOP
+    }
+    if not distinctive:
+        return False
+    return distinctive.issubset(_tokens(source))
 
 
 def hard_reject_claim(
@@ -177,25 +494,33 @@ def hard_reject_claim(
         return False, ""
 
     for pattern, reason in _HARD_REJECT_PATTERNS:
-        if pattern.search(statement):
-            # Allow only when the exact leadership phrase already exists in source
-            if reason == "unsupported_professional_leadership":
-                if pattern.search(source_text or ""):
-                    continue
-            if reason.startswith("inflated_years"):
-                inflated, detail = has_inflated_years_claim(
-                    statement,
-                    resume_years=resume_years,
-                    professional_years=professional_years,
-                )
-                if inflated:
-                    return True, detail or reason
-                # Phrase present but years somehow supported — still block
-                # "expertise" inflation when professional years are missing.
-                if professional_years is None or professional_years < 3.0:
-                    return True, reason
+        match = pattern.search(statement)
+        if not match:
+            continue
+        # Allow only when the exact leadership / headcount phrase already exists
+        if reason in {
+            "unsupported_professional_leadership",
+            "unsupported_team_headcount",
+        }:
+            if pattern.search(source_text or ""):
+                continue
+            if match.group(0).lower() in (source_text or "").lower():
                 continue
             return True, reason
+        if reason.startswith("inflated_years"):
+            inflated, detail = has_inflated_years_claim(
+                statement,
+                resume_years=resume_years,
+                professional_years=professional_years,
+            )
+            if inflated:
+                return True, detail or reason
+            # Phrase present but years somehow supported — still block
+            # "expertise" inflation when professional years are missing.
+            if professional_years is None or professional_years < 3.0:
+                return True, reason
+            continue
+        return True, reason
 
     # Worded/numeric years inflation even without the hard phrase templates
     inflated, detail = has_inflated_years_claim(
@@ -227,6 +552,23 @@ def hard_reject_claim(
         allowed = variants.get(tool, (tool,))
         if not any(v.replace(" ", "") in src_l for v in allowed):
             return True, f"unverified_ai_tool:{match.group(0)}"
+
+    # Absolute expertise claims still hard-reject without source support.
+    ownership = _STRONG_OWNERSHIP_RE.search(statement)
+    if ownership:
+        verb = ownership.group(0).lower()
+        src_l = (source_text or "").lower()
+        if verb not in src_l and (
+            verb.startswith("extensive")
+            or verb.startswith("deep")
+            or verb.startswith("expert")
+        ):
+            return True, f"unsupported_ownership:{verb}"
+
+    # Invented employers/schools inside free-text claims
+    for org in extract_organization_phrases(statement):
+        if not organization_supported(org, source_text or ""):
+            return True, f"unsupported_organization:{org}"
 
     return False, ""
 
@@ -281,12 +623,27 @@ def statement_supported_by_evidence(
     suspicious = {
         e
         for e in novel_entities
-        if e not in _STOP and len(e) > 2 and not skill_supported_by_source(e, source_text)
+        if e not in _STOP
+        and e not in _ORG_GENERIC_TOKENS
+        and e not in _TITLE_GENERIC_TOKENS
+        and len(e) > 2
+        and not skill_supported_by_source(e, source_text)
     }
     if suspicious:
         still = {e for e in suspicious if not evidence.has_word(e)}
         if still:
             return False, f"unsupported_entities:{', '.join(sorted(still)[:5])}"
+
+    # Novel tech lexicon hits (Docker, C++, Kubernetes, …) even when entity
+    # capitalization patterns miss them.
+    from intelligent_tailoring.scope_validator import extract_tech_mentions
+
+    novel_tech = extract_tech_mentions(statement) - extract_tech_mentions(source_text)
+    novel_tech = {
+        t for t in novel_tech if t and not skill_supported_by_source(t, source_text)
+    }
+    if novel_tech:
+        return False, f"unsupported_tech:{', '.join(sorted(novel_tech)[:5])}"
 
     # Path 2: approved strongly-inferred competencies (exact / contained statement only)
     stmt_l = statement.lower()
@@ -321,16 +678,23 @@ def statement_supported_by_evidence(
     if not stmt_tokens:
         return True, "no_content_tokens"
 
-    # Skill-like short statements
+    # Skill-like short statements / atoms — do not treat generic stem overlap
+    # ("learn" ⊂ "learning") as evidence for a different skill (scikit-learn).
     if len(stmt_tokens) <= 4:
         if skill_supported_by_source(statement, source_text):
             return True, "skill_supported"
-        # Ontology-backed short competency phrases may appear only via inferred list;
-        # without that, reject.
+        # Hyphenated / single-atom tech names must be evidenced as skills, not
+        # via fuzzy token overlap with unrelated words.
+        compact = re.sub(r"[^a-z0-9+#.]+", "", statement.lower())
+        if compact and (
+            "-" in statement
+            or " " not in statement.strip()
+            or len(stmt_tokens) <= 2
+        ):
+            return False, "unsupported_skill_or_claim"
         overlap = sum(1 for t in stmt_tokens if evidence.has_word(t))
         if overlap / max(len(stmt_tokens), 1) >= 0.5:
             return True, "token_overlap"
-        # Allow rephrasing when the majority of content tokens appear in source
         source_tokens = _tokens(source_text)
         shared = stmt_tokens & source_tokens
         if len(shared) >= 2 and len(shared) / max(len(stmt_tokens), 1) >= 0.4:
@@ -598,24 +962,16 @@ def validate_claims(
                 ):
                     kept_atoms.append(atom)
                 else:
-                    # Ontology hedged competencies may be longer phrases
-                    ok, _ = statement_supported_by_evidence(
-                        atom,
-                        source_text=source,
-                        evidence_map=evidence_map,
-                        strongly_inferred=strong,
-                    )
-                    if ok:
-                        kept_atoms.append(atom)
-                    else:
-                        rejected.append(atom)
-                        warnings.append(
-                            ValidationWarning(
-                                statement=atom,
-                                reason="Skill not evidenced in original resume",
-                                inference_category="Unsupported",
-                            )
+                    # Grouped skill atoms must be evidenced as skills — never via
+                    # prose overlap ("learn" matching "Machine Learning").
+                    rejected.append(atom)
+                    warnings.append(
+                        ValidationWarning(
+                            statement=atom,
+                            reason="Skill not evidenced in original resume",
+                            inference_category="Unsupported",
                         )
+                    )
             if kept_atoms:
                 cleaned_skills.append(f"{category.strip()}: {', '.join(kept_atoms)}")
             continue
@@ -642,27 +998,59 @@ def validate_claims(
     resume.skills = cleaned_skills
 
     # Experience / projects bullets
+    cleaned_experience: list[dict[str, Any]] = []
     for entry in resume.experience:
         company = str(entry.get("company") or "").strip()
         title = str(entry.get("title") or "").strip()
-        for label, value in (("company", company), ("title", title)):
-            if not value:
-                continue
-            # Employers/titles must appear in the original resume.
-            if value.lower() not in source.lower() and not SourceEvidence.build(
-                source
-            ).has_word(value.split()[0] if value.split() else value):
-                # Soft check: if multi-word and no overlap, blank it
-                if not _tokens(value) & _tokens(source):
-                    warnings.append(
-                        ValidationWarning(
-                            statement=value,
-                            reason=f"Experience {label} not found in original resume",
-                            inference_category="Unsupported",
-                        )
-                    )
-                    rejected.append(value)
-                    entry[label] = ""
+        dates = str(entry.get("dates") or entry.get("date") or "").strip()
+        identity_rejected = False
+        if company and not organization_supported(company, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=company,
+                    reason="Experience company not found in original resume",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(company)
+            entry["company"] = ""
+            identity_rejected = True
+        if title and not role_title_supported(title, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=title,
+                    reason="Experience title not found in original resume",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(title)
+            entry["title"] = ""
+            identity_rejected = True
+        if dates and not dates_supported(dates, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=dates,
+                    reason="Experience dates not found in original resume",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(dates)
+            if "dates" in entry:
+                entry["dates"] = ""
+            if "date" in entry:
+                entry["date"] = ""
+            identity_rejected = True
+        # Drop shells whose employer/title/dates were fabricated — keeping orphan
+        # bullets under a blank identity invites re-attribution errors later.
+        if identity_rejected and not (
+            str(entry.get("company") or "").strip()
+            or str(entry.get("title") or "").strip()
+        ):
+            for bullet in list(entry.get("bullets") or []):
+                text = str(bullet).strip()
+                if text:
+                    rejected.append(text)
+            continue
         entry["bullets"] = _filter_bullet_list(
             list(entry.get("bullets") or []),
             source_text=source,
@@ -674,20 +1062,31 @@ def validate_claims(
             professional_years=professional_years,
             rejected_registry=rejected_registry,
         )
+        cleaned_experience.append(entry)
+    resume.experience = cleaned_experience
 
+    cleaned_projects: list[dict[str, Any]] = []
     for entry in resume.projects:
         name = str(entry.get("name") or "").strip()
-        if name and name.lower() not in source.lower():
-            if not (_tokens(name) & _tokens(source)):
-                warnings.append(
-                    ValidationWarning(
-                        statement=name,
-                        reason="Project name not found in original resume",
-                        inference_category="Unsupported",
-                    )
+        if name and not project_name_supported(name, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=name,
+                    reason="Project name not found in original resume",
+                    inference_category="Unsupported",
                 )
-                rejected.append(name)
-                entry["name"] = ""
+            )
+            rejected.append(name)
+            for bullet in list(entry.get("bullets") or []):
+                text = str(bullet).strip()
+                if text:
+                    rejected.append(text)
+            desc = str(entry.get("description") or "").strip()
+            if desc:
+                rejected.append(desc)
+            # Drop invented project shells so later restore can re-insert the
+            # real source projects instead of keeping a generic substitute.
+            continue
         desc = str(entry.get("description") or "").strip()
         if desc:
             ok, reason = statement_supported_by_evidence(
@@ -743,15 +1142,29 @@ def validate_claims(
                 entry["context_type"] = "academic"
             else:
                 entry["context_type"] = "academic"
+        cleaned_projects.append(entry)
+    resume.projects = cleaned_projects
 
-    # Education / certifications — names must exist in source
+    # Education / certifications — institution identity + dates must exist in source
     cleaned_edu: list[dict[str, Any]] = []
     for entry in resume.education:
         institution = str(entry.get("institution") or "").strip()
         degree = str(entry.get("degree") or "").strip()
+        dates = str(entry.get("dates") or entry.get("date") or "").strip()
         blob = f"{institution} {degree}".strip()
+        if institution and not organization_supported(institution, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=institution,
+                    reason="Education institution not found in original resume",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(institution)
+            continue
         if blob and blob.lower() not in source.lower():
-            if not (_tokens(blob) & _tokens(source)):
+            # Degree wording may be lightly rephrased; require degree tokens overlap.
+            if degree and not (_tokens(degree) & _tokens(source)):
                 warnings.append(
                     ValidationWarning(
                         statement=blob,
@@ -761,6 +1174,19 @@ def validate_claims(
                 )
                 rejected.append(blob)
                 continue
+        if dates and not dates_supported(dates, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=dates,
+                    reason="Education dates not found in original resume",
+                    inference_category="Unsupported",
+                )
+            )
+            rejected.append(dates)
+            if "dates" in entry:
+                entry["dates"] = ""
+            if "date" in entry:
+                entry["date"] = ""
         cleaned_edu.append(entry)
     resume.education = cleaned_edu
 
