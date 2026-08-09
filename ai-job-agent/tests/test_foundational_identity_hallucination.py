@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import json
 
+from intelligent_tailoring.canonical_resume import (
+    ensure_minimum_content_from_source,
+    restore_missing_content_from_source,
+)
 from intelligent_tailoring.claim_validator import (
     dates_supported,
     organization_supported,
+    project_name_supported,
     role_title_supported,
     statement_supported_by_evidence,
     validate_claims,
@@ -114,6 +119,82 @@ def _fabricated_foundational_resume() -> dict:
     }
 
 
+def _gal_resume_facts() -> dict:
+    """Structured source facts for the Tel Hai CV (post-extraction shape)."""
+    return {
+        "experience_roles": [
+            {
+                "title": "Capstone Project Lead – Tribe Platform",
+                "company": "Tel Hai University",
+                "dates": "2024 – 2025",
+                "bullets": [
+                    "Designed backend architecture using FastAPI, SQLAlchemy and PostgreSQL",
+                    "Built WebSocket real-time updates for activity state and user participation",
+                    "Deployed backend infrastructure using AWS (EC2, RDS, S3) and implemented basic CI/CD workflows",
+                ],
+            },
+            {
+                "title": "Python Programming Tutor",
+                "company": "Tel Hai University",
+                "dates": "Jul 2022 – Jul 2023",
+                "bullets": [
+                    "Delivered weekly tutoring sessions for CS students, explaining algorithms and data structures",
+                    "Assisted with debugging Python programs",
+                ],
+            },
+        ],
+        "projects": [
+            {
+                "name": "Server Monitor System",
+                "description": "Backend monitoring system with parallel health checks",
+                "bullets": [
+                    "Developed REST API using FastAPI and PostgreSQL",
+                    "Used ThreadPoolExecutor for concurrent server monitoring",
+                ],
+                "technologies": ["FastAPI", "PostgreSQL", "ThreadPoolExecutor"],
+            },
+            {
+                "name": "Restaurant Menu Ordering App",
+                "description": "Android ordering app with offline SQLite and Firebase sync",
+                "bullets": [
+                    "Implemented offline storage with SQLite",
+                    "Synchronized orders to Firebase",
+                ],
+                "technologies": ["SQLite", "Firebase"],
+            },
+        ],
+        "education": [
+            {
+                "institution": "Tel Hai University",
+                "degree": "B.Sc. Computer Science",
+                "dates": "Mar 2022 – Aug 2025",
+            }
+        ],
+        "display_skills": [
+            "Frontend: React, React Native, Angular, HTML, CSS",
+            "Backend: FastAPI, Node.js, Laravel, REST APIs, WebSockets",
+            "Databases: PostgreSQL, SQL, MongoDB, Firebase, SQLite",
+            "Cloud & Tools: AWS (EC2, RDS, S3), Git, CI/CD, SQLAlchemy, Expo, Generative AI",
+        ],
+        "skills": [
+            "Python",
+            "FastAPI",
+            "Node.js",
+            "Laravel",
+            "WebSockets",
+            "PostgreSQL",
+            "MongoDB",
+            "Firebase",
+            "SQLite",
+            "AWS",
+            "React",
+            "SQLAlchemy",
+            "pytest",
+            "Generative AI",
+        ],
+    }
+
+
 class TestIdentityLockHelpers:
     def test_tel_aviv_not_supported_when_source_is_tel_hai(self):
         assert organization_supported("Tel Hai University", GAL_TEL_HAI_SOURCE)
@@ -132,6 +213,13 @@ class TestIdentityLockHelpers:
         assert not role_title_supported(
             "Project Lead - Title Platform", GAL_TEL_HAI_SOURCE
         )
+
+    def test_generic_invented_project_name_rejected(self):
+        assert project_name_supported("Server Monitor System", GAL_TEL_HAI_SOURCE)
+        assert project_name_supported(
+            "Restaurant Menu Ordering App", GAL_TEL_HAI_SOURCE
+        )
+        assert not project_name_supported("REST API Development", GAL_TEL_HAI_SOURCE)
 
     def test_team_headcount_and_summary_org_rejected(self):
         ok, reason = statement_supported_by_evidence(
@@ -200,3 +288,51 @@ class TestFoundationalFabricationSanitized:
         failures = " ".join(gates.get("failures") or []).lower()
         assert "tel aviv" in failures or "unsupported_organization" in failures
         assert "invalid_dates" in failures or "2021" in failures
+
+    def test_claim_plus_restore_brings_back_omitted_source_content(self):
+        """Fabricated substitute entries must not permanently hide source facts."""
+        result = validate_claims(
+            original_resume_text=GAL_TEL_HAI_SOURCE,
+            tailored_resume=_fabricated_foundational_resume(),
+        )
+        cleaned = result.cleaned_resume.to_dict()
+        # Invented shells removed — otherwise restore cannot re-home source entries.
+        assert cleaned.get("experience") == []
+        assert cleaned.get("projects") == []
+        assert cleaned.get("education") == []
+
+        facts = _gal_resume_facts()
+        restored = restore_missing_content_from_source(cleaned, resume_facts=facts)
+        restored = ensure_minimum_content_from_source(restored, resume_facts=facts)
+        blob = json.dumps(restored, ensure_ascii=False).lower()
+
+        for must in (
+            "tel hai",
+            "capstone",
+            "python programming tutor",
+            "server monitor",
+            "restaurant",
+            "fastapi",
+            "websocket",
+            "sqlalchemy",
+            "firebase",
+            "sqlite",
+            "laravel",
+            "2024",
+            "2022",
+        ):
+            assert must in blob, f"source content still omitted: {must}"
+
+        for bad in ("tel aviv", "october 2021", "kubernetes", "team of 5", "rest api development"):
+            assert bad not in blob, f"fabricated substitute survived restore: {bad}"
+
+        titles = {
+            str(e.get("title") or "").lower() for e in (restored.get("experience") or [])
+        }
+        assert any("capstone" in t for t in titles)
+        assert any("tutor" in t for t in titles)
+        names = {
+            str(p.get("name") or "").lower() for p in (restored.get("projects") or [])
+        }
+        assert any("server monitor" in n for n in names)
+        assert any("restaurant" in n for n in names)

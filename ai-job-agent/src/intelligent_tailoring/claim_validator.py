@@ -160,6 +160,34 @@ _TITLE_GENERIC_TOKENS = frozenset(
         "members",
     }
 )
+_PROJECT_GENERIC_TOKENS = frozenset(
+    {
+        "project",
+        "projects",
+        "app",
+        "application",
+        "system",
+        "systems",
+        "platform",
+        "service",
+        "services",
+        "tool",
+        "tools",
+        "api",
+        "apis",
+        "rest",
+        "development",
+        "backend",
+        "frontend",
+        "web",
+        "mobile",
+        "software",
+        "solution",
+        "solutions",
+        "demo",
+        "prototype",
+    }
+)
 
 # Outcome nouns that require explicit source support (not feature intent).
 _UNSUPPORTED_OUTCOME_NOUNS = re.compile(
@@ -424,6 +452,28 @@ def role_title_supported(title: str, source_text: str) -> bool:
             return True
         shared = title_tokens & _tokens(source)
         return len(shared) / max(len(title_tokens), 1) >= 0.7
+    return distinctive.issubset(_tokens(source))
+
+
+def project_name_supported(name: str, source_text: str) -> bool:
+    """True when a project title is grounded in the source resume.
+
+    Generic titles like ``REST API Development`` require an exact/near-exact
+    source phrase — token overlap on ``api``/``development`` alone is not enough.
+    """
+    name = re.sub(r"\s+", " ", (name or "").strip())
+    if not name:
+        return True
+    source = source_text or ""
+    if name.lower() in source.lower():
+        return True
+    distinctive = {
+        t
+        for t in _tokens(name)
+        if t not in _PROJECT_GENERIC_TOKENS and t not in _STOP
+    }
+    if not distinctive:
+        return False
     return distinctive.issubset(_tokens(source))
 
 
@@ -1015,19 +1065,28 @@ def validate_claims(
         cleaned_experience.append(entry)
     resume.experience = cleaned_experience
 
+    cleaned_projects: list[dict[str, Any]] = []
     for entry in resume.projects:
         name = str(entry.get("name") or "").strip()
-        if name and name.lower() not in source.lower():
-            if not (_tokens(name) & _tokens(source)):
-                warnings.append(
-                    ValidationWarning(
-                        statement=name,
-                        reason="Project name not found in original resume",
-                        inference_category="Unsupported",
-                    )
+        if name and not project_name_supported(name, source):
+            warnings.append(
+                ValidationWarning(
+                    statement=name,
+                    reason="Project name not found in original resume",
+                    inference_category="Unsupported",
                 )
-                rejected.append(name)
-                entry["name"] = ""
+            )
+            rejected.append(name)
+            for bullet in list(entry.get("bullets") or []):
+                text = str(bullet).strip()
+                if text:
+                    rejected.append(text)
+            desc = str(entry.get("description") or "").strip()
+            if desc:
+                rejected.append(desc)
+            # Drop invented project shells so later restore can re-insert the
+            # real source projects instead of keeping a generic substitute.
+            continue
         desc = str(entry.get("description") or "").strip()
         if desc:
             ok, reason = statement_supported_by_evidence(
@@ -1083,6 +1142,8 @@ def validate_claims(
                 entry["context_type"] = "academic"
             else:
                 entry["context_type"] = "academic"
+        cleaned_projects.append(entry)
+    resume.projects = cleaned_projects
 
     # Education / certifications — institution identity + dates must exist in source
     cleaned_edu: list[dict[str, Any]] = []
