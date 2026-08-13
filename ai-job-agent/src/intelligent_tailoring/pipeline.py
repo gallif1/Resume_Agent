@@ -1337,6 +1337,7 @@ def run_intelligent_tailoring_agents(
             drop_empty_shell_entries,
             ensure_minimum_content_from_source,
             estimate_content_density,
+            expand_thin_entries_from_source,
             find_raw_data_leaks,
             inventory_from_facts,
             log_stage_inventory,
@@ -1365,37 +1366,58 @@ def run_intelligent_tailoring_agents(
         cleaned_resume = ensure_minimum_content_from_source(
             cleaned_resume,
             resume_facts=resume_facts,
-            min_bullets_per_role=1,
-            min_bullets_per_project=1,
+            min_bullets_per_role=2,
+            min_bullets_per_project=2,
         )
         cleaned_resume = sanitize_raw_data_fields(cleaned_resume)
         density = estimate_content_density(cleaned_resume)
         if density.get("underfilled"):
             # Pull additional high-value source content rather than leaving
             # half a page empty. Keep ALL roles/projects (max_*=0).
+            from intelligent_tailoring.services.one_page_compressor import (
+                estimate_page_pressure,
+            )
+
             cleaned_resume = restore_missing_content_from_source(
                 cleaned_resume,
                 resume_facts=resume_facts,
                 max_roles=0,
                 max_projects=0,
-                min_bullets_per_role=2,
+                min_bullets_per_role=3,
+                min_bullets_per_project=3,
+            )
+            cleaned_resume = expand_thin_entries_from_source(
+                cleaned_resume,
+                resume_facts=resume_facts,
+                target_bullets_per_role=4,
+                target_bullets_per_project=3,
+            )
+            cleaned_resume = ensure_minimum_content_from_source(
+                cleaned_resume,
+                resume_facts=resume_facts,
+                min_bullets_per_role=3,
                 min_bullets_per_project=2,
             )
-            # Re-fit to one page without stripping restored substance to shells
+            # Only compress when the page is actually overfull — never compress
+            # an underfilled half-page back down to a sparse shell.
             if not allow_multi:
-                cleaned_resume = compress_resume_to_one_page(
-                    cleaned_resume, strategy=strategy, aggressive=False
-                )
-                cleaned_resume = restore_missing_content_from_source(
-                    cleaned_resume,
-                    resume_facts=resume_facts,
-                    min_bullets_per_role=1,
-                    min_bullets_per_project=1,
-                )
-                cleaned_resume = ensure_minimum_content_from_source(
-                    cleaned_resume,
-                    resume_facts=resume_facts,
-                )
+                pressure = estimate_page_pressure(cleaned_resume)
+                if not pressure.get("likely_fits_one_page"):
+                    cleaned_resume = compress_resume_to_one_page(
+                        cleaned_resume, strategy=strategy, aggressive=False
+                    )
+                    cleaned_resume = restore_missing_content_from_source(
+                        cleaned_resume,
+                        resume_facts=resume_facts,
+                        min_bullets_per_role=2,
+                        min_bullets_per_project=2,
+                    )
+                    cleaned_resume = ensure_minimum_content_from_source(
+                        cleaned_resume,
+                        resume_facts=resume_facts,
+                        min_bullets_per_role=2,
+                        min_bullets_per_project=2,
+                    )
         cleaned_resume = drop_empty_shell_entries(cleaned_resume)
         cleaned_resume = sanitize_raw_data_fields(cleaned_resume)
 
