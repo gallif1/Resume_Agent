@@ -248,6 +248,18 @@ def test_reworded_skills_count_as_supported(skill: str, source: str):
     assert svc.skill_supported_by_source(skill, source) is True
 
 
+def test_ci_cd_atom_not_split_and_survives_strip():
+    """CI/CD must stay one atom so CICD evidence is not lost after boundary matching."""
+    assert svc._skill_atoms("CI/CD") == ["CI/CD"]
+    assert svc._skill_atoms("Cloud: AWS, CI/CD, Docker") == ["AWS", "CI/CD", "Docker"]
+    kept, dropped = svc._strip_unsupported_skills(
+        ["CI/CD", "Salesforce Apex"],
+        "Set up CICD in GitHub Actions",
+    )
+    assert kept == ["CI/CD"]
+    assert dropped == ["Salesforce Apex"]
+
+
 @pytest.mark.parametrize(
     "skill",
     ["Salesforce Apex", "Terraform", "Kubernetes Operators", "SAP HANA"],
