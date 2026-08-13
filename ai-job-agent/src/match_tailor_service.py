@@ -466,6 +466,28 @@ class SourceEvidence:
         )
 
 
+def _is_spelling_variant(a: str, b: str) -> bool:
+    """True for postgres/postgresql style aliases — not sibling tools (css/scss)."""
+    sa, sb = _squash(a), _squash(b)
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    # Containment only when both are reasonably long (avoid os⊂postgres)
+    if min(len(sa), len(sb)) >= 4 and (sa in sb or sb in sa):
+        return True
+    return False
+
+
+def _is_acronym_alias(short: str, long: str) -> bool:
+    """True when ``short`` is the acronym of ``long`` (ML ↔ Machine Learning)."""
+    s = re.sub(r"[^a-z0-9]", "", (short or "").lower())
+    words = re.findall(r"[a-z0-9]+", (long or "").lower())
+    if len(s) < 2 or len(words) < 2:
+        return False
+    return s == "".join(w[0] for w in words)
+
+
 def _alias_forms(skill: str) -> set[str]:
     forms = {skill.strip().lower()}
     # Synonym expansion is for skill atoms, not full prose bullets. Expanding
@@ -475,11 +497,51 @@ def _alias_forms(skill: str) -> set[str]:
     if token_count > 4 or len((skill or "").strip()) > 48:
         return {re.sub(r"\s+", " ", f).strip() for f in forms if len(f.strip()) >= 2}
     canonical = to_canonical(skill) or normalize_skill(skill)
-    if canonical:
+    # Canonicalization can collapse sibling tools (SCSS → CSS). Only keep it
+    # when it is a spelling/punctuation variant of the claimed skill.
+    if canonical and (
+        _is_spelling_variant(canonical, skill)
+        or _is_acronym_alias(skill, canonical)
+        or _is_acronym_alias(canonical, skill)
+    ):
         forms.add(canonical.lower())
-        forms.update(v.lower() for v in expand_synonyms(canonical) if v)
-    forms.update(v.lower() for v in expand_synonyms(skill) if v)
+    # Spelling variants + acronym aliases only — not sibling tools in the same
+    # synonym bucket (SCSS must not inherit CSS evidence).
+    base = skill.strip().lower()
+    for variant in expand_synonyms(base):
+        if (
+            _is_spelling_variant(variant, skill)
+            or _is_acronym_alias(skill, variant)
+            or _is_acronym_alias(variant, skill)
+        ):
+            forms.add(variant.lower())
+    if canonical:
+        for variant in expand_synonyms(canonical.lower()):
+            if (
+                _is_spelling_variant(variant, skill)
+                or _is_acronym_alias(skill, variant)
+                or _is_acronym_alias(variant, skill)
+            ):
+                forms.add(variant.lower())
     return {re.sub(r"\s+", " ", f).strip() for f in forms if len(f.strip()) >= 2}
+
+
+def _form_in_evidence_text(form: str, text: str) -> bool:
+    """Match skill forms with word boundaries (avoid ``ses``⊂``databases``)."""
+    form = (form or "").strip().lower()
+    text = text or ""
+    if not form:
+        return False
+    if re.search(
+        rf"(?<![a-z0-9+#./]){re.escape(form)}(?![a-z0-9+#./])",
+        text,
+        flags=re.I,
+    ):
+        return True
+    # Longer multi-token forms may appear with flexible punctuation/spacing.
+    if len(form) >= 6 and form in text:
+        return True
+    return False
 
 
 def _supported(skill: str, evidence: SourceEvidence) -> bool:
@@ -488,12 +550,14 @@ def _supported(skill: str, evidence: SourceEvidence) -> bool:
 
     forms = _alias_forms(skill)
     for form in forms:
-        if form in evidence.text:
+        if _form_in_evidence_text(form, evidence.text):
             return True
     # Punctuation/spacing variants: "CI/CD" vs "CICD", "Node.js" vs "Node JS".
     for form in forms:
         squashed = _squash(form)
-        if len(squashed) >= 3 and squashed in evidence.squashed:
+        # Require length >= 4 so tiny stems like "os"/"ses" cannot hit
+        # accidental substrings inside postgresql/databases.
+        if len(squashed) >= 4 and squashed in evidence.squashed:
             return True
 
     # Word-level fallback: a multi-word skill counts as supported when every
@@ -506,6 +570,9 @@ def _supported(skill: str, evidence: SourceEvidence) -> bool:
     ]
     tokens = [t for t in tokens if t]
     if not tokens:
+        return False
+    # Single short stems are too ambiguous for the word-level fallback.
+    if len(tokens) == 1 and len(tokens[0]) <= 3:
         return False
     return all(evidence.has_word(token) for token in tokens)
 
