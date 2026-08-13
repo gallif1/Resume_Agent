@@ -200,8 +200,43 @@ def deprioritize_keywords_from_requirements(
 
 
 def deprioritize_keywords(job_family: str) -> list[str]:
-    """Legacy stub — empty by default to avoid tech-biased hiding."""
-    return []
+    """Soft opposite-family terms — never delete, only rank lower when scoring.
+
+    Frontend JDs should not let backend-only infrastructure dominate summary
+    and bullet ordering when UI evidence exists elsewhere on the resume.
+    """
+    family = (job_family or "").strip().lower()
+    opposite = {
+        "frontend": [
+            "aws",
+            "ec2",
+            "sqs",
+            "ses",
+            "microservices",
+            "django",
+            "fastapi",
+            "flask",
+            "pytest",
+            "kubernetes",
+            "docker",
+            "redis",
+            "elasticsearch",
+            "machine learning",
+            "pytorch",
+            "tensorflow",
+            "algo-trading",
+            "sqlalchemy",
+        ],
+        "backend": [
+            "figma",
+            "photoshop",
+            "illustrator",
+            "scss",
+            "less",
+            "animation",
+        ],
+    }
+    return list(opposite.get(family) or [])
 
 
 def skill_category_order(job_family: str) -> list[str]:

@@ -64,15 +64,20 @@ _SAFE_FACTUAL_REPLACEMENTS = {
 # Common tech tokens used for leakage detection (not an allowlist of skills).
 _TECH_TOKEN_RE = re.compile(
     r"\b("
-    r"vue\.?js|vue|react(?:\s*native)?|angular|fastapi|django|flask|express|"
+    r"vue\.?js|vue|react(?:\s*native)?|angular|redux(?:[-\s]?sagas?)?|fastapi|"
+    r"django|flask|pyramid|express|"
     r"node\.?js|nodejs|nestjs|spring|laravel|rails|postgresql|postgres|mysql|"
     r"mongodb|sqlite|redis|firebase|sqlalchemy|prisma|hibernate|"
+    r"elasticsearch|elastic\s*search|"
     r"aws|azure|gcp|docker|kubernetes|k8s|terraform|jenkins|pytest|jest|"
     r"selenium|websocket|websockets|graphql|kafka|rabbitmq|nginx|"
     r"typescript|javascript|python|java\b|kotlin|swift|golang|rust|"
+    r"webpack|babel|scss|less|sass|"
+    r"statsmodels|scipy|scikit[-\s]?learn|sklearn|pytorch|tensorflow|"
     r"salesforce|hubspot|quickbooks|sap|excel|tableau|power\s*bi|"
     r"figma|photoshop|illustrator|"
-    r"ci/?cd|threadpoolexecutor|openai|llm|generative\s*ai"
+    r"ci/?cd|threadpoolexecutor|openai|llm|generative\s*ai|"
+    r"algo[-\s]?trading|microservices"
     r")\b",
     re.I,
 )

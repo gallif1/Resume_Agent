@@ -347,7 +347,9 @@ def category_order_for_role(
         if cat not in order:
             order.append(cat)
 
-    # Boost categories that contain emphasized skills to the front
+    # Boost categories that contain emphasized skills to the front — but keep
+    # the family's primary categories locked ahead (Frontend JD must not lead
+    # with Cloud just because AWS fragments appeared in emphasize).
     if emphasize:
         boost: list[str] = []
         for skill in emphasize:
@@ -355,7 +357,14 @@ def category_order_for_role(
             if cat not in boost:
                 boost.append(cat)
         if boost:
-            order = [c for c in boost if c in order] + [c for c in order if c not in boost]
+            primary = preferred[:2]
+            boost = [c for c in boost if c not in primary]
+            locked = [c for c in primary if c in order]
+            order = (
+                locked
+                + [c for c in boost if c in order]
+                + [c for c in order if c not in locked and c not in boost]
+            )
     return order
 
 
@@ -380,7 +389,11 @@ def normalize_skill_lines(
     for cat in order:
         buckets[cat] = []
 
-    emphasize_norm = [normalize_skill_name(str(s)) for s in (emphasize or []) if str(s).strip()]
+    emphasize_norm = [
+        normalize_skill_name(str(s))
+        for s in (emphasize or [])
+        if str(s).strip() and not re.search(r"[()]", str(s))
+    ]
 
     seen_atoms: set[str] = set()
     for line in skills or []:
@@ -407,8 +420,13 @@ def normalize_skill_lines(
                     return (i, key)
             return (1000, key)
 
-    # Categories containing emphasized skills come first
+    # Family primary categories stay first; emphasize only reorders atoms and
+    # secondary categories (Cloud must not leapfrog Frontend on a Frontend JD).
+    primary_locked = category_order_for_role(job_family, emphasize=None)[:2] if job_family else []
+
     def _cat_rank(cat: str) -> tuple[int, int]:
+        if cat in primary_locked:
+            return (-10 + primary_locked.index(cat), 0)
         atoms = buckets.get(cat) or []
         if not atoms:
             return (999, order.index(cat) if cat in order else 999)
