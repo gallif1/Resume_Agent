@@ -556,7 +556,7 @@ def ensure_minimum_content_from_source(
                         str(b).strip() for b in (e.get("bullets") or []) if str(b).strip()
                     ]
                     desc = str(e.get("description") or "").strip()
-                    if len(bullets) < min_bullets_per_project and not desc:
+                    if len(bullets) < min_bullets_per_project:
                         src_b = [
                             str(b).strip()
                             for b in (proj.get("bullets") or [])
@@ -564,8 +564,14 @@ def ensure_minimum_content_from_source(
                         ]
                         src_d = str(proj.get("description") or "").strip()
                         if src_b:
-                            e["bullets"] = src_b[: max(min_bullets_per_project, 1)]
-                        elif src_d:
+                            from intelligent_tailoring.services.one_page_compressor import (
+                                _dedupe_similar,
+                            )
+
+                            e["bullets"] = _dedupe_similar(bullets + src_b)[
+                                : max(min_bullets_per_project, len(bullets), 1)
+                            ]
+                        if not desc and src_d:
                             e["description"] = src_d
                     break
         else:
@@ -1146,24 +1152,96 @@ def completeness_failures(
 
 
 def estimate_content_density(resume: dict[str, Any]) -> dict[str, Any]:
-    """Heuristic page utilization for early-career one-page resumes."""
+    """Heuristic page utilization for early-career one-page resumes.
+
+    Half-page previews (one thin role + one thin project) must count as
+    underfilled so the pipeline restores more source substance.
+    """
     inv = content_inventory(resume)
-    # Rough fill score: bullets + summary + skills vs expected early-career density
-    expected_bullets = 6
-    expected_summary = 50
-    expected_skills = 12
-    bullet_fill = min(1.0, inv["experience_bullets"] + inv["project_bullets"]) / expected_bullets
+    # Target a fuller one-page look — not a sparse half sheet.
+    expected_bullets = 10
+    expected_summary = 55
+    expected_skills = 14
+    total_bullets = inv["experience_bullets"] + inv["project_bullets"]
+    bullet_fill = min(1.0, total_bullets / expected_bullets)
     summary_fill = min(1.0, inv["summary_words"] / expected_summary)
     skill_fill = min(1.0, inv["skill_atoms"] / expected_skills)
     utilization = round(0.45 * bullet_fill + 0.25 * summary_fill + 0.30 * skill_fill, 3)
-    underfilled = utilization < 0.70 and (
-        inv["experience_bullets"] + inv["project_bullets"] < 4
+    entry_count = inv["experience_entries"] + int(inv.get("projects") or 0)
+    underfilled = (
+        utilization < 0.78
+        or total_bullets < 7
+        or (entry_count < 3 and total_bullets < 9)
     )
     return {
         "utilization_score": utilization,
         "underfilled": underfilled,
         "inventory": inv,
     }
+
+
+def expand_thin_entries_from_source(
+    tailored: dict[str, Any],
+    *,
+    resume_facts: dict[str, Any],
+    target_bullets_per_role: int = 4,
+    target_bullets_per_project: int = 3,
+) -> dict[str, Any]:
+    """Pad existing roles/projects with additional verified source bullets.
+
+    Used when the page is underfilled: keep tailored wording first, then append
+    unused source bullets until the target density is reached.
+    """
+    out = deepcopy(tailored) if isinstance(tailored, dict) else {}
+    source_roles = [
+        r
+        for r in (resume_facts.get("experience_roles") or resume_facts.get("experience") or [])
+        if isinstance(r, dict)
+    ]
+    source_projects = normalize_project_list(resume_facts.get("projects") or [])
+
+    from intelligent_tailoring.services.one_page_compressor import _dedupe_similar
+
+    expanded_exp: list[dict[str, Any]] = []
+    for entry in out.get("experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
+        match = _match_role(entry, source_roles)
+        if match and len(bullets) < target_bullets_per_role:
+            src_b = [
+                str(b).strip() for b in (match.get("bullets") or []) if str(b).strip()
+            ]
+            if src_b:
+                bullets = _dedupe_similar(bullets + src_b)[:target_bullets_per_role]
+                if not str(entry.get("dates") or "").strip():
+                    entry["dates"] = str(match.get("dates") or "")
+                if not str(entry.get("company") or "").strip():
+                    entry["company"] = str(match.get("company") or "")
+        expanded_exp.append({**entry, "bullets": bullets})
+    if expanded_exp:
+        out["experience"] = expanded_exp
+
+    expanded_proj: list[dict[str, Any]] = []
+    for entry in out.get("projects") or []:
+        if not isinstance(entry, dict):
+            continue
+        bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
+        desc = str(entry.get("description") or "").strip()
+        match = _match_project(entry, source_projects)
+        if match and len(bullets) < target_bullets_per_project:
+            src_b = [
+                str(b).strip() for b in (match.get("bullets") or []) if str(b).strip()
+            ]
+            if src_b:
+                bullets = _dedupe_similar(bullets + src_b)[:target_bullets_per_project]
+            if not desc:
+                desc = str(match.get("description") or "").strip()
+        expanded_proj.append({**entry, "bullets": bullets, "description": desc})
+    if expanded_proj:
+        out["projects"] = expanded_proj
+
+    return drop_empty_shell_entries(out)
 
 
 def restore_missing_content_from_source(
@@ -1203,7 +1281,7 @@ def restore_missing_content_from_source(
                     "company": str(role.get("company") or ""),
                     "title": str(role.get("title") or ""),
                     "dates": str(role.get("dates") or ""),
-                    "bullets": bullets[:3],
+                    "bullets": bullets[: max(3, min_bullets_per_role)],
                 }
             )
         if restored:
@@ -1222,7 +1300,14 @@ def restore_missing_content_from_source(
                     str(b).strip() for b in (match.get("bullets") or []) if str(b).strip()
                 ]
                 if src_bullets:
-                    fixed.append({**entry, "bullets": src_bullets[:3]})
+                    fixed.append(
+                        {
+                            **entry,
+                            "bullets": src_bullets[
+                                : max(3, min_bullets_per_role, len(bullets))
+                            ],
+                        }
+                    )
                     continue
             # Drop empty shell
         out["experience"] = fixed
