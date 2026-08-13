@@ -139,9 +139,28 @@ def build_summary_plan(
         # Prefer whole-token evidence, not accidental substring matches on "issues,"
         return bool(re.search(rf"(?<![a-z0-9]){re.escape(low)}(?![a-z0-9])", source_l))
 
+    family = str(
+        strategy.get("job_family") or strategy.get("target_job_family") or ""
+    ).strip().lower()
+
+    def _sanitize_comp_token(token: str) -> str:
+        """Drop broken emphasize fragments like ``S3)`` / ``AWS (EC2``."""
+        t = _clean_evidence_token(token)
+        if not t:
+            return ""
+        if re.search(r"[()]", t) and not re.search(
+            r"\((?:ec2|rds|s3|sqs|ses|gcp|ui|ux)\)", t, flags=re.I
+        ):
+            # Keep clean parent names only when the fragment is truncated.
+            if t.endswith(")") and "(" not in t:
+                t = t.rstrip(")").strip()
+            elif "(" in t and ")" not in t:
+                t = t.split("(", 1)[0].strip()
+        return t
+
     evidenced = []
     for s in must_highlight + emphasize:
-        cleaned = _clean_evidence_token(s)
+        cleaned = _sanitize_comp_token(str(s))
         if _skill_like(cleaned) and cleaned not in evidenced:
             evidenced.append(cleaned)
         if len(evidenced) >= 5:
@@ -149,20 +168,36 @@ def build_summary_plan(
     if not evidenced:
         skills = resume_facts.get("display_skills") or resume_facts.get("skills") or []
         if isinstance(skills, dict):
-            for key in ("frameworks", "languages", "cloud", "other", "tools"):
+            # Frontend roles: prefer UI frameworks before cloud/backend crumbs.
+            key_order = (
+                ("frameworks", "languages", "other", "tools", "cloud")
+                if family == "frontend"
+                else ("frameworks", "languages", "cloud", "other", "tools")
+            )
+            for key in key_order:
                 evidenced.extend(
-                    _clean_evidence_token(str(x))
+                    _sanitize_comp_token(str(x))
                     for x in (skills.get(key) or [])[:2]
-                    if _clean_evidence_token(str(x))
+                    if _sanitize_comp_token(str(x))
                 )
         else:
             for s in skills:
                 atom = str(s).split(":")[-1].strip()
                 for part in atom.split(","):
-                    p = _clean_evidence_token(part)
+                    p = _sanitize_comp_token(part)
                     if p and _skill_like(p) and p not in evidenced:
                         evidenced.append(p)
         evidenced = evidenced[:5]
+
+    if family == "frontend" and evidenced:
+        frontendish = re.compile(
+            r"\b(react|angular|vue|html|css|scss|less|javascript|typescript|"
+            r"redux|ui|ux|webpack|babel|frontend)\b",
+            re.I,
+        )
+        head = [e for e in evidenced if frontendish.search(e)]
+        tail = [e for e in evidenced if e not in head]
+        evidenced = (head + tail)[:5]
 
     # Strongest evidence — prefer strategy-ranked evidence, then resume bullets.
     # Never accept employer/JD voice as "evidence" (e.g. "You are the best").
@@ -207,30 +242,68 @@ def build_summary_plan(
             strongest_bits.append(text)
         if len(strongest_bits) >= 2:
             break
-    if len(strongest_bits) < 2:
-        for proj in resume_facts.get("projects") or []:
-            if not isinstance(proj, dict):
+    def _collect_evidence_bits(
+        entries: list[Any],
+        *,
+        prefer_frontend: bool,
+    ) -> None:
+        nonlocal strongest_bits
+        frontend_bit_re = re.compile(
+            r"\b(react|angular|vue|html|css|scss|ui|ux|mobile|component|"
+            r"frontend|client|interface|layout|animation)\b",
+            re.I,
+        )
+        candidates: list[str] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
                 continue
-            for b in proj.get("bullets") or []:
+            blob = " ".join(
+                [
+                    str(entry.get("name") or ""),
+                    str(entry.get("title") or ""),
+                    str(entry.get("description") or ""),
+                    " ".join(str(b) for b in (entry.get("bullets") or [])),
+                    " ".join(str(t) for t in (entry.get("technologies") or [])),
+                ]
+            )
+            entry_frontend = bool(prefer_frontend and frontend_bit_re.search(blob))
+            for b in entry.get("bullets") or []:
                 text = str(b).strip()
-                if text and text not in strongest_bits:
+                if not text or text in strongest_bits:
+                    continue
+                if prefer_frontend and entry_frontend:
+                    strongest_bits.append(text)
+                else:
+                    candidates.append(text)
+                if len(strongest_bits) >= 2:
+                    return
+        if prefer_frontend:
+            for text in candidates:
+                if text not in strongest_bits:
                     strongest_bits.append(text)
                 if len(strongest_bits) >= 2:
-                    break
-            if len(strongest_bits) >= 2:
-                break
-    if len(strongest_bits) < 2:
-        for role in resume_facts.get("experience_roles") or resume_facts.get("experience") or []:
-            if not isinstance(role, dict):
-                continue
-            for b in role.get("bullets") or []:
-                text = str(b).strip()
-                if text and text not in strongest_bits:
+                    return
+        else:
+            for text in candidates:
+                if text not in strongest_bits:
                     strongest_bits.append(text)
                 if len(strongest_bits) >= 2:
-                    break
-            if len(strongest_bits) >= 2:
-                break
+                    return
+
+    if len(strongest_bits) < 2:
+        _collect_evidence_bits(
+            list(resume_facts.get("projects") or []),
+            prefer_frontend=(family == "frontend"),
+        )
+    if len(strongest_bits) < 2:
+        _collect_evidence_bits(
+            list(
+                resume_facts.get("experience_roles")
+                or resume_facts.get("experience")
+                or []
+            ),
+            prefer_frontend=(family == "frontend"),
+        )
 
     summary_focus = str(strategy.get("summary_focus") or "").strip()
     value_prop = str(
@@ -256,7 +329,8 @@ def build_summary_plan(
         "summary_focus": summary_focus,
         "value_proposition": value_prop,
         "seniority": str(strategy.get("seniority") or ""),
-        "job_family": str(strategy.get("job_family") or strategy.get("target_job_family") or ""),
+        "job_family": family
+        or str(strategy.get("job_family") or strategy.get("target_job_family") or ""),
         "prohibited_claims": list(_PROHIBITED_PHRASES),
         "output_language": output_language if output_language in ("en", "he") else "en",
         "maximum_words": maximum_words,
@@ -394,7 +468,12 @@ def _lead_sentence(role_phrase: str, comps: list[str], family: str) -> str:
     if not joined:
         return f"{role} with a track record of practical delivery across completed roles and projects."
 
-    if family in {"backend", "frontend", "devops", "qa", "support", "data"}:
+    if family == "frontend":
+        return (
+            f"{role} with hands-on experience building intuitive user interfaces and "
+            f"client-side applications using {joined}."
+        )
+    if family in {"backend", "devops", "qa", "support", "data"}:
         return (
             f"{role} with hands-on experience building scalable services and applications "
             f"using {joined}."
