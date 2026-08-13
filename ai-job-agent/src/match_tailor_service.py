@@ -398,10 +398,28 @@ def align_recommendation(recommendation: Any, score: int) -> str:
 
 
 def _skill_atoms(entry: str) -> list[str]:
-    """Split a skills entry into checkable atoms ("Languages: Python, SQL")."""
+    """Split a skills entry into checkable atoms ("Languages: Python, SQL").
+
+    Slash-compound tools like ``CI/CD`` and ``TCP/IP`` stay as one atom — splitting
+    them into ``CI``/``CD`` makes honest word-boundary matching impossible.
+    """
     body = entry.split(":", 1)[1] if ":" in entry else entry
-    atoms = [part.strip(" .;·|") for part in re.split(r"[,/|]|\band\b", body)]
-    return [atom for atom in atoms if len(atom) >= 2]
+    chunks = [part.strip(" .;·|") for part in re.split(r"[,|]|\band\b", body)]
+    atoms: list[str] = []
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if "/" in chunk:
+            pieces = [p.strip() for p in chunk.split("/") if p.strip()]
+            # Two short tokens (CI/CD, TCP/IP) are one skill; longer slash lists split.
+            if len(pieces) == 2 and all(1 <= len(p) <= 3 for p in pieces):
+                atoms.append("/".join(pieces))
+            else:
+                atoms.extend(p for p in pieces if len(p) >= 2)
+            continue
+        if len(chunk) >= 2:
+            atoms.append(chunk)
+    return atoms
 
 
 # Words that carry no evidence on their own, so they must not decide whether a
