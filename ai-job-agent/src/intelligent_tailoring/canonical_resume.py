@@ -1214,10 +1214,12 @@ def expand_thin_entries_from_source(
             ]
             if src_b:
                 bullets = _dedupe_similar(bullets + src_b)[:target_bullets_per_role]
-                if not str(entry.get("dates") or "").strip():
-                    entry["dates"] = str(match.get("dates") or "")
-                if not str(entry.get("company") or "").strip():
-                    entry["company"] = str(match.get("company") or "")
+        if match:
+            # IDENTITY LOCK — always restore company/title/dates from source.
+            for key in ("title", "company", "dates", "date"):
+                src_val = str(match.get(key) or "").strip()
+                if src_val:
+                    entry[key] = match.get(key)
         expanded_exp.append({**entry, "bullets": bullets})
     if expanded_exp:
         out["experience"] = expanded_exp
@@ -1237,6 +1239,10 @@ def expand_thin_entries_from_source(
                 bullets = _dedupe_similar(bullets + src_b)[:target_bullets_per_project]
             if not desc:
                 desc = str(match.get("description") or "").strip()
+        if match:
+            src_name = str(match.get("name") or "").strip()
+            if src_name:
+                entry["name"] = match.get("name")
         expanded_proj.append({**entry, "bullets": bullets, "description": desc})
     if expanded_proj:
         out["projects"] = expanded_proj
@@ -1287,14 +1293,19 @@ def restore_missing_content_from_source(
         if restored:
             out["experience"] = restored
     else:
-        # Fill empty shells in place from matching source roles
+        # Fill empty shells in place from matching source roles; always lock identity.
         fixed = []
         for entry in tailored_exp:
             bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
+            match = _match_role(entry, source_roles)
+            if match:
+                for key in ("title", "company", "dates", "date"):
+                    src_val = str(match.get(key) or "").strip()
+                    if src_val:
+                        entry[key] = match.get(key)
             if len(bullets) >= min_bullets_per_role:
                 fixed.append({**entry, "bullets": bullets})
                 continue
-            match = _match_role(entry, source_roles)
             if match:
                 src_bullets = [
                     str(b).strip() for b in (match.get("bullets") or []) if str(b).strip()
@@ -1339,26 +1350,28 @@ def restore_missing_content_from_source(
         for entry in tailored_proj:
             bullets = [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
             desc = str(entry.get("description") or "").strip()
+            match = _match_project(entry, source_projects)
+            if match:
+                src_name = str(match.get("name") or "").strip()
+                if src_name:
+                    entry["name"] = match.get("name")
             if bullets or desc:
-                if len(bullets) < min_bullets_per_project:
-                    match = _match_project(entry, source_projects)
-                    if match:
-                        src_b = [
-                            str(b).strip()
-                            for b in (match.get("bullets") or [])
-                            if str(b).strip()
-                        ]
-                        if src_b:
-                            from intelligent_tailoring.services.one_page_compressor import (
-                                _dedupe_similar,
-                                texts_are_near_duplicates,
-                            )
+                if len(bullets) < min_bullets_per_project and match:
+                    src_b = [
+                        str(b).strip()
+                        for b in (match.get("bullets") or [])
+                        if str(b).strip()
+                    ]
+                    if src_b:
+                        from intelligent_tailoring.services.one_page_compressor import (
+                            _dedupe_similar,
+                        )
 
-                            bullets = _dedupe_similar(bullets + src_b)[
-                                : max(min_bullets_per_project, len(bullets), 3)
-                            ]
-                        if not desc:
-                            desc = str(match.get("description") or "").strip()
+                        bullets = _dedupe_similar(bullets + src_b)[
+                            : max(min_bullets_per_project, len(bullets), 3)
+                        ]
+                    if not desc:
+                        desc = str(match.get("description") or "").strip()
                 if desc and bullets:
                     from intelligent_tailoring.services.one_page_compressor import (
                         texts_are_near_duplicates,
@@ -1368,6 +1381,38 @@ def restore_missing_content_from_source(
                         desc = ""
                 fixed_p.append({**entry, "bullets": bullets, "description": desc})
         out["projects"] = fixed_p
+
+    # Education identity lock — never keep Tel Aviv when source is Tel Hai.
+    source_edu = [
+        e for e in (resume_facts.get("education") or []) if isinstance(e, dict)
+    ]
+    if source_edu:
+        tailored_edu = [e for e in (out.get("education") or []) if isinstance(e, dict)]
+        if not tailored_edu:
+            out["education"] = [
+                {
+                    "institution": str(e.get("institution") or e.get("school") or ""),
+                    "degree": str(e.get("degree") or ""),
+                    "dates": str(e.get("dates") or e.get("date") or ""),
+                }
+                for e in source_edu
+            ]
+        else:
+            locked_edu: list[dict[str, Any]] = []
+            for idx, entry in enumerate(tailored_edu):
+                src = source_edu[idx] if idx < len(source_edu) else source_edu[0]
+                locked = dict(entry)
+                inst = str(src.get("institution") or src.get("school") or "").strip()
+                if inst:
+                    locked["institution"] = inst
+                degree = str(src.get("degree") or "").strip()
+                if degree:
+                    locked["degree"] = src.get("degree")
+                dates = str(src.get("dates") or src.get("date") or "").strip()
+                if dates:
+                    locked["dates"] = dates
+                locked_edu.append(locked)
+            out["education"] = locked_edu
 
     # Skills: if severely thin, restore display_skills / skills from facts
     skill_lines = [str(s).strip() for s in (out.get("skills") or []) if str(s).strip()]

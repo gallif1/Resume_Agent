@@ -678,6 +678,48 @@ def _normalize_parsed_resume(resume: ParsedResume) -> ParsedResume:
             e for e in projects.entries if _entry_identity(e) not in exp_ids
         ]
 
+    # Collapse near-duplicate project/experience headings (bullet text promoted
+    # to ### names, or the same project emitted twice).
+    for section in resume.sections:
+        if section.kind not in {"projects", "experience"}:
+            continue
+        kept: list[ResumeEntry] = []
+        seen_titles: list[str] = []
+        for entry in section.entries:
+            title_key = re.sub(r"\s+", " ", (entry.title or "").strip().lower())
+            if not title_key:
+                # Untitled shells with bullets still render; keep unique bullet sets.
+                kept.append(entry)
+                continue
+            if any(
+                title_key == prior
+                or title_key in prior
+                or prior in title_key
+                for prior in seen_titles
+                if prior
+            ):
+                # Merge bullets into the first matching entry.
+                for prior_entry in kept:
+                    prior_key = re.sub(
+                        r"\s+", " ", (prior_entry.title or "").strip().lower()
+                    )
+                    if (
+                        prior_key
+                        and (
+                            title_key == prior_key
+                            or title_key in prior_key
+                            or prior_key in title_key
+                        )
+                    ):
+                        prior_entry.bullets = _dedupe_entry_bullets(
+                            list(prior_entry.bullets) + list(entry.bullets)
+                        )
+                        break
+                continue
+            seen_titles.append(title_key)
+            kept.append(entry)
+        section.entries = kept
+
     # Drop empty / ghost sections (Military, Awards, empty Other, etc.).
     resume.sections = [s for s in resume.sections if _section_has_content(s)]
     return resume

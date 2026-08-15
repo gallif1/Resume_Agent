@@ -1457,6 +1457,7 @@ def run_intelligent_tailoring_agents(
 
         def _finalize_skills_and_projects(resume_obj: dict[str, Any]) -> dict[str, Any]:
             """Re-normalize skills + scrub/repair structural dupes after late passes."""
+            from intelligent_tailoring.jd_contamination import scrub_target_employer_claims
             from intelligent_tailoring.services.one_page_compressor import (
                 scrub_resume_duplicate_content,
             )
@@ -1470,7 +1471,12 @@ def run_intelligent_tailoring_agents(
             # Entry-level dedupe + marker strip + cross-contam repair first,
             # then within-entry near-dedupe. Order matters: consolidating
             # duplicate Capstone entries must happen before bullet scrub.
-            polished = validate_and_repair_resume_structure(resume_obj)
+            polished = scrub_target_employer_claims(
+                resume_obj,
+                source_text=resume_text,
+                target_company=str(job.get("company") or ""),
+            )
+            polished = validate_and_repair_resume_structure(polished)
             polished = scrub_resume_duplicate_content(polished)
             # Second structural pass catches description↔bullet collapse leftovers
             polished = validate_and_repair_resume_structure(polished)
