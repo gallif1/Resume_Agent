@@ -225,7 +225,8 @@ def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
 
     Cross-entry cloning (same achievement pasted under two projects/roles) is a
     common Agent-2/expand failure mode — drop later near-duplicates globally.
-    Also demote bullet-like project ``name`` fields that would render as fake headings.
+    Also demote bullet-like project ``name`` fields that would render as fake headings,
+    and merge whole projects that share the same normalized name.
     """
     out = deepcopy(resume)
     out["experience"] = [
@@ -258,10 +259,42 @@ def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
             if desc and texts_are_near_duplicates(desc, name):
                 entry["description"] = ""
         cleaned_projects.append(entry)
+
+    # Merge whole projects with the same normalized name (Server Monitor ×2).
+    merged_by_name: dict[str, dict[str, Any]] = {}
+    name_order: list[str] = []
+    unnamed: list[dict[str, Any]] = []
+    for entry in cleaned_projects:
+        name = str(entry.get("name") or "").strip()
+        key = _norm(name)
+        if not key:
+            unnamed.append(entry)
+            continue
+        if key not in merged_by_name:
+            merged_by_name[key] = dict(entry)
+            name_order.append(key)
+            continue
+        existing = merged_by_name[key]
+        bullets = _dedupe_similar(
+            [str(b).strip() for b in (existing.get("bullets") or []) if str(b).strip()]
+            + [str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()]
+        )
+        existing["bullets"] = bullets
+        desc = str(existing.get("description") or "").strip()
+        other_desc = str(entry.get("description") or "").strip()
+        if not desc and other_desc:
+            existing["description"] = other_desc
+        elif desc and other_desc and texts_are_near_duplicates(desc, other_desc):
+            pass
+        elif other_desc and not texts_are_near_duplicates(other_desc, desc):
+            # Prefer longer unique description; avoid stacking duplicates.
+            if len(other_desc) > len(desc):
+                existing["description"] = other_desc
+    out["projects"] = [merged_by_name[k] for k in name_order] + unnamed
     # Drop shells that have neither a real name nor content
     out["projects"] = [
         p
-        for p in cleaned_projects
+        for p in out["projects"]
         if str(p.get("name") or "").strip()
         or str(p.get("description") or "").strip()
         or any(str(b).strip() for b in (p.get("bullets") or []))
@@ -288,7 +321,12 @@ def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
             if desc and any(texts_are_near_duplicates(desc, prior) for prior in seen):
                 entry["description"] = ""
             elif desc:
-                seen.append(desc)
+                # Description that merely restates the project name is dropped.
+                name = str(entry.get("name") or "").strip()
+                if name and texts_are_near_duplicates(desc, name):
+                    entry["description"] = ""
+                else:
+                    seen.append(desc)
     return out
 
 
