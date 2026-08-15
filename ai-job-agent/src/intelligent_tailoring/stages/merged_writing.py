@@ -60,7 +60,7 @@ from intelligent_tailoring.structured_validation import (
 
 logger = logging.getLogger("intelligent_tailoring.merged_writing")
 
-MAX_INTERNAL_REPAIR_PASSES = 2
+MAX_INTERNAL_REPAIR_PASSES = 1
 
 
 def _coerce_writer_resume(resume: dict[str, Any]) -> dict[str, Any]:

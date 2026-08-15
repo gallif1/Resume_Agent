@@ -99,6 +99,10 @@ from intelligent_tailoring.component_cache import (
     set_cached_knowledge,
 )
 from intelligent_tailoring.progress import ProgressReporter
+from intelligent_tailoring.refine_gates import (
+    should_run_hm_refine,
+    should_run_post_polish_refine,
+)
 from match_tailor_service import (
     MatchTailorError,
     align_recommendation,
@@ -344,6 +348,11 @@ def run_intelligent_tailoring_agents(
             )
             job_cache_hit = True
         else:
+            progress.heartbeat(
+                "candidate_opportunity_intelligence",
+                "Extracting job requirements from the description…",
+            )
+            _t_intel = _time.perf_counter()
             bundle = run_intelligence_bundle_llm(
                 job=job,
                 resume_facts=resume_facts,
@@ -360,6 +369,9 @@ def run_intelligent_tailoring_agents(
                 use_cache=use_cache,
                 ontology=ontology,
                 jd_snapshot=jd_snapshot,
+            )
+            agent_timings_ms["candidate_opportunity_intelligence"] = int(
+                (_time.perf_counter() - _t_intel) * 1000
             )
             job_cache_hit = bool(bundle.get("_from_cache"))
             if use_cache and bundle.get("job_requirements"):
@@ -679,7 +691,8 @@ def run_intelligent_tailoring_agents(
         # Shared RejectedClaims registry — rejected claims cannot return later
         from intelligent_tailoring.rejected_claims import RejectedClaimsRegistry
 
-        rejected_claims = RejectedClaimsRegistry(max_revision_cycles=3)
+        # At most one post-write refine LLM round (HM / polish / narrative).
+        rejected_claims = RejectedClaimsRegistry(max_revision_cycles=1)
         # Seed with strategy forbidden claims that are full phrases
         for phrase in strategy.get("forbidden_claims") or []:
             text = str(phrase).strip()
@@ -702,6 +715,7 @@ def run_intelligent_tailoring_agents(
             "Building the tailored resume narrative…",
             agent_id="resume_tailoring",
         )
+        _t_tailor = _time.perf_counter()
         while True:
             try:
                 # Agent 6 — content selection (never invents facts / wording polish)
@@ -788,6 +802,9 @@ def run_intelligent_tailoring_agents(
                 "resume_tailoring",
                 "Tailored structure drafted from evidenced content.",
                 agent_id="resume_tailoring",
+            )
+            agent_timings_ms["resume_tailoring"] = int(
+                (_time.perf_counter() - _t_tailor) * 1000
             )
             progress.started(
                 "claim_validation",
@@ -1034,6 +1051,10 @@ def run_intelligent_tailoring_agents(
             "Writing and validating your resume…",
             agent_id="human_writing_credibility",
         )
+        progress.heartbeat(
+            "human_writing_credibility",
+            "Rewriting the resume for this role from verified evidence…",
+        )
         strategy_obj.legacy_strategy = strategy
         evidence_compact = json.dumps(
             [
@@ -1047,6 +1068,7 @@ def run_intelligent_tailoring_agents(
             ],
             ensure_ascii=False,
         )
+        _t_write = _time.perf_counter()
         writing_stage = run_merged_writing_review(
             validated_resume=cleaned_resume,
             strategy=strategy,
@@ -1058,7 +1080,10 @@ def run_intelligent_tailoring_agents(
             evidence_compact=evidence_compact,
             highlight_plan=strategy.get("highlight_plan"),
             evidence_inventory=strategy.get("evidence_inventory"),
-            max_repair_passes=2,
+            max_repair_passes=1,
+        )
+        agent_timings_ms["human_writing_credibility"] = int(
+            (_time.perf_counter() - _t_write) * 1000
         )
         polished = writing_stage.get("tailored_resume") or cleaned_resume
         if not writing_stage.get("facts_unchanged", True):
@@ -1193,23 +1218,30 @@ def run_intelligent_tailoring_agents(
             agent_id="hiring_manager_simulation",
         )
 
-        # Agent 4 may request at most ONE targeted Agent 3 section repair
+        # Agent 4 may request at most ONE targeted Agent 3 section repair.
+        # Keep the bar relatively strict so mediocre-but-usable drafts do not
+        # trigger an extra multi-second gpt-4o round on every generation.
         hm_dict = hiring_manager_obj.to_dict()
         quality_score = writing_stage.get("quality_score") or {}
         quality_dims = dict(quality_score.get("dimensions") or {})
-        needs_hm_refine = (
-            int(hm_dict.get("overall_fit") or 0) < 70
-            or int(quality_score.get("overall_score") or 100) < 74
-            or int(quality_dims.get("interview_probability") or 100) < 70
-            or int(quality_dims.get("twenty_second_screen") or 100) < 70
-            or bool(hm_dict.get("weakest_sections"))
-        ) and (
-            not recruiter_review_obj.approved
-            or int(hm_dict.get("overall_fit") or 0) < 75
-            or int(quality_score.get("overall_score") or 100) < 74
+        needs_hm_refine = should_run_hm_refine(
+            overall_fit=int(hm_dict.get("overall_fit") or 0),
+            overall_score=int(quality_score.get("overall_score") or 100),
+            interview_probability=int(
+                quality_dims.get("interview_probability") or 100
+            ),
+            twenty_second_screen=int(
+                quality_dims.get("twenty_second_screen") or 100
+            ),
+            weakest_sections=hm_dict.get("weakest_sections"),
+            quality_weak_sections=quality_score.get("weak_sections"),
         )
         if needs_hm_refine and rejected_claims.begin_revision("hiring_manager_review"):
-            weak_sections = list(hm_dict.get("weakest_sections") or [])[:3]
+            weak_sections = list(
+                hm_dict.get("weakest_sections")
+                or quality_score.get("weak_sections")
+                or []
+            )[:3]
             logger.info(
                 "intelligent_tailoring: Agent4→Agent3 targeted refine sections=%s",
                 weak_sections,
@@ -1243,6 +1275,7 @@ def run_intelligent_tailoring_agents(
                 writing_stage = {
                     **writing_stage,
                     "hm_refine_pass": True,
+                    "llm_refine_used": True,
                     "prior_quality_score": quality_score,
                     "targeted_retry": True,
                 }
@@ -1286,6 +1319,7 @@ def run_intelligent_tailoring_agents(
             "Preparing the final one-page resume…",
             agent_id="final_polish",
         )
+        _t_polish = _time.perf_counter()
         prior_quality_gates = dict(quality_gates or {})
         allow_multi = allow_multi_page_requested(job, cv_profile)
         cleaned_resume = weave_resume_technologies(cleaned_resume)
@@ -1660,6 +1694,10 @@ def run_intelligent_tailoring_agents(
             evaluate_resume_quality,
         )
 
+        progress.heartbeat(
+            "final_polish",
+            "Scoring the one-page draft for interview fit…",
+        )
         post_polish_quality = evaluate_resume_quality(
             cleaned_resume,
             strategy=strategy,
@@ -1674,11 +1712,16 @@ def run_intelligent_tailoring_agents(
         post_dims = dict(post_polish_quality.get("dimensions") or {})
         interview_prob = int(post_dims.get("interview_probability") or 0)
         screen_20s = int(post_dims.get("twenty_second_screen") or 0)
-        if (
-            interview_prob < 70
-            or screen_20s < 70
-            or not post_polish_quality.get("passed")
-        ) and post_polish_quality.get("weak_sections"):
+        if should_run_post_polish_refine(
+            interview_probability=interview_prob,
+            twenty_second_screen=screen_20s,
+            quality_passed=bool(post_polish_quality.get("passed")),
+            weak_sections=post_polish_quality.get("weak_sections"),
+            llm_refine_already_used=bool(
+                writing_stage.get("llm_refine_used")
+                or writing_stage.get("hm_refine_pass")
+            ),
+        ):
             progress.decision(
                 "final_polish",
                 {
@@ -1692,52 +1735,51 @@ def run_intelligent_tailoring_agents(
                     "reason": "interview_probability",
                 },
             )
-            # Only one Agent-4-driven revise is allowed; skip if HM refine already ran
-            if not writing_stage.get("hm_refine_pass"):
-                from intelligent_tailoring.services.human_resume_writer import (
-                    write_human_resume as _write_human_resume,
-                )
+            from intelligent_tailoring.services.human_resume_writer import (
+                write_human_resume as _write_human_resume,
+            )
 
-                final_refine = _write_human_resume(
-                    validated_resume=cleaned_resume,
-                    strategy=strategy,
-                    knowledge_base=kb,
-                    output_language=output_language,
-                    sections=list(post_polish_quality.get("weak_sections") or [])[:3]
-                    or None,
-                    use_cache=False,
-                    allow_llm=True,
+            final_refine = _write_human_resume(
+                validated_resume=cleaned_resume,
+                strategy=strategy,
+                knowledge_base=kb,
+                output_language=output_language,
+                sections=list(post_polish_quality.get("weak_sections") or [])[:3]
+                or None,
+                use_cache=False,
+                allow_llm=True,
+            )
+            if final_refine.get("facts_unchanged", True) and final_refine.get(
+                "tailored_resume"
+            ):
+                cleaned_resume = final_refine["tailored_resume"]
+                if not allow_multi:
+                    cleaned_resume = compress_resume_to_one_page(
+                        cleaned_resume, strategy=strategy, aggressive=False
+                    )
+                cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
+                cleaned_resume["summary"] = str(
+                    cleaned_resume.get("professional_summary")
+                    or cleaned_resume.get("summary")
+                    or ""
                 )
-                if final_refine.get("facts_unchanged", True) and final_refine.get(
-                    "tailored_resume"
-                ):
-                    cleaned_resume = final_refine["tailored_resume"]
-                    if not allow_multi:
-                        cleaned_resume = compress_resume_to_one_page(
-                            cleaned_resume, strategy=strategy, aggressive=False
-                        )
-                    cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
-                    cleaned_resume["summary"] = str(
-                        cleaned_resume.get("professional_summary")
-                        or cleaned_resume.get("summary")
-                        or ""
-                    )
-                    cleaned_resume["professional_summary"] = cleaned_resume["summary"]
-                    cleaned_resume = weave_resume_technologies(cleaned_resume)
-                    post_polish_quality = evaluate_resume_quality(
-                        cleaned_resume,
-                        strategy=strategy,
-                        highlight_plan=strategy.get("highlight_plan"),
-                        evidence_inventory=strategy.get("evidence_inventory"),
-                        recruiter_review=recruiter_review_obj.to_dict(),
-                        hiring_manager=hiring_manager_obj.to_dict(),
-                        threshold=74,
-                    )
-                    writing_stage["quality_score"] = post_polish_quality
-                    writing_stage["post_polish_refine_pass"] = True
-                    post_dims = dict(post_polish_quality.get("dimensions") or {})
-                    interview_prob = int(post_dims.get("interview_probability") or 0)
-                    screen_20s = int(post_dims.get("twenty_second_screen") or 0)
+                cleaned_resume["professional_summary"] = cleaned_resume["summary"]
+                cleaned_resume = weave_resume_technologies(cleaned_resume)
+                post_polish_quality = evaluate_resume_quality(
+                    cleaned_resume,
+                    strategy=strategy,
+                    highlight_plan=strategy.get("highlight_plan"),
+                    evidence_inventory=strategy.get("evidence_inventory"),
+                    recruiter_review=recruiter_review_obj.to_dict(),
+                    hiring_manager=hiring_manager_obj.to_dict(),
+                    threshold=74,
+                )
+                writing_stage["quality_score"] = post_polish_quality
+                writing_stage["post_polish_refine_pass"] = True
+                writing_stage["llm_refine_used"] = True
+                post_dims = dict(post_polish_quality.get("dimensions") or {})
+                interview_prob = int(post_dims.get("interview_probability") or 0)
+                screen_20s = int(post_dims.get("twenty_second_screen") or 0)
 
         # Rebuild deterministic change log against the polished wording
         deterministic_log = build_deterministic_change_log(
@@ -1840,8 +1882,12 @@ def run_intelligent_tailoring_agents(
             not narrative_test.get("passed")
             and narrative_test.get("sections_to_regenerate")
             and rejected_claims.can_revise()
+            and not writing_stage.get("llm_refine_used")
+            and not writing_stage.get("hm_refine_pass")
+            and not writing_stage.get("post_polish_refine_pass")
         ):
-            # Targeted section regen via writer — summary only when unclear
+            # Targeted section regen via writer — summary only when unclear.
+            # Skip when a refine LLM round already ran this generation.
             rejected_claims.begin_revision("professional_narrative_test")
             narrative_feedback = {
                 "sections_to_regenerate": narrative_test["sections_to_regenerate"],
@@ -1874,6 +1920,8 @@ def run_intelligent_tailoring_agents(
                     narrative_refine["tailored_resume"]
                 )
                 cleaned_resume = _finalize_skills_and_projects(cleaned_resume)
+                writing_stage["llm_refine_used"] = True
+                writing_stage["narrative_refine_pass"] = True
             # Rebuild summary again after narrative refine
             final_summary = build_professional_summary(
                 strategy=strategy,
@@ -2195,6 +2243,9 @@ def run_intelligent_tailoring_agents(
         for item in decision_log[:8]:
             # Already emitted many live; keep final log complete without spamming
             pass
+        agent_timings_ms["final_polish"] = int(
+            (_time.perf_counter() - _t_polish) * 1000
+        )
         progress.completed(
             "final_polish",
             "Final resume ready — optimized for interview probability.",
@@ -2265,6 +2316,10 @@ def run_intelligent_tailoring_agents(
                 "ats_validation": writing_stage.get("ats_validation"),
                 "quality_score": writing_stage.get("quality_score"),
                 "hm_refine_pass": bool(writing_stage.get("hm_refine_pass")),
+                "llm_refine_used": bool(writing_stage.get("llm_refine_used")),
+                "post_polish_refine_pass": bool(
+                    writing_stage.get("post_polish_refine_pass")
+                ),
                 "quality_gate_failures": writing_stage.get("quality_gate_failures")
                 or [],
             },
