@@ -335,14 +335,13 @@ def test_tailor_cv_for_job_serves_a_current_draft_without_calling_the_model(
     assert second["estimated_ats_score"] == first["score_after"]
     report = second["generation_report"]
     assert report["from_cache"] is True
-    assert report["agents_completed"] == 4
-    assert report["agents_total"] == 4
+    assert report["agents_completed"] == 1
+    assert report["agents_total"] == 1
     assert report["generation_time_seconds"] is None
     completed_stages = {
         event["stage"] for event in stages if event.get("status") == "completed"
     }
-    assert "candidate_opportunity_intelligence" in completed_stages
-    assert "final_hiring_ats_page" in completed_stages
+    assert "smart_resume_agent" in completed_stages
 
 
 def test_replaying_a_saved_draft_keeps_changes_and_score_notes_apart(cv_env, engine):

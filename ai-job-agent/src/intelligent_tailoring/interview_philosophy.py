@@ -73,96 +73,59 @@ If not YES, regenerate weak sections using better emphasis of real facts — nev
 Never invent facts. Stay profession-agnostic.
 """.strip()
 
-# Live UI stage catalog — four merged agents (legacy 11-agent ids map into these).
+# Live UI stage catalog — one smart GPT-5 agent (legacy ids map into this).
 TAILOR_STAGES: list[dict[str, str]] = [
     {
-        "id": "candidate_opportunity_intelligence",
-        "agent_id": "candidate_opportunity_intelligence",
-        "label_en": "Analyzing your experience and the opportunity",
-        "label_he": "מנתח את הניסיון שלך ואת ההזדמנות",
-        "message_en": "Reading candidate profile, job, company, and evidence…",
-        "message_he": "קורא פרופיל מועמד, משרה, חברה וראיות…",
-    },
-    {
-        "id": "strategy_content_selection",
-        "agent_id": "strategy_content_selection",
-        "label_en": "Building the best resume strategy",
-        "label_he": "בונה את אסטרטגיית קורות החיים",
-        "message_en": "Selecting evidence and structuring the one-page narrative…",
-        "message_he": "בוחר ראיות ובונה נרטיב בעמוד אחד…",
-    },
-    {
-        "id": "human_writing_credibility",
-        "agent_id": "human_writing_credibility",
-        "label_en": "Writing and validating your resume",
-        "label_he": "כותב ומאמת את קורות החיים",
-        "message_en": "Validating claims and writing natural recruiter-ready prose…",
-        "message_he": "מאמת טענות ומנסח ניסוח טבעי למגייסים…",
-    },
-    {
-        "id": "final_hiring_ats_page",
-        "agent_id": "final_hiring_ats_page",
-        "label_en": "Final recruiter, ATS, and one-page review",
-        "label_he": "ביקורת סופית — מגייס, ATS ועמוד אחד",
-        "message_en": "Hiring-manager fit, ATS alignment, and one-page enforcement…",
-        "message_he": "בודק התאמה, ATS ועמוד אחד…",
+        "id": "smart_resume_agent",
+        "agent_id": "smart_resume_agent",
+        "label_en": "Crafting your tailored resume",
+        "label_he": "בונה את קורות החיים המותאמים",
+        "message_en": "Analyzing evidence and writing a recruiter-ready one-page resume…",
+        "message_he": "מנתח ראיות וכותב קורות חיים מוכנים למגייסים בעמוד אחד…",
     },
 ]
 
 STAGE_INDEX = {s["id"]: i for i, s in enumerate(TAILOR_STAGES)}
 
-# Legacy specialist / tool stage ids → merged UI stage
+# Legacy specialist / prior merged stage ids → single UI agent
 LEGACY_STAGE_TO_MERGED: dict[str, str] = {
-    "resume_knowledge": "candidate_opportunity_intelligence",
-    "job_intelligence": "candidate_opportunity_intelligence",
-    "company_intelligence": "candidate_opportunity_intelligence",
-    "evidence_mapping": "candidate_opportunity_intelligence",
-    "resume_strategy": "strategy_content_selection",
-    "resume_tailoring": "strategy_content_selection",
-    "claim_validation": "human_writing_credibility",
-    "human_writer": "human_writing_credibility",
-    "human_resume_writer": "human_writing_credibility",
-    "senior_recruiter": "human_writing_credibility",
-    "senior_recruiter_review": "human_writing_credibility",
-    "hiring_manager": "final_hiring_ats_page",
-    "hiring_manager_simulation": "final_hiring_ats_page",
-    "final_polish": "final_hiring_ats_page",
-    "final_quality": "final_hiring_ats_page",
-    "ats_scoring": "final_hiring_ats_page",
-    "one_page_enforcement": "final_hiring_ats_page",
-    # Also accept already-merged ids
-    "candidate_opportunity_intelligence": "candidate_opportunity_intelligence",
-    "strategy_content_selection": "strategy_content_selection",
-    "human_writing_credibility": "human_writing_credibility",
-    "final_hiring_ats_page": "final_hiring_ats_page",
+    "resume_knowledge": "smart_resume_agent",
+    "job_intelligence": "smart_resume_agent",
+    "company_intelligence": "smart_resume_agent",
+    "evidence_mapping": "smart_resume_agent",
+    "resume_strategy": "smart_resume_agent",
+    "resume_tailoring": "smart_resume_agent",
+    "claim_validation": "smart_resume_agent",
+    "human_writer": "smart_resume_agent",
+    "human_resume_writer": "smart_resume_agent",
+    "senior_recruiter": "smart_resume_agent",
+    "senior_recruiter_review": "smart_resume_agent",
+    "hiring_manager": "smart_resume_agent",
+    "hiring_manager_simulation": "smart_resume_agent",
+    "final_polish": "smart_resume_agent",
+    "final_quality": "smart_resume_agent",
+    "ats_scoring": "smart_resume_agent",
+    "one_page_enforcement": "smart_resume_agent",
+    # Prior four-agent ids
+    "candidate_opportunity_intelligence": "smart_resume_agent",
+    "strategy_content_selection": "smart_resume_agent",
+    "human_writing_credibility": "smart_resume_agent",
+    "final_hiring_ats_page": "smart_resume_agent",
+    "smart_resume_agent": "smart_resume_agent",
 }
 
 STAGE_SUBSTEPS: dict[str, tuple[str, ...]] = {
-    "candidate_opportunity_intelligence": (
-        "Reading candidate profile",
-        "Analyzing job requirements",
-        "Reviewing company context",
-        "Mapping evidence",
-    ),
-    "strategy_content_selection": (
-        "Selecting strongest evidence",
-        "Building tailored structure",
-    ),
-    "human_writing_credibility": (
-        "Validating claims",
-        "Writing natural prose",
-        "Recruiter credibility review",
-    ),
-    "final_hiring_ats_page": (
-        "Hiring manager simulation",
-        "ATS scoring",
-        "One-page enforcement",
+    "smart_resume_agent": (
+        "Reading candidate profile and job",
+        "Mapping evidence and strategy",
+        "Writing and validating the resume",
+        "Final ATS and one-page review",
     ),
 }
 
 
 def resolve_merged_stage(stage: str | None) -> str:
-    """Map any legacy or merged stage id to one of the four UI stages."""
+    """Map any legacy or merged stage id to the single UI agent."""
     if not stage:
         return TAILOR_STAGES[0]["id"]
     return LEGACY_STAGE_TO_MERGED.get(stage, stage)

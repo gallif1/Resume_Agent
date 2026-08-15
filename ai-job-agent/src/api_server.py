@@ -1824,8 +1824,8 @@ def tailor_cv_endpoint(
     if result.get("from_cache") or gen_report.get("from_cache"):
         gen_report["from_cache"] = True
         gen_report.setdefault("status", "cached")
-        gen_report.setdefault("agents_total", 4)
-        gen_report.setdefault("agents_completed", 4)
+        gen_report.setdefault("agents_total", 1)
+        gen_report.setdefault("agents_completed", 1)
         gen_report.setdefault("overall_progress", 100)
         gen_report["generation_time_seconds"] = None
     else:

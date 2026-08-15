@@ -174,8 +174,8 @@ LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD", "")
 # OpenAI — smart CV analysis (falls back to rule-based parsing if unset)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-# Resume tailoring uses GPT-4o by default for richer, human-grade phrasing.
-OPENAI_TAILOR_MODEL = os.getenv("OPENAI_TAILOR_MODEL", "gpt-4o").strip() or "gpt-4o"
+# Single smart resume agent uses GPT-5 by default for deeper one-shot quality.
+OPENAI_TAILOR_MODEL = os.getenv("OPENAI_TAILOR_MODEL", "gpt-5").strip() or "gpt-5"
 OPENAI_CV_MAX_CHARS = int(os.getenv("OPENAI_CV_MAX_CHARS", "24000"))
 OPENAI_CV_SUMMARY_MAX_CHARS = int(os.getenv("OPENAI_CV_SUMMARY_MAX_CHARS", "3500"))
 OPENAI_JOB_MAX_CHARS = int(os.getenv("OPENAI_JOB_MAX_CHARS", "4000"))

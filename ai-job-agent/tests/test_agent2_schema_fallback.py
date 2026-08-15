@@ -1,4 +1,4 @@
-"""Regression: Agent 2 must not hard-fail when the model omits tailored_resume."""
+"""Regression: smart agent must not hard-fail when the model omits tailored_resume."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ import pytest
 from intelligent_tailoring.prompts.merged_prompts import (
     AGENT_2_SYSTEM,
     MERGED_AGENT_2_PROMPT_VERSION,
+    SMART_AGENT_PROMPT_VERSION,
+    SMART_AGENT_SYSTEM,
     merged_prompt_contains_legacy_rules,
 )
 from intelligent_tailoring.schemas import SchemaValidationError
@@ -16,17 +18,17 @@ from intelligent_tailoring.services.resume_rewriter import rewrite_resume_with_s
 from intelligent_tailoring.structured_validation import ValidationReport
 
 
-def test_agent2_prompt_forbids_triage_only_payload():
-    assert "tailored_resume" in AGENT_2_SYSTEM
-    assert "Do NOT return a triage" in AGENT_2_SYSTEM or "do not emit triage" in AGENT_2_SYSTEM.lower()
-    # Competing triage JSON schema must not remain as an allowed final output
-    assert '"triage":' not in AGENT_2_SYSTEM
-    assert MERGED_AGENT_2_PROMPT_VERSION.startswith("merged_strategy_v")
+def test_smart_agent_prompt_forbids_triage_only_payload():
+    assert "tailored_resume" in SMART_AGENT_SYSTEM
+    assert "Do NOT return a triage" in SMART_AGENT_SYSTEM or "do not emit triage" in SMART_AGENT_SYSTEM.lower()
+    assert '"triage":' not in SMART_AGENT_SYSTEM
+    assert SMART_AGENT_PROMPT_VERSION.startswith("smart_resume")
     assert merged_prompt_contains_legacy_rules()["content_triage"]
     assert merged_prompt_contains_legacy_rules()["deep_tailor"]
-    # Structured / preservation contract
+    assert merged_prompt_contains_legacy_rules()["smart_agent_present"]
+    # Legacy Agent 2 prompt still available for fallback
     assert "100% CONTENT RULE" in AGENT_2_SYSTEM
-    assert "stable" in AGENT_2_SYSTEM.lower()
+    assert MERGED_AGENT_2_PROMPT_VERSION.startswith("merged_strategy_v")
     assert "WEAK-MATCH FULLNESS" in AGENT_2_SYSTEM
 
 
@@ -37,7 +39,8 @@ def test_rewrite_falls_back_when_composed_returns_triage_only():
         calls.append(kwargs.get("cache_namespace") or "")
         validate = kwargs.get("validate")
         content_validate = kwargs.get("content_validate")
-        if "merged_strategy" in (kwargs.get("cache_namespace") or ""):
+        ns = kwargs.get("cache_namespace") or ""
+        if "smart_resume" in ns or "merged_strategy" in ns:
             # Simulate the production failure: triage-shaped response
             payload = {"triage": [], "section_order": ["skills"]}
             if validate:
@@ -102,8 +105,8 @@ def test_rewrite_falls_back_when_composed_returns_triage_only():
 
     assert "tailored_resume" in result
     assert result["tailored_resume"]["professional_summary"]
-    assert any("merged_strategy" in c for c in calls)
-    assert any("fallback" in c for c in calls)
+    assert any("smart_resume" in c for c in calls)
+    assert any("fallback" in c or "deep_rewrite" in c for c in calls)
 
 
 def test_rewrite_uses_rebuilt_when_all_llm_schemas_fail():

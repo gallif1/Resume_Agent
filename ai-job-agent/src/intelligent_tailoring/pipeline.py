@@ -1,21 +1,14 @@
-"""Intelligent Resume Tailoring — four merged LLM-agent pipeline.
+"""Intelligent Resume Tailoring — single smart GPT-5 agent pipeline.
 
 Universal, profession-agnostic evidence-based flow:
 
-Merged Agent 1 — Candidate & Opportunity Intelligence
-  (Resume Knowledge + Job Intelligence + Company Intelligence + Evidence Mapping)
+Smart Resume Agent (one primary LLM call)
+  Deterministic prep: Resume Knowledge, Job/Company/Evidence, Strategy
+  GPT-5 call: content selection + human writing + recruiter self-review
+  Deterministic post: Claim Validation, Hiring Manager, ATS, One-page
 
-Merged Agent 2 — Strategy & Content Selection
-  (Resume Strategy + Resume Tailoring; triage rules composed into the rewrite)
-
-Merged Agent 3 — Human Writing & Credibility Review
-  (Claim Validation + Human Resume Writer + Senior Recruiter Review)
-
-Merged Agent 4 — Final Hiring, ATS & One-Page Review
-  (Hiring Manager Simulation + Final Quality + ATS + One-page enforcement)
-
-Legacy specialist modules remain as internal helpers. Maximum four primary
-LLM calls under normal conditions. Deterministic work stays in code.
+Legacy specialist modules remain as internal helpers. Typical primary LLM
+budget: 1 call. Deterministic work stays in code.
 """
 
 from __future__ import annotations
@@ -169,7 +162,7 @@ def run_intelligent_tailoring_agents(
     regenerate_section: str | None = None,
     progress_callback: Any | None = None,
 ) -> dict[str, Any]:
-    """Production four-agent implementation."""
+    """Production single smart-agent implementation."""
     import time as _time
 
     progress = ProgressReporter(progress_callback)
@@ -369,6 +362,9 @@ def run_intelligent_tailoring_agents(
                 use_cache=use_cache,
                 ontology=ontology,
                 jd_snapshot=jd_snapshot,
+                # Single smart agent: prep is deterministic; GPT-5 rewrite
+                # carries deep job/evidence understanding in one call.
+                allow_llm=False,
             )
             agent_timings_ms["candidate_opportunity_intelligence"] = int(
                 (_time.perf_counter() - _t_intel) * 1000
@@ -1040,20 +1036,20 @@ def run_intelligent_tailoring_agents(
             )
         )
 
-        # ---- Merged Agent 3: Human Writing & Credibility Review ----
+        # ---- Smart agent already wrote polished prose; deterministic polish only ----
         progress.completed(
             "claim_validation",
             "Claim validation complete — only evidenced statements remain.",
             agent_id="claim_validation",
         )
         progress.started(
-            "human_writing_credibility",
-            "Writing and validating your resume…",
-            agent_id="human_writing_credibility",
+            "smart_resume_agent",
+            "Applying final polish and credibility checks…",
+            agent_id="smart_resume_agent",
         )
         progress.heartbeat(
-            "human_writing_credibility",
-            "Rewriting the resume for this role from verified evidence…",
+            "smart_resume_agent",
+            "Locking facts and applying deterministic polish…",
         )
         strategy_obj.legacy_strategy = strategy
         evidence_compact = json.dumps(
@@ -1069,22 +1065,31 @@ def run_intelligent_tailoring_agents(
             ensure_ascii=False,
         )
         _t_write = _time.perf_counter()
+        # Writing LLM folded into the single smart-agent rewrite above.
         writing_stage = run_merged_writing_review(
             validated_resume=cleaned_resume,
             strategy=strategy,
             knowledge_base=kb,
             output_language=output_language,
             use_cache=use_cache,
-            allow_llm=True,
+            allow_llm=False,
             rejected_claims=list(validation.get("rejected_statements") or []),
             evidence_compact=evidence_compact,
             highlight_plan=strategy.get("highlight_plan"),
             evidence_inventory=strategy.get("evidence_inventory"),
-            max_repair_passes=1,
+            max_repair_passes=0,
         )
-        agent_timings_ms["human_writing_credibility"] = int(
+        # Prefer recruiter self-review produced by the smart agent when present.
+        smart_recruiter = (
+            generated.get("recruiter_review")
+            if isinstance(generated.get("recruiter_review"), dict)
+            else {}
+        )
+        if smart_recruiter and not writing_stage.get("recruiter_review"):
+            writing_stage = {**writing_stage, "recruiter_review": smart_recruiter}
+        agent_timings_ms["smart_resume_agent"] = int(
             (_time.perf_counter() - _t_write) * 1000
-        )
+        ) + int(agent_timings_ms.get("resume_tailoring") or 0)
         polished = writing_stage.get("tailored_resume") or cleaned_resume
         if not writing_stage.get("facts_unchanged", True):
             logger.warning(
@@ -1164,23 +1169,24 @@ def run_intelligent_tailoring_agents(
         recruiter_dict = recruiter_review_obj.to_dict()
         agent_trace.append(
             {
-                "agent_id": "human_writing_credibility",
+                "agent_id": "smart_resume_agent",
                 "metrics": {
                     "mode": writing_stage.get("mode"),
                     "repair_passes": writing_stage.get("repair_passes"),
                     "primary_llm_calls": writing_stage.get("primary_llm_calls"),
+                    "smart_recruiter": bool(smart_recruiter),
                 },
             }
         )
         progress.completed(
-            "human_writing_credibility",
+            "smart_resume_agent",
             (
                 "Writing validated — recruiter would interview."
                 if getattr(recruiter_review_obj, "would_interview", False)
                 or getattr(recruiter_review_obj, "approved", False)
                 else "Writing complete — review mode flags remain."
             ),
-            agent_id="human_writing_credibility",
+            agent_id="smart_resume_agent",
         )
 
         progress.started(
@@ -1258,7 +1264,8 @@ def run_intelligent_tailoring_agents(
                 hiring_manager_feedback=hm_dict,
                 sections=weak_sections or None,
                 use_cache=False,
-                allow_llm=True,
+                # Single smart agent: no second LLM round — deterministic only.
+                allow_llm=False,
             )
             if refine_stage.get("facts_unchanged", True) and refine_stage.get(
                 "tailored_resume"
@@ -1753,7 +1760,7 @@ def run_intelligent_tailoring_agents(
                 sections=list(post_polish_quality.get("weak_sections") or [])[:3]
                 or None,
                 use_cache=False,
-                allow_llm=True,
+                allow_llm=False,
             )
             if final_refine.get("facts_unchanged", True) and final_refine.get(
                 "tailored_resume"
@@ -1917,7 +1924,7 @@ def run_intelligent_tailoring_agents(
                 sections=list(narrative_test.get("sections_to_regenerate") or [])[:2]
                 or None,
                 use_cache=False,
-                allow_llm=True,
+                allow_llm=False,
             )
             if narrative_refine.get("facts_unchanged", True) and narrative_refine.get(
                 "tailored_resume"
@@ -2346,7 +2353,7 @@ def run_intelligent_tailoring_agents(
             "claim_decisions": validation.get("decisions") or [],
             "agent_trace": agent_trace,
             "agent_timings_ms": agent_timings_ms,
-            "architecture": "four_agent_v2_0",
+            "architecture": "single_agent_v1_0",
             "one_page": one_page_meta,
             "decision_log": decision_log,
             "top_interview_reasons": list(
@@ -2397,7 +2404,7 @@ def run_intelligent_tailoring_agents(
         result_payload["claim_decisions"] = validation.get("decisions") or []
         result_payload["agent_trace"] = agent_trace
         result_payload["agent_timings_ms"] = agent_timings_ms
-        result_payload["architecture"] = "four_agent_v2_0"
+        result_payload["architecture"] = "single_agent_v1_0"
         result_payload["one_page"] = one_page_meta
         result_payload["decision_log"] = decision_log
         result_payload["top_interview_reasons"] = list(
@@ -2419,7 +2426,7 @@ def run_intelligent_tailoring_agents(
             "merged_agents": 4,
             "knowledge_cache_hit": knowledge_cache_hit,
             "job_cache_hit": bool(locals().get("job_cache_hit")),
-            "primary_llm_call_cap": 4,
+            "primary_llm_call_cap": 1,
         }
         result_payload["quality_gates"] = classify_quality_gates(
             result_payload.get("quality_gates") or quality_gates

@@ -1,4 +1,4 @@
-"""Progress emission helpers for the live four-agent generation UI."""
+"""Progress emission helpers for the live single-agent generation UI."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ ProgressCallback = Callable[[dict[str, Any]], None] | None
 class ProgressReporter:
     """Thin wrapper that safely emits stage/decision events.
 
-    Legacy specialist agent ids are remapped to the four merged UI stages so
+    Legacy specialist / four-agent ids are remapped to the single UI agent so
     callers can keep emitting fine-grained internal substeps.
     """
 

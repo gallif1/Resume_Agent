@@ -22,7 +22,7 @@ CONTENT_VALIDATION_RETRY_NOTE = (
     "dicts/lists inside string fields."
 )
 
-# Per-generation primary LLM call accounting (four-agent pipeline).
+# Per-generation primary LLM call accounting (single smart-agent pipeline).
 _primary_calls: ContextVar[list[str] | None] = ContextVar(
     "intelligent_tailoring_primary_llm_calls", default=None
 )

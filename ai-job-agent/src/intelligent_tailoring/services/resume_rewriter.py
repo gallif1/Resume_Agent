@@ -13,6 +13,9 @@ from intelligent_tailoring.llm_utils import (
 from intelligent_tailoring.prompts.merged_prompts import (
     AGENT_2_SYSTEM,
     MERGED_AGENT_2_PROMPT_VERSION,
+    SMART_AGENT_PROMPT_VERSION,
+    SMART_AGENT_SYSTEM,
+    build_smart_agent_user_prompt,
 )
 from intelligent_tailoring.prompts.stage_prompts import (
     DEEP_TAILOR_REWRITE_SYSTEM,
@@ -220,11 +223,11 @@ def rewrite_resume_with_strategy(
     use_cache: bool = True,
     regeneration_attempt: int = 0,
 ) -> dict[str, Any]:
-    """Rewrite summary, bullets, and project descriptions per tailoring strategy.
+    """Single smart-agent rewrite: structure + polished prose + recruiter self-review.
 
-    Uses the composed Agent 2 prompt (strategy + triage rules + deep tailor).
-    Falls back to the legacy deep-tailor prompt, then to rebuilt structure,
-    so preview generation cannot hard-fail on a missing tailored_resume key.
+    Uses the composed Smart Resume Agent prompt (former Agents 2+3). Falls back
+    to the legacy Agent-2 / deep-tailor prompts, then to rebuilt structure, so
+    preview generation cannot hard-fail on a missing tailored_resume key.
     """
     source_facts = assign_stable_ids(resume_facts)
     # Carry JD snapshot for contamination checks / repair (not for LLM claims).
@@ -252,20 +255,21 @@ def rewrite_resume_with_strategy(
     )
 
     strategy_for_prompt = sanitize_strategy_for_writer(strategy or {})
-    user_prompt = build_deep_tailor_rewrite_user_prompt(
-        resume_facts=resume_facts_for_prompt(source_facts),
-        rebuilt_resume_json=json.dumps(rebuilt_resume, ensure_ascii=False, indent=2),
+    evidence_compact = json.dumps(evidence_map, ensure_ascii=False, indent=2)
+    user_prompt = build_smart_agent_user_prompt(
+        language=language,
         strategy_json=json.dumps(strategy_for_prompt, ensure_ascii=False, indent=2),
-        scores_json=json.dumps(scores, ensure_ascii=False, indent=2),
+        rebuilt_resume_json=json.dumps(rebuilt_resume, ensure_ascii=False, indent=2),
         ranked_requirements_json=json.dumps(
             ranked_requirements, ensure_ascii=False, indent=2
         ),
+        evidence_map_compact=evidence_compact[:8000],
+        resume_facts_compact=resume_facts_for_prompt(source_facts),
+        scores_json=json.dumps(scores, ensure_ascii=False, indent=2),
         inferred_json=json.dumps(
             [i.to_dict() for i in inferred], ensure_ascii=False, indent=2
         ),
         triage_json=json.dumps(triage, ensure_ascii=False, indent=2),
-        evidence_map_json=json.dumps(evidence_map, ensure_ascii=False, indent=2),
-        language=language,
         regeneration_attempt=regeneration_attempt,
     )
     cache_payload = (
@@ -281,45 +285,102 @@ def rewrite_resume_with_strategy(
     raw: dict[str, Any] | None = None
     try:
         raw = call_stage_json_with_content_validation(
-            system_prompt=AGENT_2_SYSTEM,
+            system_prompt=SMART_AGENT_SYSTEM,
             user_prompt=user_prompt,
             validate=_validate,
             content_validate=_validate_content,
             use_cache=use_cache and regeneration_attempt == 0,
-            cache_namespace=f"{MERGED_AGENT_2_PROMPT_VERSION}_strategy_content",
+            cache_namespace=f"{SMART_AGENT_PROMPT_VERSION}_smart_resume",
             cache_payload=cache_payload,
-            temperature=0.25 if regeneration_attempt else 0.2,
-            count_as_primary="strategy_content_selection",
+            temperature=0.3 if regeneration_attempt else 0.25,
+            count_as_primary="smart_resume_agent",
             max_content_retries=1,
         )
     except SchemaValidationError as composed_error:
         logger.warning(
-            "merged Agent 2 schema failed (%s) — falling back to deep-tailor prompt",
+            "smart agent schema failed (%s) — falling back to Agent-2 prompt",
             composed_error,
         )
         try:
             raw = call_stage_json_with_content_validation(
-                system_prompt=DEEP_TAILOR_REWRITE_SYSTEM,
-                user_prompt=user_prompt,
+                system_prompt=AGENT_2_SYSTEM,
+                user_prompt=build_deep_tailor_rewrite_user_prompt(
+                    resume_facts=resume_facts_for_prompt(source_facts),
+                    rebuilt_resume_json=json.dumps(
+                        rebuilt_resume, ensure_ascii=False, indent=2
+                    ),
+                    strategy_json=json.dumps(
+                        strategy_for_prompt, ensure_ascii=False, indent=2
+                    ),
+                    scores_json=json.dumps(scores, ensure_ascii=False, indent=2),
+                    ranked_requirements_json=json.dumps(
+                        ranked_requirements, ensure_ascii=False, indent=2
+                    ),
+                    inferred_json=json.dumps(
+                        [i.to_dict() for i in inferred], ensure_ascii=False, indent=2
+                    ),
+                    triage_json=json.dumps(triage, ensure_ascii=False, indent=2),
+                    evidence_map_json=evidence_compact,
+                    language=language,
+                    regeneration_attempt=regeneration_attempt,
+                ),
                 validate=_validate,
                 content_validate=_validate_content,
                 use_cache=False,
-                cache_namespace=f"{PIPELINE_VERSION}_deep_rewrite_fallback",
+                cache_namespace=f"{MERGED_AGENT_2_PROMPT_VERSION}_strategy_content",
                 cache_payload=f"fallback|{cache_payload}",
                 temperature=0.2,
-                # Already counted the composed primary call; do not double-count
+                # Already counted the smart primary call; do not double-count
                 max_content_retries=1,
             )
         except SchemaValidationError as fallback_error:
             logger.warning(
-                "deep-tailor fallback also failed (%s) — using rebuilt resume",
+                "Agent-2 fallback also failed (%s) — trying deep-tailor, then rebuilt",
                 fallback_error,
             )
-            return _fallback_from_rebuilt(
-                rebuilt_resume=rebuilt_resume,
-                resume_facts=source_facts,
-                strategy=strategy,
-            )
+            try:
+                raw = call_stage_json_with_content_validation(
+                    system_prompt=DEEP_TAILOR_REWRITE_SYSTEM,
+                    user_prompt=build_deep_tailor_rewrite_user_prompt(
+                        resume_facts=resume_facts_for_prompt(source_facts),
+                        rebuilt_resume_json=json.dumps(
+                            rebuilt_resume, ensure_ascii=False, indent=2
+                        ),
+                        strategy_json=json.dumps(
+                            strategy_for_prompt, ensure_ascii=False, indent=2
+                        ),
+                        scores_json=json.dumps(scores, ensure_ascii=False, indent=2),
+                        ranked_requirements_json=json.dumps(
+                            ranked_requirements, ensure_ascii=False, indent=2
+                        ),
+                        inferred_json=json.dumps(
+                            [i.to_dict() for i in inferred],
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        triage_json=json.dumps(triage, ensure_ascii=False, indent=2),
+                        evidence_map_json=evidence_compact,
+                        language=language,
+                        regeneration_attempt=regeneration_attempt,
+                    ),
+                    validate=_validate,
+                    content_validate=_validate_content,
+                    use_cache=False,
+                    cache_namespace=f"{PIPELINE_VERSION}_deep_rewrite_fallback",
+                    cache_payload=f"fallback2|{cache_payload}",
+                    temperature=0.2,
+                    max_content_retries=1,
+                )
+            except SchemaValidationError as deep_error:
+                logger.warning(
+                    "deep-tailor fallback also failed (%s) — using rebuilt resume",
+                    deep_error,
+                )
+                return _fallback_from_rebuilt(
+                    rebuilt_resume=rebuilt_resume,
+                    resume_facts=source_facts,
+                    strategy=strategy,
+                )
 
     assert raw is not None
     resume = validate_tailored_resume(raw["tailored_resume"])
@@ -349,6 +410,7 @@ def rewrite_resume_with_strategy(
         job_family=str(strategy.get("job_family") or ""),
         category_order=list(strategy.get("skill_category_order") or []),
     )
+
     if rebuilt_resume.get("experience"):
         # Merge: keep LLM bullet text but enforce score-based order per role
         _merge_experience_order(resume_dict, rebuilt_resume)
@@ -367,7 +429,7 @@ def rewrite_resume_with_strategy(
     )
     if not post_report.passed:
         logger.warning(
-            "Agent 2 post-merge validation failed (%s) — applying deterministic repair",
+            "smart agent post-merge validation failed (%s) — applying deterministic repair",
             post_report.error_codes(),
         )
         resume_dict = repair_structured_resume(resume_dict, source_facts=source_facts)
@@ -426,9 +488,19 @@ def rewrite_resume_with_strategy(
             for x in (raw.get("ats_keywords_added") or [])
             if str(x).strip()
         ],
+        "recruiter_review": (
+            raw.get("recruiter_review")
+            if isinstance(raw.get("recruiter_review"), dict)
+            else {}
+        ),
+        "rejected_claims": [
+            str(x).strip() for x in (raw.get("rejected_claims") or []) if str(x).strip()
+        ],
+        "validation_warnings": list(raw.get("validation_warnings") or []),
         "_from_cache": bool(raw.get("_from_cache")),
         "_content_validation": raw.get("_content_validation"),
         "_structured_validation": post_report.to_dict(),
+        "_smart_agent": True,
     }
 
 

@@ -1,25 +1,30 @@
-# Four-Agent Resume Pipeline
+# Single-Agent Resume Pipeline
 
 ## Architecture
 
-Eleven sequential specialist stages are merged into **four primary LLM agents**.
-Legacy specialist modules remain as internal helpers, validators, and schema
-builders — they no longer each require a separate sequential LLM call.
+Eleven sequential specialist stages (and the prior four merged LLM agents) are
+now driven by **one primary GPT-5 smart agent**. Legacy specialist modules
+remain as internal helpers, validators, and schema builders — they no longer
+each require a separate sequential LLM call.
 
-| Merged agent | Legacy specialists | Primary LLM calls |
+| Phase | Work | Primary LLM calls |
 |---|---|---|
-| 1. Candidate & Opportunity Intelligence | Resume Knowledge, Job Intelligence, Company Intelligence, Evidence Mapping | **1** (job + inference). Knowledge + company are deterministic / cached. |
-| 2. Strategy & Content Selection | Resume Strategy, Resume Tailoring (+ triage rules) | **1** (composed deep-tailor rewrite). Strategy + triage are deterministic. |
-| 3. Human Writing & Credibility Review | Claim Validation, Human Writer, Senior Recruiter | **1** (composed write+review). Claim validation deterministic. ≤2 repair passes. |
-| 4. Final Hiring, ATS & One-Page | Hiring Manager, Final Quality, ATS, One-page | **0** (deterministic). ≤1 targeted Agent-3 section retry. |
+| Deterministic prep | Resume Knowledge, Job/Company/Evidence (ontology), Strategy, Triage | **0** |
+| Smart Resume Agent | Content selection + polished writing + recruiter self-review | **1** (GPT-5) |
+| Deterministic post | Claim Validation, Hiring Manager, ATS, One-page | **0** (optional ≤1 targeted repair) |
 
-**Normal generation budget: ≤ 4 primary LLM calls (typically 3).**
+**Normal generation budget: 1 primary LLM call.**
+
+## Model
+
+Default tailor model: `OPENAI_TAILOR_MODEL=gpt-5` (see `config.py`).
 
 ## Prompt composition
 
-Merged prompts live in `intelligent_tailoring/prompts/merged_prompts.py`.
-Each loads the existing stage/agent instructions under labeled responsibility
-blocks. Unique rules are preserved; only duplicated framing is removed.
+The smart-agent prompt lives in `intelligent_tailoring/prompts/merged_prompts.py`
+as `SMART_AGENT_SYSTEM`. It loads prior Agent 2 + Agent 3 responsibility blocks
+under labeled sections. Unique rules are preserved; only duplicated framing is
+removed.
 
 ## Caching
 

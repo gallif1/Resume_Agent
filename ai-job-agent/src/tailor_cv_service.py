@@ -1169,10 +1169,7 @@ def _emit_cached_draft_progress(progress_callback: Any | None) -> None:
         from intelligent_tailoring.interview_philosophy import TAILOR_STAGES
     except Exception:  # noqa: BLE001
         TAILOR_STAGES = [
-            {"id": "candidate_opportunity_intelligence"},
-            {"id": "strategy_content_selection"},
-            {"id": "human_writing_credibility"},
-            {"id": "final_hiring_ats_page"},
+            {"id": "smart_resume_agent"},
         ]
     total = len(TAILOR_STAGES)
     for index, stage in enumerate(TAILOR_STAGES):
@@ -1199,8 +1196,8 @@ def _generation_report_for_cached_draft(result: dict[str, Any]) -> dict[str, Any
         report["resume_revisions"] = len(change_log)
     report["from_cache"] = True
     report.setdefault("status", "cached")
-    report.setdefault("agents_total", 4)
-    report.setdefault("agents_completed", 4)
+    report.setdefault("agents_total", 1)
+    report.setdefault("agents_completed", 1)
     report.setdefault("overall_progress", 100)
     # Instant cache loads must not show "0 seconds" as if generation ran.
     report["generation_time_seconds"] = None

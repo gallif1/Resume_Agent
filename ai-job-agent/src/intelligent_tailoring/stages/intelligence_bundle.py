@@ -419,8 +419,14 @@ def run_intelligence_bundle_llm(
     use_cache: bool = True,
     ontology: SkillOntology | None = None,
     jd_snapshot: str | None = None,
+    allow_llm: bool = True,
 ) -> dict[str, Any]:
-    """One primary LLM call returning job requirements + inferred competencies."""
+    """Job requirements + inferred competencies.
+
+    When ``allow_llm`` is False (single smart-agent mode), uses the deterministic
+    JD/ontology path only — the GPT-5 smart agent handles deep understanding
+    during the rewrite call.
+    """
     ontology = ontology or get_ontology()
     job_profile = parse_stored_job_profile(job.get("job_profile"))
     jd_text = jd_snapshot or build_job_payload(job, job_profile)
@@ -432,9 +438,18 @@ def run_intelligence_bundle_llm(
     if len(jd_text.strip()) < 40:
         return _empty_sparse_bundle(jd_text=jd_text, language=language)
 
+    if not allow_llm:
+        return _deterministic_intelligence_bundle(
+            jd_text=jd_text,
+            resume_text=resume_text,
+            language=language,
+            ontology=ontology,
+            reason="single_smart_agent_deterministic_prep",
+        )
+
     record_primary_llm_call("candidate_opportunity_intelligence")
-    # Planning/analysis uses the faster default model; Agent 2/3 writing keeps
-    # OPENAI_TAILOR_MODEL (gpt-4o) for rewrite quality.
+    # Legacy multi-agent path: planning uses OPENAI_MODEL; writing uses
+    # OPENAI_TAILOR_MODEL (gpt-5) in the smart-agent rewrite.
     try:
         raw = call_stage_json(
             system_prompt=AGENT_1_SYSTEM,

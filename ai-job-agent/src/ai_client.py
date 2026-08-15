@@ -123,19 +123,39 @@ def call_openai_json(
 
     from openai import OpenAI
 
+    # GPT-5 family often rejects custom temperature; omit it for those models.
+    model_l = selected_model.lower()
+    supports_temperature = not (
+        model_l.startswith("gpt-5")
+        or model_l.startswith("o1")
+        or model_l.startswith("o3")
+        or model_l.startswith("o4")
+    )
+    create_kwargs: dict[str, Any] = {
+        "model": selected_model,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    if supports_temperature:
+        create_kwargs["temperature"] = temperature
+
     try:
         client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model=selected_model,
-            response_format={"type": "json_object"},
-            temperature=temperature,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
+        response = client.chat.completions.create(**create_kwargs)
     except Exception as exc:
-        raise OpenAIAPIError(f"OpenAI request failed: {exc}") from exc
+        # Some snapshots still accept temperature — retry once with it dropped.
+        err = str(exc).lower()
+        if supports_temperature is False or "temperature" not in err:
+            raise OpenAIAPIError(f"OpenAI request failed: {exc}") from exc
+        try:
+            create_kwargs.pop("temperature", None)
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            response = client.chat.completions.create(**create_kwargs)
+        except Exception as retry_exc:
+            raise OpenAIAPIError(f"OpenAI request failed: {retry_exc}") from retry_exc
 
     try:
         content = response.choices[0].message.content or ""
