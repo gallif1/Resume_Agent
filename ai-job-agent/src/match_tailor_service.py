@@ -17,6 +17,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from ai_client import (
@@ -456,13 +457,8 @@ class SourceEvidence:
 
     @classmethod
     def build(cls, source_text: str) -> SourceEvidence:
-        lowered = (source_text or "").lower()
-        words = _TOKEN_RE.findall(lowered)
-        return cls(
-            text=lowered,
-            squashed=_squash(lowered),
-            stems=frozenset(_stem(w.strip(".")) for w in words if len(w) >= 2),
-        )
+        """Build (or reuse) an evidence index for the same source resume text."""
+        return _cached_source_evidence(source_text or "")
 
     def __bool__(self) -> bool:
         return bool(self.text)
@@ -482,6 +478,17 @@ class SourceEvidence:
             and (stem.startswith(token) or token.startswith(stem))
             for stem in self.stems
         )
+
+
+@lru_cache(maxsize=32)
+def _cached_source_evidence(source_text: str) -> SourceEvidence:
+    lowered = (source_text or "").lower()
+    words = _TOKEN_RE.findall(lowered)
+    return SourceEvidence(
+        text=lowered,
+        squashed=_squash(lowered),
+        stems=frozenset(_stem(w.strip(".")) for w in words if len(w) >= 2),
+    )
 
 
 def _is_spelling_variant(a: str, b: str) -> bool:

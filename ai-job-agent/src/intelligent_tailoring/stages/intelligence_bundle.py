@@ -10,7 +10,7 @@ import json
 from typing import Any
 
 from ai_client import truncate_text
-from config import OPENAI_JOB_MAX_CHARS
+from config import OPENAI_JOB_MAX_CHARS, OPENAI_MODEL
 from intelligent_tailoring.llm_utils import call_stage_json, record_primary_llm_call
 from intelligent_tailoring.ontology import SkillOntology, get_ontology
 from intelligent_tailoring.prompts.merged_prompts import (
@@ -94,6 +94,8 @@ def run_intelligence_bundle_llm(
         }
 
     record_primary_llm_call("candidate_opportunity_intelligence")
+    # Planning/analysis uses the faster default model; Agent 2/3 writing keeps
+    # OPENAI_TAILOR_MODEL (gpt-4o) for rewrite quality.
     raw = call_stage_json(
         system_prompt=AGENT_1_SYSTEM,
         user_prompt=build_agent_1_user_prompt(
@@ -109,9 +111,10 @@ def run_intelligence_bundle_llm(
         use_cache=use_cache,
         cache_namespace=f"{MERGED_AGENT_1_PROMPT_VERSION}_intel_bundle",
         cache_payload=(
-            f"{language}|{title}|{jd_text[:2500]}|"
+            f"{OPENAI_MODEL}|{language}|{title}|{jd_text[:2500]}|"
             f"{resume_text[:2000]}|{knowledge_base_summary[:500]}"
         ),
+        model=OPENAI_MODEL,
     )
 
     req_raw = raw.get("job_requirements") or raw
