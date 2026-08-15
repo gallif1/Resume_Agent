@@ -778,24 +778,68 @@ def _restore_full_source_bullets(
 
     out = deepcopy(resume) if isinstance(resume, dict) else {}
     facts = assign_stable_ids(source_facts)
-    src_roles = {
-        str(r.get("id") or r.get("source_entry_id") or ""): r
-        for r in (facts.get("experience_roles") or [])
-        if isinstance(r, dict)
+    src_roles = [
+        r for r in (facts.get("experience_roles") or []) if isinstance(r, dict)
+    ]
+    src_roles_by_id = {
+        str(r.get("id") or r.get("source_entry_id") or ""): r for r in src_roles
     }
-    src_projects = {
-        str(p.get("id") or p.get("source_entry_id") or ""): p
-        for p in (facts.get("projects") or [])
-        if isinstance(p, dict)
+    src_projects = [
+        p for p in (facts.get("projects") or []) if isinstance(p, dict)
+    ]
+    src_projects_by_id = {
+        str(p.get("id") or p.get("source_entry_id") or ""): p for p in src_projects
     }
+
+    def _norm_name(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+    def _names_match(a: str, b: str) -> bool:
+        na, nb = _norm_name(a), _norm_name(b)
+        if not na or not nb:
+            return False
+        return na == nb or na in nb or nb in na
+
+    def _resolve_role(entry: dict[str, Any]) -> dict[str, Any] | None:
+        sid = str(entry.get("id") or entry.get("source_entry_id") or "")
+        src = src_roles_by_id.get(sid) if sid else None
+        title = str(entry.get("title") or "")
+        company = str(entry.get("company") or "")
+        if src is not None:
+            if _names_match(title, str(src.get("title") or "")) or (
+                not title
+                and _names_match(company, str(src.get("company") or ""))
+            ):
+                return src
+        for cand in src_roles:
+            ct = str(cand.get("title") or "")
+            cc = str(cand.get("company") or "")
+            if title and ct and _names_match(title, ct):
+                if (
+                    not company
+                    or not cc
+                    or _names_match(company, cc)
+                ):
+                    return cand
+        return None
+
+    def _resolve_project(entry: dict[str, Any]) -> dict[str, Any] | None:
+        sid = str(entry.get("id") or entry.get("source_entry_id") or "")
+        src = src_projects_by_id.get(sid) if sid else None
+        name = str(entry.get("name") or "")
+        if src is not None and _names_match(name, str(src.get("name") or "")):
+            return src
+        for cand in src_projects:
+            if name and _names_match(name, str(cand.get("name") or "")):
+                return cand
+        return None
 
     experience = []
     for entry in out.get("experience") or []:
         if not isinstance(entry, dict):
             continue
         fixed = dict(entry)
-        sid = str(fixed.get("id") or fixed.get("source_entry_id") or "")
-        src = src_roles.get(sid)
+        src = _resolve_role(fixed)
         if src:
             src_bullets = [
                 str(b).strip() for b in (src.get("bullets") or []) if str(b).strip()
@@ -808,6 +852,11 @@ def _restore_full_source_bullets(
                 fixed["company"] = str(src.get("company") or "")
             if not fixed.get("dates"):
                 fixed["dates"] = str(src.get("dates") or "")
+            # Keep the verified source id after identity-resolved restore.
+            sid = str(src.get("id") or src.get("source_entry_id") or "")
+            if sid:
+                fixed["id"] = sid
+                fixed["source_entry_id"] = sid
         experience.append(fixed)
     out["experience"] = experience
 
@@ -816,8 +865,7 @@ def _restore_full_source_bullets(
         if not isinstance(entry, dict):
             continue
         fixed = dict(entry)
-        sid = str(fixed.get("id") or fixed.get("source_entry_id") or "")
-        src = src_projects.get(sid)
+        src = _resolve_project(fixed)
         if src:
             src_bullets = [
                 str(b).strip() for b in (src.get("bullets") or []) if str(b).strip()
@@ -837,6 +885,10 @@ def _restore_full_source_bullets(
             fixed["description"] = desc
             if not fixed.get("name"):
                 fixed["name"] = name
+            sid = str(src.get("id") or src.get("source_entry_id") or "")
+            if sid:
+                fixed["id"] = sid
+                fixed["source_entry_id"] = sid
         projects.append(fixed)
     out["projects"] = projects
     return out

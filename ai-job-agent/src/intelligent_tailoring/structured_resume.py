@@ -175,6 +175,24 @@ def stamp_ids_on_resume(
             continue
         fixed = dict(entry)
         sid = _first_key(fixed, _ID_KEYS)
+        # Drop stale ids that no longer match the source role identity —
+        # index-based ids survive reordering and cause cross-entry restores.
+        if sid and src_roles:
+            src_hit = next(
+                (
+                    src
+                    for src in src_roles
+                    if _s(src.get("id") or src.get("source_entry_id")) == sid
+                ),
+                None,
+            )
+            if src_hit is not None and not _role_match(fixed, src_hit):
+                sid = ""
+            elif src_hit is None and any(
+                _role_match(fixed, src) for src in src_roles
+            ):
+                # Id is unknown but a name match exists — rematch below.
+                sid = ""
         if not sid and src_roles:
             for src in src_roles:
                 cand = _s(src.get("id") or src.get("source_entry_id"))
@@ -182,8 +200,11 @@ def stamp_ids_on_resume(
                     sid = cand
                     break
         if not sid:
-            sid = make_role_id(idx)
-        # Avoid colliding ids when LLM duplicated entries
+            sid = (
+                f"unmapped_role_{idx}"
+                if src_roles
+                else make_role_id(idx)
+            )
         base_sid = sid
         n = 2
         while sid in used_role_ids:
@@ -202,6 +223,21 @@ def stamp_ids_on_resume(
             continue
         fixed = dict(entry)
         sid = _first_key(fixed, _ID_KEYS)
+        if sid and src_projects:
+            src_hit = next(
+                (
+                    src
+                    for src in src_projects
+                    if _s(src.get("id") or src.get("source_entry_id")) == sid
+                ),
+                None,
+            )
+            if src_hit is not None and not _proj_match(fixed, src_hit):
+                sid = ""
+            elif src_hit is None and any(
+                _proj_match(fixed, src) for src in src_projects
+            ):
+                sid = ""
         if not sid and src_projects:
             for src in src_projects:
                 cand = _s(src.get("id") or src.get("source_entry_id"))
@@ -209,7 +245,13 @@ def stamp_ids_on_resume(
                     sid = cand
                     break
         if not sid:
-            sid = make_project_id(idx)
+            # Do not invent project_{idx} when source facts exist — those ids
+            # collide with real source entries after reordering.
+            sid = (
+                f"unmapped_project_{idx}"
+                if src_projects
+                else make_project_id(idx)
+            )
         base_sid = sid
         n = 2
         while sid in used_proj_ids:

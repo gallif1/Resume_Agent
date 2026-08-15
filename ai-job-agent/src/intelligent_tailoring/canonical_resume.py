@@ -1481,6 +1481,16 @@ def normalize_project_list(projects: list[Any]) -> list[dict[str, Any]]:
                 "description": desc,
                 "bullets": bullets,
                 "technologies": techs,
+                **(
+                    {
+                        "id": str(item.get("id") or item.get("source_entry_id") or ""),
+                        "source_entry_id": str(
+                            item.get("source_entry_id") or item.get("id") or ""
+                        ),
+                    }
+                    if (item.get("id") or item.get("source_entry_id"))
+                    else {}
+                ),
             }
         )
     return out

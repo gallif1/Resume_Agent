@@ -465,13 +465,17 @@ def validate_and_repair_resume_structure(resume: dict[str, Any]) -> dict[str, An
         or str(p.get("description") or "").strip()
     ]
 
-    # Attach stable source_entry_id by final index when missing
+    # Attach placeholder ids only when missing. Never invent project_{idx} /
+    # role_{idx} — those collide with real source ids after reordering and
+    # cause cross-entry bullet restores.
     for idx, entry in enumerate(out["experience"]):
-        if not entry.get("source_entry_id"):
-            entry["source_entry_id"] = f"role_{idx}"
+        if not entry.get("source_entry_id") and not entry.get("id"):
+            entry["source_entry_id"] = f"unmapped_role_{idx}"
+            entry["id"] = entry["source_entry_id"]
     for idx, entry in enumerate(out["projects"]):
-        if not entry.get("source_entry_id"):
-            entry["source_entry_id"] = f"project_{idx}"
+        if not entry.get("source_entry_id") and not entry.get("id"):
+            entry["source_entry_id"] = f"unmapped_project_{idx}"
+            entry["id"] = entry["source_entry_id"]
 
     out["_structural_integrity"] = {
         "failures_before": structural_failures(resume if isinstance(resume, dict) else {}),
