@@ -27,8 +27,8 @@ from intelligent_tailoring.structured_validation import _restore_full_source_bul
 def test_merged_prompt_legacy_rules_still_present():
     checks = merged_prompt_contains_legacy_rules()
     assert all(checks.values()), checks
-    assert "honesty" in MERGED_AGENT_2_PROMPT_VERSION
-    assert "honesty" in MERGED_AGENT_3_PROMPT_VERSION
+    assert MERGED_AGENT_2_PROMPT_VERSION.startswith("merged_strategy_v")
+    assert MERGED_AGENT_3_PROMPT_VERSION.startswith("merged_writing_v")
 
 
 def test_philosophy_prioritizes_honesty_and_identity():

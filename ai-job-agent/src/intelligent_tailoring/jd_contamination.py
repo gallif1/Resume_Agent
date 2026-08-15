@@ -453,6 +453,8 @@ SOURCE SEPARATION (mandatory — honesty before persuasion):
   that exact skill (or a clear synonym already in <candidate_facts>) is evidenced.
 - Never invent employers, schools, YOE, production tenure, or employment from
   academic/project work to close a JD gap.
+- Never set the candidate's employer/company to the target JD company (e.g. Bylith)
+  unless that exact employer already appears in <candidate_facts>.
 - Job postings may say "You are the best", "We demand a lot", "NOW is the time" —
   those are employer voice, NEVER candidate facts.
 - Closing the gap between the candidate and the role is done by truthful
@@ -461,6 +463,50 @@ SOURCE SEPARATION (mandatory — honesty before persuasion):
 
 {SOURCE_SEPARATION_INSTRUCTION}
 """.strip()
+
+
+def scrub_target_employer_claims(
+    resume: dict[str, Any],
+    *,
+    source_text: str,
+    target_company: str = "",
+) -> dict[str, Any]:
+    """Blank experience employers that match the JD company but not the source CV.
+
+    Bylith Frontend regression: Agent 2 invented ``Bylith Platform`` as current
+    employment. Claim validation should catch this; this scrub is belt-and-suspenders
+    when the target company is known from job metadata.
+    """
+    from copy import deepcopy
+
+    from intelligent_tailoring.claim_validator import organization_supported
+
+    out = deepcopy(resume) if isinstance(resume, dict) else {}
+    target = re.sub(r"\s+", " ", (target_company or "").strip())
+    target_l = target.lower()
+    if not target_l or len(target_l) < 3:
+        return out
+
+    cleaned: list[dict[str, Any]] = []
+    for entry in out.get("experience") or []:
+        if not isinstance(entry, dict):
+            continue
+        fixed = dict(entry)
+        company = str(fixed.get("company") or "").strip()
+        company_l = company.lower()
+        looks_like_target = bool(
+            company_l
+            and (
+                target_l in company_l
+                or company_l in target_l
+                or target_l.split()[0] in company_l.split()
+            )
+        )
+        if looks_like_target and not organization_supported(company, source_text or ""):
+            fixed["company"] = ""
+        cleaned.append(fixed)
+    out["experience"] = cleaned
+    return out
 
 
 def wrap_candidate_facts(text: str) -> str:

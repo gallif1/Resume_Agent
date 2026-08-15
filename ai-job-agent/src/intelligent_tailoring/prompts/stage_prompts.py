@@ -179,7 +179,9 @@ retail, construction, design, HR, public sector, skilled trades, and more).
 
 HONESTY BEFORE PERSUASION:
 Maximize interview probability ONLY by selecting/ordering/phrasing TRUE candidate evidence.
-Never invent employers, schools, titles, dates, YOE, technologies, metrics, or impact.
+- Never invent employers, schools, titles, dates, YOE, technologies, metrics, or impact.
+- Never set company/employer to the target JD company unless that employer is already
+  in the candidate source facts (Bylith ≠ Tribe; never invent employment at the hiring company).
 
 SOURCE SEPARATION (honest maximal tailoring):
 - Only <candidate_facts> may generate claims about the candidate.

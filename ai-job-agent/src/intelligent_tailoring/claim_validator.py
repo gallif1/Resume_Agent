@@ -455,26 +455,101 @@ def role_title_supported(title: str, source_text: str) -> bool:
     return distinctive.issubset(_tokens(source))
 
 
+_BULLET_LIKE_PROJECT_NAME_RE = re.compile(
+    r"^(?:built|build|developed|develop|implemented|implement|designed|design|"
+    r"used|created|create|deployed|deploy|integrated|integrate|wrote|write|"
+    r"configured|configure|synchronized|synchronize|performed|perform|"
+    r"maintained|maintain|optimized|optimize|added|add|fixed|fix)\b",
+    re.I,
+)
+
+
+def looks_like_bullet_project_name(name: str) -> bool:
+    """True when a project ``name`` is really a bullet/sentence, not a title.
+
+    Bylith Frontend regression: Agent 2 promoted ThreadPoolExecutor bullets and
+    long Android descriptions into ``###`` project headings.
+    """
+    text = re.sub(r"\s+", " ", (name or "").strip())
+    if not text:
+        return False
+    words = text.split()
+    if len(words) >= 8 or len(text) >= 72:
+        return True
+    if _BULLET_LIKE_PROJECT_NAME_RE.match(text):
+        return True
+    # "SQLite and asynchronous orders on Firebase" style fragments
+    if len(words) >= 5 and re.search(r"\b(?:and|with|using|for|including)\b", text, re.I):
+        return True
+    return False
+
+
+def _source_project_title_candidates(source_text: str) -> list[str]:
+    """Short lines that look like project titles in the source resume."""
+    lines: list[str] = []
+    in_projects = False
+    for raw in (source_text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower().strip("# ").strip()
+        if re.match(r"^(?:projects|personal projects|selected projects)\b", low):
+            in_projects = True
+            continue
+        if re.match(
+            r"^(?:education|experience|skills|summary|certifications|awards)\b",
+            low,
+        ):
+            in_projects = False
+            continue
+        cleaned = re.sub(r"^[\s•\-\–\—*]+", "", line).strip()
+        if not cleaned or looks_like_bullet_project_name(cleaned):
+            continue
+        if len(cleaned.split()) > 8:
+            continue
+        # Prefer lines from Projects section; also keep short Title-ish lines.
+        if in_projects or (
+            cleaned[:1].isupper()
+            and not cleaned.endswith(".")
+            and len(cleaned.split()) <= 6
+        ):
+            lines.append(cleaned)
+    return lines
+
+
 def project_name_supported(name: str, source_text: str) -> bool:
     """True when a project title is grounded in the source resume.
 
-    Generic titles like ``REST API Development`` require an exact/near-exact
-    source phrase — token overlap on ``api``/``development`` alone is not enough.
+    Requires a contiguous / near-title match against source project headings.
+    Token-subset against the whole resume is NOT enough — that incorrectly
+    accepted bullet sentences (ThreadPoolExecutor…) and invented titles
+    (Backend Data Ordering App) when their tokens appeared in other bullets.
     """
     name = re.sub(r"\s+", " ", (name or "").strip())
     if not name:
         return True
     source = source_text or ""
-    if name.lower() in source.lower():
-        return True
-    distinctive = {
-        t
-        for t in _tokens(name)
-        if t not in _PROJECT_GENERIC_TOKENS and t not in _STOP
-    }
-    if not distinctive:
+    if not source.strip():
         return False
-    return distinctive.issubset(_tokens(source))
+    if looks_like_bullet_project_name(name):
+        return False
+    name_l = name.lower()
+    if name_l in source.lower():
+        return True
+
+    # Soft match only against short project-title candidates, not full prose.
+    for cand in _source_project_title_candidates(source):
+        cand_l = cand.lower()
+        if name_l == cand_l or name_l in cand_l or cand_l in name_l:
+            return True
+        # High token overlap on short titles (Restaurant Menu vs Restaurant Menu Ordering App)
+        ta, tb = _tokens(name), _tokens(cand)
+        if not ta or not tb:
+            continue
+        overlap = len(ta & tb) / max(len(ta | tb), 1)
+        if overlap >= 0.72 and len(ta) <= 6 and len(tb) <= 8:
+            return True
+    return False
 
 
 def hard_reject_claim(

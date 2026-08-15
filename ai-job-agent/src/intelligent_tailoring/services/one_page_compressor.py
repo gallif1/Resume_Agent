@@ -225,6 +225,7 @@ def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
 
     Cross-entry cloning (same achievement pasted under two projects/roles) is a
     common Agent-2/expand failure mode — drop later near-duplicates globally.
+    Also demote bullet-like project ``name`` fields that would render as fake headings.
     """
     out = deepcopy(resume)
     out["experience"] = [
@@ -232,10 +233,38 @@ def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
         for e in (out.get("experience") or [])
         if isinstance(e, dict)
     ]
+
+    # Demote sentence/bullet text wrongly stored as project names (Bylith screenshot).
+    try:
+        from intelligent_tailoring.claim_validator import looks_like_bullet_project_name
+    except Exception:  # pragma: no cover
+        looks_like_bullet_project_name = lambda _n: False  # type: ignore
+
+    cleaned_projects: list[dict[str, Any]] = []
+    for p in out.get("projects") or []:
+        if not isinstance(p, dict):
+            continue
+        entry = scrub_duplicate_entry_content(p)
+        name = str(entry.get("name") or "").strip()
+        if name and looks_like_bullet_project_name(name):
+            bullets = [
+                str(b).strip() for b in (entry.get("bullets") or []) if str(b).strip()
+            ]
+            if not any(texts_are_near_duplicates(name, b) for b in bullets):
+                bullets = [name] + bullets
+            entry["bullets"] = _dedupe_similar(bullets)
+            entry["name"] = ""
+            desc = str(entry.get("description") or "").strip()
+            if desc and texts_are_near_duplicates(desc, name):
+                entry["description"] = ""
+        cleaned_projects.append(entry)
+    # Drop shells that have neither a real name nor content
     out["projects"] = [
-        scrub_duplicate_entry_content(p)
-        for p in (out.get("projects") or [])
-        if isinstance(p, dict)
+        p
+        for p in cleaned_projects
+        if str(p.get("name") or "").strip()
+        or str(p.get("description") or "").strip()
+        or any(str(b).strip() for b in (p.get("bullets") or []))
     ]
 
     # Global cross-entry near-dedupe: keep first occurrence, drop later clones.

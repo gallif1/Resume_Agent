@@ -26,8 +26,8 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v7_honesty"
-MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v4_honesty"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v8_bylith_identity"
+MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v5_bylith_identity"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
 # Mapping of old agents → merged agent (documentation + tests).
