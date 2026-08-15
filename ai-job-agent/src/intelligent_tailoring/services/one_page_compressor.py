@@ -221,7 +221,11 @@ def scrub_duplicate_entry_content(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
-    """Apply near-dedupe across experience/project entries before export."""
+    """Apply near-dedupe within and across experience/project entries before export.
+
+    Cross-entry cloning (same achievement pasted under two projects/roles) is a
+    common Agent-2/expand failure mode — drop later near-duplicates globally.
+    """
     out = deepcopy(resume)
     out["experience"] = [
         scrub_duplicate_entry_content(e)
@@ -233,6 +237,29 @@ def scrub_resume_duplicate_content(resume: dict[str, Any]) -> dict[str, Any]:
         for p in (out.get("projects") or [])
         if isinstance(p, dict)
     ]
+
+    # Global cross-entry near-dedupe: keep first occurrence, drop later clones.
+    seen: list[str] = []
+    for section in ("experience", "projects"):
+        entries = out.get(section) or []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            kept: list[str] = []
+            for bullet in entry.get("bullets") or []:
+                text = str(bullet or "").strip()
+                if not text:
+                    continue
+                if any(texts_are_near_duplicates(text, prior) for prior in seen):
+                    continue
+                kept.append(text)
+                seen.append(text)
+            entry["bullets"] = kept
+            desc = str(entry.get("description") or "").strip()
+            if desc and any(texts_are_near_duplicates(desc, prior) for prior in seen):
+                entry["description"] = ""
+            elif desc:
+                seen.append(desc)
     return out
 
 

@@ -26,8 +26,8 @@ from intelligent_tailoring.prompts.stage_prompts import (
 
 # Prompt versions — bump when composition changes (invalidates stage caches).
 MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
-MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v6_source_sep"
-MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v3_source_sep"
+MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v7_honesty"
+MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v4_honesty"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
 
 # Mapping of old agents → merged agent (documentation + tests).
@@ -168,7 +168,8 @@ def build_agent_1_user_prompt(
 # return {triage, section_order} instead of tailored_resume.
 _CONTENT_TRIAGE_RULES_ONLY = """
 You are a Principal Recruiter applying content triage WHILE selecting content.
-Optimize for interview probability — not empty shells.
+Optimize for interview probability using ONLY truthful evidence — not empty shells,
+and never by inventing fit.
 
 For each resume element (summary, skill, experience bullet, project bullet),
 internally decide one action: Preserve | Rewrite | Reorder | Expand | Condense | Remove.
@@ -180,6 +181,9 @@ Remove low-value duty language that does not raise interview probability.
 
 PRESERVATION-FIRST RULES (mandatory):
 - Never invent facts.
+- IDENTITY LOCK: keep company / school / dates / official titles for each
+  source_entry_id identical to the base resume (no Tribe→Trike/Yoda, no Tel Hai→Tel Aviv).
+- Academic/capstone/tutor context must remain academic — never reframe as employment.
 - 100% CONTENT RULE: every Experience position and every Project from the
   base resume MUST appear in tailored_resume, identified by the same stable
   ``id`` / ``source_entry_id``. Relevance may reorder, reword, shorten, or
@@ -191,19 +195,24 @@ PRESERVATION-FIRST RULES (mandatory):
 - Prefer complete entries with full bullets over empty shells. Never omit
   an entry to save space — condense bullets instead.
 - Do not silently drop verified high-value technologies from Skills.
+- ANTI-DUPLICATION: never clone the same bullet (or near-paraphrase) into
+  another entry or repeat it inside the same entry.
 - WEAK-MATCH FULLNESS:
   * Relevance score influences ordering, emphasis, and bullet phrasing —
     never inclusion/exclusion of whole entries.
   * When the job is a weak overall match, work harder to find honest
-    connective tissue (e.g. generalize FastAPI as "production backend
-    services and REST APIs") rather than omitting content.
+    connective tissue from EXISTING facts (e.g. for a frontend JD, lead with
+    React/UI evidence if present; for a backend JD, lead with API/service
+    evidence if present). Do NOT invent tools from the JD.
   * Write full bullet sentences (context + action + outcome/tech where the
     base resume supports it) — never clipped fragments, never fabricated
-    claims. Fuller honest content fills the page.
+    claims. Fuller honest content fills the page. Never invent filler.
 - REQUIREMENT COVERAGE (before any Remove/Condense):
   * Cross-check every bullet against stated job requirements/qualifications.
   * Any bullet that directly matches a stated requirement (skill, tool,
-    responsibility, or keyword) is HIGH-PRIORITY and must NOT be removed.
+    responsibility, or keyword) AND is evidenced in the candidate facts is
+    HIGH-PRIORITY and must NOT be removed.
+  * Unsupported JD requirements stay as genuine gaps — do not invent coverage.
   * If length forces cuts, shorten low-overlap bullets — never drop an
     entire base experience/project id, and never drop the strongest
     requirement matches.
@@ -217,11 +226,12 @@ PRESERVATION-FIRST RULES (mandatory):
     use a neutral title matching the job's own title (e.g. "Backend Engineer").
   * Do not label the candidate "Junior" unless the JD uses that language or
     the base resume's own title requires it for honesty.
-  * Never fabricate seniority, titles, or experience.
+  * Never fabricate seniority, titles, years of experience, or employers.
 - All string fields must be plain human-readable text — never dict/list/JSON
   reprs inside strings.
 - No duplicated entries, bullets, or sentences.
-- Expand only when the original resume already contains supporting detail.
+- Expand only when the original resume already contains supporting detail
+  for that same entry.
 - Preserve the selected output language.
 """.strip()
 

@@ -436,23 +436,28 @@ def validate_resume_against_jd(
 SOURCE_SEPARATION_INSTRUCTION = """
 Rule: Only text inside <candidate_facts> may be used to generate claims about the
 candidate. Text inside <job_posting> may only be used to decide what to emphasize
-and which skill/keyword tokens to echo — never copied or paraphrased as a
-first/second-person claim about the candidate.
+among skills/tools the candidate already evidences — never copied or paraphrased
+as a first/second-person claim about the candidate, and never used to invent a
+JD skill the candidate does not have.
 The job posting may describe what the employer wants or how the employer talks
 about itself/the role — it is NEVER a source of facts about the candidate.
 """.strip()
 
 SOURCE_SEPARATION_RULES = f"""
-SOURCE SEPARATION (mandatory — honest maximal tailoring):
+SOURCE SEPARATION (mandatory — honesty before persuasion):
 - <candidate_facts> is the ONLY source of claims about the candidate.
-- <job_posting> is for relevance, ordering, emphasis, and keyword targeting ONLY.
+- <job_posting> is for relevance, ordering, and emphasis ONLY among evidenced skills.
 - Never copy, paraphrase as a first/second-person claim, or title-case fragments
   from the job posting into the resume (Summary, bullets, titles, skills).
+- Never echo a JD skill/tool/framework into Skills, Summary, or bullets unless
+  that exact skill (or a clear synonym already in <candidate_facts>) is evidenced.
+- Never invent employers, schools, YOE, production tenure, or employment from
+  academic/project work to close a JD gap.
 - Job postings may say "You are the best", "We demand a lot", "NOW is the time" —
   those are employer voice, NEVER candidate facts.
 - Closing the gap between the candidate and the role is done by truthful
   rewording/re-emphasis of what the candidate actually did — never by borrowing
-  the job posting's own language as claims about the candidate.
+  the job posting's own language or inventing missing stack coverage.
 
 {SOURCE_SEPARATION_INSTRUCTION}
 """.strip()

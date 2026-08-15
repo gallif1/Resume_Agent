@@ -432,25 +432,101 @@ def rewrite_resume_with_strategy(
     }
 
 
+def _entry_ids_match(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when both entries carry the same stable source id."""
+    for key in ("source_entry_id", "id"):
+        va = str(a.get(key) or "").strip()
+        vb = str(b.get(key) or "").strip()
+        if va and vb and va == vb and not va.startswith("unmapped_"):
+            return True
+    return False
+
+
+def _org_near_match(a: str, b: str) -> bool:
+    """True for equal/contained org names or near-typos (Tribe/Trike, Tel Hai drift)."""
+    from difflib import SequenceMatcher
+
+    from intelligent_tailoring.structural_integrity import _norm
+
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return True
+    if na == nb or na in nb or nb in na:
+        return True
+    # Token overlap (Tel Hai University vs Tel Hai)
+    ta, tb = set(na.split()), set(nb.split())
+    if ta and tb and (ta <= tb or tb <= ta):
+        return True
+    # Near-typo / hallucination rename (Tribe↔Trike, Yoda↔Tribe short forms)
+    ratio = SequenceMatcher(None, na, nb).ratio()
+    if ratio >= 0.72:
+        return True
+    # Shared distinctive token of length >= 4
+    shared = {t for t in (ta & tb) if len(t) >= 4}
+    if shared:
+        return True
+    return False
+
+
 def _role_soft_match(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """True when two experience entries refer to the same real position."""
+    """True when two experience entries refer to the same real position.
+
+    Prefer stable source ids. When titles soft-match, allow near-typo company
+    drift so invented employers can be overwritten from the rebuilt source.
+    """
     from intelligent_tailoring.structural_integrity import _titles_soft_match, _norm
 
+    if _entry_ids_match(a, b):
+        return True
     title_a = str(a.get("title") or "")
     title_b = str(b.get("title") or "")
     if not _titles_soft_match(title_a, title_b):
         return False
-    company_a = _norm(str(a.get("company") or ""))
-    company_b = _norm(str(b.get("company") or ""))
-    if not company_a or not company_b:
+    if _org_near_match(str(a.get("company") or ""), str(b.get("company") or "")):
         return True
-    return company_a == company_b or company_a in company_b or company_b in company_a
+    # Distinctive academic/tutor titles: allow full company rewrite (Tribe→Yoda).
+    distinctive = ("capstone", "tutor", "thesis", "coursework", "teaching assistant")
+    blob = f"{_norm(title_a)} {_norm(title_b)}"
+    return any(token in blob for token in distinctive)
 
 
 def _project_soft_match(a: dict[str, Any], b: dict[str, Any]) -> bool:
     from intelligent_tailoring.structural_integrity import _titles_soft_match
 
+    if _entry_ids_match(a, b):
+        return True
     return _titles_soft_match(str(a.get("name") or ""), str(b.get("name") or ""))
+
+
+def _lock_experience_identity(entry: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Overwrite immutable identity fields from the rebuilt/source entry."""
+    out = dict(entry)
+    for key in ("company", "title", "dates", "date"):
+        src_val = str(source.get(key) or "").strip()
+        if src_val:
+            out[key] = source.get(key)
+    sid = str(source.get("id") or source.get("source_entry_id") or "").strip()
+    if sid:
+        out["id"] = sid
+        out["source_entry_id"] = sid
+    return out
+
+
+def _lock_project_identity(entry: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Overwrite immutable project identity fields from the rebuilt/source entry."""
+    out = dict(entry)
+    src_name = str(source.get("name") or "").strip()
+    if src_name:
+        out["name"] = source.get("name")
+    for key in ("dates", "date"):
+        src_val = str(source.get(key) or "").strip()
+        if src_val:
+            out[key] = source.get(key)
+    sid = str(source.get("id") or source.get("source_entry_id") or "").strip()
+    if sid:
+        out["id"] = sid
+        out["source_entry_id"] = sid
+    return out
 
 
 def _merge_bullet_lists(preferred: list[str], fallback: list[str]) -> list[str]:
@@ -543,12 +619,7 @@ def _merge_experience_order(tailored: dict[str, Any], rebuilt: dict[str, Any]) -
         bullets = _merge_bullet_lists(tb_bullets, rb_bullets)
         if not bullets:
             continue
-        entry = dict(tb)
-        entry.setdefault("company", rb.get("company") or entry.get("company"))
-        entry.setdefault("title", rb.get("title") or entry.get("title"))
-        entry.setdefault("dates", rb.get("dates") or entry.get("dates"))
-        if rb.get("source_entry_id") and not entry.get("source_entry_id"):
-            entry["source_entry_id"] = rb.get("source_entry_id")
+        entry = _lock_experience_identity(dict(tb), rb)
         entry["bullets"] = bullets
         merged.append(entry)
 
@@ -621,7 +692,7 @@ def _merge_project_order(tailored: dict[str, Any], rebuilt: dict[str, Any]) -> N
             if str(b).strip()
         ]
         tb_desc = strip_bullet_markers(str(tb.get("description") or ""))
-        entry = dict(tb)
+        entry = _lock_project_identity(dict(tb), rb)
         # Prefer tailored wording; restore from rebuilt when empty.
         if tb_bullets:
             entry["bullets"] = _merge_bullet_lists(tb_bullets, rb_bullets)
@@ -630,8 +701,6 @@ def _merge_project_order(tailored: dict[str, Any], rebuilt: dict[str, Any]) -> N
         entry["description"] = tb_desc or rb_desc
         if not entry.get("technologies") and rb.get("technologies"):
             entry["technologies"] = list(rb.get("technologies") or [])
-        if rb.get("source_entry_id") and not entry.get("source_entry_id"):
-            entry["source_entry_id"] = rb.get("source_entry_id")
         if not entry.get("bullets") and not str(entry.get("description") or "").strip():
             continue
         ordered.append(entry)

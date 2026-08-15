@@ -802,33 +802,50 @@ def _restore_full_source_bullets(
 
     def _resolve_role(entry: dict[str, Any]) -> dict[str, Any] | None:
         sid = str(entry.get("id") or entry.get("source_entry_id") or "")
-        src = src_roles_by_id.get(sid) if sid else None
+        src = src_roles_by_id.get(sid) if sid and not sid.startswith("unmapped_") else None
         title = str(entry.get("title") or "")
         company = str(entry.get("company") or "")
         if src is not None:
-            if _names_match(title, str(src.get("title") or "")) or (
-                not title
-                and _names_match(company, str(src.get("company") or ""))
-            ):
+            # Trust id only when title still refers to the same role — stale
+            # index ids after reorder must fall through to title matching.
+            if not title or _names_match(title, str(src.get("title") or "")):
                 return src
+        title_l = title.lower()
+        distinctive = any(
+            tok in title_l
+            for tok in ("capstone", "tutor", "thesis", "coursework", "teaching assistant")
+        )
         for cand in src_roles:
             ct = str(cand.get("title") or "")
             cc = str(cand.get("company") or "")
-            if title and ct and _names_match(title, ct):
-                if (
-                    not company
-                    or not cc
-                    or _names_match(company, cc)
-                ):
-                    return cand
+            if not (title and ct and _names_match(title, ct)):
+                continue
+            if not company or not cc or _names_match(company, cc) or distinctive:
+                return cand
+            # Near-typo employers (Tel Aviv ↔ Tel Hai, Tribe ↔ Trike)
+            from difflib import SequenceMatcher
+
+            ratio = SequenceMatcher(
+                None,
+                re.sub(r"\s+", " ", company.lower()).strip(),
+                re.sub(r"\s+", " ", cc.lower()).strip(),
+            ).ratio()
+            if ratio >= 0.72:
+                return cand
         return None
 
     def _resolve_project(entry: dict[str, Any]) -> dict[str, Any] | None:
         sid = str(entry.get("id") or entry.get("source_entry_id") or "")
-        src = src_projects_by_id.get(sid) if sid else None
+        src = (
+            src_projects_by_id.get(sid)
+            if sid and not sid.startswith("unmapped_")
+            else None
+        )
         name = str(entry.get("name") or "")
-        if src is not None and _names_match(name, str(src.get("name") or "")):
-            return src
+        if src is not None:
+            # Stale project_{idx} ids after reorder must not pull wrong bullets.
+            if not name or _names_match(name, str(src.get("name") or "")):
+                return src
         for cand in src_projects:
             if name and _names_match(name, str(cand.get("name") or "")):
                 return cand
@@ -846,13 +863,11 @@ def _restore_full_source_bullets(
             ]
             cur = [str(b).strip() for b in (fixed.get("bullets") or []) if str(b).strip()]
             fixed["bullets"] = _merge_bullets_without_dupes(cur, src_bullets)
-            if not fixed.get("title"):
-                fixed["title"] = str(src.get("title") or "")
-            if not fixed.get("company"):
-                fixed["company"] = str(src.get("company") or "")
-            if not fixed.get("dates"):
-                fixed["dates"] = str(src.get("dates") or "")
-            # Keep the verified source id after identity-resolved restore.
+            # IDENTITY LOCK: always restore company/title/dates from source.
+            for key in ("title", "company", "dates", "date"):
+                src_val = str(src.get(key) or "").strip()
+                if src_val:
+                    fixed[key] = src.get(key)
             sid = str(src.get("id") or src.get("source_entry_id") or "")
             if sid:
                 fixed["id"] = sid
@@ -872,7 +887,9 @@ def _restore_full_source_bullets(
             ]
             cur = [str(b).strip() for b in (fixed.get("bullets") or []) if str(b).strip()]
             fixed["bullets"] = _merge_bullets_without_dupes(cur, src_bullets)
-            name = str(fixed.get("name") or src.get("name") or "").strip()
+            name = str(src.get("name") or fixed.get("name") or "").strip()
+            if name:
+                fixed["name"] = src.get("name") or name
             desc = str(fixed.get("description") or "").strip()
             src_desc = str(src.get("description") or "").strip()
             if not desc and src_desc:
@@ -883,8 +900,6 @@ def _restore_full_source_bullets(
             if desc and any(texts_are_near_duplicates(desc, b) for b in fixed["bullets"]):
                 desc = ""
             fixed["description"] = desc
-            if not fixed.get("name"):
-                fixed["name"] = name
             sid = str(src.get("id") or src.get("source_entry_id") or "")
             if sid:
                 fixed["id"] = sid
