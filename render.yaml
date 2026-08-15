@@ -35,6 +35,8 @@ services:
         value: true
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: OPENAI_TAILOR_MODEL
+        value: gpt-5
       - key: OPENAI_API_KEY
         sync: false
       - key: DRUSHIM_EMAIL
