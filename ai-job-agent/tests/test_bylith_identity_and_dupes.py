@@ -169,6 +169,45 @@ def test_restore_locks_tel_hai_education_and_identity():
     assert "Aviv" not in str(edu[0].get("institution") or "")
 
 
+def test_scrub_merges_whole_duplicate_project_blocks():
+    """Screenshot regression: Server Monitor System emitted twice end-to-end."""
+    desc = (
+        "Built a backend monitoring system that continuously checks server "
+        "health using multiple protocols."
+    )
+    bullets = [
+        "Developed REST API using FastAPI and PostgreSQL",
+        "Implemented background worker performing parallel health checks",
+        "Used ThreadPoolExecutor for concurrent server monitoring",
+    ]
+    resume = {
+        "experience": [],
+        "projects": [
+            {"name": "Server Monitor System", "description": desc, "bullets": list(bullets)},
+            {"name": "Server Monitor System", "description": desc, "bullets": list(bullets)},
+            {
+                "name": "Restaurant Menu Ordering App",
+                "description": "Android application for food ordering",
+                "bullets": ["Built React Native mobile UI"],
+            },
+            {
+                "name": "Restaurant Menu Ordering App",
+                "description": "Android application for food ordering",
+                "bullets": ["Built React Native mobile UI", "Synced SQLite to Firebase"],
+            },
+        ],
+    }
+    out = scrub_resume_duplicate_content(resume)
+    names = [str(p.get("name")) for p in out["projects"]]
+    assert names.count("Server Monitor System") == 1
+    assert names.count("Restaurant Menu Ordering App") == 1
+    monitor = next(p for p in out["projects"] if p["name"] == "Server Monitor System")
+    assert len(monitor["bullets"]) == 3
+    md = render_tailored_cv_markdown(out, name="Gal Lifshitz")
+    assert md.count("### Server Monitor System") == 1
+    assert md.lower().count("threadpoolexecutor") == 1
+
+
 def test_scrub_and_render_collapse_bylith_project_spam():
     scrubbed = scrub_resume_duplicate_content(_bylith_screenshot_resume())
     names = [str(p.get("name") or "") for p in scrubbed.get("projects") or []]
