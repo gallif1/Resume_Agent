@@ -1,8 +1,9 @@
-"""Composed prompts for the four merged LLM agents.
+"""Composed prompts for the single smart resume agent.
 
-IMPORTANT: Do not discard legacy prompt content. Each merged prompt loads the
+IMPORTANT: Do not discard legacy prompt content. The smart agent loads the
 existing agent/stage instructions under clearly labeled responsibility blocks.
 Only duplicated framing is removed; unique rules and examples are preserved.
+Prior four-agent prompt constants remain for tests and fallbacks.
 """
 
 from __future__ import annotations
@@ -29,25 +30,20 @@ MERGED_AGENT_1_PROMPT_VERSION = "merged_intel_v1"
 MERGED_AGENT_2_PROMPT_VERSION = "merged_strategy_v8_bylith_identity"
 MERGED_AGENT_3_PROMPT_VERSION = "merged_writing_v5_bylith_identity"
 MERGED_AGENT_4_PROMPT_VERSION = "merged_final_v1"
+SMART_AGENT_PROMPT_VERSION = "smart_resume_v1_gpt5"
 
-# Mapping of old agents → merged agent (documentation + tests).
+# Mapping of old agents → single smart agent (documentation + tests).
 AGENT_MERGE_MAP: dict[str, tuple[str, ...]] = {
-    "candidate_opportunity_intelligence": (
+    "smart_resume_agent": (
         "resume_knowledge",
         "job_intelligence",
         "company_intelligence",
         "evidence_mapping",
-    ),
-    "strategy_content_selection": (
         "resume_strategy",
         "resume_tailoring",
-    ),
-    "human_writing_credibility": (
         "claim_validation",
         "human_resume_writer",
         "senior_recruiter_review",
-    ),
-    "final_hiring_ats_page": (
         "hiring_manager_simulation",
         "final_quality",
         "ats_scoring",
@@ -560,23 +556,225 @@ def build_agent_4_user_prompt(
     )
 
 
+# ---------------------------------------------------------------------------
+# Single Smart Resume Agent (GPT-5) — prior Agents 2+3 in one call
+# ---------------------------------------------------------------------------
+
+SMART_AGENT_SYSTEM = "\n".join(
+    [
+        f"PROMPT_VERSION: {SMART_AGENT_PROMPT_VERSION}",
+        "You are the Smart Resume Agent — one expert agent for this entire rewrite.",
+        "You replace the former Strategy/Content + Human Writing + Recruiter Review agents.",
+        "In ONE response: select content, write polished natural prose, and self-review",
+        "as a strict recruiter. Never invent facts. Profession-agnostic.",
+        "",
+        "Internal sequence (do not expose chain-of-thought):",
+        "A. Apply strategy + triage to choose emphasis and structure",
+        "B. Write full, natural, recruiter-ready resume prose",
+        "C. Validate claims against candidate evidence only",
+        "D. Self-review for interview probability and credibility",
+        "E. Repair weak sections once internally if needed",
+        "",
+        "CRITICAL OUTPUT CONTRACT:",
+        "Your response MUST be a single JSON object with top-level key "
+        '"tailored_resume".',
+        "Do NOT return a triage/section_order-only payload.",
+        "Do NOT omit tailored_resume.",
+        "",
+        PIPELINE_PHILOSOPHY,
+        "",
+        SOURCE_SEPARATION_RULES,
+        "",
+        "HONEST MAXIMAL TAILORING:",
+        "- Maximize relevance using ONLY true candidate facts.",
+        "- Never omit real experience/projects; never invent or borrow JD language.",
+        "- Job posting text may guide emphasis/keywords — never become candidate claims.",
+        "",
+        _block(
+            "RESPONSIBILITY BLOCK — CONTENT TRIAGE RULES "
+            "(from Content Triage stage — apply internally, do not emit triage JSON)",
+            _CONTENT_TRIAGE_RULES_ONLY,
+        ),
+        _block(
+            "RESPONSIBILITY BLOCK — DEEP TAILOR / CONTENT SELECTION "
+            "(from Resume Tailoring Agent)",
+            DEEP_TAILOR_REWRITE_SYSTEM,
+        ),
+        _block(
+            "RESPONSIBILITY BLOCK — STRATEGY RULES (from Resume Strategy Agent)",
+            """
+Strategy rules preserved:
+- Decide what evidence deserves emphasis and what appears first.
+- Condense low-value wording for the one-page budget — do NOT drop whole
+  base experience/project ids.
+- Choose which project leads for THIS job (ordering), but keep all projects.
+- Record facts_omitted only for low-value duty phrases inside bullets —
+  never for entire positions/projects from the base resume.
+- Propagate genuine_gaps and forbidden_claims — never invent coverage.
+- Prefer excellent bullets — BUT never omit a bullet that is a direct match
+  to a stated job requirement, and never omit a base entry id.
+- Honor strategy.must_keep_bullets and strategy.shared_technologies when present.
+""",
+        ),
+        _block(
+            "RESPONSIBILITY BLOCK — CLAIM VALIDATION (from Claim Validation Agent)",
+            CLAIM_VALIDATION_LLM_SYSTEM,
+        ),
+        _block(
+            "RESPONSIBILITY BLOCK — HUMAN RESUME WRITER",
+            HUMAN_RESUME_WRITER_SYSTEM,
+        ),
+        _block(
+            "RESPONSIBILITY BLOCK — SENIOR RECRUITER REVIEW",
+            SENIOR_RECRUITER_REVIEW_SYSTEM,
+        ),
+        """
+WRITING FULLNESS RULES:
+- Preserve every experience/project id from the pre-rebuilt structure — never drop,
+  merge, or invent entries.
+- Write full, complete bullet sentences (context + action + outcome/tech when
+  supported by the base facts). Do not clip into fragments.
+- Keep contact links unaltered.
+- Summary must be 2–4 complete, well-formed sentences — never concatenated
+  competing lead-ins, never raw data structures.
+- Summary describes ONLY what the candidate did/knows from candidate facts —
+  never employer instructions, opinions, or second-person JD slogans.
+- No duplicated bullets/sentences across the document.
+- Final prose must sound human and interview-ready (not a rough draft).
+
+MANDATORY FINAL SCHEMA:
+{
+  "tailored_resume": {
+    "name": "string",
+    "contact": {
+      "location": "string",
+      "phone": "string",
+      "email": "string",
+      "github": "string|null",
+      "linkedin": "string|null"
+    },
+    "professional_title": "string",
+    "professional_summary": "string",
+    "skills": ["Category: atom, atom", "..."] OR {"Category": ["atom"]},
+    "experience": [
+      {
+        "id": "role_N (stable from rebuilt_resume — never invent new ids)",
+        "source_entry_id": "role_N",
+        "title": "string",
+        "company": "string",
+        "dates": "string",
+        "bullets": ["full sentence", "..."]
+      }
+    ],
+    "projects": [
+      {
+        "id": "project_N (stable)",
+        "source_entry_id": "project_N",
+        "name": "string",
+        "description": "string",
+        "bullets": ["full sentence", "..."]
+      }
+    ],
+    "education": [],
+    "certifications": []
+  },
+  "change_log": [],
+  "matched_requirements": [],
+  "missing_requirements": [],
+  "removed_or_deprioritized_content": [],
+  "ats_keywords_added": [],
+  "validation_warnings": [],
+  "rejected_claims": [],
+  "recruiter_review": {
+    "would_interview": true,
+    "interview_quality": 0,
+    "human_believability": 0,
+    "approved": true,
+    "sections_to_strengthen": [],
+    "sections_to_regenerate": [],
+    "notes": []
+  }
+}
+Output JSON only. tailored_resume is required.
+Every base experience/project id from PRE-REBUILT STRUCTURE must appear.
+All string values must be plain prose — no dict/list/JSON fragments.
+""".strip(),
+    ]
+)
+
+
+def build_smart_agent_user_prompt(
+    *,
+    language: str,
+    strategy_json: str,
+    rebuilt_resume_json: str,
+    ranked_requirements_json: str,
+    evidence_map_compact: str,
+    resume_facts_compact: str,
+    scores_json: str = "",
+    inferred_json: str = "",
+    triage_json: str = "",
+    regeneration_attempt: int = 0,
+) -> str:
+    regen_note = ""
+    if regeneration_attempt:
+        regen_note = (
+            f"\nThis is regeneration attempt {regeneration_attempt}. "
+            "Fix prior depth/quality issues without inventing facts.\n"
+        )
+    return (
+        f"Output language: {language}\n"
+        "Build the FINAL tailored resume for this job as STRICT structured JSON.\n"
+        "Select content, write polished natural prose, and self-review as a recruiter.\n"
+        "Follow strategy; do not invent facts; keep a full, professional page.\n"
+        "Carry every experience/project id from PRE-REBUILT STRUCTURE unchanged.\n"
+        "Copy contact (email/phone/github/linkedin) from the base resume unaltered.\n"
+        "Relevance may reorder and rephrase — never drop a whole base entry.\n"
+        "On weak matches, emphasize transferable skills with honest fuller bullets.\n"
+        "Before shortening any bullet, confirm it does NOT match a ranked "
+        "requirement or strategy.must_keep_bullets entry.\n"
+        "Keep every strategy.shared_technologies item in Skills.\n"
+        "Use a neutral professional_title matching the job title when the JD "
+        "does not specify seniority — do not invent Junior/Senior labels.\n"
+        "NEVER copy second-person/motivational JD phrases into Summary/bullets "
+        '(e.g. "You are the best", "We demand", "NOW is the time").\n'
+        f"{regen_note}\n"
+        f"<candidate_facts>\n"
+        f"=== PRE-REBUILT STRUCTURE (stable ids — preserve all) ===\n"
+        f"{rebuilt_resume_json}\n\n"
+        f"=== RESUME FACTS (compact) ===\n{resume_facts_compact}\n"
+        f"</candidate_facts>\n\n"
+        f"<job_posting>\n"
+        f"=== STRATEGY (emphasis targets only — NOT candidate facts) ===\n"
+        f"{strategy_json}\n\n"
+        f"=== RANKED REQUIREMENTS (keyword/emphasis targets only) ===\n"
+        f"{ranked_requirements_json}\n\n"
+        f"=== EVIDENCE MAP (compact) ===\n{evidence_map_compact}\n\n"
+        f"=== CONTENT SCORES ===\n{scores_json or '{}'}\n\n"
+        f"=== INFERRED COMPETENCIES ===\n{inferred_json or '[]'}\n\n"
+        f"=== TRIAGE HINTS ===\n{triage_json or '{}'}\n"
+        f"</job_posting>\n\n"
+        f"{SOURCE_SEPARATION_INSTRUCTION}\n"
+    )
+
+
 def merged_prompt_contains_legacy_rules() -> dict[str, bool]:
     """Test helper — ensure old prompt rules remain represented."""
+    smart = SMART_AGENT_SYSTEM
     return {
         "job_extraction": "hard_requirements" in AGENT_1_SYSTEM
         and "Do not hard-code software-only" in AGENT_1_SYSTEM,
         "semantic_inference": "Strongly Inferred" in AGENT_1_SYSTEM
         and "FORBIDDEN" in AGENT_1_SYSTEM,
-        "deep_tailor": "NEVER invent employers" in AGENT_2_SYSTEM
-        and "NEVER move a technology" in AGENT_2_SYSTEM,
-        "content_triage": "Preserve | Rewrite | Reorder" in AGENT_2_SYSTEM
-        or "Preserve | Rewrite | Reorder | Expand | Condense | Remove"
-        in AGENT_2_SYSTEM,
-        "human_writer": "FACTS ARE IMMUTABLE" in AGENT_3_SYSTEM
-        and "15-SECOND RULE" in AGENT_3_SYSTEM,
-        "recruiter": "SENIOR RECRUITER" in AGENT_3_SYSTEM
-        or "recruiter" in AGENT_3_SYSTEM.lower(),
-        "claim_validation": "validation_warnings" in AGENT_3_SYSTEM,
+        "deep_tailor": "NEVER invent employers" in smart
+        and "NEVER move a technology" in smart,
+        "content_triage": "Preserve | Rewrite | Reorder" in smart
+        or "Preserve | Rewrite | Reorder | Expand | Condense | Remove" in smart,
+        "human_writer": "FACTS ARE IMMUTABLE" in smart
+        and "15-SECOND RULE" in smart,
+        "recruiter": "SENIOR RECRUITER" in smart or "recruiter" in smart.lower(),
+        "claim_validation": "validation_warnings" in smart,
         "one_page": "One-page enforcement remains mandatory" in AGENT_4_SYSTEM,
-        "philosophy": "INTERVIEW-PROBABILITY" in AGENT_1_SYSTEM,
+        "philosophy": "INTERVIEW-PROBABILITY" in smart,
+        "smart_agent_present": "Smart Resume Agent" in smart,
     }

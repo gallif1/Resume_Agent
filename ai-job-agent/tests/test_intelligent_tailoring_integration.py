@@ -567,4 +567,9 @@ def test_no_generation_path_skips_claim_validator():
     assert "claim_validator_passed" in source
     assert "run_merged_writing_review" in source
     assert "writing_report" in source
-    assert "four_agent" in source or "candidate_opportunity_intelligence" in source
+    assert (
+        "single_agent" in source
+        or "smart_resume_agent" in source
+        or "four_agent" in source
+        or "candidate_opportunity_intelligence" in source
+    )

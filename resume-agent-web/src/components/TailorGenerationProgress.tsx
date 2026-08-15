@@ -5,9 +5,6 @@ import {
   Circle,
   Loader2,
   Sparkles,
-  Brain,
-  PenLine,
-  ShieldCheck,
   AlertTriangle,
   Info,
 } from "lucide-react";
@@ -31,41 +28,20 @@ const AGENT_CATALOG: Array<{
   id: string;
   label: string;
   idleMessage: string;
-  icon: typeof Brain;
+  icon: typeof Sparkles;
   substeps: string[];
 }> = [
   {
-    id: "candidate_opportunity_intelligence",
-    label: "מנתח את הניסיון שלך ואת ההזדמנות",
-    idleMessage: "קורא פרופיל מועמד, משרה, חברה וראיות…",
-    icon: Brain,
-    substeps: [
-      "קורא פרופיל מועמד",
-      "מנתח דרישות משרה",
-      "בודק הקשר ארגוני",
-      "ממפה ראיות",
-    ],
-  },
-  {
-    id: "strategy_content_selection",
-    label: "בונה את אסטרטגיית קורות החיים",
-    idleMessage: "בוחר ראיות ובונה נרטיב בעמוד אחד…",
+    id: "smart_resume_agent",
+    label: "בונה את קורות החיים המותאמים",
+    idleMessage: "מנתח ראיות וכותב קורות חיים מוכנים למגייסים…",
     icon: Sparkles,
-    substeps: ["בוחר ראיות חזקות", "בונה מבנה מותאם"],
-  },
-  {
-    id: "human_writing_credibility",
-    label: "כותב ומאמת את קורות החיים",
-    idleMessage: "מאמת טענות ומנסח ניסוח טבעי…",
-    icon: PenLine,
-    substeps: ["מאמת טענות", "כותב ניסוח טבעי", "ביקורת אמינות"],
-  },
-  {
-    id: "final_hiring_ats_page",
-    label: "ביקורת סופית — מגייס, ATS ועמוד אחד",
-    idleMessage: "בודק התאמה, ATS ועמוד אחד…",
-    icon: ShieldCheck,
-    substeps: ["סימולציית מנהל גיוס", "ציון ATS", "אכיפת עמוד אחד"],
+    substeps: [
+      "קורא פרופיל ומשרה",
+      "ממפה ראיות ואסטרטגיה",
+      "כותב ומאמת",
+      "ביקורת ATS ועמוד אחד",
+    ],
   },
 ];
 

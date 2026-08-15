@@ -196,15 +196,10 @@ def _jd_text(job: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_catalog_has_four_merged_agents():
-    assert len(AGENT_CATALOG) == 4
+def test_agent_catalog_has_one_smart_agent():
+    assert len(AGENT_CATALOG) == 1
     ids = [a[0] for a in AGENT_CATALOG]
-    assert ids == [
-        "candidate_opportunity_intelligence",
-        "strategy_content_selection",
-        "human_writing_credibility",
-        "final_hiring_ats_page",
-    ]
+    assert ids == ["smart_resume_agent"]
 
 
 def test_legacy_specialists_remain_callable():
@@ -216,8 +211,8 @@ def test_legacy_specialists_remain_callable():
         assert agent.responsibility
 
 
-def test_pipeline_version_is_four_agent():
-    assert PIPELINE_VERSION.startswith("four_agent_v2")
+def test_pipeline_version_is_single_agent():
+    assert PIPELINE_VERSION.startswith("single_agent_v1")
 
 
 # ---------------------------------------------------------------------------

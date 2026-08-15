@@ -1,9 +1,8 @@
-"""Gates that decide whether to spend another LLM refine round.
+"""Gates that decide whether to spend another refine round.
 
-Happy-path generation already uses three sequential primary LLM calls
-(opportunity intelligence → deep tailor → human writing). Extra refine
-rounds (HM / post-polish / narrative) are reserved for clearly weak drafts
-so typical generations stay fast while still rewriting when quality is poor.
+Happy-path generation uses one primary GPT-5 smart-agent call. Extra refine
+rounds (HM / post-polish / narrative) stay deterministic-only in single-agent
+mode so typical generations remain one LLM call.
 """
 
 from __future__ import annotations
