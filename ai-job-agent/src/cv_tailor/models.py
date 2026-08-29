@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+RequirementStatus = Literal["SUPPORTED", "USER_CONFIRMED", "UNSUPPORTED"]
 
 
 class ExperienceEntry(BaseModel):
@@ -31,9 +34,30 @@ class SkillGroup(BaseModel):
     skills: list[str] = Field(default_factory=list)
 
 
-class RequirementGap(BaseModel):
+class CandidateFact(BaseModel):
+    """A single candidate fact with provenance for future profile storage."""
+
+    fact: str = ""
+    normalized_fact: str = ""
+    source: Literal["original_cv", "user_confirmed"] = "user_confirmed"
+    gap_id: str = ""
+
+
+class ResolvedRequirement(BaseModel):
     requirement: str = ""
-    status: str = ""
+    title: str = ""
+    status: RequirementStatus = "SUPPORTED"
+    note: str = ""
+
+
+class RequirementGap(BaseModel):
+    gap_id: str = ""
+    title: str = ""
+    requirement: str = ""
+    job_requirement_text: str = ""
+    cv_evidence: str = ""
+    confirmation_text: str = ""
+    status: RequirementStatus = "UNSUPPORTED"
     explanation: str = ""
 
 
@@ -45,6 +69,7 @@ class JobAnalysis(BaseModel):
     key_phrases: list[str] = Field(default_factory=list)
     strong_matches: list[str] = Field(default_factory=list)
     gaps: list[RequirementGap] = Field(default_factory=list)
+    resolved_requirements: list[ResolvedRequirement] = Field(default_factory=list)
 
     @classmethod
     def from_llm_dict(cls, data: dict[str, Any]) -> JobAnalysis:
@@ -57,20 +82,57 @@ class JobAnalysis(BaseModel):
 
         strong_matches = _str_list("strong_matches")
         gaps: list[RequirementGap] = []
-        for item in data.get("gaps") or []:
+        for index, item in enumerate(data.get("gaps") or []):
             if not isinstance(item, dict):
                 continue
             requirement = str(item.get("requirement") or "").strip()
-            status = str(item.get("status") or "").strip()
+            if not requirement:
+                continue
+            raw_status = str(item.get("status") or "").strip().lower()
+            status = _normalize_requirement_status(raw_status)
+            title = str(item.get("title") or requirement).strip()
+            gap_id = str(item.get("gap_id") or "").strip() or _slugify_gap_id(title or requirement, index)
+            job_requirement_text = str(
+                item.get("job_requirement_text") or item.get("job_requirement") or ""
+            ).strip()
+            cv_evidence = str(item.get("cv_evidence") or "").strip()
+            confirmation_text = str(item.get("confirmation_text") or "").strip()
             explanation = str(item.get("explanation") or "").strip()
-            if requirement:
-                gaps.append(
-                    RequirementGap(
-                        requirement=requirement,
-                        status=status or "not_found",
-                        explanation=explanation,
-                    )
+            if not job_requirement_text and explanation:
+                job_requirement_text = explanation
+            gaps.append(
+                RequirementGap(
+                    gap_id=gap_id,
+                    title=title,
+                    requirement=requirement,
+                    job_requirement_text=job_requirement_text,
+                    cv_evidence=cv_evidence,
+                    confirmation_text=confirmation_text,
+                    status=status if status != "SUPPORTED" else "UNSUPPORTED",
+                    explanation=explanation,
                 )
+            )
+
+        resolved: list[ResolvedRequirement] = []
+        for item in data.get("resolved_requirements") or []:
+            if not isinstance(item, dict):
+                continue
+            requirement = str(item.get("requirement") or "").strip()
+            if not requirement:
+                continue
+            raw_status = str(item.get("status") or "SUPPORTED").strip().upper()
+            status: RequirementStatus = (
+                raw_status if raw_status in ("SUPPORTED", "USER_CONFIRMED") else "SUPPORTED"
+            )
+            resolved.append(
+                ResolvedRequirement(
+                    requirement=requirement,
+                    title=str(item.get("title") or requirement).strip(),
+                    status=status,
+                    note=str(item.get("note") or "").strip(),
+                )
+            )
+
         return cls(
             target_job_title=str(data.get("target_job_title") or "").strip(),
             seniority_required=str(data.get("seniority_required") or "").strip(),
@@ -79,7 +141,37 @@ class JobAnalysis(BaseModel):
             key_phrases=_str_list("key_phrases"),
             strong_matches=strong_matches,
             gaps=gaps,
+            resolved_requirements=resolved,
         )
+
+
+def _slugify_gap_id(text: str, index: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return slug[:48] or f"gap-{index}"
+
+
+def _normalize_requirement_status(raw: str) -> RequirementStatus:
+    normalized = raw.replace("-", "_").upper()
+    if normalized in ("SUPPORTED", "USER_CONFIRMED", "UNSUPPORTED"):
+        return normalized  # type: ignore[return-value]
+    if raw in ("insufficient_evidence", "not_found", "missing", "unsupported"):
+        return "UNSUPPORTED"
+    if raw in ("user_confirmed", "confirmed"):
+        return "USER_CONFIRMED"
+    if raw in ("supported", "matched"):
+        return "SUPPORTED"
+    return "UNSUPPORTED"
+
+
+class GapConfirmationInput(BaseModel):
+    gap_id: str = ""
+    confirmed: bool = False
+    details: str = ""
+
+
+class RegenerateCvRequest(BaseModel):
+    gap_confirmations: list[GapConfirmationInput] = Field(default_factory=list)
+    general_additional_info: str = ""
 
 
 class TailoredCvData(BaseModel):
@@ -254,11 +346,12 @@ class TailoredCvResult(BaseModel):
     preview_text: str
     model: str
     job_analysis: JobAnalysis = Field(default_factory=JobAnalysis)
+    user_confirmed_facts: list[CandidateFact] = Field(default_factory=list)
 
     def gaps_preview_text(self) -> str:
         if not self.job_analysis.gaps:
             return ""
         lines = ["Important gaps (not added to CV):"]
         for gap in self.job_analysis.gaps:
-            lines.append(f"• {gap.requirement} — {gap.explanation or gap.status}")
+            lines.append(f"• {gap.title or gap.requirement} — {gap.explanation or gap.status}")
         return "\n".join(lines)

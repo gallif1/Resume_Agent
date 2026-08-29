@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Download, FileText, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowLeft, ChevronDown, ChevronUp, Download, FileText, Loader2 } from "lucide-react";
 import AuthView from "./components/AuthView";
 import {
   clearAuthSession,
@@ -10,11 +10,28 @@ import {
 import {
   downloadTailoredCv,
   generateTailoredCv,
+  regenerateTailoredCv,
   type CvTailorGenerateResponse,
+  type RequirementGap,
 } from "./lib/cvTailorApi";
 import { APP_VERSION } from "./lib/version";
 
 const ACCEPTED_TYPES = ".pdf,.docx";
+
+type GapFormState = {
+  confirmed: boolean;
+  details: string;
+  showDetails: boolean;
+};
+
+function initialGapState(gaps: RequirementGap[]): Record<string, GapFormState> {
+  return Object.fromEntries(
+    gaps.map((gap) => [
+      gap.gap_id,
+      { confirmed: false, details: "", showDetails: false },
+    ])
+  );
+}
 
 export default function CvTailorPage() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -22,9 +39,12 @@ export default function CvTailorPage() {
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
   const [loading, setLoading] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CvTailorGenerateResponse | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [gapForm, setGapForm] = useState<Record<string, GapFormState>>({});
+  const [generalAdditionalInfo, setGeneralAdditionalInfo] = useState("");
 
   useEffect(() => {
     const token = getStoredToken();
@@ -52,6 +72,11 @@ export default function CvTailorPage() {
     };
   }, []);
 
+  const syncGapForm = useCallback((data: CvTailorGenerateResponse) => {
+    setGapForm(initialGapState(data.job_analysis?.gaps ?? []));
+    setGeneralAdditionalInfo("");
+  }, []);
+
   const handleGenerate = useCallback(async () => {
     setError(null);
     if (!cvFile) {
@@ -68,12 +93,13 @@ export default function CvTailorPage() {
     try {
       const data = await generateTailoredCv(cvFile, jobDescription.trim());
       setResult(data);
+      syncGapForm(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed");
     } finally {
       setLoading(false);
     }
-  }, [cvFile, jobDescription]);
+  }, [cvFile, jobDescription, syncGapForm]);
 
   const handleDownload = useCallback(async () => {
     if (!result?.result_id) return;
@@ -94,6 +120,52 @@ export default function CvTailorPage() {
       setDownloading(false);
     }
   }, [result]);
+
+  const hasGapInput = useMemo(() => {
+    const anyConfirmed = Object.values(gapForm).some((item) => item.confirmed);
+    const anyDetails = Object.values(gapForm).some((item) => item.details.trim().length > 0);
+    return anyConfirmed || anyDetails || generalAdditionalInfo.trim().length > 0;
+  }, [gapForm, generalAdditionalInfo]);
+
+  const handleRegenerate = useCallback(async () => {
+    if (!result?.result_id || !hasGapInput) return;
+    setRegenerating(true);
+    setError(null);
+    try {
+      const gap_confirmations = (result.job_analysis?.gaps ?? []).map((gap) => {
+        const state = gapForm[gap.gap_id] ?? {
+          confirmed: false,
+          details: "",
+          showDetails: false,
+        };
+        return {
+          gap_id: gap.gap_id,
+          confirmed: state.confirmed,
+          details: state.details.trim(),
+        };
+      });
+      const data = await regenerateTailoredCv(result.result_id, {
+        gap_confirmations,
+        general_additional_info: generalAdditionalInfo.trim(),
+      });
+      setResult(data);
+      syncGapForm(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Regeneration failed");
+    } finally {
+      setRegenerating(false);
+    }
+  }, [result, gapForm, generalAdditionalInfo, hasGapInput, syncGapForm]);
+
+  const updateGapForm = useCallback(
+    (gapId: string, patch: Partial<GapFormState>) => {
+      setGapForm((prev) => ({
+        ...prev,
+        [gapId]: { ...prev[gapId], ...patch },
+      }));
+    },
+    []
+  );
 
   if (authChecking) {
     return (
@@ -134,6 +206,10 @@ export default function CvTailorPage() {
       </div>
     );
   }
+
+  const gaps = result?.job_analysis?.gaps ?? [];
+  const strongMatches = result?.job_analysis?.strong_matches ?? [];
+  const resolved = result?.job_analysis?.resolved_requirements ?? [];
 
   return (
     <div className="app">
@@ -223,53 +299,192 @@ export default function CvTailorPage() {
         </section>
 
         {result && (
-          <section className="card cv-tailor-result">
-            <div className="cv-tailor-result-header">
-              <h2>Tailored CV preview</h2>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                disabled={downloading}
-                onClick={() => void handleDownload()}
-              >
-                {downloading ? (
-                  <>
-                    <Loader2 size={16} className="spin" aria-hidden="true" />
-                    Preparing…
-                  </>
-                ) : (
-                  <>
-                    <Download size={16} aria-hidden="true" />
-                    Download PDF
-                  </>
-                )}
-              </button>
-            </div>
-            <p className="cv-tailor-model-note" dir="ltr">
-              Model: {result.model}
-              {result.job_analysis?.target_job_title
-                ? ` · Target role: ${result.job_analysis.target_job_title}`
-                : ""}
-            </p>
-            <pre className="cv-tailor-preview">{result.preview_text}</pre>
-            {result.job_analysis?.gaps?.length > 0 && (
-              <div className="cv-tailor-gaps">
-                <h3>Important gaps</h3>
-                <p className="cv-tailor-gaps-note">
-                  These job requirements are not fully supported by your source CV and were not
-                  added to the tailored document.
+          <>
+            <section className="card cv-tailor-result">
+              <div className="cv-tailor-result-header">
+                <h2>Tailored CV preview</h2>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  disabled={downloading}
+                  onClick={() => void handleDownload()}
+                >
+                  {downloading ? (
+                    <>
+                      <Loader2 size={16} className="spin" aria-hidden="true" />
+                      Preparing…
+                    </>
+                  ) : (
+                    <>
+                      <Download size={16} aria-hidden="true" />
+                      Download PDF
+                    </>
+                  )}
+                </button>
+              </div>
+              <p className="cv-tailor-model-note" dir="ltr">
+                Model: {result.model}
+                {result.job_analysis?.target_job_title
+                  ? ` · Target role: ${result.job_analysis.target_job_title}`
+                  : ""}
+              </p>
+              <pre className="cv-tailor-preview">{result.preview_text}</pre>
+            </section>
+
+            {(strongMatches.length > 0 || resolved.length > 0) && (
+              <section className="card cv-tailor-matches">
+                <h2>Strong Matches</h2>
+                <p className="cv-tailor-section-note">
+                  Requirements the system found relevant and supported by your CV or confirmed
+                  information.
                 </p>
-                <ul>
-                  {result.job_analysis.gaps.map((gap) => (
-                    <li key={gap.requirement}>
-                      <strong>{gap.requirement}</strong>
-                      {gap.explanation ? ` — ${gap.explanation}` : ""}
+                <ul className="cv-tailor-match-list">
+                  {strongMatches.map((match) => (
+                    <li key={`match-${match}`}>
+                      <span className="cv-tailor-status-icon supported" aria-hidden="true">
+                        ✓
+                      </span>
+                      {match}
+                    </li>
+                  ))}
+                  {resolved.map((item) => (
+                    <li key={`resolved-${item.requirement}`}>
+                      <span
+                        className={`cv-tailor-status-icon ${item.status === "USER_CONFIRMED" ? "confirmed" : "supported"}`}
+                        aria-hidden="true"
+                      >
+                        ✓
+                      </span>
+                      {item.title || item.requirement}
+                      {item.status === "USER_CONFIRMED" ? " — supported by your confirmation" : ""}
                     </li>
                   ))}
                 </ul>
-              </div>
+              </section>
             )}
-          </section>
+
+            {gaps.length > 0 && (
+              <section className="card cv-tailor-gaps-panel">
+                <h2>Critical Missing Information</h2>
+                <p className="cv-tailor-section-note">
+                  These job requirements are not fully supported by your source CV. Confirm only
+                  what is true, or add details so the system can update your tailored CV
+                  conservatively.
+                </p>
+
+                <div className="cv-tailor-gap-list">
+                  {gaps.map((gap) => {
+                    const state = gapForm[gap.gap_id] ?? {
+                      confirmed: false,
+                      details: "",
+                      showDetails: false,
+                    };
+                    const detailsId = `gap-details-${gap.gap_id}`;
+                    const checkboxId = `gap-confirm-${gap.gap_id}`;
+                    return (
+                      <article key={gap.gap_id} className="cv-tailor-gap-card">
+                        <h3>{gap.title || gap.requirement}</h3>
+                        {gap.job_requirement_text && (
+                          <p className="cv-tailor-gap-job-req">{gap.job_requirement_text}</p>
+                        )}
+                        {gap.cv_evidence && (
+                          <p className="cv-tailor-gap-cv-evidence">
+                            <strong>Your CV:</strong> {gap.cv_evidence}
+                          </p>
+                        )}
+                        {!gap.cv_evidence && gap.explanation && (
+                          <p className="cv-tailor-gap-cv-evidence">
+                            <strong>Your CV:</strong> {gap.explanation}
+                          </p>
+                        )}
+
+                        {gap.confirmation_text && (
+                          <label className="cv-tailor-gap-checkbox" htmlFor={checkboxId}>
+                            <input
+                              id={checkboxId}
+                              type="checkbox"
+                              checked={state.confirmed}
+                              onChange={(e) =>
+                                updateGapForm(gap.gap_id, { confirmed: e.target.checked })
+                              }
+                            />
+                            <span>{gap.confirmation_text}</span>
+                          </label>
+                        )}
+
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm cv-tailor-add-details-btn"
+                          onClick={() =>
+                            updateGapForm(gap.gap_id, { showDetails: !state.showDetails })
+                          }
+                        >
+                          {state.showDetails ? (
+                            <>
+                              <ChevronUp size={14} aria-hidden="true" />
+                              Hide details
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown size={14} aria-hidden="true" />
+                              Add details
+                            </>
+                          )}
+                        </button>
+
+                        {state.showDetails && (
+                          <div className="cv-tailor-gap-details">
+                            <label className="field-label" htmlFor={detailsId}>
+                              Tell us about your {gap.title || gap.requirement} experience:
+                            </label>
+                            <textarea
+                              id={detailsId}
+                              className="cv-tailor-textarea cv-tailor-gap-textarea"
+                              rows={4}
+                              value={state.details}
+                              onChange={(e) =>
+                                updateGapForm(gap.gap_id, { details: e.target.value })
+                              }
+                            />
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+
+                <div className="cv-tailor-general-additional">
+                  <label className="field-label" htmlFor="general-additional">
+                    Anything else missing from your CV?
+                  </label>
+                  <textarea
+                    id="general-additional"
+                    className="cv-tailor-textarea cv-tailor-gap-textarea"
+                    rows={4}
+                    placeholder="Add any experience, skills, projects or tools that are relevant to this job but are not included in your original CV."
+                    value={generalAdditionalInfo}
+                    onChange={(e) => setGeneralAdditionalInfo(e.target.value)}
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  className="btn btn-primary cv-tailor-regenerate-btn"
+                  disabled={regenerating || !hasGapInput}
+                  onClick={() => void handleRegenerate()}
+                >
+                  {regenerating ? (
+                    <>
+                      <Loader2 size={18} className="spin" aria-hidden="true" />
+                      Regenerating tailored CV…
+                    </>
+                  ) : (
+                    "Add Information & Regenerate CV"
+                  )}
+                </button>
+              </section>
+            )}
+          </>
         )}
       </main>
     </div>

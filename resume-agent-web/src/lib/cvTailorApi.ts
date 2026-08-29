@@ -24,6 +24,7 @@ export type TailoredCvEducation = {
 export type TailoredCvData = {
   name: string;
   contact: string;
+  professional_title?: string;
   summary: string;
   skills: string[];
   experience: TailoredCvExperience[];
@@ -33,9 +34,21 @@ export type TailoredCvData = {
 };
 
 export type RequirementGap = {
+  gap_id: string;
+  title: string;
   requirement: string;
+  job_requirement_text: string;
+  cv_evidence: string;
+  confirmation_text: string;
   status: string;
   explanation: string;
+};
+
+export type ResolvedRequirement = {
+  requirement: string;
+  title: string;
+  status: "SUPPORTED" | "USER_CONFIRMED";
+  note: string;
 };
 
 export type JobAnalysis = {
@@ -46,6 +59,14 @@ export type JobAnalysis = {
   key_phrases?: string[];
   strong_matches: string[];
   gaps: RequirementGap[];
+  resolved_requirements?: ResolvedRequirement[];
+};
+
+export type CandidateFact = {
+  fact: string;
+  normalized_fact: string;
+  source: "original_cv" | "user_confirmed";
+  gap_id?: string;
 };
 
 export type CvTailorGenerateResponse = {
@@ -54,6 +75,18 @@ export type CvTailorGenerateResponse = {
   preview_text: string;
   tailored_cv: TailoredCvData;
   job_analysis: JobAnalysis;
+  user_confirmed_facts?: CandidateFact[];
+};
+
+export type GapConfirmationInput = {
+  gap_id: string;
+  confirmed: boolean;
+  details: string;
+};
+
+export type RegenerateCvRequest = {
+  gap_confirmations: GapConfirmationInput[];
+  general_additional_info: string;
 };
 
 function authHeaders(): Headers {
@@ -61,6 +94,17 @@ function authHeaders(): Headers {
   const token = getStoredToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   return headers;
+}
+
+async function parseErrorResponse(res: Response, fallback: string): Promise<string> {
+  let detail = fallback;
+  try {
+    const body = (await res.json()) as { detail?: string };
+    if (body.detail) detail = body.detail;
+  } catch {
+    /* ignore */
+  }
+  return detail;
 }
 
 export async function generateTailoredCv(
@@ -79,14 +123,27 @@ export async function generateTailoredCv(
   });
 
   if (!res.ok) {
-    let detail = `Request failed (${res.status})`;
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
+    throw new Error(await parseErrorResponse(res, `Request failed (${res.status})`));
+  }
+
+  return res.json() as Promise<CvTailorGenerateResponse>;
+}
+
+export async function regenerateTailoredCv(
+  resultId: string,
+  request: RegenerateCvRequest
+): Promise<CvTailorGenerateResponse> {
+  const headers = authHeaders();
+  headers.set("Content-Type", "application/json");
+
+  const res = await fetch(`${BASE_URL}/api/cv-tailor/regenerate/${encodeURIComponent(resultId)}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    throw new Error(await parseErrorResponse(res, `Regeneration failed (${res.status})`));
   }
 
   return res.json() as Promise<CvTailorGenerateResponse>;
@@ -99,14 +156,7 @@ export async function downloadTailoredCv(resultId: string): Promise<Blob> {
   });
 
   if (!res.ok) {
-    let detail = `Download failed (${res.status})`;
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail);
+    throw new Error(await parseErrorResponse(res, `Download failed (${res.status})`));
   }
 
   return res.blob();
