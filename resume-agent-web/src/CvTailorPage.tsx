@@ -249,6 +249,23 @@ export default function CvTailorPage() {
               Model: {result.model}
             </p>
             <pre className="cv-tailor-preview">{result.preview_text}</pre>
+            {result.job_analysis?.gaps?.length > 0 && (
+              <div className="cv-tailor-gaps">
+                <h3>Important gaps</h3>
+                <p className="cv-tailor-gaps-note">
+                  These job requirements are not fully supported by your source CV and were not
+                  added to the tailored document.
+                </p>
+                <ul>
+                  {result.job_analysis.gaps.map((gap) => (
+                    <li key={gap.requirement}>
+                      <strong>{gap.requirement}</strong>
+                      {gap.explanation ? ` — ${gap.explanation}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </section>
         )}
       </main>

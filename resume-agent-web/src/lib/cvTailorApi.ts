@@ -32,11 +32,23 @@ export type TailoredCvData = {
   certifications: string[];
 };
 
+export type RequirementGap = {
+  requirement: string;
+  status: string;
+  explanation: string;
+};
+
+export type JobAnalysis = {
+  strong_matches: string[];
+  gaps: RequirementGap[];
+};
+
 export type CvTailorGenerateResponse = {
   result_id: string;
   model: string;
   preview_text: string;
   tailored_cv: TailoredCvData;
+  job_analysis: JobAnalysis;
 };
 
 function authHeaders(): Headers {

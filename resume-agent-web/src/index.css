@@ -4588,3 +4588,29 @@ code {
   color: var(--danger);
   border: 1px solid rgba(220, 38, 38, 0.2);
 }
+
+.cv-tailor-gaps {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.cv-tailor-gaps h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.cv-tailor-gaps-note {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.cv-tailor-gaps ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.cv-tailor-gaps li {
+  margin-bottom: 6px;
+}

@@ -10,10 +10,11 @@ from threading import Lock
 
 from ai_client import OpenAIAPIError, call_openai_json, truncate_text
 from config import OPENAI_CV_MAX_CHARS, OPENAI_CV_TAILOR_MODEL, OPENAI_JOB_MAX_CHARS
-from cv_tailor.models import TailoredCvData, TailoredCvResult
+from cv_tailor.models import JobAnalysis, TailoredCvData, TailoredCvResult
 from cv_tailor.parser import parse_cv_bytes
 from cv_tailor.prompt import SYSTEM_PROMPT, build_user_prompt
 from cv_tailor.renderer import pdf_filename_for_cv, render_tailored_cv_pdf
+from cv_tailor.validation import apply_factual_guards, parse_llm_response
 from pdf_generator_service import PdfGeneratorError
 
 logger = logging.getLogger("cv_tailor.service")
@@ -25,6 +26,7 @@ SESSION_TTL = timedelta(hours=1)
 class _StoredResult:
     user_id: str
     tailored_cv: TailoredCvData
+    job_analysis: JobAnalysis
     pdf_bytes: bytes
     pdf_filename: str
     created_at: datetime
@@ -52,7 +54,7 @@ def generate_tailored_cv(
     job_description: str,
     user_id: str,
 ) -> TailoredCvResult:
-    """Parse CV, call OpenAI once, store PDF for download."""
+    """Parse CV, call OpenAI once, apply factual guards, store PDF for download."""
     job_description = (job_description or "").strip()
     if len(job_description) < 20:
         raise CvTailorError("Job description is too short")
@@ -70,7 +72,7 @@ def generate_tailored_cv(
             SYSTEM_PROMPT,
             user_prompt,
             use_cache=False,
-            cache_namespace="cv_tailor_mvp",
+            cache_namespace="cv_tailor_mvp_v2",
             model=OPENAI_CV_TAILOR_MODEL,
         )
     except OpenAIAPIError as exc:
@@ -80,7 +82,9 @@ def generate_tailored_cv(
         logger.exception("Unexpected OpenAI CV tailor failure")
         raise CvTailorError("CV tailoring failed. Please try again.") from exc
 
-    tailored_cv = TailoredCvData.from_llm_dict(raw)
+    tailored_cv, job_analysis = parse_llm_response(raw)
+    tailored_cv = apply_factual_guards(cv_text, tailored_cv)
+
     if not (
         tailored_cv.summary
         or tailored_cv.experience
@@ -90,6 +94,12 @@ def generate_tailored_cv(
     ):
         logger.error("OpenAI returned empty tailored CV structure")
         raise CvTailorError("Tailored CV generation returned empty content")
+
+    logger.info(
+        "CV tailor analysis complete (strong_matches=%d, gaps=%d)",
+        len(job_analysis.strong_matches),
+        len(job_analysis.gaps),
+    )
 
     try:
         pdf_bytes = render_tailored_cv_pdf(tailored_cv)
@@ -107,18 +117,21 @@ def generate_tailored_cv(
         _store[result_id] = _StoredResult(
             user_id=user_id,
             tailored_cv=tailored_cv,
+            job_analysis=job_analysis,
             pdf_bytes=pdf_bytes,
             pdf_filename=pdf_filename,
             created_at=datetime.now(timezone.utc),
         )
 
     logger.info("CV tailor workflow completed (result_id=%s, model=%s)", result_id, OPENAI_CV_TAILOR_MODEL)
-    return TailoredCvResult(
+    result = TailoredCvResult(
         result_id=result_id,
         tailored_cv=tailored_cv,
         preview_text=tailored_cv.to_preview_text(),
         model=OPENAI_CV_TAILOR_MODEL,
+        job_analysis=job_analysis,
     )
+    return result
 
 
 def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:

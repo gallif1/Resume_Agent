@@ -46,6 +46,7 @@ async def cv_tailor_generate(
         "model": result.model,
         "preview_text": result.preview_text,
         "tailored_cv": result.tailored_cv.model_dump(),
+        "job_analysis": result.job_analysis.model_dump(),
     }
 
 

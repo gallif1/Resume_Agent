@@ -17,7 +17,7 @@ CV_TAILOR_THEME = "cv_tailor"
 CV_TAILOR_CSS = """
 @page {
     size: A4;
-    margin: 12mm 14mm 12mm 14mm;
+    margin: 10mm 12mm 10mm 12mm;
 }
 * {
     box-sizing: border-box;
@@ -25,8 +25,8 @@ CV_TAILOR_CSS = """
 body {
     font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
     color: #1a1a1a;
-    line-height: 1.42;
-    font-size: 10pt;
+    line-height: 1.32;
+    font-size: 9.5pt;
     margin: 0;
     padding: 0;
     -webkit-print-color-adjust: exact;
@@ -37,62 +37,62 @@ body {
 }
 .header {
     text-align: center;
-    margin-bottom: 5mm;
-    padding-bottom: 2mm;
+    margin-bottom: 3mm;
+    padding-bottom: 1.5mm;
 }
 .header h1 {
     font-family: Georgia, "Times New Roman", Times, serif;
-    font-size: 22pt;
+    font-size: 20pt;
     font-weight: 700;
     color: #2e4a7d;
-    margin: 0 0 1.5mm 0;
+    margin: 0 0 1mm 0;
     letter-spacing: 0.2px;
 }
 .professional-title {
     font-family: Georgia, "Times New Roman", Times, serif;
-    font-size: 11pt;
+    font-size: 10.5pt;
     font-weight: 700;
     color: #2e4a7d;
-    margin: 0 0 1.5mm 0;
+    margin: 0 0 1mm 0;
 }
 .contact-info {
-    font-size: 9pt;
+    font-size: 8.5pt;
     color: #4a5568;
     margin: 0;
-    line-height: 1.5;
+    line-height: 1.35;
 }
 h2.section-title {
     font-family: Georgia, "Times New Roman", Times, serif;
-    font-size: 11pt;
+    font-size: 10.5pt;
     font-weight: 700;
     color: #2e4a7d;
     text-transform: none;
-    margin: 4.5mm 0 2mm 0;
-    padding-bottom: 1mm;
+    margin: 3mm 0 1.2mm 0;
+    padding-bottom: 0.6mm;
     border-bottom: 1px solid #2e4a7d;
     page-break-after: avoid;
     break-after: avoid;
 }
 .summary-text {
-    margin: 0 0 1.5mm 0;
+    margin: 0 0 1mm 0;
     text-align: left;
     color: #1a1a1a;
 }
 .skills-container {
-    margin-top: 0.5mm;
+    margin-top: 0.2mm;
 }
 .skills-line {
-    margin-bottom: 0.9mm;
-    font-size: 10pt;
+    margin-bottom: 0.5mm;
+    font-size: 9.5pt;
 }
 .skills-category {
     font-weight: 700;
     color: #1a1a1a;
 }
 .resume-entry {
-    margin: 0 0 2.8mm 0;
-    page-break-inside: avoid;
-    break-inside: avoid;
+    margin: 0 0 1.6mm 0;
+    page-break-inside: auto;
+    break-inside: auto;
 }
 .resume-row {
     display: flex;
@@ -126,11 +126,11 @@ h2.section-title {
     margin: 0.3mm 0 0.8mm 0;
 }
 ul {
-    margin: 0.6mm 0 1.2mm 0;
-    padding-left: 4.5mm;
+    margin: 0.3mm 0 0.6mm 0;
+    padding-left: 4mm;
 }
 li {
-    margin-bottom: 0.75mm;
+    margin-bottom: 0.35mm;
     color: #1a1a1a;
 }
 li::marker {

@@ -31,6 +31,41 @@ class SkillGroup(BaseModel):
     skills: list[str] = Field(default_factory=list)
 
 
+class RequirementGap(BaseModel):
+    requirement: str = ""
+    status: str = ""
+    explanation: str = ""
+
+
+class JobAnalysis(BaseModel):
+    strong_matches: list[str] = Field(default_factory=list)
+    gaps: list[RequirementGap] = Field(default_factory=list)
+
+    @classmethod
+    def from_llm_dict(cls, data: dict[str, Any]) -> JobAnalysis:
+        strong_matches = [
+            str(item).strip()
+            for item in (data.get("strong_matches") or [])
+            if str(item).strip()
+        ]
+        gaps: list[RequirementGap] = []
+        for item in data.get("gaps") or []:
+            if not isinstance(item, dict):
+                continue
+            requirement = str(item.get("requirement") or "").strip()
+            status = str(item.get("status") or "").strip()
+            explanation = str(item.get("explanation") or "").strip()
+            if requirement:
+                gaps.append(
+                    RequirementGap(
+                        requirement=requirement,
+                        status=status or "not_found",
+                        explanation=explanation,
+                    )
+                )
+        return cls(strong_matches=strong_matches, gaps=gaps)
+
+
 class TailoredCvData(BaseModel):
     name: str = ""
     contact: str = ""
@@ -202,3 +237,12 @@ class TailoredCvResult(BaseModel):
     tailored_cv: TailoredCvData
     preview_text: str
     model: str
+    job_analysis: JobAnalysis = Field(default_factory=JobAnalysis)
+
+    def gaps_preview_text(self) -> str:
+        if not self.job_analysis.gaps:
+            return ""
+        lines = ["Important gaps (not added to CV):"]
+        for gap in self.job_analysis.gaps:
+            lines.append(f"• {gap.requirement} — {gap.explanation or gap.status}")
+        return "\n".join(lines)

@@ -96,22 +96,25 @@ def test_api_cv_tailor_generate_and_download(db_path, monkeypatch):
     client = TestClient(api_server.app)
 
     mock_llm = {
-        "name": "Jane Doe",
-        "contact": "jane@example.com",
-        "professional_title": "Backend Software Developer",
-        "summary": "Python backend engineer aligned with the role.",
-        "skill_groups": [{"category": "Backend", "skills": ["Python", "FastAPI"]}],
-        "experience": [
-            {
-                "company": "Acme Corp",
-                "role": "Software Engineer",
-                "dates": "2020–2024",
-                "bullets": ["Built REST APIs with Python"],
-            }
-        ],
-        "projects": [],
-        "education": [],
-        "certifications": [],
+        "tailored_cv": {
+            "name": "Jane Doe",
+            "contact": "jane@example.com",
+            "professional_title": "Backend Software Developer",
+            "summary": "Python backend engineer aligned with the role.",
+            "skill_groups": [{"category": "Backend", "skills": ["Python", "FastAPI"]}],
+            "experience": [
+                {
+                    "company": "Acme Corp",
+                    "role": "Software Engineer",
+                    "dates": "2020–2024",
+                    "bullets": ["Built REST APIs with Python"],
+                }
+            ],
+            "projects": [],
+            "education": [],
+            "certifications": [],
+        },
+        "job_analysis": {"strong_matches": ["Python"], "gaps": []},
     }
 
     fake_pdf = b"%PDF-1.4 tailored"
@@ -171,12 +174,15 @@ def test_generate_tailored_cv_rejects_short_job_description():
 
 def test_get_download_pdf_wrong_user():
     mock_llm = {
-        "summary": "Summary text for tailored CV.",
-        "skills": ["Python"],
-        "experience": [],
-        "projects": [],
-        "education": [],
-        "certifications": [],
+        "tailored_cv": {
+            "summary": "Summary text for tailored CV.",
+            "skills": ["Python"],
+            "experience": [],
+            "projects": [],
+            "education": [],
+            "certifications": [],
+        },
+        "job_analysis": {"strong_matches": [], "gaps": []},
     }
     with patch("cv_tailor.service.call_openai_json", return_value=mock_llm):
         with patch(
