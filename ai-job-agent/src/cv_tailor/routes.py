@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -25,7 +26,9 @@ async def cv_tailor_generate(
     filename = file.filename or "cv.pdf"
     try:
         file_bytes = await file.read()
-        result = generate_tailored_cv(
+        # Playwright sync API must not run on the asyncio event loop.
+        result = await asyncio.to_thread(
+            generate_tailored_cv,
             file_bytes=file_bytes,
             filename=filename,
             job_description=job_description,
