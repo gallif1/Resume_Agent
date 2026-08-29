@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from cv_tailor.models import JobAnalysis, TailoredCvData
+from cv_tailor.models import CandidateFact, JobAnalysis, TailoredCvData
 
 logger = logging.getLogger("cv_tailor.validation")
 
@@ -132,6 +132,30 @@ def parse_llm_response(raw: dict[str, Any]) -> tuple[TailoredCvData, JobAnalysis
     return tailored_cv, job_analysis
 
 
+def parse_regenerate_response(
+    raw: dict[str, Any],
+) -> tuple[TailoredCvData, JobAnalysis, list[CandidateFact]]:
+    """Parse regeneration LLM JSON including newly normalized facts."""
+    tailored_cv, job_analysis = parse_llm_response(raw)
+    new_facts: list[CandidateFact] = []
+    for item in raw.get("normalized_new_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        fact = str(item.get("fact") or "").strip()
+        normalized = str(item.get("normalized_fact") or fact).strip()
+        if not normalized:
+            continue
+        new_facts.append(
+            CandidateFact(
+                fact=fact or normalized,
+                normalized_fact=normalized,
+                source="user_confirmed",
+                gap_id=str(item.get("gap_id") or "").strip(),
+            )
+        )
+    return tailored_cv, job_analysis, new_facts
+
+
 def _source_skill_tokens(source_text: str) -> set[str]:
     tokens: set[str] = set()
     for match in _SKILL_TOKEN_RE.finditer(source_text.lower()):
@@ -169,7 +193,53 @@ def _source_skill_tokens(source_text: str) -> set[str]:
     return tokens
 
 
-def _skill_supported(skill: str, source_text: str, source_tokens: set[str]) -> bool:
+def _confirmed_facts_text(user_confirmed_facts: list[CandidateFact] | None) -> str:
+    if not user_confirmed_facts:
+        return ""
+    parts = [
+        (fact.normalized_fact or fact.fact).strip()
+        for fact in user_confirmed_facts
+        if (fact.normalized_fact or fact.fact).strip()
+    ]
+    return "\n".join(parts)
+
+
+def _combined_evidence_text(
+    source_text: str,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+) -> str:
+    confirmed = _confirmed_facts_text(user_confirmed_facts)
+    if confirmed:
+        return f"{source_text}\n\nUSER CONFIRMED FACTS:\n{confirmed}"
+    return source_text
+
+
+def _confirmed_year_claims(user_confirmed_facts: list[CandidateFact] | None) -> list[tuple[str, str]]:
+    """Extract (years, technology) pairs explicitly confirmed by the user."""
+    claims: list[tuple[str, str]] = []
+    if not user_confirmed_facts:
+        return claims
+    for fact in user_confirmed_facts:
+        text = (fact.normalized_fact or fact.fact).strip()
+        for match in _YEARS_CLAIM_RE.finditer(text):
+            claims.append((match.group(1).strip(), match.group(2).strip()))
+        confirm_match = re.search(
+            r"confirm that i have at least (\d+\+?\s*(?:years?|yrs?))\s+(.+?)(?:\.|$)",
+            text,
+            re.IGNORECASE,
+        )
+        if confirm_match:
+            claims.append((confirm_match.group(1).strip(), confirm_match.group(2).strip()))
+    return claims
+
+
+def _skill_supported(
+    skill: str,
+    source_text: str,
+    source_tokens: set[str],
+    *,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+) -> bool:
     skill_l = skill.strip().lower()
     if not skill_l:
         return True
@@ -181,11 +251,34 @@ def _skill_supported(skill: str, source_text: str, source_tokens: set[str]) -> b
     for token in source_tokens:
         if token in skill_l or skill_l in token:
             return True
+    confirmed_text = _confirmed_facts_text(user_confirmed_facts).lower()
+    if confirmed_text and skill_l in confirmed_text:
+        return True
+    if confirmed_text:
+        for fact in user_confirmed_facts or []:
+            fact_text = (fact.normalized_fact or fact.fact).lower()
+            if skill_l in fact_text or fact_text in skill_l:
+                return True
     return False
 
 
-def _source_supports_years_claim(source_text: str, technology: str, years: str) -> bool:
+def _source_supports_years_claim(
+    source_text: str,
+    technology: str,
+    years: str,
+    *,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+) -> bool:
     tech = technology.strip().lower()
+    years_norm = years.strip().lower()
+    if user_confirmed_facts:
+        for confirmed_years, confirmed_tech in _confirmed_year_claims(user_confirmed_facts):
+            if tech in confirmed_tech.lower() or confirmed_tech.lower() in tech:
+                if confirmed_years.lower() == years_norm or confirmed_years.lower() in years_norm:
+                    return True
+        confirmed_text = _confirmed_facts_text(user_confirmed_facts).lower()
+        if tech in confirmed_text and years_norm in confirmed_text:
+            return True
     if tech not in source_text.lower():
         return False
     # Require explicit duration near the technology in source, not just a skills mention.
@@ -213,11 +306,26 @@ def _repair_education(source_text: str, tailored_cv: TailoredCvData) -> Tailored
     return tailored_cv
 
 
-def _strip_unsupported_skills(source_text: str, tailored_cv: TailoredCvData) -> TailoredCvData:
-    source_tokens = _source_skill_tokens(source_text)
+def _strip_unsupported_skills(
+    source_text: str,
+    tailored_cv: TailoredCvData,
+    *,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+) -> TailoredCvData:
+    evidence_text = _combined_evidence_text(source_text, user_confirmed_facts)
+    source_tokens = _source_skill_tokens(evidence_text)
     cleaned_groups = []
     for group in tailored_cv.skill_groups:
-        kept = [s for s in group.skills if _skill_supported(s, source_text, source_tokens)]
+        kept = [
+            s
+            for s in group.skills
+            if _skill_supported(
+                s,
+                evidence_text,
+                source_tokens,
+                user_confirmed_facts=user_confirmed_facts,
+            )
+        ]
         removed = [s for s in group.skills if s not in kept]
         for skill in removed:
             logger.warning("Removed unsupported skill from output: %s", skill)
@@ -226,18 +334,35 @@ def _strip_unsupported_skills(source_text: str, tailored_cv: TailoredCvData) -> 
     tailored_cv.skill_groups = cleaned_groups
 
     tailored_cv.skills = [
-        s for s in tailored_cv.skills if _skill_supported(s, source_text, source_tokens)
+        s
+        for s in tailored_cv.skills
+        if _skill_supported(
+            s,
+            evidence_text,
+            source_tokens,
+            user_confirmed_facts=user_confirmed_facts,
+        )
     ]
     return tailored_cv
 
 
-def _strip_unsupported_years_claims(source_text: str, tailored_cv: TailoredCvData) -> TailoredCvData:
+def _strip_unsupported_years_claims(
+    source_text: str,
+    tailored_cv: TailoredCvData,
+    *,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+) -> TailoredCvData:
     """Remove 'N years of X' claims from summary/bullets when unsupported by source."""
 
     def clean_text(text: str) -> str:
         def repl(match: re.Match[str]) -> str:
             years, tech = match.group(1), match.group(2).strip()
-            if _source_supports_years_claim(source_text, tech, years):
+            if _source_supports_years_claim(
+                source_text,
+                tech,
+                years,
+                user_confirmed_facts=user_confirmed_facts,
+            ):
                 return match.group(0)
             logger.warning("Removed unsupported duration claim: %s %s", years, tech)
             return tech
@@ -259,6 +384,7 @@ def apply_factual_guards(
     *,
     job_description: str = "",
     job_analysis: JobAnalysis | None = None,
+    user_confirmed_facts: list[CandidateFact] | None = None,
 ) -> TailoredCvData:
     """Apply deterministic repairs for common factual and alignment issues."""
     analysis = job_analysis or JobAnalysis()
@@ -269,8 +395,16 @@ def apply_factual_guards(
         source_text=source_text,
     )
     tailored_cv = _repair_education(source_text, tailored_cv)
-    tailored_cv = _strip_unsupported_skills(source_text, tailored_cv)
-    tailored_cv = _strip_unsupported_years_claims(source_text, tailored_cv)
+    tailored_cv = _strip_unsupported_skills(
+        source_text,
+        tailored_cv,
+        user_confirmed_facts=user_confirmed_facts,
+    )
+    tailored_cv = _strip_unsupported_years_claims(
+        source_text,
+        tailored_cv,
+        user_confirmed_facts=user_confirmed_facts,
+    )
 
     if _summary_echoes_source(tailored_cv.summary, source_text):
         logger.warning(

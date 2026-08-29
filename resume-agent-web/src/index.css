@@ -4614,3 +4614,125 @@ code {
 .cv-tailor-gaps li {
   margin-bottom: 6px;
 }
+
+.cv-tailor-matches,
+.cv-tailor-gaps-panel {
+  margin-bottom: 20px;
+}
+
+.cv-tailor-matches h2,
+.cv-tailor-gaps-panel h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+.cv-tailor-section-note {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.cv-tailor-match-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.cv-tailor-match-list li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.95rem;
+}
+
+.cv-tailor-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.cv-tailor-status-icon.supported {
+  background: rgba(22, 163, 74, 0.15);
+  color: #15803d;
+}
+
+.cv-tailor-status-icon.confirmed {
+  background: rgba(37, 99, 235, 0.15);
+  color: #1d4ed8;
+}
+
+.cv-tailor-gap-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cv-tailor-gap-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  background: var(--surface-2);
+}
+
+.cv-tailor-gap-card h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.cv-tailor-gap-job-req,
+.cv-tailor-gap-cv-evidence {
+  margin: 0 0 8px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.cv-tailor-gap-cv-evidence {
+  color: var(--text-muted);
+}
+
+.cv-tailor-gap-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 0;
+  cursor: pointer;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.cv-tailor-gap-checkbox input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.cv-tailor-add-details-btn {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cv-tailor-gap-details,
+.cv-tailor-general-additional {
+  margin-top: 12px;
+}
+
+.cv-tailor-gap-textarea {
+  min-height: 100px;
+}
+
+.cv-tailor-regenerate-btn {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

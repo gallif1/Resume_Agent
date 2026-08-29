@@ -10,7 +10,8 @@ from fastapi.responses import Response
 
 import auth
 from cv_tailor.parser import CvParseError
-from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_pdf
+from cv_tailor.models import RegenerateCvRequest
+from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_pdf, regenerate_tailored_cv
 
 logger = logging.getLogger("cv_tailor.routes")
 
@@ -47,6 +48,34 @@ async def cv_tailor_generate(
         "preview_text": result.preview_text,
         "tailored_cv": result.tailored_cv.model_dump(),
         "job_analysis": result.job_analysis.model_dump(),
+        "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
+    }
+
+
+@router.post("/regenerate/{result_id}")
+async def cv_tailor_regenerate(
+    result_id: str,
+    body: RegenerateCvRequest,
+    user: dict = Depends(auth.get_current_user),
+):
+    try:
+        result = await asyncio.to_thread(
+            regenerate_tailored_cv,
+            result_id=result_id,
+            user_id=str(user["id"]),
+            request=body,
+        )
+    except CvTailorError as exc:
+        logger.warning("CV tailor regenerate error: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "result_id": result.result_id,
+        "model": result.model,
+        "preview_text": result.preview_text,
+        "tailored_cv": result.tailored_cv.model_dump(),
+        "job_analysis": result.job_analysis.model_dump(),
+        "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
     }
 
 
