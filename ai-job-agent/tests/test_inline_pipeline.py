@@ -43,7 +43,12 @@ def _context(**overrides) -> MatchContext:
 
 
 def _job(**overrides) -> dict:
-    job = {"id": 1, "title": "Python Dev", "company": "Acme", "description": "desc"}
+    job = {
+        "id": 1,
+        "title": "Python Dev",
+        "company": "Acme",
+        "description": "Python backend developer role with APIs, databases, and cloud deployment.",
+    }
     job.update(overrides)
     return job
 

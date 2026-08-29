@@ -80,8 +80,8 @@ def delta_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_path: Path):
     }
 
 
-def test_apply_collect_filters_stop_on_known_empty_db_skips_age_filter():
-    """First scan (empty DB index) must not apply a hardcoded age/time window."""
+def test_apply_collect_filters_stop_on_known_applies_age_filter_by_default():
+    """First scan (empty DB) still respects the configured posted-date window."""
     page = [
         {
             "title": "Ancient",
@@ -92,6 +92,27 @@ def test_apply_collect_filters_stop_on_known_empty_db_skips_age_filter():
     kept, age, known_skipped, all_old, hit = _apply_collect_filters(
         page,
         stop_on_known=True,
+    )
+    assert hit is False
+    assert all_old is True
+    assert age == 1
+    assert known_skipped == 0
+    assert kept == []
+
+
+def test_apply_collect_filters_stop_on_known_can_disable_age_filter():
+    """Explicit opt-out keeps chronological crawl without a time window."""
+    page = [
+        {
+            "title": "Ancient",
+            "job_url": "https://www.drushim.co.il/job/10/",
+            "posted_date": "שנת 2020",
+        },
+    ]
+    kept, age, known_skipped, all_old, hit = _apply_collect_filters(
+        page,
+        stop_on_known=True,
+        apply_age_filter=False,
     )
     assert hit is False
     assert all_old is False
