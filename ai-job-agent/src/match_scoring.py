@@ -7,7 +7,9 @@ from typing import Any
 from ai_client import clamp_score
 from ats_scorer import (
     DOMAIN_MISMATCH_SCORE_CAP,
+    EXPERIENCE_GAP_SCORE_CAP,
     HARD_CONSTRAINT_FAIL_CAP,
+    junior_underqualified_cap_for_gap,
 )
 
 PROFILE_MATCH_WEIGHT = 0.60
@@ -39,6 +41,17 @@ def compute_final_match_score(
         )
     elif ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
         final_score = min(final_score, int(ats_result.ats_score))
+    if getattr(ats_result, "experience_gap_failed", False) is True:
+        gap_years = getattr(ats_result, "experience_gap_years", 0.0)
+        if not isinstance(gap_years, (int, float)):
+            gap_years = 0.0
+        if gap_years >= 2:
+            gap_cap = junior_underqualified_cap_for_gap(float(gap_years))
+            final_score = min(
+                final_score,
+                gap_cap,
+                int(ats_result.ats_score),
+            )
     if ats_result.domain_mismatch:
         final_score = min(
             final_score, DOMAIN_MISMATCH_SCORE_CAP, int(ats_result.ats_score)

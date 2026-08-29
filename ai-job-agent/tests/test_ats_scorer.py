@@ -176,8 +176,8 @@ def test_to_db_fields_includes_ats_columns():
     assert fields["ats_reasons"]
 
 
-def test_junior_underqualified_capped_at_70():
-    """0–1y candidate vs 3y+ role cannot score above 70."""
+def test_junior_underqualified_capped_for_experience_gap():
+    """Junior with fewer years than the JD minimum cannot score above the gap cap."""
     job = _job_profile(
         title="Backend Developer",
         seniority="mid",
@@ -197,8 +197,36 @@ def test_junior_underqualified_capped_at_70():
         projects=["API platform"],
     )
     result = score(candidate, job)
-    assert result.ats_score <= 70
-    assert any("Early-career" in r for r in result.score_reasons)
+    assert result.experience_gap_failed
+    assert result.ats_score <= 45
+    assert any("experience gap" in r.lower() for r in result.score_reasons)
+
+
+def test_junior_vs_senior_years_role_not_potential_match():
+    """5+ year role with skill overlap must not be treated as a potential junior match."""
+    job = _job_profile(
+        title="Backend Developer",
+        seniority="senior",
+        years_experience_min=5.0,
+        mandatory_requirements=["5+ years experience", "3+ years node-js"],
+        required_skills=["Python", "Node.js", "AWS", "Docker"],
+        technologies=["Python", "Node.js", "AWS", "Docker"],
+        preferred_skills=[],
+        languages=["English"],
+    )
+    candidate = _candidate(
+        experience_years=0.0,
+        seniority="junior",
+        skills=["Python", "Node.js", "AWS", "Docker", "English"],
+        technologies=["Python", "Node.js", "AWS", "Docker"],
+        previous_roles=["Computer Science Student"],
+        projects=["Backend API project"],
+    )
+    result = score(candidate, job)
+    assert not result.is_potential_junior_match
+    assert result.experience_gap_failed
+    assert result.ats_score <= 45
+    assert result.mandatory_failed
 
 
 def test_dynamic_domain_mismatch_penalized():
