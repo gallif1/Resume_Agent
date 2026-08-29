@@ -13,7 +13,8 @@ from config import OPENAI_CV_MAX_CHARS, OPENAI_CV_TAILOR_MODEL, OPENAI_JOB_MAX_C
 from cv_tailor.models import TailoredCvData, TailoredCvResult
 from cv_tailor.parser import parse_cv_bytes
 from cv_tailor.prompt import SYSTEM_PROMPT, build_user_prompt
-from cv_tailor.renderer import render_tailored_cv_docx
+from cv_tailor.renderer import pdf_filename_for_cv, render_tailored_cv_pdf
+from pdf_generator_service import PdfGeneratorError
 
 logger = logging.getLogger("cv_tailor.service")
 
@@ -24,7 +25,8 @@ SESSION_TTL = timedelta(hours=1)
 class _StoredResult:
     user_id: str
     tailored_cv: TailoredCvData
-    docx_bytes: bytes
+    pdf_bytes: bytes
+    pdf_filename: str
     created_at: datetime
 
 
@@ -50,7 +52,7 @@ def generate_tailored_cv(
     job_description: str,
     user_id: str,
 ) -> TailoredCvResult:
-    """Parse CV, call OpenAI once, store DOCX for download."""
+    """Parse CV, call OpenAI once, store PDF for download."""
     job_description = (job_description or "").strip()
     if len(job_description) < 20:
         raise CvTailorError("Job description is too short")
@@ -83,16 +85,21 @@ def generate_tailored_cv(
         tailored_cv.summary
         or tailored_cv.experience
         or tailored_cv.skills
+        or tailored_cv.skill_groups
         or tailored_cv.projects
     ):
         logger.error("OpenAI returned empty tailored CV structure")
         raise CvTailorError("Tailored CV generation returned empty content")
 
     try:
-        docx_bytes = render_tailored_cv_docx(tailored_cv)
+        pdf_bytes = render_tailored_cv_pdf(tailored_cv)
+        pdf_filename = pdf_filename_for_cv(tailored_cv)
+    except PdfGeneratorError as exc:
+        logger.error("PDF generation failed: %s", exc)
+        raise CvTailorError(str(exc)) from exc
     except Exception as exc:
-        logger.exception("DOCX generation failed")
-        raise CvTailorError("Could not generate downloadable CV document") from exc
+        logger.exception("PDF generation failed")
+        raise CvTailorError("Could not generate downloadable CV PDF") from exc
 
     result_id = str(uuid.uuid4())
     with _store_lock:
@@ -100,7 +107,8 @@ def generate_tailored_cv(
         _store[result_id] = _StoredResult(
             user_id=user_id,
             tailored_cv=tailored_cv,
-            docx_bytes=docx_bytes,
+            pdf_bytes=pdf_bytes,
+            pdf_filename=pdf_filename,
             created_at=datetime.now(timezone.utc),
         )
 
@@ -113,8 +121,8 @@ def generate_tailored_cv(
     )
 
 
-def get_download_docx(*, result_id: str, user_id: str) -> tuple[bytes, str]:
-    """Return DOCX bytes and filename for a stored result."""
+def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
+    """Return PDF bytes and filename for a stored result."""
     with _store_lock:
         _cleanup_expired()
         stored = _store.get(result_id)
@@ -124,7 +132,4 @@ def get_download_docx(*, result_id: str, user_id: str) -> tuple[bytes, str]:
     if stored.user_id != user_id:
         raise CvTailorError("Download link expired or not found")
 
-    name_part = (stored.tailored_cv.name or "tailored-cv").strip()
-    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in name_part)
-    safe_name = safe_name.strip("-") or "tailored-cv"
-    return stored.docx_bytes, f"{safe_name}.docx"
+    return stored.pdf_bytes, stored.pdf_filename

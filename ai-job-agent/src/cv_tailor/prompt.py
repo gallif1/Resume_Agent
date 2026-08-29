@@ -25,9 +25,16 @@ OUTPUT:
 Return a single JSON object with this schema (adapt only if the original CV has additional factual sections worth preserving):
 {
   "name": "candidate full name if present in original CV, else empty string",
-  "contact": "email/phone/location line if present, else empty string",
+  "contact": "email/phone/location/links line if present, else empty string",
+  "professional_title": "target job title or current professional title from the original CV",
   "summary": "tailored professional summary",
-  "skills": ["skill1", "skill2"],
+  "skill_groups": [
+    {
+      "category": "Backend",
+      "skills": ["Python", "FastAPI"]
+    }
+  ],
+  "skills": ["optional flat skill list if skill_groups is not used"],
   "experience": [
     {
       "company": "exact company name from original CV",

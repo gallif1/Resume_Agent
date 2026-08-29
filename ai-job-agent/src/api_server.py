@@ -52,7 +52,7 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
 
 CV Tailor MVP (require Bearer JWT):
     POST   /api/cv-tailor/generate            upload CV + job description → tailored JSON
-    GET    /api/cv-tailor/download/{result_id} download tailored CV as DOCX
+    GET    /api/cv-tailor/download/{result_id} download tailored CV as PDF
 
 Legacy (single global CV) endpoints, kept for backward compatibility:
     GET  /api/health            server + pipeline/scan availability

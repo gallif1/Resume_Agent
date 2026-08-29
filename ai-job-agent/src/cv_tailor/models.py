@@ -26,11 +26,18 @@ class EducationEntry(BaseModel):
     dates: str = ""
 
 
+class SkillGroup(BaseModel):
+    category: str = ""
+    skills: list[str] = Field(default_factory=list)
+
+
 class TailoredCvData(BaseModel):
     name: str = ""
     contact: str = ""
+    professional_title: str = ""
     summary: str = ""
     skills: list[str] = Field(default_factory=list)
+    skill_groups: list[SkillGroup] = Field(default_factory=list)
     experience: list[ExperienceEntry] = Field(default_factory=list)
     projects: list[ProjectEntry] = Field(default_factory=list)
     education: list[EducationEntry] = Field(default_factory=list)
@@ -88,6 +95,22 @@ class TailoredCvData(BaseModel):
             str(s).strip() for s in (data.get("skills") or []) if str(s).strip()
         ]
 
+        skill_groups: list[SkillGroup] = []
+        raw_groups = data.get("skill_groups") or data.get("skills_by_category") or []
+        if isinstance(raw_groups, dict):
+            raw_groups = [{"category": k, "skills": v} for k, v in raw_groups.items()]
+        for item in raw_groups:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("category") or item.get("name") or "").strip()
+            group_skills = [
+                str(s).strip()
+                for s in (item.get("skills") or [])
+                if str(s).strip()
+            ]
+            if category and group_skills:
+                skill_groups.append(SkillGroup(category=category, skills=group_skills))
+
         certs_raw = data.get("certifications") or []
         certifications: list[str] = []
         for cert in certs_raw:
@@ -105,8 +128,15 @@ class TailoredCvData(BaseModel):
         return cls(
             name=str(data.get("name") or "").strip(),
             contact=str(data.get("contact") or data.get("contact_line") or "").strip(),
+            professional_title=str(
+                data.get("professional_title")
+                or data.get("target_role")
+                or data.get("title")
+                or ""
+            ).strip(),
             summary=summary,
             skills=skills,
+            skill_groups=skill_groups,
             experience=experience,
             projects=projects,
             education=education,
@@ -118,12 +148,18 @@ class TailoredCvData(BaseModel):
         lines: list[str] = []
         if self.name:
             lines.append(self.name)
+        if self.professional_title:
+            lines.append(self.professional_title)
         if self.contact:
             lines.append(self.contact)
         if self.summary:
             lines.extend(["", "Summary", self.summary])
-        if self.skills:
-            lines.extend(["", "Skills", ", ".join(self.skills)])
+        if self.skill_groups:
+            lines.extend(["", "Technical Skills"])
+            for group in self.skill_groups:
+                lines.append(f"{group.category}: {', '.join(group.skills)}")
+        elif self.skills:
+            lines.extend(["", "Technical Skills", ", ".join(self.skills)])
         if self.experience:
             lines.append("")
             lines.append("Experience")

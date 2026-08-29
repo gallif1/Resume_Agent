@@ -9,7 +9,7 @@ from fastapi.responses import Response
 
 import auth
 from cv_tailor.parser import CvParseError
-from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_docx
+from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_pdf
 
 logger = logging.getLogger("cv_tailor.routes")
 
@@ -52,12 +52,12 @@ async def cv_tailor_download(
     user: dict = Depends(auth.get_current_user),
 ):
     try:
-        docx_bytes, filename = get_download_docx(result_id=result_id, user_id=str(user["id"]))
+        pdf_bytes, filename = get_download_pdf(result_id=result_id, user_id=str(user["id"]))
     except CvTailorError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return Response(
-        content=docx_bytes,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        content=pdf_bytes,
+        media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
