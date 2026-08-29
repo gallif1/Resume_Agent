@@ -176,6 +176,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # Single smart resume agent uses GPT-5 by default for deeper one-shot quality.
 OPENAI_TAILOR_MODEL = os.getenv("OPENAI_TAILOR_MODEL", "gpt-5").strip() or "gpt-5"
+# Standalone CV Tailor MVP — defaults to OPENAI_TAILOR_MODEL when unset.
+OPENAI_CV_TAILOR_MODEL = (
+    os.getenv("OPENAI_CV_TAILOR_MODEL", "").strip() or OPENAI_TAILOR_MODEL
+)
 OPENAI_CV_MAX_CHARS = int(os.getenv("OPENAI_CV_MAX_CHARS", "24000"))
 OPENAI_CV_SUMMARY_MAX_CHARS = int(os.getenv("OPENAI_CV_SUMMARY_MAX_CHARS", "3500"))
 OPENAI_JOB_MAX_CHARS = int(os.getenv("OPENAI_JOB_MAX_CHARS", "4000"))

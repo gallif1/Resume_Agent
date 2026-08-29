@@ -624,6 +624,11 @@ export default function App() {
           </div>
 
           <div className="header-actions">
+            {authUser && (
+              <a href="/cv-tailor" className="btn btn-secondary btn-sm">
+                Create Tailored CV
+              </a>
+            )}
             {authUser?.email && (
               <span className="user-chip" title={authUser.email} dir="ltr">
                 {authUser.email}

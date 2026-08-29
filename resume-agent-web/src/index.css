@@ -4480,3 +4480,111 @@ code {
 .job-score {
   border-radius: var(--radius-sm);
 }
+
+/* ── CV Tailor MVP (/cv-tailor) ── */
+.cv-tailor-main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  width: 100%;
+}
+
+.cv-tailor-card,
+.cv-tailor-result {
+  margin-bottom: 20px;
+}
+
+.cv-tailor-title {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+}
+
+.cv-tailor-subtitle {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+}
+
+.field-label {
+  display: block;
+  font-weight: 600;
+  margin: 16px 0 8px;
+}
+
+.cv-tailor-file-input {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+
+.cv-tailor-file-name {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.cv-tailor-textarea {
+  width: 100%;
+  min-height: 220px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  resize: vertical;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.cv-tailor-card .btn-primary {
+  margin-top: 20px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cv-tailor-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.cv-tailor-result-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.cv-tailor-model-note {
+  margin: 0 0 12px;
+  color: var(--text-subtle);
+  font-size: 0.85rem;
+}
+
+.cv-tailor-preview {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  margin: 0;
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.alert {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.95rem;
+}
+
+.alert-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+}

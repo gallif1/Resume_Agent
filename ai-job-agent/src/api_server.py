@@ -50,6 +50,10 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     GET    /cvs/{cv_id}/site-credentials             per-CV login settings (no passwords)
     PUT    /cvs/{cv_id}/site-credentials             save LinkedIn/Drushim login for auto-apply
 
+CV Tailor MVP (require Bearer JWT):
+    POST   /api/cv-tailor/generate            upload CV + job description → tailored JSON
+    GET    /api/cv-tailor/download/{result_id} download tailored CV as DOCX
+
 Legacy (single global CV) endpoints, kept for backward compatibility:
     GET  /api/health            server + pipeline/scan availability
     GET  /api/jobs              jobs with match scores (query: min_score, all)
@@ -120,6 +124,7 @@ from tailor_cv_service import (
     prepare_for_preview,
     tailor_cv_for_job,
 )
+from cv_tailor.routes import router as cv_tailor_router
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -141,6 +146,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(cv_tailor_router)
 
 
 def _utc_now() -> str:
