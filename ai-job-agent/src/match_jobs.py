@@ -360,6 +360,14 @@ def score_one_job(job: dict, ctx: MatchContext, *, rematch: bool = False) -> dic
             refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
         return {"action": "skipped"}
 
+    from date_utils import job_has_substantive_description
+
+    if not job_has_substantive_description(job):
+        safe_print(
+            f"  [skip] no description: {job.get('title', '')} @ {job.get('company', '')}"
+        )
+        return {"action": "skipped", "reason": "no_description"}
+
     analyzed = job_needs_analysis(job)
     job_profile = _ensure_job_profile(job, use_ai=False)
 

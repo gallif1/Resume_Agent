@@ -731,8 +731,15 @@ export function searchJobsForCv(
     skip_enrich?: boolean;
     job_sites?: string[];
     delta?: boolean;
+    max_age_days?: number;
   }
-): Promise<{ started: boolean; cv_id: string; domains: string[]; delta?: boolean }> {
+): Promise<{
+  started: boolean;
+  cv_id: string;
+  domains: string[];
+  delta?: boolean;
+  max_age_days?: number;
+}> {
   return request(`/cvs/${cvId}/search`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -741,6 +748,7 @@ export function searchJobsForCv(
       skip_enrich: options.skip_enrich,
       job_sites: options.job_sites,
       delta: options.delta,
+      max_age_days: options.max_age_days,
     }),
   });
 }

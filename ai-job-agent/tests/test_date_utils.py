@@ -7,7 +7,10 @@ from datetime import date
 from date_utils import (
     format_posted_date_he,
     inject_posted_date_header,
+    job_description_body,
+    job_has_substantive_description,
     normalize_posted_date,
+    posted_date_cutoff_iso,
 )
 
 
@@ -79,3 +82,15 @@ def test_hebrew_header_and_injection():
     # Idempotent — do not stack headers.
     again = inject_posted_date_header(text, "2026-07-08")
     assert again.count("תאריך פרסום") == 1
+
+
+def test_job_description_helpers():
+    assert not job_has_substantive_description({"description": "", "full_description": ""})
+    assert job_has_substantive_description(
+        {"description": "x" * 40, "full_description": ""}
+    )
+    assert job_description_body({"full_description": "full", "description": "short"}) == "full"
+
+
+def test_posted_date_cutoff_iso():
+    assert posted_date_cutoff_iso(30, reference=REF) == "2026-06-18"

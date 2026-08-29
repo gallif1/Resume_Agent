@@ -20,7 +20,7 @@ from multilingual_normalizer import best_title_similarity, title_similarity
 from skill_normalizer import find_matching_skills, normalize_skill, skills_match
 
 # Bump when scoring algorithm changes — used for match invalidation.
-ATS_SCORER_VERSION = "v5"
+ATS_SCORER_VERSION = "v4"
 
 # Section weights (must sum to 1.0).
 WEIGHT_MANDATORY = 0.35

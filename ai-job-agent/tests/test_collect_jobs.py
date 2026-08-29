@@ -238,3 +238,24 @@ def test_collect_drushim_with_page_skips_visible_retry_when_disabled():
 
     assert outcome.status == "http_error"
     mock_retry.assert_not_called()
+
+
+def test_apply_collect_filters_applies_age_in_delta_mode():
+    from collect_jobs import _apply_collect_filters
+
+    page_jobs = [
+        {"title": "fresh", "posted_date": "2026-08-20", "job_url": "https://example.com/1"},
+        {"title": "stale", "posted_date": "2025-01-01", "job_url": "https://example.com/2"},
+    ]
+    kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
+        page_jobs,
+        stop_on_known=False,
+        apply_age_filter=True,
+        max_age_days=30,
+    )
+    assert len(kept) == 1
+    assert kept[0]["title"] == "fresh"
+    assert age_skipped == 1
+    assert known_skipped == 0
+    assert all_old is False
+    assert hit_delta is False

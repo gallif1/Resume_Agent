@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
-import { Briefcase, Check, Globe, Loader2, Play, Plus } from "lucide-react";
+import { Briefcase, Calendar, Check, Globe, Loader2, Play, Plus } from "lucide-react";
 import { type JobSite } from "../lib/api";
+
+export const JOB_MAX_AGE_PRESETS = [7, 14, 30, 60, 90] as const;
+export const DEFAULT_MAX_AGE_DAYS = 30;
 
 interface Props {
   cvId: string;
@@ -14,7 +17,7 @@ interface Props {
   /** When true, modal copy reflects a rescan rather than a first scan. */
   hasPriorResults?: boolean;
   onAnalyze: (cvId: string) => Promise<void>;
-  onConfirm: (siteIds: string[], domains: string[]) => void;
+  onConfirm: (siteIds: string[], domains: string[], maxAgeDays: number) => void;
   onCancel: () => void;
 }
 
@@ -60,6 +63,7 @@ export default function RunAgentModal({
   const enabledIds = displaySites.filter((s) => s.enabled).map((s) => s.id);
   const [selected, setSelected] = useState<string[]>(enabledIds);
   const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
+  const [maxAgeDays, setMaxAgeDays] = useState<number>(DEFAULT_MAX_AGE_DAYS);
   const [customDomain, setCustomDomain] = useState("");
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const requestedAnalysisRef = useRef<string | null>(null);
@@ -258,6 +262,33 @@ export default function RunAgentModal({
 
           <div className="scan-modal-section">
             <div className="scan-modal-section-head">
+              <span className="scan-config-label">טווח פרסום</span>
+            </div>
+            <p className="domain-summary">
+              ייאספו רק משרות שפורסמו בטווח שתבחרו. משרות ישנות יותר ומשרות ללא תיאור
+              לא יוצגו בתוצאות.
+            </p>
+            <div className="max-age-options" role="group" aria-label="טווח פרסום משרות">
+              {JOB_MAX_AGE_PRESETS.map((days) => {
+                const selectedAge = maxAgeDays === days;
+                return (
+                  <button
+                    key={days}
+                    type="button"
+                    className={`max-age-option ${selectedAge ? "selected" : ""}`}
+                    aria-pressed={selectedAge}
+                    onClick={() => setMaxAgeDays(days)}
+                  >
+                    <Calendar size={16} aria-hidden />
+                    <span>{days} ימים אחרונים</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="scan-modal-section">
+            <div className="scan-modal-section-head">
               <span className="scan-config-label">תחומים מומלצים</span>
               {suggestedDomains.length > 0 && (
                 <label className="domain-select-all-toggle">
@@ -352,7 +383,7 @@ export default function RunAgentModal({
             type="button"
             className="btn btn-primary"
             disabled={loading || analyzing || selected.length === 0 || selectedDomains.length === 0}
-            onClick={() => onConfirm(selected, selectedDomains)}
+            onClick={() => onConfirm(selected, selectedDomains, maxAgeDays)}
           >
             <Play size={16} aria-hidden />
             {hasPriorResults ? "סריקה מחדש" : "סרוק עכשיו"}

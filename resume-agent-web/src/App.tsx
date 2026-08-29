@@ -498,7 +498,8 @@ export default function App() {
   const handleStartSearch = async (
     cvId: string,
     domains: string[],
-    siteIds: string[]
+    siteIds: string[],
+    maxAgeDays: number = 30
   ) => {
     if (scanRunningRef.current) return;
     if (domains.length === 0) {
@@ -510,7 +511,11 @@ export default function App() {
       return;
     }
     try {
-      await searchJobsForCv(cvId, { domains, job_sites: siteIds });
+      await searchJobsForCv(cvId, {
+        domains,
+        job_sites: siteIds,
+        max_age_days: maxAgeDays,
+      });
       setActiveCvId(cvId);
       setScanModalOpen(false);
       setShowScanPanel(true);
@@ -778,8 +783,8 @@ export default function App() {
               candidateSummary={candidateSummary}
               hasPriorResults={cvHasPriorScanResults(selectedCv)}
               onAnalyze={handleAnalyze}
-              onConfirm={(siteIds, domains) =>
-                handleStartSearch(selectedCv.id, domains, siteIds)
+              onConfirm={(siteIds, domains, maxAgeDays) =>
+                handleStartSearch(selectedCv.id, domains, siteIds, maxAgeDays)
               }
               onCancel={() => setScanModalOpen(false)}
             />

@@ -431,6 +431,7 @@ def run_search(
     skip_enrich: bool = False,
     job_sites: list[str] | None = None,
     delta: bool = False,
+    max_age_days: int | None = None,
     log: Callable[[str], None] | None = None,
     set_step_status: Callable[[str, str], None] | None = None,
     db_path: Path = db.REGISTRY_DB_PATH,
@@ -492,6 +493,15 @@ def run_search(
     else:
         _log(">> איסוף משרות — מצב דלתא אינקרמנטלי (עצירה במשרה קיימת)")
 
+    from date_utils import JOB_MAX_AGE_DAYS
+
+    posted_window_days = (
+        max(0, int(max_age_days))
+        if max_age_days is not None
+        else JOB_MAX_AGE_DAYS
+    )
+    _log(f">> טווח פרסום: משרות מה-{posted_window_days} הימים האחרונים בלבד")
+
     for key, name, script, extra in SEARCH_STEPS:
         skipped = key == "enrich" and skip_enrich
         if skipped:
@@ -509,6 +519,7 @@ def run_search(
                 extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
             if delta:
                 extra_args = [*extra_args, "--delta"]
+            extra_args = [*extra_args, "--max-age-days", str(posted_window_days)]
 
         step_warnings: list[str] = []
         step_summary_holder: dict[str, Any] = {}
@@ -573,6 +584,7 @@ def run_search(
         "new_matches": new_matches,
         "domains": cleaned_domains,
         "job_sites": selected_sites,
+        "max_age_days": posted_window_days,
         "incremental": True,
         "delta": True,
     }
@@ -696,9 +708,16 @@ def get_last_scan_criteria(
     if not domains:
         return None
 
+    max_age_days = summary.get("max_age_days")
+    try:
+        max_age_days = int(max_age_days) if max_age_days is not None else None
+    except (TypeError, ValueError):
+        max_age_days = None
+
     return {
         "domains": domains,
         "job_sites": job_sites or None,
+        "max_age_days": max_age_days,
         "scan_id": preferred.get("id"),
         "status": preferred.get("status"),
     }
@@ -724,6 +743,7 @@ def run_delta_refresh(
         skip_enrich=skip_enrich,
         job_sites=criteria.get("job_sites"),
         delta=True,
+        max_age_days=criteria.get("max_age_days"),
         log=log,
         set_step_status=set_step_status,
         db_path=db_path,

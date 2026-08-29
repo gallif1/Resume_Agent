@@ -153,6 +153,36 @@ def test_users_cannot_see_each_others_cvs(db_path, monkeypatch, cvs_dir):
     assert bob_get.status_code == 404
 
 
+def test_get_cv_matches_can_hide_jobs_without_description(db_path):
+    db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
+    with_desc = insert_job(db_path, title="With", url="https://x/with")
+    without_desc = insert_job(db_path, title="Without", url="https://x/without")
+
+    with db.get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
+            ("x" * 50, "2026-08-20", with_desc),
+        )
+        conn.execute(
+            "UPDATE jobs SET description = ?, full_description = ?, posted_date = ? WHERE id = ?",
+            ("", "", "2026-08-20", without_desc),
+        )
+        conn.commit()
+
+    scan = db.create_scan("cv-a", db_path=db_path)
+    db.upsert_cv_job_match("cv-a", with_desc, _match_fields(80), scan_id=scan, db_path=db_path)
+    db.upsert_cv_job_match(
+        "cv-a", without_desc, _match_fields(80), scan_id=scan, db_path=db_path
+    )
+
+    all_rows = db.get_cv_matches("cv-a", db_path=db_path)
+    assert len(all_rows) == 2
+
+    visible = db.get_cv_matches("cv-a", require_description=True, db_path=db_path)
+    assert len(visible) == 1
+    assert visible[0]["job_id"] == with_desc
+
+
 def test_match_sorting_by_site_and_score(db_path):
     db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
     j_drushim = insert_job(db_path, title="D", url="https://x/d")
