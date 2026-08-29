@@ -20,7 +20,7 @@ from multilingual_normalizer import best_title_similarity, title_similarity
 from skill_normalizer import find_matching_skills, normalize_skill, skills_match
 
 # Bump when scoring algorithm changes — used for match invalidation.
-ATS_SCORER_VERSION = "v4"
+ATS_SCORER_VERSION = "v5"
 
 # Section weights (must sum to 1.0).
 WEIGHT_MANDATORY = 0.35
@@ -36,8 +36,10 @@ MANDATORY_FAIL_CAP = 49
 HARD_CONSTRAINT_FAIL_CAP = 30
 # Soft ceiling when a junior candidate is a "potential" match (no hard Weak cap).
 POTENTIAL_MATCH_SOFT_CAP = 69
-# Early-career (0–1y) vs roles demanding 3+ years — hard ceiling.
+# Early-career junior vs roles demanding more experience than the CV shows.
 JUNIOR_UNDERQUALIFIED_CAP = 70
+# Blend-layer ceiling when a junior CV falls short on years vs the JD minimum.
+EXPERIENCE_GAP_SCORE_CAP = 45
 EARLY_CAREER_MAX_YEARS = 1.0
 EXPERIENCED_ROLE_MIN_YEARS = 3.0
 # Nonlinear exponent: missing required keywords hurt more than linear ratio.
@@ -111,6 +113,8 @@ class AtsMatchResult:
     candidate_domain: str = ""
     target_domain: str = ""
     is_potential_junior_match: bool = False
+    experience_gap_failed: bool = False
+    experience_gap_years: float = 0.0
 
     def to_db_fields(self, *, strategy_hash: str = "", fallback_score: int | None = None) -> dict[str, Any]:
         decision = score_to_decision(self.ats_score)
@@ -244,7 +248,8 @@ def evaluate_potential_junior_match(
     required = job.required_skills or job.technologies
     years_ok = _job_within_junior_reach(job)
     skills_ok = _has_foundational_skill_overlap(matched_required_skills, required)
-    return years_ok or skills_ok
+    # Skill overlap alone must not waive experience gates on senior-year roles.
+    return years_ok and skills_ok
 
 
 def _blob(*parts: Any) -> str:
@@ -413,16 +418,42 @@ def evaluate_domain_misalignment(
     return 0, False, None, candidate_domain, target_domain
 
 
+def evaluate_experience_gap(
+    candidate: AtsCandidateProfile,
+    job: JobProfile,
+) -> tuple[bool, float]:
+    """True when the CV has fewer years than the JD minimum."""
+    required = job.years_experience_min
+    if required is None:
+        return False, 0.0
+    cv_years = candidate.experience_years
+    if cv_years is None:
+        cv_years = 0.0
+    if cv_years >= required:
+        return False, 0.0
+    return True, required - cv_years
+
+
+def junior_underqualified_cap_for_gap(gap_years: float) -> int:
+    """Tiered ATS ceiling for juniors who fall short on years."""
+    if gap_years >= 4:
+        return 35
+    if gap_years >= 2:
+        return 45
+    if gap_years >= 1:
+        return 55
+    return JUNIOR_UNDERQUALIFIED_CAP
+
+
 def evaluate_junior_underqualified_cap(
     candidate: AtsCandidateProfile,
     job: JobProfile,
 ) -> bool:
-    """True when 0–1y candidate applies to a role demanding 3+ years."""
-    years = candidate.experience_years
-    required = job.years_experience_min
-    if years is None or required is None:
+    """True when a junior CV has fewer years than the JD minimum."""
+    if not is_junior_profile(candidate):
         return False
-    return years <= EARLY_CAREER_MAX_YEARS and required >= EXPERIENCED_ROLE_MIN_YEARS
+    gap_failed, _ = evaluate_experience_gap(candidate, job)
+    return gap_failed
 
 
 def _seniority_distance(cv_seniority: str, job_seniority: str | None) -> float:
@@ -836,10 +867,21 @@ def score(
     if domain_mismatch:
         weighted = min(weighted, DOMAIN_MISMATCH_SCORE_CAP)
 
+    experience_gap_failed, experience_gap_years = evaluate_experience_gap(
+        candidate, job_profile
+    )
     underqualified = evaluate_junior_underqualified_cap(candidate, job_profile)
-    if underqualified:
-        # No points for "potential": early-career vs 3y+ roles cannot clear 70.
-        weighted = min(weighted, JUNIOR_UNDERQUALIFIED_CAP)
+    significant_gap = experience_gap_years >= 2 or (
+        job_profile.years_experience_min is not None
+        and job_profile.years_experience_min > POTENTIAL_MAX_YEARS
+    )
+    if underqualified and significant_gap:
+        weighted = min(
+            weighted,
+            junior_underqualified_cap_for_gap(experience_gap_years),
+        )
+    elif experience_gap_failed and is_junior_profile(candidate) and significant_gap:
+        weighted = min(weighted, EXPERIENCE_GAP_SCORE_CAP)
 
     ats_score = clamp_score(round(weighted))
     label = score_label_for(ats_score)
@@ -856,12 +898,21 @@ def score(
             f"{HARD_CONSTRAINT_FAIL_CAP}%: {', '.join(missing_hard[:5])} "
             f"(-{hard_penalty})",
         )
-    if underqualified:
+    if underqualified and significant_gap:
+        cap = junior_underqualified_cap_for_gap(experience_gap_years)
         all_reasons.insert(
             0,
-            f"Early-career (≤{EARLY_CAREER_MAX_YEARS:g}y) vs "
-            f"{job_profile.years_experience_min}+ year role — score capped at "
-            f"{JUNIOR_UNDERQUALIFIED_CAP}",
+            f"Junior experience gap ({candidate.experience_years or 0:g}y vs "
+            f"{job_profile.years_experience_min}+ required, Δ{experience_gap_years:g}y) "
+            f"— score capped at {cap}",
+        )
+    elif experience_gap_failed and is_junior_profile(candidate) and significant_gap:
+        all_reasons.insert(
+            0,
+            f"Experience years below requirement "
+            f"({candidate.experience_years or 'unknown'} vs "
+            f"{job_profile.years_experience_min}) — score capped at "
+            f"{EXPERIENCE_GAP_SCORE_CAP}",
         )
     if is_potential:
         all_reasons.insert(
@@ -897,4 +948,6 @@ def score(
         candidate_domain=cand_domain,
         target_domain=target_domain,
         is_potential_junior_match=is_potential,
+        experience_gap_failed=experience_gap_failed,
+        experience_gap_years=experience_gap_years,
     )

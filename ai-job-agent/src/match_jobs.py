@@ -17,8 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ai_client import clamp_score
 from ats_candidate import build_ats_candidate
 from ats_scorer import (
-    DOMAIN_MISMATCH_SCORE_CAP,
-    HARD_CONSTRAINT_FAIL_CAP,
     score as ats_score,
 )
 from console_utils import configure_console, safe_print
@@ -54,7 +52,7 @@ from profile_utils import load_profile
 from role_analyzer import fallback_matching_strategy, load_ai_roles, load_matching_strategy
 from universal_profile import build_universal_profile_fallback, get_universal_profile
 
-from match_scoring import blend_match_scores
+from match_scoring import blend_match_scores, compute_final_match_score
 
 
 def _resolved_scan_id() -> int | None:
@@ -378,16 +376,11 @@ def score_one_job(job: dict, ctx: MatchContext, *, rematch: bool = False) -> dic
         fallback_score=fallback_score,
     )
 
-    final_score = _blend_scores(pm_result.score, ats_result.ats_score)
-    if pm_result.exclusion_hit:
-        final_score = min(final_score, pm_result.score)
-    if ats_result.hard_constraint_failed:
-        # Critical must-haves unmet — hard ceiling regardless of soft overlap.
-        final_score = min(final_score, HARD_CONSTRAINT_FAIL_CAP, ats_result.ats_score)
-    elif ats_result.mandatory_failed and not ats_result.is_potential_junior_match:
-        final_score = min(final_score, ats_result.ats_score)
-    if ats_result.domain_mismatch:
-        final_score = min(final_score, DOMAIN_MISMATCH_SCORE_CAP, ats_result.ats_score)
+    final_score = compute_final_match_score(
+        pm_result.score,
+        ats_result,
+        profile_exclusion_hit=pm_result.exclusion_hit,
+    )
 
     score_label = pm_result.score_label if final_score == pm_result.score else ats_result.score_label
     if final_score >= 85:
