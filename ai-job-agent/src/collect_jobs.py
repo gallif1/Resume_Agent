@@ -63,6 +63,9 @@ from date_utils import (
     normalize_posted_date,
     pick_raw_posted_date,
 )
+
+# Set from --max-age-days in main(); controls posted-date filtering during collection.
+_RUN_MAX_AGE_DAYS: int = JOB_MAX_AGE_DAYS
 from db import (
     get_job_by_id,
     get_known_job_identity_keys,
@@ -503,12 +506,15 @@ def _known_filter_kwargs(
     known_identity_keys: set[str] | None = None,
     delta_stop_identity: dict | None = None,
     stop_on_known: bool = True,
+    max_age_days: int | None = None,
 ) -> dict[str, Any]:
     """Build kwargs for :func:`_apply_collect_filters` in incremental delta mode."""
+    age_days = max_age_days if max_age_days is not None else _RUN_MAX_AGE_DAYS
     return {
         "known_job_urls": known_job_urls,
         "known_identity_keys": known_identity_keys,
-        "apply_age_filter": False,
+        "apply_age_filter": age_days > 0,
+        "max_age_days": age_days,
         "delta_stop_identity": None,
         "stop_on_known": stop_on_known,
     }
@@ -548,6 +554,11 @@ def _apply_collect_filters(
         else:
             work_jobs = list(page_jobs)
         known_skipped = 1 if hit_delta_stop else 0
+        if apply_age_filter and work_jobs:
+            kept, age_skipped, all_old = filter_jobs_by_max_age(
+                work_jobs, max_age_days=max_age_days
+            )
+            return kept, age_skipped, known_skipped, all_old, hit_delta_stop
         return work_jobs, 0, known_skipped, False, hit_delta_stop
 
     work_jobs = page_jobs
@@ -1814,7 +1825,19 @@ def main() -> None:
             "first already-known job URL/ID (no hardcoded time window)."
         ),
     )
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=JOB_MAX_AGE_DAYS,
+        help=(
+            f"Skip jobs posted more than N days ago during collection "
+            f"(default: {JOB_MAX_AGE_DAYS})"
+        ),
+    )
     args = parser.parse_args()
+
+    global _RUN_MAX_AGE_DAYS
+    _RUN_MAX_AGE_DAYS = max(0, int(args.max_age_days))
 
     print("AI Job Agent — job collection")
     incremental_mode = True
@@ -1886,7 +1909,8 @@ def main() -> None:
         f"Collection limits: max {args.max_queries} queries/category "
         f"(CV strategy expands to ~{MIN_EXPANDED_QUERIES}–4 distinct titles), "
         f"{args.max_categories if args.max_categories is not None else 'all'} categories; "
-        "incremental DB early-break (no time window); "
+        f"posted within last {_RUN_MAX_AGE_DAYS} days; "
+        "incremental DB early-break; "
         f"board pages — Drushim ≤{DRUSHIM_MAX_PAGES}, LinkedIn ≤{LINKEDIN_MAX_PAGES}, "
         f"GotFriends ≤{GOTFRIENDS_MAX_PAGES}, AllJobs ≤{ALLJOBS_MAX_PAGES}, "
         f"Indeed ≤{INDEED_MAX_PAGES}, SecretTelAviv ≤{SECRET_TEL_AVIV_MAX_PAGES}, "

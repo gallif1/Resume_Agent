@@ -355,12 +355,13 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
         skip_enrich: bool = False,
         job_sites: list[str] | None = None,
         delta: bool = False,
+        max_age_days: int | None = None,
         log=None,
         set_step_status=None,
-        db_path_arg=db.REGISTRY_DB_PATH,
+        db_path=db.REGISTRY_DB_PATH,
     ):
         assert domains == ["Fullstack Developer", "DevOps"]
-        del delta  # unused in this stub — signature must accept the new flag
+        del delta, max_age_days  # unused in this stub
         cv_db = config.cv_db_path(cv_id_arg)
         db.init_db(cv_db)
         new_id = db.insert_job(
@@ -380,6 +381,13 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
             db_path=cv_db,
         )
         assert ignored is None
+        if new_id is not None:
+            with db.get_connection(cv_db) as conn:
+                conn.execute(
+                    "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
+                    ("Fullstack developer role with detailed requirements." * 2, "2026-08-20", new_id),
+                )
+                conn.commit()
         scan_id = db.create_scan(cv_id_arg, db_path=cv_db)
         if set_step_status:
             for key, *_ in cv_service.SEARCH_STEPS:
@@ -428,6 +436,12 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
             db_path=cv_db,
         )
         assert existing_id is not None
+        with db.get_connection(cv_db) as conn:
+            conn.execute(
+                "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
+                ("Existing fullstack role with enough description text." * 2, "2026-08-15", existing_id),
+            )
+            conn.commit()
         scan1 = db.create_scan(cv_id, db_path=cv_db)
         db.upsert_cv_job_match(
             cv_id,

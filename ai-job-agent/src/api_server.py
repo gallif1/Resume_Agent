@@ -339,6 +339,12 @@ class SearchJobsRequest(BaseModel):
     domains: list[str] = Field(default_factory=list)
     skip_enrich: bool = False
     job_sites: list[str] | None = None
+    max_age_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Only collect jobs posted within the last N days",
+    )
 
     # Accept either {"domains": [...]} or {"selected_domains": [...]}
     selected_domains: list[str] | None = None
@@ -648,6 +654,7 @@ def _run_search_thread(
     skip_enrich: bool,
     job_sites: list[str] | None,
     delta: bool = False,
+    max_age_days: int = 30,
 ) -> None:
     error: str | None = None
     try:
@@ -657,6 +664,7 @@ def _run_search_thread(
             skip_enrich=skip_enrich,
             job_sites=job_sites,
             delta=delta,
+            max_age_days=max_age_days,
             log=_scan_log,
             set_step_status=_scan_set_step,
         )
@@ -956,12 +964,11 @@ def _parse_json_list(value) -> list:
 def _job_description_text(match: dict) -> str:
     """Prefer the enriched full description, fall back to the listing snippet.
 
-    Always injects a Hebrew publication-date header at the top of the text box.
+    When no body text exists, return empty — the UI shows a dedicated placeholder.
     """
-    from date_utils import inject_posted_date_header, normalize_posted_date
+    from date_utils import inject_posted_date_header, job_description_body, normalize_posted_date
 
-    full = (match.get("full_description") or "").strip()
-    body = full if full else (match.get("description") or "").strip()
+    body = job_description_body(match)
     posted = normalize_posted_date(
         match.get("posted_date")
         or match.get("first_seen_at")
@@ -969,6 +976,8 @@ def _job_description_text(match: dict) -> str:
         or match.get("job_created_at"),
         default_to_today=True,
     )
+    if not body:
+        return ""
     return inject_posted_date_header(body, posted)
 
 
@@ -1442,7 +1451,7 @@ def search_jobs_for_cv(
 
     thread = threading.Thread(
         target=_run_search_thread,
-        args=(cv_id, domains, req.skip_enrich, req.job_sites, req.delta),
+        args=(cv_id, domains, req.skip_enrich, req.job_sites, req.delta, req.max_age_days),
         daemon=True,
     )
     thread.start()
@@ -1451,6 +1460,7 @@ def search_jobs_for_cv(
         "cv_id": cv_id,
         "domains": domains,
         "delta": bool(req.delta),
+        "max_age_days": req.max_age_days,
     }
 
 
@@ -1476,6 +1486,7 @@ def refresh_jobs_for_cv(
 
     domains = criteria["domains"]
     job_sites = criteria.get("job_sites")
+    max_age_days = criteria.get("max_age_days") or 30
     try:
         normalize_job_board_ids(job_sites)
     except ValueError as exc:
@@ -1509,7 +1520,7 @@ def refresh_jobs_for_cv(
 
     thread = threading.Thread(
         target=_run_search_thread,
-        args=(cv_id, domains, False, job_sites, True),
+        args=(cv_id, domains, False, job_sites, True, max_age_days),
         daemon=True,
     )
     thread.start()
@@ -1519,6 +1530,7 @@ def refresh_jobs_for_cv(
         "domains": domains,
         "job_sites": job_sites,
         "delta": True,
+        "max_age_days": max_age_days,
     }
 
 
@@ -1616,6 +1628,21 @@ def cv_scan_status(cv_id: str, user: dict = Depends(auth.get_current_user)):
     return live
 
 
+def _scan_max_age_days(cv_id: str, cv_db) -> int | None:
+    """Read the posted-date window from the CV's latest successful scan."""
+    try:
+        criteria = cv_service.get_last_scan_criteria(cv_id)
+    except ValueError:
+        return None
+    if not criteria:
+        return None
+    raw = criteria.get("max_age_days")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/cvs/{cv_id}/matches")
 def get_cv_matches(
     cv_id: str,
@@ -1623,6 +1650,7 @@ def get_cv_matches(
     min_score: int | None = None,
     sort_by: str | None = None,
     order: str | None = None,
+    max_age_days: int | None = None,
     user: dict = Depends(auth.get_current_user),
 ):
     db.ensure_multi_cv_storage()
@@ -1630,6 +1658,11 @@ def get_cv_matches(
     cv_db = cv_db_path(cv_id)
     db.init_db(cv_db)
     sort_key, sort_order = _parse_match_sort(sort_by, order)
+    age_window = max_age_days if max_age_days is not None else _scan_max_age_days(cv_id, cv_db)
+    if age_window is None:
+        from date_utils import JOB_MAX_AGE_DAYS
+
+        age_window = JOB_MAX_AGE_DAYS
     try:
         matches = db.get_cv_matches(
             cv_id,
@@ -1637,6 +1670,8 @@ def get_cv_matches(
             min_score=min_score,
             sort_by=sort_key,
             order=sort_order,
+            max_age_days=age_window,
+            require_description=True,
             db_path=cv_db,
         )
     except ValueError as exc:

@@ -361,3 +361,23 @@ def pick_raw_posted_date(*candidates: Any) -> Any:
         if text:
             return text
     return None
+
+
+def job_description_body(job: dict) -> str:
+    """Return the best available job description text (full, then listing snippet)."""
+    full = (job.get("full_description") or "").strip()
+    if full:
+        return full
+    return (job.get("description") or "").strip()
+
+
+def job_has_substantive_description(job: dict, *, min_chars: int = 40) -> bool:
+    """True when the job has enough description text to score or display meaningfully."""
+    return len(job_description_body(job)) >= max(1, int(min_chars))
+
+
+def posted_date_cutoff_iso(max_age_days: int, *, reference: date | None = None) -> str:
+    """Inclusive cutoff date (YYYY-MM-DD) for jobs posted within ``max_age_days``."""
+    ref = reference or date.fromisoformat(today_iso())
+    days = max(0, int(max_age_days))
+    return (ref - timedelta(days=days)).isoformat()

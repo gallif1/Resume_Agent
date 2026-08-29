@@ -22,7 +22,7 @@ from config import (
     USERS_DIR,
     cv_db_path,
 )
-from date_utils import normalize_posted_date, today_iso
+from date_utils import job_has_substantive_description, normalize_posted_date, posted_date_cutoff_iso, today_iso
 from job_identity import (
     compute_job_content_hash,
     compute_job_hash,
@@ -3225,6 +3225,8 @@ def get_cv_matches(
     min_score: int | None = None,
     sort_by: str | None = None,
     order: str | None = None,
+    max_age_days: int | None = None,
+    require_description: bool = False,
     db_path: Path = DB_PATH,
 ) -> list[dict[str, Any]]:
     """Return a CV's job matches joined with the global job record.
@@ -3254,6 +3256,16 @@ def get_cv_matches(
     if min_score is not None:
         conditions.append("m.match_score IS NOT NULL AND m.match_score >= ?")
         params.append(min_score)
+
+    if max_age_days is not None and int(max_age_days) > 0:
+        cutoff = posted_date_cutoff_iso(int(max_age_days))
+        seen_expr = _coalesce_seen_at_expr(
+            "j.first_seen_at", "j.collected_at", "j.created_at"
+        )
+        conditions.append(
+            f"(COALESCE(j.posted_date, substr({seen_expr}, 1, 10)) >= ?)"
+        )
+        params.append(cutoff)
 
     sort_key = (sort_by or "score").strip().lower()
     if sort_key not in _MATCH_SORT_COLUMNS:
@@ -3322,7 +3334,12 @@ def get_cv_matches(
     """
     with get_connection(db_path) as conn:
         rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        matches = [dict(row) for row in rows]
+
+    if require_description:
+        matches = [m for m in matches if job_has_substantive_description(m)]
+
+    return matches
 
 
 def update_cv_match_status(
