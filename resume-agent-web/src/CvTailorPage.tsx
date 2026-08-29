@@ -85,7 +85,7 @@ export default function CvTailorPage() {
       const anchor = document.createElement("a");
       anchor.href = url;
       const baseName = result.tailored_cv.name?.trim() || "tailored-cv";
-      anchor.download = `${baseName.replace(/[^\w\-]+/g, "-")}.docx`;
+      anchor.download = `${baseName.replace(/[^\w\-]+/g, "-")}.pdf`;
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -240,7 +240,7 @@ export default function CvTailorPage() {
                 ) : (
                   <>
                     <Download size={16} aria-hidden="true" />
-                    Download DOCX
+                    Download PDF
                   </>
                 )}
               </button>
