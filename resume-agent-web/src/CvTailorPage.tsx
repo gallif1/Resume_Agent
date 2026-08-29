@@ -247,6 +247,9 @@ export default function CvTailorPage() {
             </div>
             <p className="cv-tailor-model-note" dir="ltr">
               Model: {result.model}
+              {result.job_analysis?.target_job_title
+                ? ` · Target role: ${result.job_analysis.target_job_title}`
+                : ""}
             </p>
             <pre className="cv-tailor-preview">{result.preview_text}</pre>
             {result.job_analysis?.gaps?.length > 0 && (

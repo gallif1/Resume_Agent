@@ -39,6 +39,11 @@ export type RequirementGap = {
 };
 
 export type JobAnalysis = {
+  target_job_title?: string;
+  seniority_required?: string;
+  must_have_technologies?: string[];
+  nice_to_have?: string[];
+  key_phrases?: string[];
   strong_matches: string[];
   gaps: RequirementGap[];
 };

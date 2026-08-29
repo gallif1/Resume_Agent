@@ -83,7 +83,12 @@ def generate_tailored_cv(
         raise CvTailorError("CV tailoring failed. Please try again.") from exc
 
     tailored_cv, job_analysis = parse_llm_response(raw)
-    tailored_cv = apply_factual_guards(cv_text, tailored_cv)
+    tailored_cv = apply_factual_guards(
+        cv_text,
+        tailored_cv,
+        job_description=job_description,
+        job_analysis=job_analysis,
+    )
 
     if not (
         tailored_cv.summary

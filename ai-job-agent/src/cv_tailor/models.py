@@ -38,16 +38,24 @@ class RequirementGap(BaseModel):
 
 
 class JobAnalysis(BaseModel):
+    target_job_title: str = ""
+    seniority_required: str = ""
+    must_have_technologies: list[str] = Field(default_factory=list)
+    nice_to_have: list[str] = Field(default_factory=list)
+    key_phrases: list[str] = Field(default_factory=list)
     strong_matches: list[str] = Field(default_factory=list)
     gaps: list[RequirementGap] = Field(default_factory=list)
 
     @classmethod
     def from_llm_dict(cls, data: dict[str, Any]) -> JobAnalysis:
-        strong_matches = [
-            str(item).strip()
-            for item in (data.get("strong_matches") or [])
-            if str(item).strip()
-        ]
+        def _str_list(key: str) -> list[str]:
+            return [
+                str(item).strip()
+                for item in (data.get(key) or [])
+                if str(item).strip()
+            ]
+
+        strong_matches = _str_list("strong_matches")
         gaps: list[RequirementGap] = []
         for item in data.get("gaps") or []:
             if not isinstance(item, dict):
@@ -63,7 +71,15 @@ class JobAnalysis(BaseModel):
                         explanation=explanation,
                     )
                 )
-        return cls(strong_matches=strong_matches, gaps=gaps)
+        return cls(
+            target_job_title=str(data.get("target_job_title") or "").strip(),
+            seniority_required=str(data.get("seniority_required") or "").strip(),
+            must_have_technologies=_str_list("must_have_technologies"),
+            nice_to_have=_str_list("nice_to_have"),
+            key_phrases=_str_list("key_phrases"),
+            strong_matches=strong_matches,
+            gaps=gaps,
+        )
 
 
 class TailoredCvData(BaseModel):

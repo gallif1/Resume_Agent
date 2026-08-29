@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cv_tailor.models import TailoredCvData
+from cv_tailor.models import JobAnalysis, TailoredCvData
 from cv_tailor.validation import apply_factual_guards, parse_llm_response
 
 GAL_TEL_HAI_SOURCE = """
@@ -116,6 +116,18 @@ def _ideal_checkpoint_response() -> dict:
             "certifications": [],
         },
         "job_analysis": {
+            "target_job_title": "Backend Developer",
+            "seniority_required": "5+ years distributed systems; 3+ years Node.js",
+            "must_have_technologies": [
+                "Python",
+                "REST APIs",
+                "AWS",
+                "CI/CD",
+                "pytest",
+                "HTTP/FTP/SSH",
+            ],
+            "nice_to_have": ["Java", "Check Point security products"],
+            "key_phrases": [],
             "strong_matches": [
                 "AWS",
                 "CI/CD",
@@ -198,6 +210,30 @@ def test_checkpoint_tailoring_prioritization_signals():
 
     flat = cv.to_preview_text().lower()
     assert "in progress" not in flat
+
+
+def test_validation_replaces_junior_title_with_posting_role():
+    cv = TailoredCvData(
+        professional_title="Junior Software Developer",
+        summary="Junior Software Developer with hands-on experience.",
+    )
+    analysis = JobAnalysis(target_job_title="Backend Developer")
+    repaired = apply_factual_guards(
+        GAL_TEL_HAI_SOURCE,
+        cv,
+        job_description=CHECKPOINT_BACKEND_JD,
+        job_analysis=analysis,
+    )
+    assert "Junior" not in repaired.professional_title
+    assert "Backend" in repaired.professional_title
+
+
+def test_infer_role_title_from_job_description():
+    from cv_tailor.validation import _infer_role_title
+
+    title = _infer_role_title(CHECKPOINT_BACKEND_JD)
+    assert "backend" in title.lower()
+    assert "developer" in title.lower()
 
 
 def test_checkpoint_output_differs_from_generic_rewrite():

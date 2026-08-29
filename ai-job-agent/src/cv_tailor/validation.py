@@ -24,6 +24,98 @@ _YEARS_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 _SKILL_TOKEN_RE = re.compile(r"[a-z0-9.+#/]+", re.IGNORECASE)
+_JUNIOR_RE = re.compile(r"\bjunior\b", re.IGNORECASE)
+_ROLE_TITLE_RE = re.compile(
+    r"(?:(?:senior|lead|staff|principal|junior)\s+)?"
+    r"(?:full[-\s]?stack|backend|frontend|software|cloud|devops)?\s*"
+    r"(?:developer|engineer|architect)",
+    re.IGNORECASE,
+)
+
+
+def _infer_role_title(job_description: str) -> str:
+    """Best-effort role title extraction from a job description."""
+    text = job_description or ""
+    for line in text.splitlines()[:8]:
+        line = line.strip(" -–—|")
+        if not line or len(line) > 80:
+            continue
+        match = _ROLE_TITLE_RE.search(line)
+        if match:
+            return re.sub(r"\s+", " ", match.group(0)).strip()
+    match = _ROLE_TITLE_RE.search(text[:400])
+    if match:
+        return re.sub(r"\s+", " ", match.group(0)).strip()
+    return ""
+
+
+def _role_aligned_title(target_job_title: str) -> str:
+    title = re.sub(r"\s+", " ", (target_job_title or "").strip())
+    if not title:
+        return title
+    low = title.lower()
+    if "backend" in low and "developer" in low and "software" not in low:
+        return "Backend Software Developer"
+    if "full" in low and "stack" in low and "developer" in low:
+        return title
+    return title
+
+
+def _posting_seeks_junior(job_description: str, job_analysis: JobAnalysis) -> bool:
+    combined = " ".join(
+        [
+            job_description,
+            job_analysis.target_job_title,
+            job_analysis.seniority_required,
+        ]
+    )
+    return bool(_JUNIOR_RE.search(combined))
+
+
+def _align_professional_title(
+    tailored_cv: TailoredCvData,
+    *,
+    job_description: str,
+    job_analysis: JobAnalysis,
+    source_text: str,
+) -> TailoredCvData:
+    """Replace generic/junior base-CV titles with the posting's target role when appropriate."""
+    target = job_analysis.target_job_title.strip() or _infer_role_title(job_description)
+    if not target:
+        return tailored_cv
+
+    current = tailored_cv.professional_title.strip()
+    seeks_junior = _posting_seeks_junior(job_description, job_analysis)
+    aligned = _role_aligned_title(target)
+
+    if not current:
+        tailored_cv.professional_title = aligned
+        logger.info("Set professional_title from posting: %s", aligned)
+        return tailored_cv
+
+    if _JUNIOR_RE.search(current) and not seeks_junior:
+        logger.warning("Replacing junior title '%s' with posting-aligned '%s'", current, aligned)
+        tailored_cv.professional_title = aligned
+        return tailored_cv
+
+    source_opening = source_text[:600].lower()
+    if current.lower() in source_opening and _JUNIOR_RE.search(current) and not seeks_junior:
+        logger.warning("Replacing base-CV title copy '%s' with '%s'", current, aligned)
+        tailored_cv.professional_title = aligned
+
+    return tailored_cv
+
+
+def _summary_echoes_source(summary: str, source_text: str) -> bool:
+    summary_norm = re.sub(r"\s+", " ", summary.lower()).strip()
+    if len(summary_norm) < 40:
+        return False
+    source_norm = re.sub(r"\s+", " ", source_text.lower())
+    # First ~120 chars of source summary block often get copied verbatim.
+    for chunk in (120, 90, 70):
+        if summary_norm[:chunk] and summary_norm[:chunk] in source_norm:
+            return True
+    return False
 
 
 def parse_llm_response(raw: dict[str, Any]) -> tuple[TailoredCvData, JobAnalysis]:
@@ -161,9 +253,28 @@ def _strip_unsupported_years_claims(source_text: str, tailored_cv: TailoredCvDat
     return tailored_cv
 
 
-def apply_factual_guards(source_text: str, tailored_cv: TailoredCvData) -> TailoredCvData:
-    """Apply deterministic repairs for common factual mutations."""
+def apply_factual_guards(
+    source_text: str,
+    tailored_cv: TailoredCvData,
+    *,
+    job_description: str = "",
+    job_analysis: JobAnalysis | None = None,
+) -> TailoredCvData:
+    """Apply deterministic repairs for common factual and alignment issues."""
+    analysis = job_analysis or JobAnalysis()
+    tailored_cv = _align_professional_title(
+        tailored_cv,
+        job_description=job_description,
+        job_analysis=analysis,
+        source_text=source_text,
+    )
     tailored_cv = _repair_education(source_text, tailored_cv)
     tailored_cv = _strip_unsupported_skills(source_text, tailored_cv)
     tailored_cv = _strip_unsupported_years_claims(source_text, tailored_cv)
+
+    if _summary_echoes_source(tailored_cv.summary, source_text):
+        logger.warning(
+            "Summary appears copied from base CV; model should rewrite per posting"
+        )
+
     return tailored_cv
