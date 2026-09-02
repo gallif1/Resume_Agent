@@ -134,6 +134,7 @@ from tailor_cv_service import (
     extract_cv_markdown_for_copy,
     load_saved_tailored_cv,
     load_saved_tailored_result,
+    load_saved_tailored_cv_pdf,
     load_tailored_cv_version,
     load_tailored_cv_version_result,
     persist_tailored_cv_markdown,
@@ -1994,6 +1995,41 @@ def _load_tailored_markdown_for_request(
     return saved, resolved_cv_id, cv_db
 
 
+def _try_load_saved_tailored_pdf(
+    cv_id: str,
+    job_id: int,
+    user: dict,
+    *,
+    version_id: int | None = None,
+) -> tuple[bytes, str] | None:
+    """Return (pdf_bytes, filename) when a rendered PDF was saved for this job."""
+    candidates: list[str] = [cv_id]
+    if cv_id != db.WORKSPACE_CV_ID:
+        candidates.append(db.WORKSPACE_CV_ID)
+    for resolved_cv_id in candidates:
+        pdf_bytes = load_saved_tailored_cv_pdf(
+            resolved_cv_id, job_id, version_id=version_id
+        )
+        if pdf_bytes:
+            return pdf_bytes, f"CV_Tailored_{job_id}.pdf"
+    return None
+
+
+def _tailored_pdf_response(
+    pdf_bytes: bytes,
+    *,
+    filename: str,
+    inline: bool,
+) -> Response:
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "CV_Tailored.pdf"
+    disposition = "inline" if inline else "attachment"
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="{ascii_name}"',
+        "Cache-Control": "no-store",
+    }
+    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailor-cv")
 def tailor_cv_endpoint(
     cv_id: str,
@@ -2260,6 +2296,13 @@ def preview_tailored_cv_pdf(
     if cv_id != db.WORKSPACE_CV_ID:
         _require_owned_cv(cv_id, user)
 
+    saved_pdf = _try_load_saved_tailored_pdf(
+        cv_id, job_id, user, version_id=version_id
+    )
+    if saved_pdf:
+        pdf_bytes, filename = saved_pdf
+        return _tailored_pdf_response(pdf_bytes, filename=filename, inline=True)
+
     saved, _, _ = _load_tailored_markdown_for_request(
         cv_id, job_id, user, version_id=version_id
     )
@@ -2270,12 +2313,7 @@ def preview_tailored_cv_pdf(
     except PdfGeneratorError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "CV_Tailored.pdf"
-    headers = {
-        "Content-Disposition": f'inline; filename="{ascii_name}"',
-        "Cache-Control": "no-store",
-    }
-    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    return _tailored_pdf_response(pdf_bytes, filename=filename, inline=True)
 
 
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/export")
@@ -2306,6 +2344,13 @@ def download_tailored_cv_pdf(
         pass
     else:
         _require_owned_cv(cv_id, user)
+
+    saved_pdf = _try_load_saved_tailored_pdf(
+        cv_id, job_id, user, version_id=version_id
+    )
+    if saved_pdf:
+        pdf_bytes, filename = saved_pdf
+        return _tailored_pdf_response(pdf_bytes, filename=filename, inline=False)
 
     saved, _, cv_db = _load_tailored_markdown_for_request(
         cv_id, job_id, user, version_id=version_id
@@ -2343,13 +2388,7 @@ def download_tailored_cv_pdf(
     except PdfGeneratorError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
-    # ASCII fallback keeps Content-Disposition compatible with older clients.
-    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "CV_Tailored.pdf"
-    headers = {
-        "Content-Disposition": f'attachment; filename="{ascii_name}"',
-        "Cache-Control": "no-store",
-    }
-    return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    return _tailored_pdf_response(pdf_bytes, filename=filename, inline=False)
 
 
 @app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-docx")

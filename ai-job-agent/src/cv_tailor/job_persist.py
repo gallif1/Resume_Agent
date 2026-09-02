@@ -16,6 +16,8 @@ def maybe_persist_tailored_cv_to_job(
     job_id: int | None,
     preview_text: str,
     user_id: str,
+    pdf_bytes: bytes | None = None,
+    tailored_cv: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Save MVP output to job history when cv/job ids are provided."""
     if not cv_id or job_id is None:
@@ -29,6 +31,8 @@ def maybe_persist_tailored_cv_to_job(
             int(job_id),
             markdown,
             user_id=user_id,
+            pdf_bytes=pdf_bytes,
+            mvp_tailored_cv=tailored_cv,
         )
     except TailorCvError as exc:
         logger.warning(

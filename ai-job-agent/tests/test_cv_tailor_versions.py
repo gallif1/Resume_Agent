@@ -119,12 +119,17 @@ def test_persist_tailored_cv_markdown_records_version(cvs_dir, db_path, monkeypa
         job_id,
         "# MVP CV\n\nTailored body",
         db_path=db_path,
+        pdf_bytes=b"%PDF-1.4 test",
     )
     assert saved["version_id"] is not None
     history = db.list_cv_tailor_versions(cv_id, job_id, db_path=db_path)
     assert len(history) == 1
     match = db.get_cv_job_match(cv_id, job_id, db_path=db_path)
     assert match.get("tailored_cv_path")
+    loaded = svc.load_saved_tailored_cv_pdf(
+        cv_id, job_id, version_id=saved["version_id"]
+    )
+    assert loaded == b"%PDF-1.4 test"
 
 
 def test_record_version_archives_markdown_per_version(
