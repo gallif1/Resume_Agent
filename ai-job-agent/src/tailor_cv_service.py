@@ -102,6 +102,56 @@ def tailored_cv_version_path(cv_id: str, job_id: int, version_id: int) -> Path:
     return tailored_cv_dir(cv_id) / f"{job_id}_v{version_id}.md"
 
 
+def tailored_cv_pdf_path(cv_id: str, job_id: int) -> Path:
+    return tailored_cv_dir(cv_id) / f"{job_id}.pdf"
+
+
+def tailored_cv_version_pdf_path(cv_id: str, job_id: int, version_id: int) -> Path:
+    return tailored_cv_dir(cv_id) / f"{job_id}_v{version_id}.pdf"
+
+
+def save_tailored_cv_pdf(
+    cv_id: str,
+    job_id: int,
+    pdf_bytes: bytes,
+    *,
+    version_id: int | None = None,
+) -> Path:
+    """Persist rendered PDF bytes for preview/download (latest + optional archive)."""
+    directory = tailored_cv_dir(cv_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    latest = tailored_cv_pdf_path(cv_id, job_id)
+    latest.write_bytes(pdf_bytes)
+    if version_id is not None:
+        archive = tailored_cv_version_pdf_path(cv_id, job_id, version_id)
+        archive.write_bytes(pdf_bytes)
+        return archive
+    return latest
+
+
+def load_saved_tailored_cv_pdf(
+    cv_id: str,
+    job_id: int,
+    *,
+    version_id: int | None = None,
+) -> bytes | None:
+    """Load archived or latest tailored CV PDF if it exists on disk."""
+    if version_id is not None:
+        archive = tailored_cv_version_pdf_path(cv_id, job_id, version_id)
+        if archive.exists():
+            try:
+                return archive.read_bytes()
+            except OSError:
+                return None
+    latest = tailored_cv_pdf_path(cv_id, job_id)
+    if latest.exists():
+        try:
+            return latest.read_bytes()
+        except OSError:
+            return None
+    return None
+
+
 def split_tailored_markdown(markdown: str) -> tuple[str, str]:
     """Split full tailor output into (preamble, cv_body).
 
@@ -1294,6 +1344,8 @@ def persist_tailored_cv_markdown(
     db_path: Path | None,
     score_before: int | None = None,
     score_after: int | None = None,
+    pdf_bytes: bytes | None = None,
+    mvp_tailored_cv: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Save markdown to disk, record version history, and return metadata."""
     text = (markdown or "").strip()
@@ -1314,6 +1366,14 @@ def persist_tailored_cv_markdown(
         parsed_after = parsed_before
 
     path = save_tailored_cv(cv_id, job_id, text)
+    report = None
+    if mvp_tailored_cv:
+        report = {
+            "tailored_cv": mvp_tailored_cv,
+            "tailored_resume": mvp_tailored_cv,
+            "source": "cv_tailor_mvp",
+            "preview_text": text,
+        }
     version_id = _record_version(
         cv_id,
         job_id,
@@ -1321,8 +1381,12 @@ def persist_tailored_cv_markdown(
         score_after=int(parsed_after),
         path=path,
         db_path=db_path,
-        report=None,
+        report=report,
     )
+    if pdf_bytes:
+        save_tailored_cv_pdf(
+            cv_id, job_id, pdf_bytes, version_id=version_id
+        )
     if db_path is not None:
         relative = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
         mark_cv_match_tailored(
@@ -1346,6 +1410,8 @@ def persist_mvp_tailored_cv_for_user(
     *,
     user_id: str,
     score_after: int | None = None,
+    pdf_bytes: bytes | None = None,
+    mvp_tailored_cv: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist CV Tailor MVP markdown for an owned CV/job pair."""
     import db as db_module
@@ -1365,6 +1431,8 @@ def persist_mvp_tailored_cv_for_user(
         markdown,
         db_path=cv_db,
         score_after=score_after,
+        pdf_bytes=pdf_bytes,
+        mvp_tailored_cv=mvp_tailored_cv,
     )
 
 

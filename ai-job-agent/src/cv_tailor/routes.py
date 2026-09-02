@@ -12,7 +12,13 @@ import auth
 from cv_tailor.job_persist import maybe_persist_tailored_cv_to_job
 from cv_tailor.parser import CvParseError
 from cv_tailor.models import RegenerateCvRequest
-from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_pdf, regenerate_tailored_cv
+from cv_tailor.service import (
+    CvTailorError,
+    generate_tailored_cv,
+    get_download_pdf,
+    get_stored_pdf_bytes,
+    regenerate_tailored_cv,
+)
 
 logger = logging.getLogger("cv_tailor.routes")
 
@@ -50,6 +56,8 @@ async def cv_tailor_generate(
         job_id=job_id,
         preview_text=result.preview_text,
         user_id=str(user["id"]),
+        pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
+        tailored_cv=result.tailored_cv.model_dump(),
     )
 
     return {
@@ -86,6 +94,8 @@ async def cv_tailor_regenerate(
         job_id=body.job_id,
         preview_text=result.preview_text,
         user_id=str(user["id"]),
+        pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
+        tailored_cv=result.tailored_cv.model_dump(),
     )
 
     return {

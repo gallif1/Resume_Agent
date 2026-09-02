@@ -1594,9 +1594,12 @@ export default function CvDetails({
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
-                            disabled={loadingSavedTailored === m.job_id}
                             onClick={() => {
-                              void handleOpenSavedTailored(m, versionParam);
+                              void openTailoredCvPdfPreview(
+                                cvId,
+                                m.job_id,
+                                versionParam
+                              );
                             }}
                           >
                             צפה

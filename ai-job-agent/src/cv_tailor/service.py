@@ -338,6 +338,16 @@ def regenerate_tailored_cv(
     )
 
 
+def get_stored_pdf_bytes(*, result_id: str, user_id: str) -> bytes | None:
+    """Return PDF bytes for a recent CV Tailor session, if still in memory."""
+    with _store_lock:
+        _cleanup_expired()
+        stored = _store.get(result_id)
+    if stored is None or stored.user_id != user_id:
+        return None
+    return stored.pdf_bytes or None
+
+
 def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
     """Return PDF bytes and filename for a stored result."""
     with _store_lock:
