@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from cv_tailor.models import CandidateFact, JobAnalysis, TailoredCvData
+from cv_tailor.models import CandidateFact, ExperienceEntry, JobAnalysis, ProjectEntry, SkillGroup, TailoredCvData
 
 logger = logging.getLogger("cv_tailor.validation")
 
@@ -412,3 +412,153 @@ def apply_factual_guards(
         )
 
     return tailored_cv
+
+
+def _normalize_entry_key(*parts: str) -> str:
+    return " | ".join(re.sub(r"\s+", " ", part.lower().strip()) for part in parts if part.strip())
+
+
+def _contact_is_broken(contact: str) -> bool:
+    text = (contact or "").strip()
+    return not text or text.startswith("{") or text.startswith("[")
+
+
+def _merge_skill_groups(previous: list[SkillGroup], updated: list[SkillGroup]) -> list[SkillGroup]:
+    if not previous:
+        return updated
+    if not updated:
+        return previous
+
+    updated_by_category = {group.category.lower(): group for group in updated}
+    merged: list[SkillGroup] = []
+    seen_categories: set[str] = set()
+
+    for prev_group in previous:
+        key = prev_group.category.lower()
+        upd_group = updated_by_category.get(key)
+        if upd_group:
+            skills = list(upd_group.skills)
+            for skill in prev_group.skills:
+                if skill not in skills:
+                    skills.append(skill)
+            merged.append(SkillGroup(category=upd_group.category, skills=skills))
+            seen_categories.add(key)
+        else:
+            merged.append(prev_group)
+
+    for upd_group in updated:
+        key = upd_group.category.lower()
+        if key not in seen_categories:
+            merged.append(upd_group)
+    return merged
+
+
+def _merge_experience(
+    previous: list[ExperienceEntry],
+    updated: list[ExperienceEntry],
+) -> list[ExperienceEntry]:
+    if not previous:
+        return updated
+    if not updated:
+        return previous
+
+    prev_by_key = {
+        _normalize_entry_key(entry.role, entry.company): entry for entry in previous
+    }
+    merged: list[ExperienceEntry] = []
+    seen_keys: set[str] = set()
+
+    for upd in updated:
+        key = _normalize_entry_key(upd.role, upd.company)
+        prev = prev_by_key.get(key)
+        if prev:
+            merged.append(
+                upd.model_copy(
+                    update={
+                        "company": upd.company or prev.company,
+                        "role": upd.role or prev.role,
+                        "dates": upd.dates or prev.dates,
+                        "bullets": upd.bullets or prev.bullets,
+                    }
+                )
+            )
+        else:
+            merged.append(upd)
+        seen_keys.add(key)
+
+    for prev in previous:
+        key = _normalize_entry_key(prev.role, prev.company)
+        if key not in seen_keys:
+            merged.append(prev)
+    return merged
+
+
+def _merge_projects(
+    previous: list[ProjectEntry],
+    updated: list[ProjectEntry],
+) -> list[ProjectEntry]:
+    if not previous:
+        return updated
+    if not updated:
+        return previous
+
+    prev_by_key = {_normalize_entry_key(project.name): project for project in previous}
+    merged: list[ProjectEntry] = []
+    seen_keys: set[str] = set()
+
+    for upd in updated:
+        key = _normalize_entry_key(upd.name)
+        prev = prev_by_key.get(key)
+        if prev:
+            merged.append(
+                upd.model_copy(
+                    update={
+                        "description": upd.description or prev.description,
+                        "bullets": upd.bullets or prev.bullets,
+                    }
+                )
+            )
+        else:
+            merged.append(upd)
+        seen_keys.add(key)
+
+    for prev in previous:
+        key = _normalize_entry_key(prev.name)
+        if key not in seen_keys:
+            merged.append(prev)
+    return merged
+
+
+def preserve_regeneration_baseline(
+    previous: TailoredCvData,
+    updated: TailoredCvData,
+) -> TailoredCvData:
+    """Keep the rich first-pass CV when regeneration returns a sparse draft."""
+    result = updated.model_copy(deep=True)
+
+    if not result.name.strip():
+        result.name = previous.name
+    if not result.professional_title.strip():
+        result.professional_title = previous.professional_title
+    if _contact_is_broken(result.contact):
+        result.contact = previous.contact
+
+    if previous.summary and (
+        not result.summary
+        or len(result.summary) < len(previous.summary) * 0.75
+    ):
+        result.summary = previous.summary
+
+    result.skill_groups = _merge_skill_groups(previous.skill_groups, result.skill_groups)
+    if not result.skills and previous.skills:
+        result.skills = list(previous.skills)
+
+    result.experience = _merge_experience(previous.experience, result.experience)
+    result.projects = _merge_projects(previous.projects, result.projects)
+
+    if not result.education and previous.education:
+        result.education = list(previous.education)
+    if not result.certifications and previous.certifications:
+        result.certifications = list(previous.certifications)
+
+    return result

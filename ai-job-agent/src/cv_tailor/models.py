@@ -150,6 +150,44 @@ def _slugify_gap_id(text: str, index: int) -> str:
     return slug[:48] or f"gap-{index}"
 
 
+def _format_contact_field(value: Any) -> str:
+    """Normalize contact info from strings, dicts, or lists into one display line."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        ordered_keys = (
+            "location",
+            "phone",
+            "email",
+            "github",
+            "linkedin",
+            "website",
+            "url",
+        )
+        parts: list[str] = []
+        seen: set[str] = set()
+        for key in ordered_keys:
+            raw = value.get(key)
+            if raw is None:
+                continue
+            text = str(raw).strip()
+            if text and text not in seen:
+                parts.append(text)
+                seen.add(text)
+        for raw in value.values():
+            text = str(raw).strip()
+            if text and text not in seen:
+                parts.append(text)
+                seen.add(text)
+        return " | ".join(parts)
+    if isinstance(value, list):
+        return " | ".join(str(item).strip() for item in value if str(item).strip())
+    text = str(value).strip()
+    if text.startswith("{") and text.endswith("}"):
+        return ""
+    return text
+
+
 def _normalize_requirement_status(raw: str) -> RequirementStatus:
     normalized = raw.replace("-", "_").upper()
     if normalized in ("SUPPORTED", "USER_CONFIRMED", "UNSUPPORTED"):
@@ -270,7 +308,7 @@ class TailoredCvData(BaseModel):
 
         return cls(
             name=str(data.get("name") or "").strip(),
-            contact=str(data.get("contact") or data.get("contact_line") or "").strip(),
+            contact=_format_contact_field(data.get("contact") or data.get("contact_line")),
             professional_title=str(
                 data.get("professional_title")
                 or data.get("target_role")
