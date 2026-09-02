@@ -13,6 +13,8 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     GET    /cvs                             list uploaded CVs + metadata
     POST   /cvs/upload                      upload a CV (dedup by content hash)
     GET    /cvs/{cv_id}                     one CV + its latest scan
+    GET    /cvs/{cv_id}/file                download the original uploaded CV file
+    GET    /cvs/{cv_id}/jobs/{job_id}/context  job title/company/description for CV Tailor
     DELETE /cvs/{cv_id}                     delete a CV and all its data
     POST   /cvs/reset                       delete all CVs + clear workspace
     POST   /cvs/{cv_id}/analyze             parse CV + suggest job domains/roles
@@ -99,7 +101,18 @@ from application_service import ApplicationError, get_application_for_cv, get_jo
 from application_worker import enqueue_application, is_application_active
 from build_info import build_info
 from collection_report import parse_agent_line
-from config import API_HOST, API_PORT, CV_PROFILE_PATH, DATA_DIR, PROJECT_ROOT, RESUMES_DIR, cv_db_path, user_db_path
+from config import (
+    API_HOST,
+    API_PORT,
+    CV_PROFILE_PATH,
+    DATA_DIR,
+    PROJECT_ROOT,
+    RESUMES_DIR,
+    _find_cv_file,
+    cv_data_dir,
+    cv_db_path,
+    user_db_path,
+)
 from job_boards import list_job_boards, normalize_job_board_ids
 from intelligent_tailoring.themes.modern_template_manager import list_themes
 from pdf_generator_service import PdfGeneratorError, generate_tailored_cv_pdf
@@ -1340,6 +1353,72 @@ def get_cv(cv_id: str, user: dict = Depends(auth.get_current_user)):
     public = _cv_public(cv)
     public["latest_scan"] = db.get_latest_scan(cv_id, db_path=cv_db_path(cv_id))
     return {"cv": public}
+
+
+def _resolve_cv_file_path(cv: dict) -> Path:
+    """Return the on-disk path to a CV's uploaded resume file."""
+    cv_id = cv["id"]
+    found = _find_cv_file(cv_data_dir(cv_id))
+    if found is not None and found.is_file():
+        return found
+    stored = (cv.get("stored_path") or "").strip()
+    if stored:
+        candidate = (PROJECT_ROOT / stored).resolve()
+        if candidate.is_file():
+            return candidate
+    raise HTTPException(status_code=404, detail="קובץ קורות החיים לא נמצא")
+
+
+@app.get("/cvs/{cv_id}/file")
+def download_cv_file(cv_id: str, user: dict = Depends(auth.get_current_user)):
+    """Download the original uploaded resume for use in CV Tailor or other flows."""
+    db.ensure_multi_cv_storage()
+    cv = _require_owned_cv(cv_id, user)
+    cv_file = _resolve_cv_file_path(cv)
+    filename = cv.get("file_name") or cv_file.name
+    ext = (cv.get("file_ext") or cv_file.suffix or "").lower()
+    media_type = (
+        "application/pdf"
+        if ext == ".pdf"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if ext == ".docx"
+        else "application/octet-stream"
+    )
+    return FileResponse(cv_file, filename=filename, media_type=media_type)
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/context")
+def get_cv_job_context(
+    cv_id: str,
+    job_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Return job metadata and description text for CV Tailor prefill."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None:
+        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+
+    description = _job_description_text(job)
+    if len(description.strip()) < 20:
+        parts = [
+            job.get("title") or "",
+            job.get("company") or "",
+            job.get("location") or "",
+            job.get("description") or job.get("full_description") or "",
+        ]
+        description = "\n".join(p for p in parts if p and str(p).strip()).strip()
+
+    return {
+        "job_id": job_id,
+        "title": job.get("title"),
+        "company": job.get("company"),
+        "location": job.get("location"),
+        "description": description,
+    }
 
 
 @app.delete("/cvs/{cv_id}")

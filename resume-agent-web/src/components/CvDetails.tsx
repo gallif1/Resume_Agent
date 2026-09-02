@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildCvTailorUrl } from "../lib/cvTailorApi";
 import Markdown from "react-markdown";
 import { ArrowRight, Loader2, RefreshCw, Search } from "lucide-react";
 import {
@@ -919,51 +920,8 @@ export default function CvDetails({
     }
   };
 
-  const handleTailorCv = async (match: CvMatch, force = false) => {
-    setTailoringId(match.job_id);
-    setActiveMatchBaseline(match.match_score);
-    setError(null);
-    setInfoMessage(null);
-    setCopyDone(false);
-    beginGenerationSession(match.job_id);
-    try {
-      const signal = tailorAbortRef.current?.signal;
-      const result = workspaceMode
-        ? await tailorWorkspaceJob(match.job_id, {
-            force,
-            sourceCvId: cvId,
-            signal,
-          })
-        : await tailorCvForJob(cvId, match.job_id, { force, signal });
-      if (generationCancelledRef.current) return;
-      if (result.generation_report) {
-        setGenerationReport(result.generation_report);
-      }
-      if (result.decision_log?.length) {
-        setTailorDecisions(result.decision_log);
-      }
-      applyTailoredResult(result, { resetSession: true });
-      setTailorStatusMessage(
-        result.from_cache
-          ? "נטענו קורות חיים שמורים למשרה זו"
-          : "קורות החיים נוצרו בהצלחה"
-      );
-      setGenerationUiOpen(true);
-      setGenerationBackground(false);
-    } catch (e) {
-      if (
-        generationCancelledRef.current ||
-        (e instanceof DOMException && e.name === "AbortError")
-      ) {
-        return;
-      }
-      setError(e instanceof Error ? e.message : "שגיאה בהתאמת קורות החיים");
-      setTailorStatusMessage(null);
-    } finally {
-      closeTailorStream();
-      setTailoringId(null);
-      tailorAbortRef.current = null;
-    }
+  const handleOpenCvTailor = (match: CvMatch) => {
+    window.location.href = buildCvTailorUrl({ cvId, jobId: match.job_id });
   };
 
   const handleCopyTailored = async () => {
@@ -1338,21 +1296,10 @@ export default function CvDetails({
           <div className="cv-actions" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
-              className={`btn btn-ghost btn-sm ${busyTailor ? "btn-loading" : ""}`}
-              disabled={busyTailor}
-              onClick={() => handleTailorCv(m, /* force */ true)}
-              aria-busy={busyTailor}
+              className="btn btn-ghost btn-sm"
+              onClick={() => handleOpenCvTailor(m)}
             >
-              {busyTailor ? (
-                <>
-                  <span className="btn-spinner" aria-hidden="true" />
-                  מייצר קורות חיים...
-                </>
-              ) : m.has_tailored_cv ? (
-                "ייצר מחדש"
-              ) : (
-                "ייצר קורות חיים"
-              )}
+              {m.has_tailored_cv ? "ייצר מחדש" : "ייצר קורות חיים"}
             </button>
             {m.has_tailored_cv && (
               <button

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronUp, Download, FileText, Loader2 } from "lucide-react";
 import AuthView from "./components/AuthView";
 import {
@@ -9,8 +9,11 @@ import {
 } from "./lib/api";
 import {
   downloadTailoredCv,
+  fetchJobContext,
+  fetchStoredCvFile,
   generateTailoredCv,
   regenerateTailoredCv,
+  type CvJobContext,
   type CvTailorGenerateResponse,
   type RequirementGap,
 } from "./lib/cvTailorApi";
@@ -18,6 +21,22 @@ import { APP_VERSION } from "./lib/version";
 
 const ACCEPTED_TYPES = ".pdf,.docx";
 const MAX_CV_FILE_BYTES = 10 * 1024 * 1024;
+
+function readLaunchParams(): {
+  cvId: string | null;
+  jobId: number | null;
+  autoRun: boolean;
+} {
+  const params = new URLSearchParams(window.location.search);
+  const cvId = params.get("cv_id");
+  const jobIdRaw = params.get("job_id");
+  const jobId = jobIdRaw ? Number.parseInt(jobIdRaw, 10) : null;
+  return {
+    cvId,
+    jobId: jobId != null && Number.isFinite(jobId) ? jobId : null,
+    autoRun: params.get("auto") === "1",
+  };
+}
 
 function validateCvFile(file: File): string | null {
   const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase() : "";
@@ -49,10 +68,15 @@ function initialGapState(gaps: RequirementGap[]): Record<string, GapFormState> {
 }
 
 export default function CvTailorPage() {
+  const launchParams = useMemo(() => readLaunchParams(), []);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authChecking, setAuthChecking] = useState(() => Boolean(getStoredToken()));
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
+  const [jobContext, setJobContext] = useState<CvJobContext | null>(null);
+  const [prefillLoading, setPrefillLoading] = useState(
+    () => Boolean(launchParams.cvId && launchParams.jobId)
+  );
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +84,7 @@ export default function CvTailorPage() {
   const [downloading, setDownloading] = useState(false);
   const [gapForm, setGapForm] = useState<Record<string, GapFormState>>({});
   const [generalAdditionalInfo, setGeneralAdditionalInfo] = useState("");
+  const autoRunTriggeredRef = useRef(false);
 
   useEffect(() => {
     const token = getStoredToken();
@@ -120,6 +145,66 @@ export default function CvTailorPage() {
       setLoading(false);
     }
   }, [cvFile, jobDescription, syncGapForm]);
+
+  useEffect(() => {
+    const { cvId, jobId } = launchParams;
+    if (!authUser || !cvId || !jobId) {
+      if (!cvId || !jobId) setPrefillLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPrefillLoading(true);
+    setError(null);
+
+    Promise.all([fetchStoredCvFile(cvId), fetchJobContext(cvId, jobId)])
+      .then(([file, context]) => {
+        if (cancelled) return;
+        setCvFile(file);
+        setJobContext(context);
+        setJobDescription(context.description);
+        const fileError = validateCvFile(file);
+        if (fileError) setError(fileError);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : "טעינת נתוני המשרה נכשלה");
+      })
+      .finally(() => {
+        if (!cancelled) setPrefillLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser, launchParams]);
+
+  useEffect(() => {
+    if (
+      !launchParams.autoRun ||
+      autoRunTriggeredRef.current ||
+      prefillLoading ||
+      loading ||
+      result ||
+      !cvFile ||
+      jobDescription.trim().length < 20
+    ) {
+      return;
+    }
+    const fileError = validateCvFile(cvFile);
+    if (fileError) return;
+
+    autoRunTriggeredRef.current = true;
+    void handleGenerate();
+  }, [
+    launchParams.autoRun,
+    prefillLoading,
+    loading,
+    result,
+    cvFile,
+    jobDescription,
+    handleGenerate,
+  ]);
 
   const handleDownload = useCallback(async () => {
     if (!result?.result_id) return;
@@ -187,11 +272,13 @@ export default function CvTailorPage() {
     []
   );
 
-  if (authChecking) {
+  if (authChecking || prefillLoading) {
     return (
       <div className="app">
         <main className="main cv-tailor-main">
-          <p className="muted">Loading…</p>
+          <p className="muted">
+            {prefillLoading ? "טוען קורות חיים ופרטי משרה…" : "Loading…"}
+          </p>
         </main>
       </div>
     );
@@ -260,6 +347,12 @@ export default function CvTailorPage() {
       <main className="main cv-tailor-main">
         <section className="card cv-tailor-card">
           <h1 className="cv-tailor-title">Create Tailored CV</h1>
+          {jobContext?.title && (
+            <p className="cv-tailor-subtitle">
+              {jobContext.title}
+              {jobContext.company ? ` · ${jobContext.company}` : ""}
+            </p>
+          )}
           <p className="cv-tailor-subtitle">
             Upload your CV and paste a job description. The AI will rewrite your CV using only
             information from the original — no fabricated experience.
