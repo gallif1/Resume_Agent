@@ -14,6 +14,7 @@ import {
   getJobMatchStatus,
   getJobApplication,
   getTailoredCvPreview,
+  listTailoredCvVersions,
   openTailoredCvPdfPreview,
   parseScanSummary,
   regenerateTailoredSection,
@@ -26,6 +27,7 @@ import {
   type ApplicationStatus,
   type Cv,
   type CvMatch,
+  type CvTailorVersion,
   type CvScanStatus,
   type GenerationReport,
   type JobApplication,
@@ -338,6 +340,12 @@ export default function CvDetails({
   const [maxMatchReached, setMaxMatchReached] = useState(false);
   const [previewAnimKey, setPreviewAnimKey] = useState(0);
   const [liveJobIds, setLiveJobIds] = useState<Set<number>>(() => new Set());
+  const [tailorVersionsByJob, setTailorVersionsByJob] = useState<
+    Record<number, CvTailorVersion[]>
+  >({});
+  const [loadingTailorVersionsJobId, setLoadingTailorVersionsJobId] = useState<
+    number | null
+  >(null);
   const [lastScanInfo, setLastScanInfo] = useState(() =>
     parseScanSummary(null)
   );
@@ -360,6 +368,7 @@ export default function CvDetails({
   const tailorAbortRef = useRef<AbortController | null>(null);
   const generationCancelledRef = useRef(false);
   const streamedJobIdsRef = useRef<Set<number>>(new Set());
+  const loadedTailorVersionsRef = useRef<Set<number>>(new Set());
   /** Session-best tailored draft so a lower-scoring regenerate never overwrites it. */
   const bestSessionRef = useRef<{
     jobId: number;
@@ -700,10 +709,45 @@ export default function CvDetails({
     }
     setExpandedId(match.match_id);
     setJobInteractions((prev) => markViewed(interactionsScope, match.job_id, prev));
+    if (match.has_tailored_cv) {
+      void loadTailorVersions(match.job_id);
+    }
   };
 
   const handleOpenJobLink = (match: CvMatch) => {
     setJobInteractions((prev) => markEngaged(interactionsScope, match.job_id, prev));
+  };
+
+  const loadTailorVersions = useCallback(
+    async (jobId: number, force = false) => {
+      if (!force && loadedTailorVersionsRef.current.has(jobId)) return;
+      setLoadingTailorVersionsJobId(jobId);
+      try {
+        const data = await listTailoredCvVersions(cvId, jobId);
+        loadedTailorVersionsRef.current.add(jobId);
+        setTailorVersionsByJob((prev) => ({
+          ...prev,
+          [jobId]: data.versions ?? [],
+        }));
+      } catch {
+        loadedTailorVersionsRef.current.add(jobId);
+        setTailorVersionsByJob((prev) => ({ ...prev, [jobId]: [] }));
+      } finally {
+        setLoadingTailorVersionsJobId((current) =>
+          current === jobId ? null : current
+        );
+      }
+    },
+    [cvId]
+  );
+
+  const invalidateTailorVersions = (jobId: number) => {
+    loadedTailorVersionsRef.current.delete(jobId);
+    setTailorVersionsByJob((prev) => {
+      const next = { ...prev };
+      delete next[jobId];
+      return next;
+    });
   };
 
   const handleApply = async (match: CvMatch, force = false) => {
@@ -796,6 +840,8 @@ export default function CvDetails({
           : m
       )
     );
+    invalidateTailorVersions(result.job_id);
+    void loadTailorVersions(result.job_id, true);
   };
 
   const closeTailorStream = () => {
@@ -890,17 +936,24 @@ export default function CvDetails({
     }
   };
 
-  const handleOpenSavedTailored = async (match: CvMatch) => {
+  const handleOpenSavedTailored = async (
+    match: CvMatch,
+    versionId?: number
+  ) => {
     setError(null);
     setInfoMessage(null);
-    if (tailoredCv?.job_id === match.job_id && tailoredCv.markdown) {
+    if (
+      versionId == null &&
+      tailoredCv?.job_id === match.job_id &&
+      tailoredCv.markdown
+    ) {
       setActiveMatchBaseline(match.match_score);
       setResultModalOpen(true);
       return;
     }
     setLoadingSavedTailored(match.job_id);
     try {
-      const result = await getTailoredCvPreview(cvId, match.job_id);
+      const result = await getTailoredCvPreview(cvId, match.job_id, versionId);
       applyTailoredResult(result);
       setActiveMatchBaseline(match.match_score);
       setResultModalOpen(true);
@@ -1476,22 +1529,82 @@ export default function CvDetails({
               )}
             </div>
             {m.has_tailored_cv && (
-              <p className="cv-meta">
-                קורות חיים מותאמים נשמרו
-                {m.tailored_cv_updated_at
-                  ? ` · עודכן ${formatDate(m.tailored_cv_updated_at)}`
-                  : ""}
-                {" · "}
-                <button
-                  type="button"
-                  className="btn-link-touch"
-                  onClick={() => {
-                    void handleOpenSavedTailored(m);
-                  }}
-                >
-                  פתח שוב
-                </button>
-              </p>
+              <div className="job-tailor-history">
+                <h4 className="job-description-title">היסטוריית קורות חיים מותאמים</h4>
+                {loadingTailorVersionsJobId === m.job_id ? (
+                  <p className="cv-meta">טוען היסטוריה…</p>
+                ) : (tailorVersionsByJob[m.job_id] ?? []).length === 0 ? (
+                  <p className="cv-meta">
+                    עדיין אין גרסאות שמורות — גרסאות חדשות יופיעו כאן אחרי יצירה.
+                  </p>
+                ) : (
+                  <ul className="tailor-version-list">
+                    {(tailorVersionsByJob[m.job_id] ?? []).map((version) => (
+                      <li key={version.id} className="tailor-version-item">
+                        <div className="tailor-version-meta">
+                          <span className="tailor-version-date">
+                            {formatDate(version.created_at)}
+                          </span>
+                          <span className="tailor-version-score">
+                            ציון {version.score_before} ← {version.score_after}
+                          </span>
+                        </div>
+                        <div className="tailor-version-actions">
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            disabled={loadingSavedTailored === m.job_id}
+                            onClick={() => {
+                              void handleOpenSavedTailored(m, version.id);
+                            }}
+                          >
+                            צפה
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => {
+                              void openTailoredCvPdfPreview(
+                                cvId,
+                                m.job_id,
+                                version.id
+                              );
+                            }}
+                          >
+                            PDF
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => {
+                              void downloadTailoredCvPdf(
+                                cvId,
+                                m.job_id,
+                                version.id
+                              );
+                            }}
+                          >
+                            הורד PDF
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => {
+                              void downloadTailoredCvDocx(
+                                cvId,
+                                m.job_id,
+                                version.id
+                              );
+                            }}
+                          >
+                            DOCX
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
             {app?.failure_reason && (
               <p className="apply-log-error">

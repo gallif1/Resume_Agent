@@ -3517,6 +3517,41 @@ def record_cv_tailor_version(
         return int(row_id)
 
 
+def get_cv_tailor_version_by_id(
+    version_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> dict[str, Any] | None:
+    """Return one tailored-CV version row by primary key."""
+    if _sqlite_path_missing(db_path):
+        return None
+    with get_connection(db_path) as conn:
+        if "cv_tailor_versions" not in _table_names(conn):
+            return None
+        row = conn.execute(
+            "SELECT * FROM cv_tailor_versions WHERE id = ?",
+            (version_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+
+def update_cv_tailor_version_path(
+    version_id: int,
+    tailored_cv_path: str,
+    *,
+    db_path: Path = DB_PATH,
+) -> None:
+    """Point a version row at its archived markdown file."""
+    with get_connection(db_path) as conn:
+        if "cv_tailor_versions" not in _table_names(conn):
+            return
+        conn.execute(
+            "UPDATE cv_tailor_versions SET tailored_cv_path = ? WHERE id = ?",
+            (tailored_cv_path, version_id),
+        )
+        conn.commit()
+
+
 def get_latest_cv_tailor_version(
     cv_id: str,
     job_id: int,

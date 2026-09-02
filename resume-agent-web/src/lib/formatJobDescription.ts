@@ -72,15 +72,41 @@ const NEW_PARAGRAPH_START_RE =
 
 const SENTENCE_SPLIT_RE = /(?<=[.!?…])\s+(?=[A-Z״"«א-ת])/u;
 
-function normalizeWhitespace(text: string): string {
-  return text
-    .replace(/\r\n?/g, "\n")
-    .replace(/\u00a0/g, " ")
+/** LinkedIn / job-board UI chrome that scrapers often capture as plain text. */
+const SCRAPER_UI_NOISE_RES: RegExp[] = [
+  /^\s*show\s+more\s*\.?\s*$/gim,
+  /^\s*show\s+less\s*\.?\s*$/gim,
+  /^\s*see\s+more\s*\.?\s*$/gim,
+  /^\s*see\s+less\s*\.?\s*$/gim,
+  /^\s*read\s+more\s*\.?\s*$/gim,
+  /^\s*read\s+less\s*\.?\s*$/gim,
+  /\bshow\s+more\b/gi,
+  /\bshow\s+less\b/gi,
+];
+
+function stripScraperUiNoise(text: string): string {
+  let cleaned = text;
+  for (const pattern of SCRAPER_UI_NOISE_RES) {
+    cleaned = cleaned.replace(pattern, "");
+  }
+  return cleaned
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n[ \t]+/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function normalizeWhitespace(text: string): string {
+  return stripScraperUiNoise(
+    text
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
 
 function isSectionHeader(line: string): boolean {

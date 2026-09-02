@@ -97,6 +97,46 @@ def test_record_and_fetch_cv_tailor_versions(db_path):
     assert history[1]["id"] == v1
 
 
+def test_record_version_archives_markdown_per_version(
+    cvs_dir, db_path, monkeypatch
+):
+    db.init_db(db_path)
+    monkeypatch.setattr("config.CVS_DIR", cvs_dir)
+    cv_id = "cv_archive"
+    job_id = 7
+
+    svc.save_tailored_cv(cv_id, job_id, "# Version A")
+    version_id = svc._record_version(
+        cv_id,
+        job_id,
+        score_before=70,
+        score_after=75,
+        path=svc.tailored_cv_path(cv_id, job_id),
+        db_path=db_path,
+    )
+    assert version_id is not None
+    archive_a = svc.tailored_cv_version_path(cv_id, job_id, version_id)
+    assert archive_a.exists()
+    assert "Version A" in archive_a.read_text(encoding="utf-8")
+
+    svc.save_tailored_cv(cv_id, job_id, "# Version B")
+    version_id_2 = svc._record_version(
+        cv_id,
+        job_id,
+        score_before=75,
+        score_after=80,
+        path=svc.tailored_cv_path(cv_id, job_id),
+        db_path=db_path,
+    )
+    assert version_id_2 is not None
+    archive_b = svc.tailored_cv_version_path(cv_id, job_id, version_id_2)
+    assert "Version B" in archive_b.read_text(encoding="utf-8")
+    assert "Version A" in archive_a.read_text(encoding="utf-8")
+    assert svc.load_tailored_cv_version(
+        cv_id, job_id, version_id, db_path=db_path
+    ).startswith("# Version A")
+
+
 def test_tailor_cv_records_a_version_and_publishes_the_honest_score(
     cvs_dir,
     db_path,
