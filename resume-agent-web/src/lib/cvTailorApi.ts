@@ -142,3 +142,54 @@ export async function downloadTailoredCv(resultId: string): Promise<Blob> {
   }
   return res.blob();
 }
+
+export type CvJobContext = {
+  job_id: number;
+  title: string | null;
+  company: string | null;
+  location: string | null;
+  description: string;
+};
+
+/** Build a CV Tailor URL with optional prefill + auto-run query params. */
+export function buildCvTailorUrl(options: {
+  cvId: string;
+  jobId: number;
+  auto?: boolean;
+}): string {
+  const params = new URLSearchParams({
+    cv_id: options.cvId,
+    job_id: String(options.jobId),
+  });
+  if (options.auto !== false) {
+    params.set("auto", "1");
+  }
+  return `/cv-tailor?${params.toString()}`;
+}
+
+/** Fetch the stored CV file for a CV record (for CV Tailor prefill). */
+export async function fetchStoredCvFile(cvId: string): Promise<File> {
+  const res = await authFetch(`/cvs/${encodeURIComponent(cvId)}/file`, {}, "לא ניתן לטעון את קובץ קורות החיים");
+  if (!res.ok) {
+    throw new Error(await parseBlobError(res, `טעינת קובץ קורות החיים נכשלה (${res.status})`));
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const plainMatch = /filename="([^"]+)"|filename=([^;]+)/i.exec(disposition);
+  const rawName =
+    (utfMatch && decodeURIComponent(utfMatch[1])) ||
+    (plainMatch && (plainMatch[1] || plainMatch[2]).trim()) ||
+    "resume.pdf";
+  const filename = rawName.replace(/^["']|["']$/g, "");
+  return new File([blob], filename, { type: blob.type || "application/octet-stream" });
+}
+
+/** Fetch job description and metadata for CV Tailor prefill. */
+export async function fetchJobContext(cvId: string, jobId: number): Promise<CvJobContext> {
+  return authJsonRequest<CvJobContext>(
+    `/cvs/${encodeURIComponent(cvId)}/jobs/${jobId}/context`,
+    {},
+    "לא ניתן לטעון את פרטי המשרה"
+  );
+}
