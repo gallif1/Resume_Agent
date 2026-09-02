@@ -210,6 +210,8 @@ class GapConfirmationInput(BaseModel):
 class RegenerateCvRequest(BaseModel):
     gap_confirmations: list[GapConfirmationInput] = Field(default_factory=list)
     general_additional_info: str = ""
+    cv_id: str | None = None
+    job_id: int | None = None
 
 
 class TailoredCvData(BaseModel):

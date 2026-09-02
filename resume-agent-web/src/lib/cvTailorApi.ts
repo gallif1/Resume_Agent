@@ -74,6 +74,13 @@ export type CvTailorGenerateResponse = {
   tailored_cv: TailoredCvData;
   job_analysis: JobAnalysis;
   user_confirmed_facts?: CandidateFact[];
+  saved_to_job?: boolean;
+  job_version_id?: number | null;
+};
+
+export type CvTailorJobContext = {
+  cvId?: string;
+  jobId?: number;
 };
 
 export type GapConfirmationInput = {
@@ -85,6 +92,8 @@ export type GapConfirmationInput = {
 export type RegenerateCvRequest = {
   gap_confirmations: GapConfirmationInput[];
   general_additional_info: string;
+  cv_id?: string;
+  job_id?: number;
 };
 
 function detailFromBody(body: unknown, fallback: string): string {
@@ -107,11 +116,18 @@ async function parseBlobError(res: Response, fallback: string): Promise<string> 
 
 export async function generateTailoredCv(
   file: File,
-  jobDescription: string
+  jobDescription: string,
+  jobContext?: CvTailorJobContext
 ): Promise<CvTailorGenerateResponse> {
   const form = new FormData();
   form.append("file", file);
   form.append("job_description", jobDescription);
+  if (jobContext?.cvId) {
+    form.append("cv_id", jobContext.cvId);
+  }
+  if (jobContext?.jobId != null) {
+    form.append("job_id", String(jobContext.jobId));
+  }
 
   return authJsonRequest<CvTailorGenerateResponse>(
     "/api/cv-tailor/generate",
@@ -122,14 +138,22 @@ export async function generateTailoredCv(
 
 export async function regenerateTailoredCv(
   resultId: string,
-  request: RegenerateCvRequest
+  request: RegenerateCvRequest,
+  jobContext?: CvTailorJobContext
 ): Promise<CvTailorGenerateResponse> {
+  const payload: RegenerateCvRequest = { ...request };
+  if (jobContext?.cvId) {
+    payload.cv_id = jobContext.cvId;
+  }
+  if (jobContext?.jobId != null) {
+    payload.job_id = jobContext.jobId;
+  }
   return authJsonRequest<CvTailorGenerateResponse>(
     `/api/cv-tailor/regenerate/${encodeURIComponent(resultId)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
+      body: JSON.stringify(payload),
     },
     "עדכון קורות החיים נכשל"
   );
