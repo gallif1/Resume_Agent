@@ -80,11 +80,11 @@ export default function CvTailorPage() {
   const handleGenerate = useCallback(async () => {
     setError(null);
     if (!cvFile) {
-      setError("Please upload a CV file (PDF or DOCX).");
+      setError("יש להעלות קובץ קורות חיים (PDF או DOCX).");
       return;
     }
     if (jobDescription.trim().length < 20) {
-      setError("Please paste a job description (at least 20 characters).");
+      setError("יש להדביק תיאור משרה (לפחות 20 תווים).");
       return;
     }
 
@@ -95,7 +95,7 @@ export default function CvTailorPage() {
       setResult(data);
       syncGapForm(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Generation failed");
+      setError(e instanceof Error ? e.message : "יצירת קורות החיים נכשלה");
     } finally {
       setLoading(false);
     }
@@ -115,7 +115,7 @@ export default function CvTailorPage() {
       anchor.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Download failed");
+      setError(e instanceof Error ? e.message : "הורדת הקובץ נכשלה");
     } finally {
       setDownloading(false);
     }
@@ -151,7 +151,7 @@ export default function CvTailorPage() {
       setResult(data);
       syncGapForm(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Regeneration failed");
+      setError(e instanceof Error ? e.message : "עדכון קורות החיים נכשל");
     } finally {
       setRegenerating(false);
     }
