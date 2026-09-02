@@ -1269,6 +1269,53 @@ body {
   color: var(--text-muted);
 }
 
+.job-tailor-history {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.tailor-version-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tailor-version-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+}
+
+.tailor-version-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.tailor-version-date {
+  font-weight: 600;
+}
+
+.tailor-version-score {
+  color: var(--text-muted);
+}
+
+.tailor-version-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .job-item-favorite {
   border-inline-start: 3px solid color-mix(in srgb, var(--warning, #eab308) 70%, transparent);
 }

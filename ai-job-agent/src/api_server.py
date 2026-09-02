@@ -134,6 +134,8 @@ from tailor_cv_service import (
     extract_cv_markdown_for_copy,
     load_saved_tailored_cv,
     load_saved_tailored_result,
+    load_tailored_cv_version,
+    load_tailored_cv_version_result,
     prepare_for_preview,
     tailor_cv_for_job,
 )
@@ -1875,6 +1877,55 @@ def _tailored_cv_response(
     }
 
 
+def _tailored_cv_db_for_request(cv_id: str, user: dict) -> Path:
+    return cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+
+
+def _load_tailored_markdown_for_request(
+    cv_id: str,
+    job_id: int,
+    user: dict,
+    *,
+    version_id: int | None = None,
+) -> tuple[str, str, Path]:
+    """Return (markdown, resolved_cv_id, cv_db) for preview/download."""
+    cv_db = _tailored_cv_db_for_request(cv_id, user)
+    resolved_cv_id = cv_id
+
+    if version_id is not None:
+        saved = load_tailored_cv_version(
+            cv_id, job_id, version_id, db_path=cv_db
+        )
+        if not saved and cv_id != db.WORKSPACE_CV_ID:
+            workspace_db = user_db_path(user["id"])
+            saved = load_tailored_cv_version(
+                db.WORKSPACE_CV_ID, job_id, version_id, db_path=workspace_db
+            )
+            if saved:
+                resolved_cv_id = db.WORKSPACE_CV_ID
+                cv_db = workspace_db
+        if not saved:
+            raise HTTPException(
+                status_code=404,
+                detail="גרסת קורות החיים לא נמצאה",
+            )
+        return saved, resolved_cv_id, cv_db
+
+    saved = load_saved_tailored_cv(cv_id, job_id)
+    if not saved and cv_id != db.WORKSPACE_CV_ID:
+        workspace_db = user_db_path(user["id"])
+        saved = load_saved_tailored_cv(db.WORKSPACE_CV_ID, job_id)
+        if saved:
+            resolved_cv_id = db.WORKSPACE_CV_ID
+            cv_db = workspace_db
+    if not saved:
+        raise HTTPException(
+            status_code=404,
+            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
+        )
+    return saved, resolved_cv_id, cv_db
+
+
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailor-cv")
 def tailor_cv_endpoint(
     cv_id: str,
@@ -2039,6 +2090,7 @@ def get_resume_themes(user: dict = Depends(auth.get_current_user)):
 def preview_tailored_cv(
     cv_id: str,
     job_id: int,
+    version_id: int | None = None,
     user: dict = Depends(auth.get_current_user),
 ):
     """Load the generated resume for review without running export gates.
@@ -2051,7 +2103,7 @@ def preview_tailored_cv(
     if cv_id != db.WORKSPACE_CV_ID:
         _require_owned_cv(cv_id, user)
 
-    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
+    cv_db = _tailored_cv_db_for_request(cv_id, user)
     job = db.get_job_by_id(job_id, db_path=cv_db)
     if job is None and cv_id != db.WORKSPACE_CV_ID:
         # Workspace-mode matches may store the draft under the user workspace.
@@ -2060,33 +2112,59 @@ def preview_tailored_cv(
         if job is not None:
             cv_db = workspace_db
 
-    result = load_saved_tailored_result(cv_id, job_id, db_path=cv_db)
-    resolved_cv_id = cv_id
-    if not result and cv_id != db.WORKSPACE_CV_ID:
-        workspace_db = user_db_path(user["id"])
-        result = load_saved_tailored_result(
-            db.WORKSPACE_CV_ID, job_id, db_path=workspace_db
+    if version_id is not None:
+        result = load_tailored_cv_version_result(
+            cv_id, job_id, version_id, db_path=cv_db
         )
-        if result:
-            resolved_cv_id = db.WORKSPACE_CV_ID
-            cv_db = workspace_db
-            if job is None:
-                job = db.get_job_by_id(job_id, db_path=workspace_db)
+        resolved_cv_id = cv_id
+        if not result and cv_id != db.WORKSPACE_CV_ID:
+            workspace_db = user_db_path(user["id"])
+            result = load_tailored_cv_version_result(
+                db.WORKSPACE_CV_ID, job_id, version_id, db_path=workspace_db
+            )
+            if result:
+                resolved_cv_id = db.WORKSPACE_CV_ID
+                cv_db = workspace_db
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="גרסת קורות החיים לא נמצאה",
+            )
+    else:
+        result = load_saved_tailored_result(cv_id, job_id, db_path=cv_db)
+        resolved_cv_id = cv_id
+        if not result and cv_id != db.WORKSPACE_CV_ID:
+            workspace_db = user_db_path(user["id"])
+            result = load_saved_tailored_result(
+                db.WORKSPACE_CV_ID, job_id, db_path=workspace_db
+            )
+            if result:
+                resolved_cv_id = db.WORKSPACE_CV_ID
+                cv_db = workspace_db
+                if job is None:
+                    job = db.get_job_by_id(job_id, db_path=workspace_db)
 
-    if not result:
-        raise HTTPException(
-            status_code=404,
-            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
-        )
+        if not result:
+            raise HTTPException(
+                status_code=404,
+                detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
+            )
 
     if job is None:
         job = {"id": job_id, "title": None, "company": None}
 
-    relative_path = (
-        f"data/cvs/{resolved_cv_id}/tailored_cvs/{job_id}.md"
-        if resolved_cv_id != db.WORKSPACE_CV_ID
-        else f"data/users/{user['id']}/tailored_cvs/{job_id}.md"
-    )
+    if version_id is not None:
+        relative_path = (
+            f"data/cvs/{resolved_cv_id}/tailored_cvs/{job_id}_v{version_id}.md"
+            if resolved_cv_id != db.WORKSPACE_CV_ID
+            else f"data/users/{user['id']}/tailored_cvs/{job_id}_v{version_id}.md"
+        )
+    else:
+        relative_path = (
+            f"data/cvs/{resolved_cv_id}/tailored_cvs/{job_id}.md"
+            if resolved_cv_id != db.WORKSPACE_CV_ID
+            else f"data/users/{user['id']}/tailored_cvs/{job_id}.md"
+        )
     return _tailored_cv_response(
         cv_id=cv_id,
         job_id=job_id,
@@ -2102,6 +2180,7 @@ def preview_tailored_cv_pdf(
     cv_id: str,
     job_id: int,
     theme: str | None = None,
+    version_id: int | None = None,
     user: dict = Depends(auth.get_current_user),
 ):
     """Render the saved tailored CV as an inline PDF for on-screen preview.
@@ -2113,14 +2192,9 @@ def preview_tailored_cv_pdf(
     if cv_id != db.WORKSPACE_CV_ID:
         _require_owned_cv(cv_id, user)
 
-    saved = load_saved_tailored_cv(cv_id, job_id)
-    if not saved and cv_id != db.WORKSPACE_CV_ID:
-        saved = load_saved_tailored_cv(db.WORKSPACE_CV_ID, job_id)
-    if not saved:
-        raise HTTPException(
-            status_code=404,
-            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
-        )
+    saved, _, _ = _load_tailored_markdown_for_request(
+        cv_id, job_id, user, version_id=version_id
+    )
 
     cv_body = extract_cv_markdown_for_copy(saved)
     try:
@@ -2153,6 +2227,7 @@ def download_tailored_cv_pdf(
     cv_id: str,
     job_id: int,
     theme: str | None = None,
+    version_id: int | None = None,
     user: dict = Depends(auth.get_current_user),
 ):
     """Render the saved tailored CV Markdown to a professionally styled A4 PDF."""
@@ -2164,21 +2239,18 @@ def download_tailored_cv_pdf(
     else:
         _require_owned_cv(cv_id, user)
 
-    saved = load_saved_tailored_cv(cv_id, job_id)
-    if not saved and cv_id != db.WORKSPACE_CV_ID:
-        saved = load_saved_tailored_cv(db.WORKSPACE_CV_ID, job_id)
-    if not saved:
-        raise HTTPException(
-            status_code=404,
-            detail="לא נמצא קובץ קורות חיים מותאם — יש ליצור קודם",
-        )
+    saved, _, cv_db = _load_tailored_markdown_for_request(
+        cv_id, job_id, user, version_id=version_id
+    )
 
     # Enforce quality gates from the structured report when available
-    cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
     repaired_report: dict[str, Any] | None = None
     try:
         report_row = db.get_tailored_resume_report(
-            cv_id=cv_id, job_id=job_id, db_path=cv_db
+            cv_id=cv_id,
+            job_id=job_id,
+            version_id=version_id,
+            db_path=cv_db,
         )
         if report_row and isinstance(report_row.get("report"), dict):
             repaired_report = assert_safe_to_export(report_row["report"])
@@ -2216,6 +2288,7 @@ def download_tailored_cv_pdf(
 def download_tailored_cv_docx(
     cv_id: str,
     job_id: int,
+    version_id: int | None = None,
     user: dict = Depends(auth.get_current_user),
 ):
     """Export the approved tailored CV as an ATS-friendly DOCX (no tables/graphics)."""
@@ -2226,7 +2299,10 @@ def download_tailored_cv_docx(
     cv_db = cv_db_path(cv_id) if cv_id != db.WORKSPACE_CV_ID else user_db_path(user["id"])
     db.init_db(cv_db)
     report_row = db.get_tailored_resume_report(
-        cv_id=cv_id, job_id=job_id, db_path=cv_db
+        cv_id=cv_id,
+        job_id=job_id,
+        version_id=version_id,
+        db_path=cv_db,
     )
     tailored_cv: dict[str, Any] = {}
     repaired_report: dict[str, Any] | None = None

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -31,11 +32,13 @@ from db import (
     DEFAULT_USER_ID,
     WORKSPACE_CV_ID,
     apply_honest_match_score,
+    get_cv_tailor_version_by_id,
     get_latest_cv_tailor_version,
     get_tailored_resume_report,
     list_cv_tailor_versions,
     record_cv_tailor_version,
     save_tailored_resume_report,
+    update_cv_tailor_version_path,
 )
 from match_scoring import score_label_for
 from intelligent_tailoring import (
@@ -91,6 +94,10 @@ def tailored_cv_dir(cv_id: str) -> Path:
 
 def tailored_cv_path(cv_id: str, job_id: int) -> Path:
     return tailored_cv_dir(cv_id) / f"{job_id}.md"
+
+
+def tailored_cv_version_path(cv_id: str, job_id: int, version_id: int) -> Path:
+    return tailored_cv_dir(cv_id) / f"{job_id}_v{version_id}.md"
 
 
 def split_tailored_markdown(markdown: str) -> tuple[str, str]:
@@ -897,7 +904,11 @@ def _load_cv_profile_or_raise(cv_id: str, *, user_id: str | None = None) -> dict
 
 def _read_saved_draft(cv_id: str, job_id: int) -> tuple[str | None, str | None]:
     """Return (markdown, pipeline_version) for a saved draft, marker stripped."""
-    path = tailored_cv_path(cv_id, job_id)
+    return _read_markdown_file(tailored_cv_path(cv_id, job_id))
+
+
+def _read_markdown_file(path: Path) -> tuple[str | None, str | None]:
+    """Return (markdown, pipeline_version) for one saved draft file."""
     if not path.exists():
         return None, None
     try:
@@ -910,6 +921,58 @@ def _read_saved_draft(cv_id: str, job_id: int) -> tuple[str | None, str | None]:
         text = text[marker.end() :]
     text = text.strip()
     return (text or None), version
+
+
+def load_tailored_cv_version(
+    cv_id: str,
+    job_id: int,
+    version_id: int,
+    *,
+    db_path: Path | None = None,
+) -> str | None:
+    """Load archived markdown for one tailored-CV version."""
+    archive = tailored_cv_version_path(cv_id, job_id, version_id)
+    markdown, _ = _read_markdown_file(archive)
+    if markdown:
+        return markdown
+    if db_path is not None:
+        row = get_cv_tailor_version_by_id(version_id, db_path=db_path)
+        stored = (row or {}).get("tailored_cv_path")
+        if stored:
+            markdown, _ = _read_markdown_file(Path(stored))
+            if markdown:
+                return markdown
+    # Legacy rows may only have the latest file — use it for the newest version.
+    latest = get_latest_cv_tailor_version(cv_id, job_id, db_path=db_path) if db_path else None
+    if latest and int(latest.get("id") or 0) == int(version_id):
+        return load_saved_tailored_cv(cv_id, job_id)
+    return None
+
+
+def load_tailored_cv_version_result(
+    cv_id: str,
+    job_id: int,
+    version_id: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Load one archived tailored CV plus metadata for preview/reopen."""
+    markdown = load_tailored_cv_version(
+        cv_id, job_id, version_id, db_path=db_path
+    )
+    if not markdown:
+        return None
+    archive = tailored_cv_version_path(cv_id, job_id, version_id)
+    saved_path = str(archive if archive.exists() else tailored_cv_path(cv_id, job_id))
+    result = _result_from_saved_markdown(markdown, saved_path=saved_path)
+    result["version_id"] = version_id
+    return _enrich_cached_result_with_db_scores(
+        result,
+        cv_id=cv_id,
+        job_id=job_id,
+        db_path=db_path,
+        version_id=version_id,
+    )
 
 
 def repair_report_for_export(report: dict[str, Any] | None) -> dict[str, Any]:
@@ -1279,11 +1342,16 @@ def _enrich_cached_result_with_db_scores(
     cv_id: str,
     job_id: int,
     db_path: Path | None,
+    version_id: int | None = None,
 ) -> dict[str, Any]:
     """Replay stored score history onto a draft loaded from disk."""
     if db_path is None:
         return result
-    latest = get_latest_cv_tailor_version(cv_id, job_id, db_path=db_path)
+    if version_id is not None:
+        version_row = get_cv_tailor_version_by_id(version_id, db_path=db_path)
+    else:
+        version_row = get_latest_cv_tailor_version(cv_id, job_id, db_path=db_path)
+    latest = version_row
     score_after = (
         latest.get("score_after") if latest else result.get("estimated_ats_score")
     )
@@ -1487,6 +1555,15 @@ def _record_version(
         )
     except Exception:  # noqa: BLE001 — version history must not fail a good tailor
         return None
+    if version_id is not None and path.exists():
+        archive = tailored_cv_version_path(cv_id, job_id, version_id)
+        try:
+            shutil.copy2(path, archive)
+            update_cv_tailor_version_path(
+                version_id, str(archive), db_path=db_path
+            )
+        except Exception:  # noqa: BLE001 — archive is best-effort
+            pass
     if report and version_id is not None:
         try:
             save_tailored_resume_report(

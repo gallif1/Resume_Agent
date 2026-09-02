@@ -365,6 +365,16 @@ export interface CvMatch {
   updated_at: string | null;
 }
 
+export interface CvTailorVersion {
+  id: number;
+  cv_id: string;
+  job_id: number;
+  score_before: number;
+  score_after: number;
+  tailored_cv_path: string | null;
+  created_at: string;
+}
+
 export interface MatcherFeedbackSnapshot {
   match_score?: number | null;
   ats_score?: number | null;
@@ -1005,10 +1015,13 @@ function filenameFromContentDisposition(header: string | null): string | null {
 async function fetchTailoredCvPdfBlob(
   cvId: string,
   jobId: number,
-  path: "download-pdf" | "preview-pdf"
+  path: "download-pdf" | "preview-pdf",
+  versionId?: number
 ): Promise<{ blob: Blob; filename: string }> {
+  const versionQuery =
+    versionId != null ? `?version_id=${encodeURIComponent(String(versionId))}` : "";
   const res = await fetch(
-    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/${path}`,
+    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/${path}${versionQuery}`,
     { headers: authHeaders() }
   );
   if (res.status === 401) {
@@ -1036,17 +1049,29 @@ async function fetchTailoredCvPdfBlob(
 /** Reopen a saved tailored CV without regenerating (no export gates). */
 export function getTailoredCvPreview(
   cvId: string,
-  jobId: number
+  jobId: number,
+  versionId?: number
 ): Promise<TailoredCvResponse> {
-  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/preview`);
+  const query =
+    versionId != null ? `?version_id=${encodeURIComponent(String(versionId))}` : "";
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/preview${query}`);
+}
+
+/** List all tailored-CV versions saved for one job. */
+export function listTailoredCvVersions(
+  cvId: string,
+  jobId: number
+): Promise<{ versions: CvTailorVersion[] }> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/versions`);
 }
 
 /** Open the tailored CV PDF in a new tab for on-screen preview (no export gates). */
 export async function openTailoredCvPdfPreview(
   cvId: string,
-  jobId: number
+  jobId: number,
+  versionId?: number
 ): Promise<void> {
-  const { blob } = await fetchTailoredCvPdfBlob(cvId, jobId, "preview-pdf");
+  const { blob } = await fetchTailoredCvPdfBlob(cvId, jobId, "preview-pdf", versionId);
   const url = URL.createObjectURL(blob);
   const opened = window.open(url, "_blank", "noopener,noreferrer");
   if (!opened) {
@@ -1060,12 +1085,14 @@ export async function openTailoredCvPdfPreview(
 /** Download the tailored CV as a professionally rendered PDF (Playwright). */
 export async function downloadTailoredCvPdf(
   cvId: string,
-  jobId: number
+  jobId: number,
+  versionId?: number
 ): Promise<void> {
   const { blob, filename } = await fetchTailoredCvPdfBlob(
     cvId,
     jobId,
-    "download-pdf"
+    "download-pdf",
+    versionId
   );
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1078,10 +1105,13 @@ export async function downloadTailoredCvPdf(
 /** Download the approved tailored CV as an ATS-friendly DOCX. */
 export async function downloadTailoredCvDocx(
   cvId: string,
-  jobId: number
+  jobId: number,
+  versionId?: number
 ): Promise<void> {
+  const versionQuery =
+    versionId != null ? `?version_id=${encodeURIComponent(String(versionId))}` : "";
   const res = await fetch(
-    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-docx`,
+    `${BASE_URL}/cvs/${cvId}/jobs/${jobId}/tailored-cv/download-docx${versionQuery}`,
     { headers: authHeaders() }
   );
   if (res.status === 401) {
