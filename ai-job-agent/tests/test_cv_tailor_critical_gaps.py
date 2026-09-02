@@ -7,9 +7,21 @@ from unittest.mock import patch
 import api_server
 import db
 from conftest import auth_header_for, register_test_user
-from cv_tailor.models import CandidateFact, JobAnalysis, RegenerateCvRequest
+from cv_tailor.models import (
+    CandidateFact,
+    ExperienceEntry,
+    JobAnalysis,
+    ProjectEntry,
+    RegenerateCvRequest,
+    SkillGroup,
+    TailoredCvData,
+)
 from cv_tailor.service import CvTailorError, generate_tailored_cv, regenerate_tailored_cv
-from cv_tailor.validation import apply_factual_guards, parse_regenerate_response
+from cv_tailor.validation import (
+    apply_factual_guards,
+    parse_regenerate_response,
+    preserve_regeneration_baseline,
+)
 from fastapi.testclient import TestClient
 
 GAL_TEL_HAI_SOURCE = """
@@ -422,3 +434,149 @@ def test_legacy_gap_status_mapping():
         {"gaps": [{"requirement": "Java", "status": "not_found", "explanation": "Missing."}]}
     )
     assert analysis.gaps[0].status == "UNSUPPORTED"
+
+
+def test_contact_dict_is_formatted_not_raw():
+    cv = TailoredCvData.from_llm_dict(
+        {
+            "name": "Gal Lifshitz",
+            "contact": {
+                "location": "Israel",
+                "phone": "052-352-7293",
+                "email": "gal@example.com",
+                "github": "GitHub",
+                "linkedin": "LinkedIn",
+            },
+        }
+    )
+    assert "Israel" in cv.contact
+    assert "052-352-7293" in cv.contact
+    assert not cv.contact.startswith("{")
+
+
+def test_preserve_regeneration_baseline_keeps_bullets_and_skills():
+    previous = TailoredCvData(
+        name="Gal Lifshitz",
+        contact="Israel | 052-352-7293 | gal@example.com | GitHub | LinkedIn",
+        professional_title="Junior React Developer",
+        summary="Full summary with React, AWS, CI/CD, pytest, and real-time platform experience.",
+        skill_groups=[
+            SkillGroup(category="Frontend", skills=["React", "HTML", "CSS"]),
+            SkillGroup(category="Backend", skills=["FastAPI", "Node.js"]),
+        ],
+        experience=[
+            ExperienceEntry(
+                company="Tel Hai University",
+                role="Capstone Project Lead – Tribe Platform",
+                dates="2024 – 2025",
+                bullets=[
+                    "Deployed backend infrastructure using AWS (EC2, RDS, S3) and implemented basic CI/CD workflows",
+                    "Implemented automated testing using pytest including integration tests and reusable testing utilities",
+                ],
+            )
+        ],
+        projects=[
+            ProjectEntry(
+                name="Server Monitor System",
+                description="Backend monitoring system",
+                bullets=[
+                    "Implemented background worker performing parallel health checks (HTTP, FTP, SSH)",
+                ],
+            )
+        ],
+    )
+    sparse = TailoredCvData(
+        name="Gal Lifshitz",
+        contact="{'location': 'Israel', 'phone': '052-352-7293'}",
+        professional_title="Junior React Developer",
+        summary="Short summary.",
+        experience=[
+            ExperienceEntry(
+                company="Tel Hai University",
+                role="Capstone Project Lead – Tribe Platform",
+                dates="2024 – 2025",
+                bullets=[],
+            )
+        ],
+        projects=[
+            ProjectEntry(name="Server Monitor System", description="", bullets=[]),
+        ],
+    )
+
+    merged = preserve_regeneration_baseline(previous, sparse)
+
+    assert merged.contact == previous.contact
+    assert len(merged.experience[0].bullets) == 2
+    assert merged.projects[0].bullets == previous.projects[0].bullets
+    assert len(merged.skill_groups) == 2
+    assert "React" in merged.skill_groups[0].skills
+    assert len(merged.summary) > len(sparse.summary)
+
+
+def test_regenerate_service_preserves_full_cv_when_llm_returns_sparse():
+    full_cv = INITIAL_MINUTE_MEDIA_RESPONSE["tailored_cv"]
+    sparse_regen = {
+        "normalized_new_facts": [
+            {
+                "fact": "I confirm JavaScript",
+                "normalized_fact": "Hands-on JavaScript development experience.",
+                "source": "user_confirmed",
+                "gap_id": "vanilla-javascript",
+            }
+        ],
+        "tailored_cv": {
+            "name": "Gal Lifshitz",
+            "contact": {
+                "location": "Israel",
+                "phone": "052-352-7293",
+                "email": "gal@example.com",
+            },
+            "professional_title": "Full-Stack Developer",
+            "summary": "Short summary.",
+            "experience": [
+                {
+                    "company": "Tel Hai University",
+                    "role": "Capstone Project Lead – Tribe Platform",
+                    "dates": "2024 – 2025",
+                    "bullets": [],
+                }
+            ],
+            "projects": [{"name": "Server Monitor System", "description": "", "bullets": []}],
+            "education": full_cv["education"],
+            "skill_groups": [],
+        },
+        "job_analysis": REGENERATED_MINUTE_MEDIA_RESPONSE["job_analysis"],
+    }
+    fake_pdf = b"%PDF-1.4 regen"
+
+    with patch("cv_tailor.service.call_openai_json", side_effect=[INITIAL_MINUTE_MEDIA_RESPONSE, sparse_regen]):
+        with patch(
+            "cv_tailor.parser.extract_text_from_resume",
+            return_value=(GAL_TEL_HAI_SOURCE, "pdf:test"),
+        ):
+            with patch("cv_tailor.service.render_tailored_cv_pdf", return_value=fake_pdf):
+                initial = generate_tailored_cv(
+                    file_bytes=b"pdf-bytes",
+                    filename="cv.pdf",
+                    job_description=MINUTE_MEDIA_FULLSTACK_JD,
+                    user_id="user-1",
+                )
+
+    js_gap = next(g for g in initial.job_analysis.gaps if g.gap_id == "vanilla-javascript")
+    request = RegenerateCvRequest(
+        gap_confirmations=[{"gap_id": js_gap.gap_id, "confirmed": True, "details": ""}],
+        general_additional_info="",
+    )
+
+    with patch("cv_tailor.service.call_openai_json", return_value=sparse_regen):
+        with patch("cv_tailor.service.render_tailored_cv_pdf", return_value=fake_pdf):
+            updated = regenerate_tailored_cv(
+                result_id=initial.result_id,
+                user_id="user-1",
+                request=request,
+            )
+
+    assert len(updated.tailored_cv.experience[0].bullets) >= 2
+    assert updated.tailored_cv.skill_groups
+    assert "Israel" in updated.tailored_cv.contact
+    assert not updated.tailored_cv.contact.startswith("{")

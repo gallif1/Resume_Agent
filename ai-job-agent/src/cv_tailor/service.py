@@ -29,6 +29,7 @@ from cv_tailor.validation import (
     apply_factual_guards,
     parse_llm_response,
     parse_regenerate_response,
+    preserve_regeneration_baseline,
 )
 from pdf_generator_service import PdfGeneratorError
 
@@ -243,6 +244,7 @@ def regenerate_tailored_cv(
     user_prompt = build_regenerate_user_prompt(
         cv_text=truncate_text(stored.cv_text, OPENAI_CV_MAX_CHARS),
         job_description=truncate_text(stored.job_description, OPENAI_JOB_MAX_CHARS),
+        current_tailored_cv=stored.tailored_cv,
         existing_confirmed_facts=stored.user_confirmed_facts,
         checkbox_confirmations=checkbox_confirmations,
         gap_details=gap_details,
@@ -254,7 +256,7 @@ def regenerate_tailored_cv(
             REGENERATE_SYSTEM_PROMPT,
             user_prompt,
             use_cache=False,
-            cache_namespace="cv_tailor_regen_v1",
+            cache_namespace="cv_tailor_regen_v2",
             model=OPENAI_CV_TAILOR_MODEL,
         )
     except OpenAIAPIError as exc:
@@ -281,6 +283,7 @@ def regenerate_tailored_cv(
         checkbox_facts,
     )
 
+    tailored_cv = preserve_regeneration_baseline(stored.tailored_cv, tailored_cv)
     tailored_cv = apply_factual_guards(
         stored.cv_text,
         tailored_cv,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cv_tailor.models import CandidateFact
+from cv_tailor.models import CandidateFact, TailoredCvData
 
 SYSTEM_PROMPT = """You are an expert resume strategist and truthful CV writer.
 
@@ -117,12 +117,19 @@ Omit empty arrays."""
 
 REGENERATE_SYSTEM_PROMPT = """You are an expert resume strategist and truthful CV writer.
 
-The candidate already received a tailored CV. They reviewed critical gaps and submitted additional information.
+The candidate already received a FULL tailored CV (provided as CURRENT TAILORED CV).
+They reviewed critical gaps and submitted additional information.
 Your job is ONE integrated pass:
 1. Normalize new user input into conservative candidate facts.
-2. Merge with existing user-confirmed facts and the original CV.
-3. Re-tailor the CV for the same job posting.
+2. START FROM THE CURRENT TAILORED CV — do NOT rebuild from scratch and do NOT drop content.
+3. Add only the user-confirmed information to the existing CV (skills, summary wording, etc.).
 4. Re-analyze requirements and update gaps / strong matches / resolved requirements.
+
+PRESERVATION RULES (critical):
+- Keep ALL existing experience bullets, project bullets, skill groups, education, and contact formatting unless you are explicitly improving wording.
+- NEVER return skeleton entries (roles/projects with no bullets) when the current tailored CV already has bullets.
+- contact MUST be a single formatted string (e.g. "Israel | 052-352-7293 | email@example.com | GitHub | LinkedIn"), NEVER a JSON object.
+- If you are unsure, copy sections verbatim from CURRENT TAILORED CV and only add confirmed skills/facts.
 
 CANDIDATE PROFILE = original CV facts + all user-confirmed facts (preserve source distinction internally).
 
@@ -150,7 +157,7 @@ OUTPUT — ONE JSON object:
   "normalized_new_facts": [
     {"fact": "raw user input", "normalized_fact": "conservative professional fact", "source": "user_confirmed", "gap_id": "optional"}
   ],
-  "tailored_cv": { ... same schema as initial generation ... },
+  "tailored_cv": { ... same schema as initial generation — FULL content preserved ... },
   "job_analysis": {
     "target_job_title": "...",
     "seniority_required": "...",
@@ -183,6 +190,7 @@ def build_regenerate_user_prompt(
     *,
     cv_text: str,
     job_description: str,
+    current_tailored_cv: TailoredCvData,
     existing_confirmed_facts: list[CandidateFact],
     checkbox_confirmations: list[str],
     gap_details: list[tuple[str, str, str]],
@@ -203,9 +211,13 @@ def build_regenerate_user_prompt(
     details_block = "\n\n".join(details_lines) or "(none)"
 
     general_block = general_additional_info.strip() or "(none)"
+    current_cv_block = current_tailored_cv.model_dump_json(indent=2)
 
     return f"""ORIGINAL CV (immutable factual source):
 {cv_text}
+
+CURRENT TAILORED CV (preserve this content — update incrementally only):
+{current_cv_block}
 
 JOB DESCRIPTION:
 {job_description}
@@ -223,4 +235,5 @@ GENERAL ADDITIONAL INFORMATION:
 {general_block}
 
 Normalize new input, merge facts, regenerate the tailored CV, and re-run gap analysis.
+Start from CURRENT TAILORED CV and keep all existing bullets/sections unless adding confirmed facts.
 Move resolved items to resolved_requirements. Return JSON only."""
