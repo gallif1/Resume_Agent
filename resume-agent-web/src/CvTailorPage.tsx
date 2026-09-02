@@ -5,6 +5,7 @@ import {
   clearAuthSession,
   getCurrentUser,
   getStoredToken,
+  saveMvpTailoredCvToJob,
   type AuthUser,
 } from "./lib/api";
 import {
@@ -117,6 +118,21 @@ export default function CvTailorPage() {
     setGeneralAdditionalInfo("");
   }, []);
 
+  const persistToJobHistory = useCallback(
+    async (data: CvTailorGenerateResponse) => {
+      const { cvId, jobId } = launchParams;
+      if (!cvId || !jobId) return;
+      const markdown = (data.preview_text || "").trim();
+      if (!markdown) return;
+      try {
+        await saveMvpTailoredCvToJob(cvId, jobId, markdown);
+      } catch {
+        // History persistence must not block the tailor flow.
+      }
+    },
+    [launchParams]
+  );
+
   const handleGenerate = useCallback(async () => {
     setError(null);
     if (!cvFile) {
@@ -139,12 +155,13 @@ export default function CvTailorPage() {
       const data = await generateTailoredCv(cvFile, jobDescription.trim());
       setResult(data);
       syncGapForm(data);
+      await persistToJobHistory(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "יצירת קורות החיים נכשלה");
     } finally {
       setLoading(false);
     }
-  }, [cvFile, jobDescription, syncGapForm]);
+  }, [cvFile, jobDescription, syncGapForm, persistToJobHistory]);
 
   useEffect(() => {
     const { cvId, jobId } = launchParams;
@@ -255,12 +272,13 @@ export default function CvTailorPage() {
       });
       setResult(data);
       syncGapForm(data);
+      await persistToJobHistory(data);
     } catch (e) {
       setError(e instanceof Error ? e.message : "עדכון קורות החיים נכשל");
     } finally {
       setRegenerating(false);
     }
-  }, [result, gapForm, generalAdditionalInfo, hasGapInput, syncGapForm]);
+  }, [result, gapForm, generalAdditionalInfo, hasGapInput, syncGapForm, persistToJobHistory]);
 
   const updateGapForm = useCallback(
     (gapId: string, patch: Partial<GapFormState>) => {

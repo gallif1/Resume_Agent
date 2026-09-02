@@ -1057,6 +1057,22 @@ export function getTailoredCvPreview(
   return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/preview${query}`);
 }
 
+/** Persist CV Tailor MVP output into the job's tailored-CV history. */
+export function saveMvpTailoredCvToJob(
+  cvId: string,
+  jobId: number,
+  markdown: string,
+  scoreAfter?: number | null
+): Promise<{ saved: boolean; version_id: number | null }> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/save-mvp`, {
+    method: "POST",
+    body: JSON.stringify({
+      markdown,
+      score_after: scoreAfter ?? undefined,
+    }),
+  });
+}
+
 /** List all tailored-CV versions saved for one job. */
 export function listTailoredCvVersions(
   cvId: string,
