@@ -73,6 +73,29 @@ function detailFromApiBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
+function looksLikeHtml(text: string): boolean {
+  const sample = text.trim().slice(0, 200).toLowerCase();
+  return sample.startsWith("<!doctype") || sample.startsWith("<html") || sample.startsWith("<head");
+}
+
+/** Actionable message when the server body is not JSON (common on Safari / timeouts). */
+function nonJsonResponseMessage(res: Response, text: string, errorFallback: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    if (res.ok) {
+      return "הבקשה נקטעה לפני שהשרת החזיר תוצאה — יצירת קורות חיים לוקחת 1–2 דקות, נסה שוב ואל תסגור את הדף.";
+    }
+    return errorFallback;
+  }
+  if (looksLikeHtml(trimmed)) {
+    return "השרת החזיר דף שגיאה במקום תשובת API — ודא שהכתובת כוללת :8001 (למשל http://18.195.208.12:8001/cv-tailor).";
+  }
+  if (res.ok) {
+    return "יצירת קורות החיים נכשלה — נסה קובץ DOCX מ-Word (לא PDF סרוק), והמתן 1–2 דקות בזמן העיבוד.";
+  }
+  return errorFallback;
+}
+
 /** Parse JSON safely — Safari throws opaque errors from Response.json() on bad bodies. */
 async function parseResponseBody<T>(
   res: Response,
@@ -85,9 +108,7 @@ async function parseResponseBody<T>(
     try {
       body = JSON.parse(text);
     } catch {
-      if (res.ok) {
-        throw new Error("השרת החזיר תשובה לא תקינה — נסה לרענן את הדף");
-      }
+      throw new Error(nonJsonResponseMessage(res, text, errorFallback));
     }
   }
 
@@ -98,14 +119,11 @@ async function parseResponseBody<T>(
   }
 
   if (!res.ok) {
-    throw new Error(body ? detailFromApiBody(body, errorFallback) : errorFallback);
+    throw new Error(body ? detailFromApiBody(body, errorFallback) : nonJsonResponseMessage(res, text, errorFallback));
   }
 
   if (body === null) {
-    if (!text.trim()) {
-      throw new Error("השרת החזיר תשובה ריקה — נסה שוב");
-    }
-    throw new Error("השרת החזיר תשובה לא תקינה — נסה לרענן את הדף");
+    throw new Error(nonJsonResponseMessage(res, text, errorFallback));
   }
 
   return body as T;
@@ -117,8 +135,13 @@ export async function authFetch(
   networkError = "השרת לא זמין כרגע — נסה לרענן בעוד דקה"
 ): Promise<Response> {
   const headers = authHeaders(init.headers);
+  headers.set("Accept", "application/json");
+  // Let the browser set multipart boundaries for file uploads.
+  if (init.body instanceof FormData) {
+    headers.delete("Content-Type");
+  }
   try {
-    return await fetch(apiUrl(path), { ...init, headers });
+    return await fetch(apiUrl(path), { ...init, headers, cache: "no-store" });
   } catch (err) {
     if (
       (err instanceof DOMException && err.name === "AbortError") ||
