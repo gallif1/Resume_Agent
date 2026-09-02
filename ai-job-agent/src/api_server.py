@@ -136,6 +136,7 @@ from tailor_cv_service import (
     load_saved_tailored_result,
     load_tailored_cv_version,
     load_tailored_cv_version_result,
+    persist_tailored_cv_markdown,
     prepare_for_preview,
     tailor_cv_for_job,
 )
@@ -1778,6 +1779,72 @@ class TailorCvRequest(BaseModel):
     force: bool = False
 
 
+class SaveMvpTailoredCvRequest(BaseModel):
+    markdown: str
+    score_after: int | None = None
+
+
+def _collect_tailored_versions(
+    cv_id: str,
+    job_id: int,
+    user: dict,
+) -> tuple[list[dict[str, Any]], Path, str]:
+    """Return version rows, db path, and resolved cv_id (may fall back to workspace)."""
+    cv_db = cv_db_path(cv_id)
+    db.init_db(cv_db)
+    versions = db.list_cv_tailor_versions(cv_id, job_id, db_path=cv_db)
+    resolved_cv_id = cv_id
+    if versions:
+        return versions, cv_db, resolved_cv_id
+
+    saved = load_saved_tailored_cv(cv_id, job_id)
+    if not saved:
+        workspace_db = user_db_path(user["id"])
+        saved = load_saved_tailored_cv(db.WORKSPACE_CV_ID, job_id)
+        if saved:
+            resolved_cv_id = db.WORKSPACE_CV_ID
+            cv_db = workspace_db
+            db.init_db(cv_db)
+            versions = db.list_cv_tailor_versions(
+                db.WORKSPACE_CV_ID, job_id, db_path=workspace_db
+            )
+            if versions:
+                return versions, cv_db, resolved_cv_id
+
+    if versions:
+        return versions, cv_db, resolved_cv_id
+
+    if not saved:
+        return [], cv_db, resolved_cv_id
+
+    match = db.get_cv_job_match(resolved_cv_id, job_id, db_path=cv_db) or {}
+    score = match.get("match_score")
+    try:
+        score_int = int(score) if score is not None else 0
+    except (TypeError, ValueError):
+        score_int = 0
+    created_at = (
+        match.get("tailored_cv_updated_at")
+        or match.get("updated_at")
+        or _utc_now()
+    )
+    return (
+        [
+            {
+                "id": 0,
+                "cv_id": resolved_cv_id,
+                "job_id": job_id,
+                "score_before": score_int,
+                "score_after": score_int,
+                "tailored_cv_path": f"data/cvs/{resolved_cv_id}/tailored_cvs/{job_id}.md",
+                "created_at": created_at,
+            }
+        ],
+        cv_db,
+        resolved_cv_id,
+    )
+
+
 def _tailored_cv_response(
     *,
     cv_id: str,
@@ -2378,11 +2445,44 @@ def list_tailored_versions(
     """List tailored resume versions + report ids for a resume/job pair."""
     db.ensure_multi_cv_storage()
     _require_owned_cv(cv_id, user)
+    versions, cv_db, resolved_cv_id = _collect_tailored_versions(cv_id, job_id, user)
+    reports = db.list_tailored_resume_reports(
+        resolved_cv_id, job_id, db_path=cv_db
+    )
+    return {"versions": versions, "reports": reports}
+
+
+@app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/save-mvp")
+def save_mvp_tailored_cv(
+    cv_id: str,
+    job_id: int,
+    req: SaveMvpTailoredCvRequest,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Persist CV Tailor MVP output onto the job's tailored-CV history."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
     cv_db = cv_db_path(cv_id)
     db.init_db(cv_db)
-    versions = db.list_cv_tailor_versions(cv_id, job_id, db_path=cv_db)
-    reports = db.list_tailored_resume_reports(cv_id, job_id, db_path=cv_db)
-    return {"versions": versions, "reports": reports}
+    job = db.get_job_by_id(job_id, db_path=cv_db)
+    if job is None:
+        raise HTTPException(status_code=404, detail="משרה לא נמצאה")
+    try:
+        saved = persist_tailored_cv_markdown(
+            cv_id,
+            job_id,
+            req.markdown,
+            db_path=cv_db,
+            score_after=req.score_after,
+        )
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return {
+        "saved": True,
+        "cv_id": cv_id,
+        "job_id": job_id,
+        **saved,
+    }
 
 
 @app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/report")

@@ -34,8 +34,10 @@ from db import (
     apply_honest_match_score,
     get_cv_tailor_version_by_id,
     get_latest_cv_tailor_version,
+    get_match_baseline_score,
     get_tailored_resume_report,
     list_cv_tailor_versions,
+    mark_cv_match_tailored,
     record_cv_tailor_version,
     save_tailored_resume_report,
     update_cv_tailor_version_path,
@@ -1282,6 +1284,59 @@ def save_tailored_cv(cv_id: str, job_id: int, markdown: str) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def persist_tailored_cv_markdown(
+    cv_id: str,
+    job_id: int,
+    markdown: str,
+    *,
+    db_path: Path | None,
+    score_before: int | None = None,
+    score_after: int | None = None,
+) -> dict[str, Any]:
+    """Save markdown to disk, record version history, and return metadata."""
+    text = (markdown or "").strip()
+    if not text:
+        raise TailorCvError("תוכן קורות החיים ריק", status_code=400)
+
+    parsed_before = score_before
+    parsed_after = score_after
+    if db_path is not None:
+        baseline = get_match_baseline_score(cv_id, job_id, db_path=db_path)
+        if parsed_before is None:
+            parsed_before = baseline
+        if parsed_after is None:
+            parsed_after = baseline
+    if parsed_before is None:
+        parsed_before = _parse_score_from_markdown(text) or 0
+    if parsed_after is None:
+        parsed_after = parsed_before
+
+    path = save_tailored_cv(cv_id, job_id, text)
+    version_id = _record_version(
+        cv_id,
+        job_id,
+        score_before=int(parsed_before),
+        score_after=int(parsed_after),
+        path=path,
+        db_path=db_path,
+        report=None,
+    )
+    if db_path is not None:
+        relative = f"data/cvs/{cv_id}/tailored_cvs/{job_id}.md"
+        mark_cv_match_tailored(
+            cv_id,
+            job_id,
+            tailored_cv_path=relative,
+            db_path=db_path,
+        )
+    return {
+        "version_id": version_id,
+        "saved_path": str(path),
+        "score_before": int(parsed_before),
+        "score_after": int(parsed_after),
+    }
 
 
 def _result_from_saved_markdown(markdown: str, *, saved_path: str) -> dict[str, Any]:

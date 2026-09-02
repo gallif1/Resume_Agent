@@ -709,9 +709,7 @@ export default function CvDetails({
     }
     setExpandedId(match.match_id);
     setJobInteractions((prev) => markViewed(interactionsScope, match.job_id, prev));
-    if (match.has_tailored_cv) {
-      void loadTailorVersions(match.job_id);
-    }
+    void loadTailorVersions(match.job_id);
   };
 
   const handleOpenJobLink = (match: CvMatch) => {
@@ -725,10 +723,25 @@ export default function CvDetails({
       try {
         const data = await listTailoredCvVersions(cvId, jobId);
         loadedTailorVersionsRef.current.add(jobId);
+        const versions = data.versions ?? [];
         setTailorVersionsByJob((prev) => ({
           ...prev,
-          [jobId]: data.versions ?? [],
+          [jobId]: versions,
         }));
+        if (versions.length > 0) {
+          setMatches((prev) =>
+            prev.map((m) =>
+              m.job_id === jobId && !m.has_tailored_cv
+                ? {
+                    ...m,
+                    has_tailored_cv: true,
+                    tailored_cv_updated_at:
+                      m.tailored_cv_updated_at ?? versions[0]?.created_at ?? null,
+                  }
+                : m
+            )
+          );
+        }
       } catch {
         loadedTailorVersionsRef.current.add(jobId);
         setTailorVersionsByJob((prev) => ({ ...prev, [jobId]: [] }));
@@ -1528,19 +1541,25 @@ export default function CvDetails({
                 <p className="cv-meta">אין תיאור מלא למשרה זו</p>
               )}
             </div>
-            {m.has_tailored_cv && (
-              <div className="job-tailor-history">
+            <div className="job-tailor-history">
                 <h4 className="job-description-title">היסטוריית קורות חיים מותאמים</h4>
                 {loadingTailorVersionsJobId === m.job_id ? (
                   <p className="cv-meta">טוען היסטוריה…</p>
                 ) : (tailorVersionsByJob[m.job_id] ?? []).length === 0 ? (
                   <p className="cv-meta">
-                    עדיין אין גרסאות שמורות — גרסאות חדשות יופיעו כאן אחרי יצירה.
+                    {m.has_tailored_cv
+                      ? "טוען גרסאות…"
+                      : "עדיין אין גרסאות שמורות — לחצו \"ייצר קורות חיים\" כדי ליצור ולשמור כאן."}
                   </p>
                 ) : (
                   <ul className="tailor-version-list">
-                    {(tailorVersionsByJob[m.job_id] ?? []).map((version) => (
-                      <li key={version.id} className="tailor-version-item">
+                    {(tailorVersionsByJob[m.job_id] ?? []).map((version) => {
+                      const versionKey =
+                        version.id > 0 ? version.id : `legacy-${m.job_id}`;
+                      const versionParam =
+                        version.id > 0 ? version.id : undefined;
+                      return (
+                      <li key={versionKey} className="tailor-version-item">
                         <div className="tailor-version-meta">
                           <span className="tailor-version-date">
                             {formatDate(version.created_at)}
@@ -1555,7 +1574,7 @@ export default function CvDetails({
                             className="btn btn-ghost btn-sm"
                             disabled={loadingSavedTailored === m.job_id}
                             onClick={() => {
-                              void handleOpenSavedTailored(m, version.id);
+                              void handleOpenSavedTailored(m, versionParam);
                             }}
                           >
                             צפה
@@ -1567,7 +1586,7 @@ export default function CvDetails({
                               void openTailoredCvPdfPreview(
                                 cvId,
                                 m.job_id,
-                                version.id
+                                versionParam
                               );
                             }}
                           >
@@ -1580,7 +1599,7 @@ export default function CvDetails({
                               void downloadTailoredCvPdf(
                                 cvId,
                                 m.job_id,
-                                version.id
+                                versionParam
                               );
                             }}
                           >
@@ -1593,7 +1612,7 @@ export default function CvDetails({
                               void downloadTailoredCvDocx(
                                 cvId,
                                 m.job_id,
-                                version.id
+                                versionParam
                               );
                             }}
                           >
@@ -1601,10 +1620,15 @@ export default function CvDetails({
                           </button>
                         </div>
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 )}
               </div>
+            {m.has_tailored_cv && (
+              <p className="cv-meta job-tailor-latest-hint">
+                הגרסה האחרונה זמינה גם בכפתור &quot;צפה בתוצאה&quot; למעלה.
+              </p>
             )}
             {app?.failure_reason && (
               <p className="apply-log-error">
