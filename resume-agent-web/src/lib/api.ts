@@ -55,6 +55,90 @@ function authHeaders(extra?: HeadersInit): Headers {
   return headers;
 }
 
+function apiUrl(path: string): string {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  return `${BASE_URL}${normalized}`;
+}
+
+function detailFromApiBody(body: unknown, fallback: string): string {
+  if (body && typeof body === "object" && "detail" in body) {
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && "message" in detail) {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === "string") return message;
+    }
+    if (detail !== undefined) return JSON.stringify(detail);
+  }
+  return fallback;
+}
+
+/** Parse JSON safely — Safari throws opaque errors from Response.json() on bad bodies. */
+async function parseResponseBody<T>(
+  res: Response,
+  errorFallback: string,
+  options?: { handleUnauthorized?: boolean }
+): Promise<T> {
+  const text = await res.text();
+  let body: unknown = null;
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      if (res.ok) {
+        throw new Error("השרת החזיר תשובה לא תקינה — נסה לרענן את הדף");
+      }
+    }
+  }
+
+  if (res.status === 401 && options?.handleUnauthorized !== false) {
+    clearAuthSession();
+    onUnauthorized?.();
+    throw new Error("נדרשת התחברות מחדש");
+  }
+
+  if (!res.ok) {
+    throw new Error(body ? detailFromApiBody(body, errorFallback) : errorFallback);
+  }
+
+  if (body === null) {
+    if (!text.trim()) {
+      throw new Error("השרת החזיר תשובה ריקה — נסה שוב");
+    }
+    throw new Error("השרת החזיר תשובה לא תקינה — נסה לרענן את הדף");
+  }
+
+  return body as T;
+}
+
+export async function authFetch(
+  path: string,
+  init: RequestInit = {},
+  networkError = "השרת לא זמין כרגע — נסה לרענן בעוד דקה"
+): Promise<Response> {
+  const headers = authHeaders(init.headers);
+  try {
+    return await fetch(apiUrl(path), { ...init, headers });
+  } catch (err) {
+    if (
+      (err instanceof DOMException && err.name === "AbortError") ||
+      (err instanceof Error && err.name === "AbortError")
+    ) {
+      throw err;
+    }
+    throw new Error(networkError);
+  }
+}
+
+export async function authJsonRequest<T>(
+  path: string,
+  init: RequestInit = {},
+  errorFallback?: string
+): Promise<T> {
+  const res = await authFetch(path, init);
+  return parseResponseBody<T>(res, errorFallback ?? `שגיאה ${res.status}`);
+}
+
 function fetchWithTimeout(
   url: string,
   init: RequestInit = {},
@@ -77,44 +161,15 @@ export type MatchSortBy = "date" | "score" | "site";
 export type MatchSortOrder = "asc" | "desc";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = authHeaders(init?.headers);
-  let res: Response;
-  try {
-    res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
-  } catch (err) {
-    if (
-      (err instanceof DOMException && err.name === "AbortError") ||
-      (err instanceof Error && err.name === "AbortError")
-    ) {
-      throw err;
-    }
-    throw new Error("השרת לא זמין כרגע — נסה לרענן בעוד דקה");
-  }
-  if (res.status === 401) {
-    clearAuthSession();
-    onUnauthorized?.();
-    throw new Error("נדרשת התחברות מחדש");
-  }
-  if (!res.ok) {
-    let detail = `שגיאה ${res.status}`;
-    try {
-      const body = await res.json();
-      if (typeof body?.detail === "string") detail = body.detail;
-      else if (body?.detail?.message) detail = body.detail.message;
-      else if (body?.detail) detail = JSON.stringify(body.detail);
-    } catch {
-      /* keep generic message */
-    }
-    throw new Error(detail);
-  }
-  return res.json() as Promise<T>;
+  const res = await authFetch(path, init ?? {});
+  return parseResponseBody<T>(res, `שגיאה ${res.status}`);
 }
 
 async function authRequest(path: string, email: string, password: string): Promise<AuthResponse> {
   // Auth forms must not trigger the global 401 logout handler on bad credentials.
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}${path}`, {
+    res = await fetch(apiUrl(path), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
@@ -122,17 +177,9 @@ async function authRequest(path: string, email: string, password: string): Promi
   } catch {
     throw new Error("השרת לא זמין כרגע — נסה לרענן בעוד דקה");
   }
-  if (!res.ok) {
-    let detail = `שגיאה ${res.status}`;
-    try {
-      const body = await res.json();
-      if (typeof body?.detail === "string") detail = body.detail;
-    } catch {
-      /* keep generic */
-    }
-    throw new Error(detail);
-  }
-  return res.json() as Promise<AuthResponse>;
+  return parseResponseBody<AuthResponse>(res, `שגיאה ${res.status}`, {
+    handleUnauthorized: false,
+  });
 }
 
 export function registerUser(email: string, password: string): Promise<AuthResponse> {

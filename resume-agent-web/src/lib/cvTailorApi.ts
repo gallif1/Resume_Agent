@@ -1,6 +1,4 @@
-import { getStoredToken } from "./api";
-
-const BASE_URL: string = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+import { authFetch, authJsonRequest } from "./api";
 
 export type TailoredCvExperience = {
   company: string;
@@ -89,22 +87,22 @@ export type RegenerateCvRequest = {
   general_additional_info: string;
 };
 
-function authHeaders(): Headers {
-  const headers = new Headers();
-  const token = getStoredToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  return headers;
+function detailFromBody(body: unknown, fallback: string): string {
+  if (body && typeof body === "object" && "detail" in body) {
+    const detail = (body as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+  }
+  return fallback;
 }
 
-async function parseErrorResponse(res: Response, fallback: string): Promise<string> {
-  let detail = fallback;
+async function parseBlobError(res: Response, fallback: string): Promise<string> {
+  const text = await res.text();
+  if (!text.trim()) return fallback;
   try {
-    const body = (await res.json()) as { detail?: string };
-    if (body.detail) detail = body.detail;
+    return detailFromBody(JSON.parse(text), fallback);
   } catch {
-    /* ignore */
+    return fallback;
   }
-  return detail;
 }
 
 export async function generateTailoredCv(
@@ -115,49 +113,32 @@ export async function generateTailoredCv(
   form.append("file", file);
   form.append("job_description", jobDescription);
 
-  const headers = authHeaders();
-  const res = await fetch(`${BASE_URL}/api/cv-tailor/generate`, {
-    method: "POST",
-    headers,
-    body: form,
-  });
-
-  if (!res.ok) {
-    throw new Error(await parseErrorResponse(res, `Request failed (${res.status})`));
-  }
-
-  return res.json() as Promise<CvTailorGenerateResponse>;
+  return authJsonRequest<CvTailorGenerateResponse>(
+    "/api/cv-tailor/generate",
+    { method: "POST", body: form },
+    "יצירת קורות חיים מותאמים נכשלה"
+  );
 }
 
 export async function regenerateTailoredCv(
   resultId: string,
   request: RegenerateCvRequest
 ): Promise<CvTailorGenerateResponse> {
-  const headers = authHeaders();
-  headers.set("Content-Type", "application/json");
-
-  const res = await fetch(`${BASE_URL}/api/cv-tailor/regenerate/${encodeURIComponent(resultId)}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    throw new Error(await parseErrorResponse(res, `Regeneration failed (${res.status})`));
-  }
-
-  return res.json() as Promise<CvTailorGenerateResponse>;
+  return authJsonRequest<CvTailorGenerateResponse>(
+    `/api/cv-tailor/regenerate/${encodeURIComponent(resultId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    "עדכון קורות החיים נכשל"
+  );
 }
 
 export async function downloadTailoredCv(resultId: string): Promise<Blob> {
-  const headers = authHeaders();
-  const res = await fetch(`${BASE_URL}/api/cv-tailor/download/${encodeURIComponent(resultId)}`, {
-    headers,
-  });
-
+  const res = await authFetch(`/api/cv-tailor/download/${encodeURIComponent(resultId)}`);
   if (!res.ok) {
-    throw new Error(await parseErrorResponse(res, `Download failed (${res.status})`));
+    throw new Error(await parseBlobError(res, `הורדה נכשלה (${res.status})`));
   }
-
   return res.blob();
 }
