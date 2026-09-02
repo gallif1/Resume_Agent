@@ -1339,6 +1339,35 @@ def persist_tailored_cv_markdown(
     }
 
 
+def persist_mvp_tailored_cv_for_user(
+    cv_id: str,
+    job_id: int,
+    markdown: str,
+    *,
+    user_id: str,
+    score_after: int | None = None,
+) -> dict[str, Any]:
+    """Persist CV Tailor MVP markdown for an owned CV/job pair."""
+    import db as db_module
+    from config import cv_db_path
+
+    db_module.ensure_multi_cv_storage()
+    cv = db_module.get_cv(cv_id, db_path=db_module.REGISTRY_DB_PATH)
+    if cv is None or cv.get("user_id") != user_id:
+        raise TailorCvError("קורות חיים לא נמצאו", status_code=404)
+    cv_db = cv_db_path(cv_id)
+    db_module.init_db(cv_db)
+    if db_module.get_job_by_id(job_id, db_path=cv_db) is None:
+        raise TailorCvError("משרה לא נמצאה", status_code=404)
+    return persist_tailored_cv_markdown(
+        cv_id,
+        job_id,
+        markdown,
+        db_path=cv_db,
+        score_after=score_after,
+    )
+
+
 def _result_from_saved_markdown(markdown: str, *, saved_path: str) -> dict[str, Any]:
     _, cv_body = split_tailored_markdown(markdown)
     return {

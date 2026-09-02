@@ -86,6 +86,15 @@ export default function CvTailorPage() {
   const [gapForm, setGapForm] = useState<Record<string, GapFormState>>({});
   const [generalAdditionalInfo, setGeneralAdditionalInfo] = useState("");
   const autoRunTriggeredRef = useRef(false);
+  const [savedToJobMessage, setSavedToJobMessage] = useState<string | null>(null);
+
+  const tailorJobContext = useMemo(
+    () =>
+      launchParams.cvId && launchParams.jobId
+        ? { cvId: launchParams.cvId, jobId: launchParams.jobId }
+        : undefined,
+    [launchParams.cvId, launchParams.jobId]
+  );
 
   useEffect(() => {
     const token = getStoredToken();
@@ -121,13 +130,24 @@ export default function CvTailorPage() {
   const persistToJobHistory = useCallback(
     async (data: CvTailorGenerateResponse) => {
       const { cvId, jobId } = launchParams;
-      if (!cvId || !jobId) return;
+      if (!cvId || !jobId) return false;
+      if (data.saved_to_job) {
+        setSavedToJobMessage("נשמר בהיסטוריית המשרה — אפשר לחזור לרשימה ולראות את הקובץ.");
+        return true;
+      }
       const markdown = (data.preview_text || "").trim();
-      if (!markdown) return;
+      if (!markdown) return false;
       try {
         await saveMvpTailoredCvToJob(cvId, jobId, markdown);
-      } catch {
-        // History persistence must not block the tailor flow.
+        setSavedToJobMessage("נשמר בהיסטוריית המשרה — אפשר לחזור לרשימה ולראות את הקובץ.");
+        return true;
+      } catch (e) {
+        setSavedToJobMessage(
+          e instanceof Error
+            ? `לא הצלחנו לשמור למשרה: ${e.message}`
+            : "לא הצלחנו לשמור למשרה"
+        );
+        return false;
       }
     },
     [launchParams]
@@ -135,6 +155,7 @@ export default function CvTailorPage() {
 
   const handleGenerate = useCallback(async () => {
     setError(null);
+    setSavedToJobMessage(null);
     if (!cvFile) {
       setError("יש להעלות קובץ קורות חיים (PDF או DOCX).");
       return;
@@ -152,7 +173,11 @@ export default function CvTailorPage() {
     setLoading(true);
     setResult(null);
     try {
-      const data = await generateTailoredCv(cvFile, jobDescription.trim());
+      const data = await generateTailoredCv(
+        cvFile,
+        jobDescription.trim(),
+        tailorJobContext
+      );
       setResult(data);
       syncGapForm(data);
       await persistToJobHistory(data);
@@ -161,7 +186,7 @@ export default function CvTailorPage() {
     } finally {
       setLoading(false);
     }
-  }, [cvFile, jobDescription, syncGapForm, persistToJobHistory]);
+  }, [cvFile, jobDescription, syncGapForm, persistToJobHistory, tailorJobContext]);
 
   useEffect(() => {
     const { cvId, jobId } = launchParams;
@@ -253,6 +278,7 @@ export default function CvTailorPage() {
     if (!result?.result_id || !hasGapInput) return;
     setRegenerating(true);
     setError(null);
+    setSavedToJobMessage(null);
     try {
       const gap_confirmations = (result.job_analysis?.gaps ?? []).map((gap) => {
         const state = gapForm[gap.gap_id] ?? {
@@ -266,10 +292,14 @@ export default function CvTailorPage() {
           details: state.details.trim(),
         };
       });
-      const data = await regenerateTailoredCv(result.result_id, {
-        gap_confirmations,
-        general_additional_info: generalAdditionalInfo.trim(),
-      });
+      const data = await regenerateTailoredCv(
+        result.result_id,
+        {
+          gap_confirmations,
+          general_additional_info: generalAdditionalInfo.trim(),
+        },
+        tailorJobContext
+      );
       setResult(data);
       syncGapForm(data);
       await persistToJobHistory(data);
@@ -278,7 +308,15 @@ export default function CvTailorPage() {
     } finally {
       setRegenerating(false);
     }
-  }, [result, gapForm, generalAdditionalInfo, hasGapInput, syncGapForm, persistToJobHistory]);
+  }, [
+    result,
+    gapForm,
+    generalAdditionalInfo,
+    hasGapInput,
+    syncGapForm,
+    persistToJobHistory,
+    tailorJobContext,
+  ]);
 
   const updateGapForm = useCallback(
     (gapId: string, patch: Partial<GapFormState>) => {
@@ -436,10 +474,20 @@ export default function CvTailorPage() {
               {error}
             </div>
           )}
+          {savedToJobMessage && (
+            <div className="alert alert-success" role="status">
+              {savedToJobMessage}
+            </div>
+          )}
         </section>
 
         {result && (
           <>
+            {tailorJobContext && (
+              <p className="cv-meta cv-tailor-back-hint">
+                לצפייה בהיסטוריה: חזרו לרשימת המשרות ופתחו את כרטיס המשרה.
+              </p>
+            )}
             <section className="card cv-tailor-result">
               <div className="cv-tailor-result-header">
                 <h2>Tailored CV preview</h2>

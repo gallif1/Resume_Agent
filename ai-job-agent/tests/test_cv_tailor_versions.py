@@ -97,6 +97,36 @@ def test_record_and_fetch_cv_tailor_versions(db_path):
     assert history[1]["id"] == v1
 
 
+def test_persist_tailored_cv_markdown_records_version(cvs_dir, db_path, monkeypatch):
+    db.init_db(db_path)
+    monkeypatch.setattr("config.CVS_DIR", cvs_dir)
+    cv_id = "cv_persist"
+    job_id = db.insert_job(
+        title="Engineer",
+        job_url="https://example.com/job/persist",
+        company="Acme",
+        description="Python",
+        db_path=db_path,
+    )
+    db.upsert_cv_job_match(
+        cv_id,
+        job_id,
+        {"match_score": 61, "match_reason": "test"},
+        db_path=db_path,
+    )
+    saved = svc.persist_tailored_cv_markdown(
+        cv_id,
+        job_id,
+        "# MVP CV\n\nTailored body",
+        db_path=db_path,
+    )
+    assert saved["version_id"] is not None
+    history = db.list_cv_tailor_versions(cv_id, job_id, db_path=db_path)
+    assert len(history) == 1
+    match = db.get_cv_job_match(cv_id, job_id, db_path=db_path)
+    assert match.get("tailored_cv_path")
+
+
 def test_record_version_archives_markdown_per_version(
     cvs_dir, db_path, monkeypatch
 ):

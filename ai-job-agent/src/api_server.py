@@ -137,6 +137,7 @@ from tailor_cv_service import (
     load_tailored_cv_version,
     load_tailored_cv_version_result,
     persist_tailored_cv_markdown,
+    persist_mvp_tailored_cv_for_user,
     prepare_for_preview,
     tailor_cv_for_job,
 )
@@ -2468,11 +2469,11 @@ def save_mvp_tailored_cv(
     if job is None:
         raise HTTPException(status_code=404, detail="משרה לא נמצאה")
     try:
-        saved = persist_tailored_cv_markdown(
+        saved = persist_mvp_tailored_cv_for_user(
             cv_id,
             job_id,
             req.markdown,
-            db_path=cv_db,
+            user_id=user["id"],
             score_after=req.score_after,
         )
     except TailorCvError as exc:

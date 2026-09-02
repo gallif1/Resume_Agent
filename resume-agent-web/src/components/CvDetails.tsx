@@ -709,7 +709,7 @@ export default function CvDetails({
     }
     setExpandedId(match.match_id);
     setJobInteractions((prev) => markViewed(interactionsScope, match.job_id, prev));
-    void loadTailorVersions(match.job_id);
+    void loadTailorVersions(match.job_id, true);
   };
 
   const handleOpenJobLink = (match: CvMatch) => {
@@ -762,6 +762,20 @@ export default function CvDetails({
       return next;
     });
   };
+
+  useEffect(() => {
+    const onPageShow = () => {
+      loadedTailorVersionsRef.current.clear();
+      if (expandedId != null) {
+        const match = matches.find((m) => m.match_id === expandedId);
+        if (match) {
+          void loadTailorVersions(match.job_id, true);
+        }
+      }
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, [expandedId, matches, loadTailorVersions]);
 
   const handleApply = async (match: CvMatch, force = false) => {
     setApplyingId(match.job_id);
@@ -1048,6 +1062,14 @@ export default function CvDetails({
   };
 
   const handleOpenCvTailor = (match: CvMatch) => {
+    try {
+      sessionStorage.setItem(
+        `reload-tailor-${cvId}-${match.job_id}`,
+        String(Date.now())
+      );
+    } catch {
+      /* storage blocked */
+    }
     window.location.href = buildCvTailorUrl({ cvId, jobId: match.job_id });
   };
 

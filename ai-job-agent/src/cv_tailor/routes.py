@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 import auth
+from cv_tailor.job_persist import maybe_persist_tailored_cv_to_job
 from cv_tailor.parser import CvParseError
 from cv_tailor.models import RegenerateCvRequest
 from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_pdf, regenerate_tailored_cv
@@ -22,6 +23,8 @@ router = APIRouter(prefix="/api/cv-tailor", tags=["cv-tailor"])
 async def cv_tailor_generate(
     file: UploadFile = File(...),
     job_description: str = Form(...),
+    cv_id: str | None = Form(default=None),
+    job_id: int | None = Form(default=None),
     user: dict = Depends(auth.get_current_user),
 ):
     filename = file.filename or "cv.pdf"
@@ -42,6 +45,13 @@ async def cv_tailor_generate(
         logger.warning("CV tailor generation error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    saved_to_job = maybe_persist_tailored_cv_to_job(
+        cv_id=cv_id,
+        job_id=job_id,
+        preview_text=result.preview_text,
+        user_id=str(user["id"]),
+    )
+
     return {
         "result_id": result.result_id,
         "model": result.model,
@@ -49,6 +59,8 @@ async def cv_tailor_generate(
         "tailored_cv": result.tailored_cv.model_dump(),
         "job_analysis": result.job_analysis.model_dump(),
         "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
+        "saved_to_job": saved_to_job is not None,
+        "job_version_id": (saved_to_job or {}).get("version_id"),
     }
 
 
@@ -69,6 +81,13 @@ async def cv_tailor_regenerate(
         logger.warning("CV tailor regenerate error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    saved_to_job = maybe_persist_tailored_cv_to_job(
+        cv_id=body.cv_id,
+        job_id=body.job_id,
+        preview_text=result.preview_text,
+        user_id=str(user["id"]),
+    )
+
     return {
         "result_id": result.result_id,
         "model": result.model,
@@ -76,6 +95,8 @@ async def cv_tailor_regenerate(
         "tailored_cv": result.tailored_cv.model_dump(),
         "job_analysis": result.job_analysis.model_dump(),
         "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
+        "saved_to_job": saved_to_job is not None,
+        "job_version_id": (saved_to_job or {}).get("version_id"),
     }
 
 
