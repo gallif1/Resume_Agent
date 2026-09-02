@@ -39,6 +39,19 @@ try:
 except Exception:  # pragma: no cover - optional at import time
     sync_playwright = None  # type: ignore[assignment]
 
+
+def _active_max_age_days() -> int:
+    """Prefer the scan's AGENT_MAX_AGE_DAYS; fall back to the module default."""
+    import os
+
+    raw = (os.getenv("AGENT_MAX_AGE_DAYS") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return int(JOB_MAX_AGE_DAYS)
+
 GOTFRIENDS_CATEGORIES = (
     "software",
     "ai",
@@ -781,15 +794,18 @@ class GotfriendsScraper(BaseScraper):
                     candidates.append(job)
 
                 total_known_skipped += known_skipped
-                if stop_on_known:
-                    kept, age_skipped, all_old = candidates, 0, False
-                else:
-                    kept, age_skipped, all_old = filter_jobs_by_max_age(candidates)
+                # Always apply the posted-date window, including incremental
+                # delta mode (stop_on_known). Known-job early-break and age
+                # filtering are complementary, not mutually exclusive.
+                age_days = _active_max_age_days()
+                kept, age_skipped, all_old = filter_jobs_by_max_age(
+                    candidates, max_age_days=age_days
+                )
                 total_age_skipped += age_skipped
-                if all_old and not stop_on_known:
+                if all_old:
                     print(
                         f"  GotFriends page {page_index + 1}: all dated jobs older than "
-                        f"{JOB_MAX_AGE_DAYS} days — early exit"
+                        f"{age_days} days — early exit"
                     )
                     break
 

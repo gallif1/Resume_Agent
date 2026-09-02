@@ -45,8 +45,8 @@ SAMPLE_DRUSHIM_API_PAGE = {
                 "Link": "/job/111/abcd/",
                 "Hash": "ABCD",
                 "JumpDateString": "היום",
-                "DateActual": "2026-07-18T08:00:00Z",
-            },
+                "DateActual": "2026-09-01T08:00:00Z",
+            }
         },
         {
             "Code": 222,
@@ -89,7 +89,7 @@ def test_parse_drushim_api_jobs_extracts_fields():
     assert jobs[0]["job_url"] == "https://www.drushim.co.il/job/111/abcd"
     assert jobs[0]["description"] == "Build APIs"
     assert jobs[0]["source"] == "drushim"
-    assert jobs[0]["posted_date"] == "2026-07-18"
+    assert jobs[0]["posted_date"] == "2026-09-01"
 
 
 def test_build_drushim_api_search_url_pagination():

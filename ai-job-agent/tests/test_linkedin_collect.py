@@ -41,14 +41,19 @@ SAMPLE_LINKEDIN_HTML = """
 
 
 def test_build_linkedin_search_url_uses_broad_israel_defaults():
-    url = build_linkedin_search_url("Software Engineer", start=10)
+    url = build_linkedin_search_url("Software Engineer", start=10, max_age_days=30)
     assert "keywords=Software+Engineer" in url or "keywords=Software%20Engineer" in url
     assert "location=Israel" in url
     assert "geoId=101620260" in url
     assert "start=10" in url
-    # No hardcoded guest time filter; incremental scrapes early-break on known jobs.
-    assert "f_TPR" not in url  # no hardcoded time window; use known-job early-break
+    # Guest API time hint mirrors the scan picker (30 days → r2592000 seconds).
+    assert "f_TPR=r2592000" in url
     assert "f_E=" not in url
+
+
+def test_build_linkedin_search_url_omits_time_filter_when_age_disabled():
+    url = build_linkedin_search_url("Backend", start=0, max_age_days=0)
+    assert "f_TPR" not in url
 
 
 def test_parse_linkedin_cards_extracts_jobs():
@@ -78,7 +83,7 @@ def test_collect_linkedin_jobs_paginates_with_actual_page_size():
         "collect_jobs.time.sleep"
     ), patch("collect_jobs.LINKEDIN_JOBS_PER_PAGE", 10), patch(
         "collect_jobs.LINKEDIN_MAX_RETRIES", 1
-    ):
+    ), patch("collect_jobs._RUN_MAX_AGE_DAYS", 365):
         outcome = collect_linkedin_jobs("Software Engineer", max_pages=3)
 
     assert outcome.status == "ok"
@@ -99,7 +104,9 @@ def test_collect_linkedin_jobs_retries_on_429_with_backoff():
 
     with patch("collect_jobs.requests.get", side_effect=[limited, ok]) as mock_get, patch(
         "collect_jobs.time.sleep"
-    ) as mock_sleep, patch("collect_jobs.LINKEDIN_MAX_RETRIES", 3):
+    ) as mock_sleep, patch("collect_jobs.LINKEDIN_MAX_RETRIES", 3), patch(
+        "collect_jobs._RUN_MAX_AGE_DAYS", 365
+    ):
         outcome = collect_linkedin_jobs("Python Developer", max_pages=1)
 
     assert outcome.status == "ok"
@@ -116,7 +123,9 @@ def test_collect_linkedin_keeps_new_jobs_after_known_on_same_page():
     with patch(
         "collect_jobs.requests.get",
         return_value=MagicMock(status_code=200, text=SAMPLE_LINKEDIN_HTML),
-    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1):
+    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1), patch(
+        "collect_jobs._RUN_MAX_AGE_DAYS", 365
+    ):
         outcome = collect_linkedin_jobs(
             "Software Engineer",
             max_pages=1,
@@ -141,7 +150,9 @@ def test_collect_linkedin_returns_caught_up_when_all_known():
     with patch(
         "collect_jobs.requests.get",
         return_value=MagicMock(status_code=200, text=SAMPLE_LINKEDIN_HTML),
-    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1):
+    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1), patch(
+        "collect_jobs._RUN_MAX_AGE_DAYS", 365
+    ):
         outcome = collect_linkedin_jobs(
             "Backend Developer",
             max_pages=1,
@@ -250,4 +261,22 @@ def test_apply_collect_filters_skips_old_and_known():
     assert known2 == 0
     assert all_old2 is True
     assert hit_delta2 is False
+
+
+def test_collect_linkedin_drops_jobs_outside_max_age_days():
+    """LinkedIn must honor the scan date picker even though search is relevance-ranked."""
+    stale_html = SAMPLE_LINKEDIN_HTML.replace(
+        'datetime="2026-07-18"', 'datetime="2024-12-31"'
+    ).replace('datetime="2026-07-10"', 'datetime="2024-12-31"')
+
+    with patch(
+        "collect_jobs.requests.get",
+        return_value=MagicMock(status_code=200, text=stale_html),
+    ), patch("collect_jobs.time.sleep"), patch("collect_jobs.LINKEDIN_MAX_RETRIES", 1), patch(
+        "collect_jobs._RUN_MAX_AGE_DAYS", 30
+    ):
+        outcome = collect_linkedin_jobs("Backend Engineer", max_pages=1)
+
+    assert outcome.status in {"empty", "ok"}
+    assert outcome.jobs == []
 

@@ -183,6 +183,36 @@ def test_get_cv_matches_can_hide_jobs_without_description(db_path):
     assert visible[0]["job_id"] == with_desc
 
 
+def test_get_cv_matches_filters_by_max_age_days(db_path):
+    from datetime import date, timedelta
+
+    db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
+    fresh = insert_job(db_path, title="Fresh", url="https://x/fresh")
+    stale = insert_job(db_path, title="Stale", url="https://x/stale")
+    fresh_date = (date.today() - timedelta(days=5)).isoformat()
+
+    with db.get_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
+            ("x" * 50, fresh_date, fresh),
+        )
+        conn.execute(
+            "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
+            ("x" * 50, "2024-12-31", stale),
+        )
+        conn.commit()
+
+    scan = db.create_scan("cv-a", db_path=db_path)
+    db.upsert_cv_job_match("cv-a", fresh, _match_fields(80), scan_id=scan, db_path=db_path)
+    db.upsert_cv_job_match("cv-a", stale, _match_fields(80), scan_id=scan, db_path=db_path)
+
+    visible = db.get_cv_matches("cv-a", max_age_days=30, db_path=db_path)
+    assert [m["job_id"] for m in visible] == [fresh]
+
+    wide = db.get_cv_matches("cv-a", max_age_days=900, db_path=db_path)
+    assert {m["job_id"] for m in wide} == {fresh, stale}
+
+
 def test_match_sorting_by_site_and_score(db_path):
     db.create_cv("cv-a", file_name="a.pdf", stored_path="a", db_path=db_path)
     j_drushim = insert_job(db_path, title="D", url="https://x/d")

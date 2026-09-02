@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import time
@@ -665,18 +666,19 @@ def collect_drushim_jobs_api(
 
         kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
             page_jobs,
-            known_job_urls=known_job_urls,
-            known_identity_keys=known_identity_keys,
-            apply_age_filter=not stop_on_known,
-            delta_stop_identity=None if stop_on_known else delta_stop_identity,
-            stop_on_known=stop_on_known,
+            **_known_filter_kwargs(
+                known_job_urls=known_job_urls,
+                known_identity_keys=known_identity_keys,
+                delta_stop_identity=delta_stop_identity,
+                stop_on_known=stop_on_known,
+            ),
         )
         total_age_skipped += age_skipped
         total_known_skipped += known_skipped
-        if all_old and not stop_on_known:
+        if all_old:
             print(
-                f"  Drushim API page: all {len(page_jobs)} job(s) older than "
-                f"{JOB_MAX_AGE_DAYS} days — early exit"
+                f"  Drushim API page: all dated job(s) older than "
+                f"{_RUN_MAX_AGE_DAYS} days — early exit"
             )
             break
 
@@ -1252,11 +1254,18 @@ def _linkedin_headers(*, user_agent: str | None = None) -> dict[str, str]:
     return headers
 
 
-def build_linkedin_search_url(query: str, start: int = 0) -> str:
+def build_linkedin_search_url(
+    query: str,
+    start: int = 0,
+    *,
+    max_age_days: int | None = None,
+) -> str:
     """Build a LinkedIn guest jobs-search API URL (no login required).
 
-    Uses broad location defaults (Israel + geoId) with no hardcoded time window.
-    Incremental delta scrapes stop when they hit an already-known job instead.
+    Uses broad location defaults (Israel + geoId). When ``max_age_days`` is set
+    (or the run-level ``_RUN_MAX_AGE_DAYS``), adds LinkedIn's ``f_TPR`` past-time
+    filter so the guest API prefers recent postings. Card-level age filtering
+    in :func:`collect_linkedin_jobs` remains the authoritative cutoff.
     Seniority / experience filters belong in matching, not collection.
     """
     params: dict[str, str | int] = {
@@ -1266,6 +1275,10 @@ def build_linkedin_search_url(query: str, start: int = 0) -> str:
     }
     if LINKEDIN_GEO_ID:
         params["geoId"] = LINKEDIN_GEO_ID
+    age_days = max_age_days if max_age_days is not None else _RUN_MAX_AGE_DAYS
+    if age_days and int(age_days) > 0:
+        # LinkedIn guest search: f_TPR=r<seconds> ≈ "posted in the last N seconds".
+        params["f_TPR"] = f"r{int(age_days) * 86400}"
     return f"{LINKEDIN_BASE_URL}/jobs-guest/jobs/api/seeMoreJobPostings/search?{urlencode(params)}"
 
 
@@ -1414,21 +1427,23 @@ def collect_linkedin_jobs(
     location_label = LINKEDIN_LOCATION
     if LINKEDIN_GEO_ID:
         location_label = f"{LINKEDIN_LOCATION} (geoId={LINKEDIN_GEO_ID})"
+    age_days = _RUN_MAX_AGE_DAYS
     print(
         f"Searching LinkedIn for: {query} "
         f"(location: {location_label}, up to {max_pages} page(s), "
-        f"~{LINKEDIN_JOBS_PER_PAGE}/page, no time filter)"
+        f"~{LINKEDIN_JOBS_PER_PAGE}/page, last {age_days} day(s))"
     )
     all_jobs: list[dict] = []
     seen_ids: set[str] = set()
     page_size = max(1, LINKEDIN_JOBS_PER_PAGE)
     last_status: int | None = None
     total_known_skipped = 0
+    total_age_skipped = 0
     cards_seen = 0
 
     for page_index in range(max_pages):
         start = page_index * page_size
-        url = build_linkedin_search_url(query, start=start)
+        url = build_linkedin_search_url(query, start=start, max_age_days=age_days)
         print(f"  LinkedIn page {page_index + 1}/{max_pages}: start={start}")
         print(f"  URL: {url}")
 
@@ -1470,15 +1485,18 @@ def collect_linkedin_jobs(
             page_size = max(len(page_jobs), 1)
 
         cards_seen += len(page_jobs)
-        # Relevance-ranked: skip known jobs, never trim at the first known listing.
-        kept, _age_skipped, known_skipped, _all_old, _hit_delta = _apply_collect_filters(
+        # Relevance-ranked: skip known jobs without trimming at the first known
+        # listing, but still drop cards older than the scan's posted-date window.
+        kept, age_skipped, known_skipped, _all_old, _hit_delta = _apply_collect_filters(
             page_jobs,
             known_job_urls=known_job_urls,
             known_identity_keys=known_identity_keys,
-            apply_age_filter=False,
+            apply_age_filter=age_days > 0,
+            max_age_days=age_days,
             stop_on_known=False,
         )
         total_known_skipped += known_skipped
+        total_age_skipped += age_skipped
 
         added = 0
         for job in kept:
@@ -1492,7 +1510,8 @@ def collect_linkedin_jobs(
 
         print(
             f"  LinkedIn page {page_index + 1}: +{added} new "
-            f"({len(page_jobs)} on page, {known_skipped} already known)"
+            f"({len(page_jobs)} on page, {known_skipped} already known, "
+            f"{age_skipped} too old)"
         )
         if stop_on_known and known_skipped > 0 and added == 0:
             print(
@@ -1504,8 +1523,11 @@ def collect_linkedin_jobs(
         if page_index < max_pages - 1:
             time.sleep(1.5)
 
-    if total_known_skipped:
-        print(f"  LinkedIn skipped {total_known_skipped} job(s) already in DB")
+    if total_known_skipped or total_age_skipped:
+        print(
+            f"  LinkedIn skipped {total_known_skipped} already in DB, "
+            f"{total_age_skipped} older than {age_days} day(s)"
+        )
     print(f"  LinkedIn returned {len(all_jobs)} job card(s) for '{query}'")
     if all_jobs:
         return CollectionOutcome(jobs=all_jobs, status="ok", http_status=last_status)
@@ -1876,6 +1898,7 @@ def main() -> None:
 
     global _RUN_MAX_AGE_DAYS
     _RUN_MAX_AGE_DAYS = max(0, int(args.max_age_days))
+    os.environ["AGENT_MAX_AGE_DAYS"] = str(_RUN_MAX_AGE_DAYS)
 
     print("AI Job Agent — job collection")
     incremental_mode = True
@@ -1985,7 +2008,7 @@ def main() -> None:
     inline_enrich_browser: InlineEnrichBrowser | None = None
     if INLINE_PIPELINE_ENABLED:
         try:
-            match_ctx = build_match_context()
+            match_ctx = build_match_context(max_age_days=_RUN_MAX_AGE_DAYS)
         except Exception as error:
             print(f"  Could not prepare inline matching context — falling back to batch matching: {error}")
             match_ctx = None
