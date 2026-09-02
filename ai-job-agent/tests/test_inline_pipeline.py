@@ -321,3 +321,83 @@ def test_enrich_job_inline_skips_drushim_without_a_page():
 def test_enrich_job_inline_passes_through_sources_without_per_job_enrichment():
     job = {"source": "alljobs", "description": "short listing snippet"}
     assert enrich_job_inline(job) == (ENRICH_SUCCESS, "short listing snippet", None)
+
+
+# --- process_job_inline gate -------------------------------------------------
+
+
+def test_process_job_inline_defers_when_enrich_cannot_run(monkeypatch):
+    """Drushim without a page must not score/stream — wait for batch enrich."""
+    from collect_jobs import process_job_inline
+
+    monkeypatch.setattr(
+        "collect_jobs.get_job_by_id",
+        lambda job_id: {
+            "id": job_id,
+            "source": "drushim",
+            "title": "Dev",
+            "company": "Acme",
+            "description": "short listing",
+        },
+    )
+    enrich_mock = MagicMock(return_value=(None, None, None))
+    score_mock = MagicMock()
+    record_mock = MagicMock()
+    monkeypatch.setattr("collect_jobs.enrich_job_inline", enrich_mock)
+    monkeypatch.setattr("collect_jobs.score_one_job", score_mock)
+    monkeypatch.setattr("collect_jobs.record_enrichment_attempt", record_mock)
+
+    assert process_job_inline(42, _context()) == "deferred"
+    enrich_mock.assert_called_once()
+    score_mock.assert_not_called()
+    record_mock.assert_not_called()
+
+
+def test_process_job_inline_enriches_then_scores_linkedin(monkeypatch):
+    from collect_jobs import process_job_inline
+
+    row = {
+        "id": 7,
+        "source": "linkedin",
+        "title": "Backend",
+        "company": "Co",
+        "description": "Python APIs and cloud deployment experience required here.",
+    }
+    monkeypatch.setattr("collect_jobs.get_job_by_id", lambda job_id: dict(row))
+    monkeypatch.setattr(
+        "collect_jobs.enrich_job_inline",
+        lambda job, **k: (ENRICH_SUCCESS, "full linkedin description " * 3, None),
+    )
+    record_mock = MagicMock()
+    monkeypatch.setattr("collect_jobs.record_enrichment_attempt", record_mock)
+    score_mock = MagicMock(return_value={"action": "scored", "matched": True})
+    monkeypatch.setattr("collect_jobs.score_one_job", score_mock)
+
+    assert process_job_inline(7, _context()) == "scored"
+    record_mock.assert_called_once()
+    score_mock.assert_called_once()
+    scored_row = score_mock.call_args.args[0]
+    assert scored_row["enrich_status"] == ENRICH_SUCCESS
+    assert "full linkedin" in (scored_row.get("full_description") or "")
+
+
+def test_process_job_inline_scores_sources_without_board_enrichment(monkeypatch):
+    from collect_jobs import process_job_inline
+
+    monkeypatch.setattr(
+        "collect_jobs.get_job_by_id",
+        lambda job_id: {
+            "id": job_id,
+            "source": "alljobs",
+            "title": "Dev",
+            "description": "Enough listing text from collection already present.",
+        },
+    )
+    enrich_mock = MagicMock()
+    monkeypatch.setattr("collect_jobs.enrich_job_inline", enrich_mock)
+    score_mock = MagicMock(return_value={"action": "scored"})
+    monkeypatch.setattr("collect_jobs.score_one_job", score_mock)
+
+    assert process_job_inline(3, _context()) == "scored"
+    enrich_mock.assert_not_called()
+    score_mock.assert_called_once()

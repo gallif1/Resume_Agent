@@ -522,11 +522,14 @@ def enrich_job_inline(
     Used by the inline collect -> enrich -> match pipeline so a job can be
     fully processed and streamed to the UI before the next one is collected.
     LinkedIn/GotFriends are plain HTTP (no browser needed). Drushim needs a
-    live page — when none is available inline, enrichment is skipped here
-    (status ``None``) so the job keeps its listing description for now and
-    the batch enrich step can still pick it up normally. Sources without a
-    per-job enrichment step (AllJobs, Indeed, Secret Tel Aviv, Geektime, ...)
-    already carry a sufficient description straight from collection.
+  live page — when none is available inline, enrichment is skipped here
+  (status ``None``) so the job keeps its listing description for now and
+  the batch enrich step can still pick it up normally. Callers that stream
+  to the UI (see ``collect_jobs.process_job_inline``) must treat ``None`` as
+  deferred — do not score or emit the job until enrichment reaches a
+  terminal status. Sources without a
+  per-job enrichment step (AllJobs, Indeed, Secret Tel Aviv, Geektime, ...)
+  already carry a sufficient description straight from collection.
     """
     source = job.get("source")
     if source == "linkedin":

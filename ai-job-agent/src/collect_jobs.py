@@ -1034,6 +1034,44 @@ def _collect_drushim_with_page(
     )
 
 
+def process_job_inline(
+    job_id: int,
+    match_ctx: MatchContext,
+    *,
+    drushim_page: Page | None = None,
+) -> str:
+    """Enrich then score one freshly collected job for live streaming.
+
+    Returns one of:
+    - ``"scored"`` / ``"skipped"`` — whatever :func:`score_one_job` reported
+    - ``"deferred"`` — enrichment could not run yet (e.g. Drushim without a
+      page). The job is **not** scored or streamed; the later batch
+      enrich → match steps finish it so the UI never shows a half-processed job.
+    - ``"missing"`` — job id not found in the DB
+    """
+    row = get_job_by_id(job_id)
+    if not row:
+        return "missing"
+
+    source = row.get("source")
+    if source in ("drushim", "linkedin", "gotfriends"):
+        status, description, error = enrich_job_inline(row, drushim_page=drushim_page)
+        if status is None:
+            # Soft-skip: keep listing text only and wait for batch enrich.
+            return "deferred"
+        record_enrichment_attempt(
+            row["id"], status, full_description=description, error=error
+        )
+        row["enrich_status"] = status
+        if description:
+            row["full_description"] = description
+
+    result = score_one_job(row, match_ctx)
+    if isinstance(result, dict):
+        return str(result.get("action") or "scored")
+    return "scored"
+
+
 class InlineEnrichBrowser:
     """Lazily-opened Playwright browser for enriching Drushim jobs inline.
 
@@ -1959,24 +1997,18 @@ def main() -> None:
         if match_ctx is None:
             return
         row = get_job_by_id(job_id)
-        if not row:
-            return
-        source = row.get("source")
-        if source in ("drushim", "linkedin", "gotfriends"):
-            page = (
-                inline_enrich_browser.get_page()
-                if source == "drushim" and inline_enrich_browser is not None
-                else None
+        source = row.get("source") if row else None
+        page = (
+            inline_enrich_browser.get_page()
+            if source == "drushim" and inline_enrich_browser is not None
+            else None
+        )
+        outcome = process_job_inline(job_id, match_ctx, drushim_page=page)
+        if outcome == "deferred":
+            print(
+                f"  [inline] deferred job {job_id} until batch enrich "
+                f"(source={source or '?'})"
             )
-            status, description, error = enrich_job_inline(row, drushim_page=page)
-            if status is not None:
-                record_enrichment_attempt(
-                    row["id"], status, full_description=description, error=error
-                )
-                row["enrich_status"] = status
-                if description:
-                    row["full_description"] = description
-        score_one_job(row, match_ctx)
 
     on_job_saved = _process_job_inline if match_ctx is not None else None
 

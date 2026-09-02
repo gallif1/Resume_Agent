@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import type { CollectionSummary, CvScanStatus, SiteCollectionSummary } from "../lib/api";
+import { applyInlinePipelineStageHints } from "../lib/scanUi";
 
 interface Props {
   scanStatus: CvScanStatus | null;
@@ -169,8 +170,13 @@ function friendlyLiveMessage(opts: {
     return "מתחיל סריקה...";
   }
 
-  if (activeStage.id === "collect" && jobsCount > 0) {
-    return `נמצאו ${jobsCount} משרות חדשות, עכשיו בודק מה מתוכן הכי מתאים לך...`;
+  if (activeStage.id === "collect") {
+    if (matchCount > 0) {
+      return `כל משרה מופיעה רק אחרי איסוף + העשרה + חישוב התאמה — זוהו כבר ${matchCount} התאמות מוכנות...`;
+    }
+    if (jobsCount > 0) {
+      return `נמצאו ${jobsCount} משרות חדשות, מעשיר ומחשב התאמה לפני שהן מופיעות ברשימה...`;
+    }
   }
 
   if (activeStage.id === "enrich") {
@@ -226,7 +232,7 @@ export default function PipelineProgress({
 
   const searchOnly = isSearchOnlyRun(steps);
 
-  const stages = VISUAL_STAGES.map((stage) => {
+  let stages = VISUAL_STAGES.map((stage) => {
     let status = stageStatus(stage.keys, steps);
     // Search-only runs already finished CV analysis in the modal.
     if (searchOnly && EARLY_STAGE_IDS.has(stage.id) && status === "pending") {
@@ -247,6 +253,17 @@ export default function PipelineProgress({
   const scraped = totalScraped(scanStatus.collection);
   const newJobs = totalNew(scanStatus.collection);
   const liveFound = Math.max(matchCount, 0);
+
+  // Inline pipeline streams fully-processed jobs during collect — reflect that
+  // enrich + match are already running for those jobs in the stepper.
+  stages = applyInlinePipelineStageHints(stages, {
+    running,
+    liveMatchCount: liveFound,
+  });
+
+  // Prefer collect as the primary "active" stage while it is still running so
+  // the live copy can explain that enrich+match happen per job in parallel.
+  // The stepper still shows enrich/match as running via applyInlinePipelineStageHints.
   const activeStage = stages.find((s) => s.status === "running");
   const activeDef = activeStage
     ? VISUAL_STAGES.find((s) => s.id === activeStage.id)
