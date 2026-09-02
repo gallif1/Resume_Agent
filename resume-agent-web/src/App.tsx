@@ -286,6 +286,14 @@ export default function App() {
 
   const handleStreamJobFound = useCallback((_job: import("./lib/api").CvMatch) => {
     setWorkspaceMatchCount((count) => count + 1);
+    setScanStatus((prev) =>
+      prev
+        ? {
+            ...prev,
+            match_count: (prev.match_count ?? 0) + 1,
+          }
+        : prev
+    );
   }, []);
 
   const handleStreamComplete = useCallback(

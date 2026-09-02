@@ -349,6 +349,8 @@ export default function CvDetails({
     result: TailoredCvResponse;
   } | null>(null);
   const running = scanStatus?.running ?? false;
+  const runningRef = useRef(running);
+  runningRef.current = running;
   const isGenerating = isTailorGenerating({ regenerating, tailoringId });
   const activeTailoredCv = resolveActiveTailoredCv(tailoredCv, tailoringId);
 
@@ -385,6 +387,13 @@ export default function CvDetails({
   }, [matches, sortBy, sortOrder]);
 
   const load = useCallback(async () => {
+    // During an active scan the live SSE stream owns the list. Fetching
+    // historical/latest-scan matches here races the stream and can flash
+    // previous-scan jobs while collect is still running.
+    if (runningRef.current) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -392,6 +401,9 @@ export default function CvDetails({
       const data = workspaceMode
         ? await getJobMatches(sortOpts)
         : await getCvMatches(cvId, sortOpts);
+      if (runningRef.current) {
+        return;
+      }
       // Badge counts all matches; list defaults to latest scan. If the latest
       // scan filter yields nothing but the CV still has matches, fall back so
       // the Jobs tab is not empty while the card shows hundreds of matches.
@@ -405,19 +417,24 @@ export default function CvDetails({
           sortBy,
           order: sortOrder,
         });
+        if (runningRef.current) {
+          return;
+        }
         setMatches(all.matches);
       } else {
         setMatches(data.matches);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
+      if (!runningRef.current) {
+        setError(e instanceof Error ? e.message : "שגיאה בטעינת ההתאמות");
+      }
     } finally {
       setLoading(false);
     }
   }, [cvId, workspaceMode, sortBy, sortOrder, cv?.match_count]);
 
   const refreshJobList = useCallback(async () => {
-    if (listRefreshing) return;
+    if (listRefreshing || runningRef.current) return;
     setListRefreshing(true);
     setError(null);
     try {
@@ -425,6 +442,9 @@ export default function CvDetails({
       const data = workspaceMode
         ? await getJobMatches(sortOpts)
         : await getCvMatches(cvId, sortOpts);
+      if (runningRef.current) {
+        return;
+      }
       if (
         !workspaceMode &&
         data.matches.length === 0 &&
@@ -435,6 +455,9 @@ export default function CvDetails({
           sortBy,
           order: sortOrder,
         });
+        if (runningRef.current) {
+          return;
+        }
         setMatches(all.matches);
       } else {
         setMatches(data.matches);
@@ -454,8 +477,9 @@ export default function CvDetails({
   };
 
   useEffect(() => {
+    if (running) return;
     load();
-  }, [load]);
+  }, [load, running]);
 
   useEffect(() => {
     let cancelled = false;
@@ -489,7 +513,9 @@ export default function CvDetails({
     prevRunning.current = running;
   }, [running, load]);
 
-  // Live SSE stream: append each scored job as soon as the backend emits it.
+  // Live SSE stream: only fully-processed jobs (collect→enrich→match) are
+  // emitted by the backend. Keep the list empty until those events arrive —
+  // never mix in historical matches while the scan is running.
   useEffect(() => {
     if (!running) {
       if (eventSourceRef.current) {
@@ -502,6 +528,7 @@ export default function CvDetails({
     streamedJobIdsRef.current = new Set();
     setMatches([]);
     setLiveJobIds(new Set());
+    setLoading(false);
     let closed = false;
     const source = new EventSource(scanStreamUrl());
     eventSourceRef.current = source;
@@ -1521,11 +1548,19 @@ export default function CvDetails({
           <PipelineProgress
             scanStatus={panelScanStatus}
             matchCount={
-              typeof scanStatus?.match_count === "number"
-                ? scanStatus.match_count
-                : matches.length > 0
-                  ? matches.length
-                  : cv?.match_count ?? 0
+              running
+                ? Math.max(
+                    typeof scanStatus?.match_count === "number"
+                      ? scanStatus.match_count
+                      : 0,
+                    matches.length,
+                    liveJobIds.size
+                  )
+                : typeof scanStatus?.match_count === "number"
+                  ? scanStatus.match_count
+                  : matches.length > 0
+                    ? matches.length
+                    : cv?.match_count ?? 0
             }
           />
         </div>
@@ -2258,7 +2293,7 @@ export default function CvDetails({
           </div>
           <p>
             {scanStatus?.running
-              ? "הסריקה רצה — משרות יופיעו כאן בזמן אמת ברגע שיימצאו"
+              ? "הסריקה רצה — משרה תופיע כאן רק אחרי שאיסוף, העשרה וחישוב התאמה הושלמו עבורה"
               : "לא נמצאו משרות עדיין"}
           </p>
           {!scanStatus?.running &&
