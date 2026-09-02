@@ -1259,6 +1259,34 @@ body {
   transform: none;
 }
 
+.job-item-viewed {
+  opacity: 0.72;
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+
+.job-item-viewed .cv-name,
+.job-item-viewed .cv-meta {
+  color: var(--text-muted);
+}
+
+.job-item-favorite {
+  border-inline-start: 3px solid color-mix(in srgb, var(--warning, #eab308) 70%, transparent);
+}
+
+.job-favorite-btn {
+  padding: 6px 8px;
+  min-width: 36px;
+  color: var(--text-muted);
+}
+
+.job-favorite-btn-active {
+  color: var(--warning, #eab308);
+}
+
+.job-favorite-btn:hover {
+  color: var(--warning, #eab308);
+}
+
 .job-row {
   display: flex;
   flex-direction: column;
@@ -1458,6 +1486,77 @@ body {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.job-search-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  flex: 1 1 180px;
+  min-width: min(100%, 220px);
+}
+
+.job-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 0.85rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  padding: 8px 12px;
+  min-height: 38px;
+}
+
+.job-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.job-filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.job-filter-tab {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.job-filter-tab.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2));
+}
+
+.job-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--surface-3, var(--surface-2));
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
 .sort-control {

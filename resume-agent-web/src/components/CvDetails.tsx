@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildCvTailorUrl } from "../lib/cvTailorApi";
 import Markdown from "react-markdown";
-import { ArrowRight, Loader2, RefreshCw, Search } from "lucide-react";
+import { ArrowRight, Loader2, RefreshCw, Search, Star } from "lucide-react";
 import {
   applyTailoredChangeDecisions,
   applyToJob,
@@ -51,6 +51,15 @@ import {
   getPreviousTailoredScore,
   getTailoredScore,
 } from "../lib/tailorScores";
+import {
+  interactionsToSets,
+  jobMatchesSearch,
+  loadJobInteractions,
+  markEngaged,
+  markViewed,
+  toggleFavorite,
+  type JobInteractions,
+} from "../lib/jobInteractions";
 
 interface Props {
   cvId: string;
@@ -305,6 +314,14 @@ export default function CvDetails({
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [logApplication, setLogApplication] = useState<JobApplication | null>(null);
   const [activeTab, setActiveTab] = useState<"jobs" | "profile">("jobs");
+  const [jobFilterTab, setJobFilterTab] = useState<"all" | "favorites" | "engaged">(
+    "all"
+  );
+  const [searchQuery, setSearchQuery] = useState("");
+  const interactionsScope = workspaceMode ? "workspace" : cvId;
+  const [jobInteractions, setJobInteractions] = useState<JobInteractions>(() =>
+    loadJobInteractions(interactionsScope)
+  );
   const [tailoringId, setTailoringId] = useState<number | null>(null);
   const [tailoredCv, setTailoredCv] = useState<TailoredCvResponse | null>(null);
   const [resultModalOpen, setResultModalOpen] = useState(false);
@@ -369,10 +386,35 @@ export default function CvDetails({
     return () => window.clearInterval(id);
   }, [isGenerating, generationStartedAt]);
 
+  const { favorites, engaged, viewed } = useMemo(
+    () => interactionsToSets(jobInteractions),
+    [jobInteractions]
+  );
+
+  useEffect(() => {
+    setJobInteractions(loadJobInteractions(interactionsScope));
+    setJobFilterTab("all");
+    setSearchQuery("");
+  }, [interactionsScope]);
+
+  const filteredMatches = useMemo(() => {
+    let list = matches;
+    const q = searchQuery.trim();
+    if (q) {
+      list = list.filter((m) => jobMatchesSearch(m, q));
+    }
+    if (jobFilterTab === "favorites") {
+      list = list.filter((m) => favorites.has(m.job_id));
+    } else if (jobFilterTab === "engaged") {
+      list = list.filter((m) => engaged.has(m.job_id));
+    }
+    return list;
+  }, [matches, searchQuery, jobFilterTab, favorites, engaged]);
+
   const { primaryMatches, potentialMatches } = useMemo(() => {
     const primary: CvMatch[] = [];
     const potential: CvMatch[] = [];
-    for (const m of matches) {
+    for (const m of filteredMatches) {
       if (isPotentialMatch(m)) potential.push(m);
       else primary.push(m);
     }
@@ -385,7 +427,7 @@ export default function CvDetails({
       };
     }
     return { primaryMatches: primary, potentialMatches: potential };
-  }, [matches, sortBy, sortOrder]);
+  }, [filteredMatches, sortBy, sortOrder]);
 
   const load = useCallback(async () => {
     // During an active scan the live SSE stream owns the list. Fetching
@@ -642,7 +684,26 @@ export default function CvDetails({
   };
 
   const openConfirm = (match: CvMatch, force = false) => {
+    setJobInteractions((prev) => markEngaged(interactionsScope, match.job_id, prev));
     setConfirmState({ match, force });
+  };
+
+  const handleToggleFavorite = (jobId: number) => {
+    setJobInteractions((prev) => toggleFavorite(interactionsScope, jobId, prev));
+  };
+
+  const handleExpandMatch = (match: CvMatch) => {
+    const expanded = expandedId === match.match_id;
+    if (expanded) {
+      setExpandedId(null);
+      return;
+    }
+    setExpandedId(match.match_id);
+    setJobInteractions((prev) => markViewed(interactionsScope, match.job_id, prev));
+  };
+
+  const handleOpenJobLink = (match: CvMatch) => {
+    setJobInteractions((prev) => markEngaged(interactionsScope, match.job_id, prev));
   };
 
   const handleApply = async (match: CvMatch, force = false) => {
@@ -1253,17 +1314,19 @@ export default function CvDetails({
     const potential = isPotentialMatch(m) || Boolean(m.is_potential_junior_match);
     const label = formatScoreLabel(m.score_label, potential);
     const busyTailor = tailoringId === m.job_id;
+    const isFavorite = favorites.has(m.job_id);
+    const isViewed = viewed.has(m.job_id);
 
     return (
       <li
         key={m.match_id ?? m.job_id}
         className={`cv-item job-item ${potential ? "job-item-potential" : ""} ${
           liveJobIds.has(m.job_id) ? "job-item-live-in" : ""
-        }`}
+        } ${isViewed ? "job-item-viewed" : ""} ${isFavorite ? "job-item-favorite" : ""}`}
       >
         <div
           className="job-row"
-          onClick={() => setExpandedId(expanded ? null : m.match_id)}
+          onClick={() => handleExpandMatch(m)}
         >
           <div className="job-row-main">
             <span className={`job-score ${scoreClass(m.match_score, potential)}`}>
@@ -1294,6 +1357,18 @@ export default function CvDetails({
             </div>
           </div>
           <div className="cv-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm job-favorite-btn ${
+                isFavorite ? "job-favorite-btn-active" : ""
+              }`}
+              aria-pressed={isFavorite}
+              aria-label={isFavorite ? "הסר ממועדפות" : "הוסף למועדפות"}
+              title={isFavorite ? "הסר ממועדפות" : "הוסף למועדפות"}
+              onClick={() => handleToggleFavorite(m.job_id)}
+            >
+              <Star size={16} fill={isFavorite ? "currentColor" : "none"} aria-hidden />
+            </button>
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -1353,6 +1428,7 @@ export default function CvDetails({
                 href={m.job_url}
                 target="_blank"
                 rel="noreferrer"
+                onClick={() => handleOpenJobLink(m)}
               >
                 למשרה ↗
               </a>
@@ -1487,6 +1563,46 @@ export default function CvDetails({
         <ProfileSettings cvId={cvId} />
       ) : (
         <>
+      <div
+        className="job-filter-tabs"
+        role="tablist"
+        aria-label="סינון משרות"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={jobFilterTab === "all"}
+          className={`job-filter-tab ${jobFilterTab === "all" ? "active" : ""}`}
+          onClick={() => setJobFilterTab("all")}
+        >
+          כל המשרות
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={jobFilterTab === "favorites"}
+          className={`job-filter-tab ${jobFilterTab === "favorites" ? "active" : ""}`}
+          onClick={() => setJobFilterTab("favorites")}
+        >
+          מועדפות
+          {favorites.size > 0 && (
+            <span className="job-filter-count">{favorites.size}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={jobFilterTab === "engaged"}
+          className={`job-filter-tab ${jobFilterTab === "engaged" ? "active" : ""}`}
+          onClick={() => setJobFilterTab("engaged")}
+        >
+          הגשות וקישורים
+          {engaged.size > 0 && (
+            <span className="job-filter-count">{engaged.size}</span>
+          )}
+        </button>
+      </div>
+
       <div
         className={`scan-panel-wrapper ${panelVisible ? "scan-panel-wrapper--visible" : "scan-panel-wrapper--hidden"}`}
         aria-hidden={!panelVisible}
@@ -2178,8 +2294,25 @@ export default function CvDetails({
       )}
 
       <div className="history-header">
-        <h2>התאמות מהסריקה האחרונה</h2>
+        <h2>
+          {jobFilterTab === "favorites"
+            ? "משרות מועדפות"
+            : jobFilterTab === "engaged"
+              ? "הגשות וקישורים למשרות"
+              : "התאמות מהסריקה האחרונה"}
+        </h2>
         <div className="matches-toolbar">
+          <label className="job-search-control">
+            <span className="sort-label">חיפוש</span>
+            <input
+              type="search"
+              className="job-search-input"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="חיפוש לפי מילת מפתח..."
+              aria-label="חיפוש במשרות שנמצאו"
+            />
+          </label>
           <label className="sort-control">
             <span className="sort-label">מיין לפי</span>
             <select
@@ -2198,7 +2331,11 @@ export default function CvDetails({
           </label>
           <div className="history-count-group">
             <span className="history-count">
-              {loading && matches.length === 0 ? "טוען..." : `${matches.length} משרות`}
+              {loading && matches.length === 0
+                ? "טוען..."
+                : searchQuery.trim() || jobFilterTab !== "all"
+                  ? `${filteredMatches.length} מתוך ${matches.length} משרות`
+                  : `${matches.length} משרות`}
             </span>
             <button
               type="button"
@@ -2227,11 +2364,11 @@ export default function CvDetails({
           </div>
           <p>טוען משרות…</p>
         </div>
-      ) : matches.length === 0 ? (
+      ) : filteredMatches.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon" aria-hidden>
             <span className="icon-bubble icon-bubble-blue">
-              {scanStatus?.running ? (
+              {scanStatus?.running && matches.length === 0 ? (
                 <Loader2 size={22} className="domain-analyzing-spinner" />
               ) : (
                 <Search size={22} />
@@ -2239,11 +2376,30 @@ export default function CvDetails({
             </span>
           </div>
           <p>
-            {scanStatus?.running
+            {scanStatus?.running && matches.length === 0
               ? "הסריקה רצה — משרה תופיע כאן רק אחרי שאיסוף, העשרה וחישוב התאמה הושלמו עבורה"
-              : "לא נמצאו משרות עדיין"}
+              : jobFilterTab === "favorites"
+                ? "אין עדיין משרות מועדפות"
+                : jobFilterTab === "engaged"
+                  ? "עדיין לא לחצתם על \"הגש קורות חיים\" או \"למשרה\""
+                  : searchQuery.trim()
+                    ? "לא נמצאו משרות התואמות לחיפוש"
+                    : "לא נמצאו משרות עדיין"}
           </p>
-          {!scanStatus?.running &&
+          {jobFilterTab === "favorites" && matches.length > 0 && (
+            <p className="empty-hint">לחצו על הכוכב ליד משרה כדי לשמור אותה כאן.</p>
+          )}
+          {jobFilterTab === "engaged" && matches.length > 0 && (
+            <p className="empty-hint">
+              משרות שתלחצו עליהן &quot;הגש קורות חיים&quot; או &quot;למשרה ↗&quot; יופיעו כאן.
+            </p>
+          )}
+          {searchQuery.trim() && jobFilterTab === "all" && matches.length > 0 && (
+            <p className="empty-hint">
+              נסו מילת מפתח אחרת — החיפוש מחפש בכותרת, חברה, מיקום, אתר ותיאור.
+            </p>
+          )}
+          {matches.length === 0 && !scanStatus?.running &&
             (displayWarnings.length > 0 ? (
               <p className="empty-hint">
                 הסריקה הסתיימה, אך לא נמצאו משרות חדשות. ראו את ההודעות למעלה לפרטים.
