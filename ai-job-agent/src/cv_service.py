@@ -500,6 +500,7 @@ def run_search(
         if max_age_days is not None
         else JOB_MAX_AGE_DAYS
     )
+    env["AGENT_MAX_AGE_DAYS"] = str(posted_window_days)
     _log(f">> טווח פרסום: משרות מה-{posted_window_days} הימים האחרונים בלבד")
 
     for key, name, script, extra in SEARCH_STEPS:
@@ -519,6 +520,8 @@ def run_search(
                 extra_args = [*extra_args, "--sites", ",".join(selected_sites)]
             if delta:
                 extra_args = [*extra_args, "--delta"]
+            extra_args = [*extra_args, "--max-age-days", str(posted_window_days)]
+        elif key == "match":
             extra_args = [*extra_args, "--max-age-days", str(posted_window_days)]
 
         step_warnings: list[str] = []

@@ -37,6 +37,7 @@ def _context(**overrides) -> MatchContext:
         universal={},
         candidate=object(),
         min_score=50,
+        max_age_days=30,
     )
     defaults.update(overrides)
     return MatchContext(**defaults)
@@ -87,6 +88,24 @@ def test_score_one_job_skips_with_cv_refreshes_scan_visibility(monkeypatch):
 
     assert result == {"action": "skipped"}
     refresh.assert_called_once_with("cv-1", 7, 42)
+
+
+def test_score_one_job_skips_stale_jobs_without_refresh_or_emit(monkeypatch):
+    """Jobs older than the scan picker window must not reattach or stream."""
+    ctx = _context(cv_id="cv-1", scan_id=42, max_age_days=30)
+    needs = MagicMock(return_value=False)
+    monkeypatch.setattr(match_jobs, "cv_job_needs_matching", needs)
+    refresh = MagicMock()
+    monkeypatch.setattr(match_jobs, "refresh_cv_job_match_scan", refresh)
+    emit = MagicMock()
+    monkeypatch.setattr(match_jobs, "_emit_scored_job", emit)
+
+    result = score_one_job(_job(id=7, posted_date="2024-12-31"), ctx)
+
+    assert result == {"action": "skipped", "reason": "too_old"}
+    needs.assert_not_called()
+    refresh.assert_not_called()
+    emit.assert_not_called()
 
 
 def test_score_one_job_scores_analyzes_stores_and_streams(monkeypatch):

@@ -278,12 +278,29 @@ class MatchContext:
     universal: dict
     candidate: Any
     min_score: int
+    max_age_days: int = 30
+
+
+def _resolved_max_age_days() -> int:
+    """Posted-date window for this match run (env override or default)."""
+    import os
+
+    from date_utils import JOB_MAX_AGE_DAYS
+
+    raw = (os.getenv("AGENT_MAX_AGE_DAYS") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return int(JOB_MAX_AGE_DAYS)
 
 
 def build_match_context(
     *,
     cv_id: str | None = None,
     scan_id: int | None = None,
+    max_age_days: int | None = None,
 ) -> MatchContext:
     """Load and precompute everything :func:`score_one_job` needs, once per scan."""
     if cv_id is None:
@@ -316,6 +333,11 @@ def build_match_context(
 
     candidate = build_ats_candidate(cv_profile)
     min_score = profile.get("min_match_score", 0)
+    age_window = (
+        max(0, int(max_age_days))
+        if max_age_days is not None
+        else _resolved_max_age_days()
+    )
 
     return MatchContext(
         cv_id=cv_id,
@@ -327,6 +349,7 @@ def build_match_context(
         universal=universal,
         candidate=candidate,
         min_score=min_score,
+        max_age_days=age_window,
     )
 
 
@@ -346,6 +369,25 @@ def score_one_job(job: dict, ctx: MatchContext, *, rematch: bool = False) -> dic
     cv_id = ctx.cv_id
     scan_id = ctx.scan_id
 
+    from date_utils import is_posted_older_than, job_has_substantive_description
+
+    # Do not attach or stream jobs outside the scan's posted-date window —
+    # refresh_cv_job_match_scan would otherwise re-surface stale matches on
+    # the latest scan, and SSE would show them before the listing filter runs.
+    if ctx.max_age_days > 0 and is_posted_older_than(
+        job.get("posted_date")
+        or job.get("posted_date_raw")
+        or job.get("first_seen_at")
+        or job.get("collected_at")
+        or job.get("created_at"),
+        max_age_days=ctx.max_age_days,
+    ):
+        safe_print(
+            f"  [skip] older than {ctx.max_age_days}d: "
+            f"{job.get('title', '')} @ {job.get('company', '')}"
+        )
+        return {"action": "skipped", "reason": "too_old"}
+
     if cv_id:
         needs = cv_job_needs_matching(
             cv_id, job["id"], current_strategy_hash=ctx.strategy_hash, rematch=rematch
@@ -359,8 +401,6 @@ def score_one_job(job: dict, ctx: MatchContext, *, rematch: bool = False) -> dic
         if cv_id and scan_id is not None:
             refresh_cv_job_match_scan(cv_id, int(job["id"]), int(scan_id))
         return {"action": "skipped"}
-
-    from date_utils import job_has_substantive_description
 
     if not job_has_substantive_description(job):
         safe_print(
@@ -439,10 +479,13 @@ def match_all_jobs(
     ai_rerank: bool = False,
     cv_id: str | None = None,
     scan_id: int | None = None,
+    max_age_days: int | None = None,
 ) -> dict[str, int]:
     """Score jobs using deterministic profile matcher + ATS engine (no per-job AI)."""
     configure_console()
-    ctx = build_match_context(cv_id=cv_id, scan_id=scan_id)
+    ctx = build_match_context(
+        cv_id=cv_id, scan_id=scan_id, max_age_days=max_age_days
+    )
     jobs = get_all_jobs()
     emit_status_update(f"מחשב ציוני התאמה ({len(jobs)} משרות)…")
 
@@ -462,6 +505,8 @@ def match_all_jobs(
             continue
         if result["action"] == "skipped":
             stats["skipped"] += 1
+            if result.get("reason") == "too_old":
+                continue
             safe_print(
                 f"Reusing prior match for current scan: "
                 f"{job.get('title', '')} @ {job.get('company', '')}"
@@ -487,6 +532,8 @@ def match_all_jobs(
 def main() -> None:
     import argparse
 
+    from date_utils import JOB_MAX_AGE_DAYS
+
     parser = argparse.ArgumentParser(
         description="Match jobs using deterministic profile + ATS scoring (no per-job AI)"
     )
@@ -499,6 +546,15 @@ def main() -> None:
         "--ai-rerank",
         action="store_true",
         help="(Deprecated) AI rerank is disabled; matching is deterministic",
+    )
+    parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=None,
+        help=(
+            f"Skip scoring/reattaching jobs older than N days "
+            f"(default: AGENT_MAX_AGE_DAYS or {JOB_MAX_AGE_DAYS})"
+        ),
     )
     args = parser.parse_args()
     configure_console()
@@ -523,7 +579,11 @@ def main() -> None:
         safe_print(f"Best-fit roles: {', '.join(roles) or 'none'}")
 
     try:
-        stats = match_all_jobs(rematch=args.rematch, ai_rerank=args.ai_rerank)
+        stats = match_all_jobs(
+            rematch=args.rematch,
+            ai_rerank=args.ai_rerank,
+            max_age_days=args.max_age_days,
+        )
     except Exception as exc:
         safe_print(f"\nError during job matching: {exc}", file=sys.stderr)
         sys.exit(1)
