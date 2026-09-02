@@ -17,6 +17,21 @@ import {
 import { APP_VERSION } from "./lib/version";
 
 const ACCEPTED_TYPES = ".pdf,.docx";
+const MAX_CV_FILE_BYTES = 10 * 1024 * 1024;
+
+function validateCvFile(file: File): string | null {
+  const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".")).toLowerCase() : "";
+  if (![".pdf", ".docx"].includes(ext)) {
+    return "יש להעלות קובץ PDF או DOCX בלבד.";
+  }
+  if (file.size > MAX_CV_FILE_BYTES) {
+    return "הקובץ גדול מדי (מקסימום 10 MB).";
+  }
+  if (file.size === 0) {
+    return "הקובץ ריק.";
+  }
+  return null;
+}
 
 type GapFormState = {
   confirmed: boolean;
@@ -81,6 +96,11 @@ export default function CvTailorPage() {
     setError(null);
     if (!cvFile) {
       setError("יש להעלות קובץ קורות חיים (PDF או DOCX).");
+      return;
+    }
+    const fileError = validateCvFile(cvFile);
+    if (fileError) {
+      setError(fileError);
       return;
     }
     if (jobDescription.trim().length < 20) {
@@ -244,6 +264,9 @@ export default function CvTailorPage() {
             Upload your CV and paste a job description. The AI will rewrite your CV using only
             information from the original — no fabricated experience.
           </p>
+          <p className="cv-tailor-section-note">
+            מומלץ DOCX מ-Word. PDF סרוק עלול להיכשל. העיבוד לוקח 1–2 דקות — אל תסגור את הדף.
+          </p>
 
           <label className="field-label" htmlFor="cv-upload">
             CV file (PDF or DOCX)
@@ -254,8 +277,14 @@ export default function CvTailorPage() {
             accept={ACCEPTED_TYPES}
             className="cv-tailor-file-input"
             onChange={(e) => {
-              setCvFile(e.target.files?.[0] ?? null);
-              setError(null);
+              const file = e.target.files?.[0] ?? null;
+              setCvFile(file);
+              if (file) {
+                const fileError = validateCvFile(file);
+                setError(fileError);
+              } else {
+                setError(null);
+              }
             }}
           />
           {cvFile && <p className="cv-tailor-file-name">{cvFile.name}</p>}
@@ -284,7 +313,7 @@ export default function CvTailorPage() {
             {loading ? (
               <>
                 <Loader2 size={18} className="spin" aria-hidden="true" />
-                Generating tailored CV…
+                יוצר קורות חיים מותאמים… (1–2 דקות)
               </>
             ) : (
               "Generate Tailored CV"

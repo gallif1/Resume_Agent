@@ -24,7 +24,7 @@ def test_validate_extension_rejects_unknown():
         validate_extension("resume.txt")
         assert False, "expected CvParseError"
     except CvParseError as exc:
-        assert "Unsupported" in str(exc)
+        assert "לא נתמך" in str(exc)
 
 
 def test_parse_cv_bytes_rejects_empty():
@@ -32,7 +32,7 @@ def test_parse_cv_bytes_rejects_empty():
         parse_cv_bytes(b"", "cv.pdf")
         assert False, "expected CvParseError"
     except CvParseError as exc:
-        assert "empty" in str(exc).lower()
+        assert "ריק" in str(exc)
 
 
 def test_tailored_cv_preview_text():

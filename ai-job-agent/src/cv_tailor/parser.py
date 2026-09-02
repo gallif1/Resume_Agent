@@ -33,17 +33,21 @@ def validate_extension(filename: str) -> str:
     ext = Path(filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
-        raise CvParseError(f"Unsupported file type '{ext or 'unknown'}'. Allowed: {allowed}")
+        raise CvParseError(
+            f"סוג קובץ לא נתמך ({ext or 'unknown'}). ניתן להעלות: {allowed}"
+        )
     return ext
 
 
 def parse_cv_bytes(file_bytes: bytes, filename: str) -> tuple[str, str]:
     """Validate upload, extract text, and return (text, source_label)."""
     if not file_bytes:
-        raise CvParseError("Uploaded file is empty")
+        raise CvParseError("הקובץ שהועלה ריק")
 
     if len(file_bytes) > MAX_FILE_SIZE:
-        raise CvParseError(f"File exceeds maximum size of {MAX_FILE_SIZE // (1024 * 1024)} MB")
+        raise CvParseError(
+            f"הקובץ גדול מדי (מקסימום {MAX_FILE_SIZE // (1024 * 1024)} MB)"
+        )
 
     ext = validate_extension(filename)
     safe_name = sanitize_filename(filename)
@@ -60,7 +64,7 @@ def parse_cv_bytes(file_bytes: bytes, filename: str) -> tuple[str, str]:
             raise CvParseError(str(exc)) from exc
         except Exception as exc:
             logger.exception("Unexpected CV parse failure for %s", safe_name)
-            raise CvParseError("Could not read the uploaded CV file") from exc
+            raise CvParseError("לא ניתן לקרוא את קובץ קורות החיים") from exc
 
     cleaned = (text or "").strip()
     if len(cleaned) < MIN_EXTRACTED_CHARS:
@@ -71,8 +75,8 @@ def parse_cv_bytes(file_bytes: bytes, filename: str) -> tuple[str, str]:
             source,
         )
         raise CvParseError(
-            "Could not extract enough text from the CV. "
-            "Try a text-based PDF or DOCX export."
+            "לא הצלחנו לקרוא טקסט מקובץ קורות החיים. "
+            "נסה DOCX מ-Word, או PDF מבוסס טקסט (לא סריקה/תמונה)."
         )
 
     logger.info(
