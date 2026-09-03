@@ -1,0 +1,78 @@
+{
+  "baseURL": "https://resume-agent-u8n6.onrender.com",
+  "discoveredAt": "2026-07-19T08:59:13.044Z",
+  "framework": "React + TypeScript + Vite (SPA, no client router)",
+  "backend": "FastAPI (same-origin /api, /cvs, /jobs)",
+  "routes": [
+    "/ (SPA root — AuthView when logged out)",
+    "/jobs → SPA fallback (hasUi=false)",
+    "/cvs → SPA fallback (hasUi=false)",
+    "/dashboard → SPA fallback (hasUi=true)",
+    "/settings → SPA fallback (hasUi=true)",
+    "/ (CvManager when logged in)",
+    "in-app view: CvDetails (showMatches state, no URL change)"
+  ],
+  "navigation": [
+    "התחברות",
+    "הרשמה",
+    "קורות החיים שלך, מאוחדים לפרופיל אחד",
+    "קבצי קורות החיים שהועלו"
+  ],
+  "buttons": [
+    "התחברות",
+    "הרשמה",
+    "התחבר",
+    "התנתק"
+  ],
+  "forms": [
+    "auth-form (email, password)"
+  ],
+  "modals": [
+    "delete CV confirm",
+    "reset results / reset files",
+    "apply confirm",
+    "application log",
+    "tailored CV preview"
+  ],
+  "resumeControls": [
+    "dropzone file upload (pdf/doc/docx/txt/images)",
+    "cv list with delete + confirm modal",
+    "cv picker (marks primary display; workspace aggregates all CVs)",
+    "אפס תוצאות / אפס קבצים reset modals"
+  ],
+  "jobScanControls": [
+    "site toggles: Drushim / LinkedIn / GotFriends",
+    "שגר סוכן לסריקה",
+    "עצור סריקה (while running)",
+    "PipelineProgress live steps"
+  ],
+  "jobResultControls": [
+    "צפה בתוצאות → CvDetails workspace mode",
+    "sort: score / date / site",
+    "expand job card: description, skills, status select",
+    "הגש קורות חיים (confirm modal — do not submit in QA)",
+    "ייצר קורות חיים (AI tailor — expensive, skip in discovery)",
+    "NO client-side search / filter / pagination UI observed in source"
+  ],
+  "auth": {
+    "requiresAuth": true,
+    "modes": [
+      "login",
+      "register"
+    ],
+    "fields": [
+      "email",
+      "password"
+    ],
+    "passwordMinLength": 6,
+    "passwordConfirmField": false,
+    "jwtStorageKey": "resume_agent_jwt",
+    "htmlDir": "rtl",
+    "htmlLang": "he"
+  },
+  "states": {
+    "authEmpty": true,
+    "emptyCvs": true
+  },
+  "notes": []
+}

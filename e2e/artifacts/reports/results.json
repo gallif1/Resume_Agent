@@ -1,0 +1,876 @@
+{
+  "config": {
+    "argv": [
+      "/exec-daemon/node",
+      "/workspace/e2e/node_modules/.bin/playwright",
+      "test",
+      "tests/responsive-rtl.spec.ts",
+      "tests/accessibility.spec.ts",
+      "--project=chromium-desktop",
+      "--project=chromium-mobile",
+      "--project=chromium-small-mobile",
+      "--retries=0"
+    ],
+    "configFile": "/workspace/e2e/playwright.config.ts",
+    "rootDir": "/workspace/e2e/tests",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/workspace/e2e/artifacts/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium-desktop",
+        "name": "chromium-desktop",
+        "testDir": "/workspace/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/workspace/e2e/artifacts/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium-laptop",
+        "name": "chromium-laptop",
+        "testDir": "/workspace/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/workspace/e2e/artifacts/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium-tablet",
+        "name": "chromium-tablet",
+        "testDir": "/workspace/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/workspace/e2e/artifacts/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium-mobile",
+        "name": "chromium-mobile",
+        "testDir": "/workspace/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      },
+      {
+        "outputDir": "/workspace/e2e/artifacts/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium-small-mobile",
+        "name": "chromium-small-mobile",
+        "testDir": "/workspace/e2e/tests",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 120000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "html",
+        {
+          "outputFolder": "artifacts/html-report",
+          "open": "never"
+        }
+      ],
+      [
+        "json",
+        {
+          "outputFile": "artifacts/reports/results.json"
+        }
+      ],
+      [
+        "junit",
+        {
+          "outputFile": "artifacts/reports/junit.xml"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.61.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "accessibility.spec.ts",
+      "file": "accessibility.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Phase 11 — Accessibility",
+          "file": "accessibility.spec.ts",
+          "line": 21,
+          "column": 6,
+          "specs": [
+            {
+              "title": "auth: labels, roles, keyboard, axe",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "defect-candidate",
+                      "description": "Email input may lack a visible focus indicator"
+                    },
+                    {
+                      "type": "defect",
+                      "description": "DEF-002 axe serious: color-contrast"
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-desktop",
+                  "projectName": "chromium-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1682,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "Form labels and accessible names",
+                          "duration": 19
+                        },
+                        {
+                          "title": "Keyboard tab order reaches email, password, submit",
+                          "duration": 161
+                        },
+                        {
+                          "title": "Visible focus style exists on focused control",
+                          "duration": 11
+                        },
+                        {
+                          "title": "axe-core scan on auth view",
+                          "duration": 488
+                        },
+                        {
+                          "title": "Error not only by color — alert role on bad login",
+                          "duration": 337
+                        }
+                      ],
+                      "startTime": "2026-07-19T09:04:05.937Z",
+                      "annotations": [
+                        {
+                          "type": "defect-candidate",
+                          "description": "Email input may lack a visible focus indicator"
+                        },
+                        {
+                          "type": "defect",
+                          "description": "DEF-002 axe serious: color-contrast"
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "ddd864604af8a6a0198f-09563ff1e44ea605dd63",
+              "file": "accessibility.spec.ts",
+              "line": 29,
+              "column": 7
+            },
+            {
+              "title": "authenticated: headings, modal escape, axe",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "defect-candidate",
+                      "description": "Delete confirmation modal does not close on Escape; closed via Cancel instead"
+                    },
+                    {
+                      "type": "a11y-violations",
+                      "description": "color-contrast"
+                    },
+                    {
+                      "type": "env",
+                      "description": "Used generated throwaway credentials"
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-desktop",
+                  "projectName": "chromium-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 23662,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "Heading hierarchy has h1",
+                          "duration": 3
+                        },
+                        {
+                          "title": "Modal focus: open delete modal, Escape closes",
+                          "duration": 1333
+                        },
+                        {
+                          "title": "axe-core on workspace",
+                          "duration": 821
+                        }
+                      ],
+                      "startTime": "2026-07-19T09:04:07.696Z",
+                      "annotations": [
+                        {
+                          "type": "defect-candidate",
+                          "description": "Delete confirmation modal does not close on Escape; closed via Cancel instead"
+                        },
+                        {
+                          "type": "a11y-violations",
+                          "description": "color-contrast"
+                        },
+                        {
+                          "type": "env",
+                          "description": "Used generated throwaway credentials"
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "ddd864604af8a6a0198f-57bdbf4325c7e72eaecd",
+              "file": "accessibility.spec.ts",
+              "line": 144,
+              "column": 7
+            },
+            {
+              "title": "auth: labels, roles, keyboard, axe",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "defect-candidate",
+                      "description": "Email input may lack a visible focus indicator"
+                    },
+                    {
+                      "type": "defect",
+                      "description": "DEF-002 axe serious: color-contrast"
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-mobile",
+                  "projectName": "chromium-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 1681,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "Form labels and accessible names",
+                          "duration": 21
+                        },
+                        {
+                          "title": "Keyboard tab order reaches email, password, submit",
+                          "duration": 160
+                        },
+                        {
+                          "title": "Visible focus style exists on focused control",
+                          "duration": 12
+                        },
+                        {
+                          "title": "axe-core scan on auth view",
+                          "duration": 532
+                        },
+                        {
+                          "title": "Error not only by color — alert role on bad login",
+                          "duration": 350
+                        }
+                      ],
+                      "startTime": "2026-07-19T09:05:18.210Z",
+                      "annotations": [
+                        {
+                          "type": "defect-candidate",
+                          "description": "Email input may lack a visible focus indicator"
+                        },
+                        {
+                          "type": "defect",
+                          "description": "DEF-002 axe serious: color-contrast"
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "ddd864604af8a6a0198f-1d6baf3612c201706f1e",
+              "file": "accessibility.spec.ts",
+              "line": 29,
+              "column": 7
+            },
+            {
+              "title": "authenticated: headings, modal escape, axe",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "Authenticated a11y once on desktop",
+                      "location": {
+                        "file": "/workspace/e2e/tests/accessibility.spec.ts",
+                        "line": 145,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "chromium-mobile",
+                  "projectName": "chromium-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 121,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:05:19.971Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "Authenticated a11y once on desktop",
+                          "location": {
+                            "file": "/workspace/e2e/tests/accessibility.spec.ts",
+                            "line": 145,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "ddd864604af8a6a0198f-ec3b489997fe9671a938",
+              "file": "accessibility.spec.ts",
+              "line": 144,
+              "column": 7
+            },
+            {
+              "title": "auth: labels, roles, keyboard, axe",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "A11y on desktop + mobile",
+                      "location": {
+                        "file": "/workspace/e2e/tests/accessibility.spec.ts",
+                        "line": 23,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "chromium-small-mobile",
+                  "projectName": "chromium-small-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 1,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:05:43.854Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "A11y on desktop + mobile",
+                          "location": {
+                            "file": "/workspace/e2e/tests/accessibility.spec.ts",
+                            "line": 23,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "ddd864604af8a6a0198f-fe614f0b1115700ed03c",
+              "file": "accessibility.spec.ts",
+              "line": 29,
+              "column": 7
+            },
+            {
+              "title": "authenticated: headings, modal escape, axe",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "A11y on desktop + mobile",
+                      "location": {
+                        "file": "/workspace/e2e/tests/accessibility.spec.ts",
+                        "line": 23,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "chromium-small-mobile",
+                  "projectName": "chromium-small-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 0,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:05:43.883Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "A11y on desktop + mobile",
+                          "location": {
+                            "file": "/workspace/e2e/tests/accessibility.spec.ts",
+                            "line": 23,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "ddd864604af8a6a0198f-27cfa785e8daac848ae7",
+              "file": "accessibility.spec.ts",
+              "line": 144,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "responsive-rtl.spec.ts",
+      "file": "responsive-rtl.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Phase 9 — Responsive UI",
+          "file": "responsive-rtl.spec.ts",
+          "line": 19,
+          "column": 6,
+          "specs": [
+            {
+              "title": "auth + workspace layout at current viewport",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-desktop",
+                  "projectName": "chromium-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 24560,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:04:31.370Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "80dd91714507c67ab601-0a9d85b1cc7e53ae477c",
+              "file": "responsive-rtl.spec.ts",
+              "line": 20,
+              "column": 7
+            },
+            {
+              "title": "auth + workspace layout at current viewport",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "note",
+                      "description": "On ≤767px, .server-status-text is CSS-hidden; only the status dot remains (index.css)"
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-mobile",
+                  "projectName": "chromium-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 23118,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:05:20.102Z",
+                      "annotations": [
+                        {
+                          "type": "note",
+                          "description": "On ≤767px, .server-status-text is CSS-hidden; only the status dot remains (index.css)"
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "80dd91714507c67ab601-30533e232afe5b0a9639",
+              "file": "responsive-rtl.spec.ts",
+              "line": 20,
+              "column": 7
+            },
+            {
+              "title": "auth + workspace layout at current viewport",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "note",
+                      "description": "On ≤767px, .server-status-text is CSS-hidden; only the status dot remains (index.css)"
+                    },
+                    {
+                      "type": "defect",
+                      "description": "DEF-003: document.scrollWidth=330 > clientWidth=320"
+                    }
+                  ],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-small-mobile",
+                  "projectName": "chromium-small-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 23372,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:05:43.896Z",
+                      "annotations": [
+                        {
+                          "type": "note",
+                          "description": "On ≤767px, .server-status-text is CSS-hidden; only the status dot remains (index.css)"
+                        },
+                        {
+                          "type": "defect",
+                          "description": "DEF-003: document.scrollWidth=330 > clientWidth=320"
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "80dd91714507c67ab601-a2a4845e975bd213ac13",
+              "file": "responsive-rtl.spec.ts",
+              "line": 20,
+              "column": 7
+            }
+          ]
+        },
+        {
+          "title": "Phase 10 — Hebrew RTL",
+          "file": "responsive-rtl.spec.ts",
+          "line": 115,
+          "column": 6,
+          "specs": [
+            {
+              "title": "RTL direction, alignment, mixed content, no raw i18n keys on auth",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-desktop",
+                  "projectName": "chromium-desktop",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 21799,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "steps": [
+                        {
+                          "title": "html dir/lang",
+                          "duration": 5
+                        },
+                        {
+                          "title": "Auth form direction",
+                          "duration": 6
+                        },
+                        {
+                          "title": "Hebrew labels present; brand English ok",
+                          "duration": 18
+                        },
+                        {
+                          "title": "No obvious untranslated keys on auth screen",
+                          "duration": 3
+                        }
+                      ],
+                      "startTime": "2026-07-19T09:04:55.938Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "80dd91714507c67ab601-972b7f833026959bfd1f",
+              "file": "responsive-rtl.spec.ts",
+              "line": 116,
+              "column": 7
+            },
+            {
+              "title": "RTL direction, alignment, mixed content, no raw i18n keys on auth",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "RTL deep check on desktop",
+                      "location": {
+                        "file": "/workspace/e2e/tests/responsive-rtl.spec.ts",
+                        "line": 119,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "chromium-mobile",
+                  "projectName": "chromium-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 156,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:05:43.226Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "RTL deep check on desktop",
+                          "location": {
+                            "file": "/workspace/e2e/tests/responsive-rtl.spec.ts",
+                            "line": 119,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "80dd91714507c67ab601-29e2f86354b871d2fe4e",
+              "file": "responsive-rtl.spec.ts",
+              "line": 116,
+              "column": 7
+            },
+            {
+              "title": "RTL direction, alignment, mixed content, no raw i18n keys on auth",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 120000,
+                  "annotations": [
+                    {
+                      "type": "skip",
+                      "description": "RTL deep check on desktop",
+                      "location": {
+                        "file": "/workspace/e2e/tests/responsive-rtl.spec.ts",
+                        "line": 119,
+                        "column": 10
+                      }
+                    }
+                  ],
+                  "expectedStatus": "skipped",
+                  "projectId": "chromium-small-mobile",
+                  "projectName": "chromium-small-mobile",
+                  "results": [
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "skipped",
+                      "duration": 79,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-07-19T09:06:07.318Z",
+                      "annotations": [
+                        {
+                          "type": "skip",
+                          "description": "RTL deep check on desktop",
+                          "location": {
+                            "file": "/workspace/e2e/tests/responsive-rtl.spec.ts",
+                            "line": 119,
+                            "column": 10
+                          }
+                        }
+                      ],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "skipped"
+                }
+              ],
+              "id": "80dd91714507c67ab601-142e8feaca03b7c08faa",
+              "file": "responsive-rtl.spec.ts",
+              "line": 116,
+              "column": 7
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-07-19T09:04:05.296Z",
+    "duration": 122147.041,
+    "expected": 7,
+    "skipped": 5,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}
