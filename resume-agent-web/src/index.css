@@ -1314,6 +1314,11 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  align-items: center;
+}
+
+.tailor-version-delete {
+  color: var(--danger, #b42318);
 }
 
 .job-item-favorite {

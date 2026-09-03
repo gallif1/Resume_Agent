@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
+from typing import Any
 
 from ai_client import OpenAIAPIError, call_openai_json, truncate_text
 from config import OPENAI_CV_MAX_CHARS, OPENAI_CV_TAILOR_MODEL, OPENAI_JOB_MAX_CHARS
@@ -348,6 +349,24 @@ def get_stored_pdf_bytes(*, result_id: str, user_id: str) -> bytes | None:
     return stored.pdf_bytes or None
 
 
+def get_stored_session_snapshot(*, result_id: str, user_id: str) -> dict[str, Any] | None:
+    """Return serializable session fields needed for durable job-history restore."""
+    with _store_lock:
+        _cleanup_expired()
+        stored = _store.get(result_id)
+    if stored is None or stored.user_id != user_id:
+        return None
+    return {
+        "cv_text": stored.cv_text,
+        "job_description": stored.job_description,
+        "tailored_cv": stored.tailored_cv.model_dump(),
+        "job_analysis": stored.job_analysis.model_dump(),
+        "user_confirmed_facts": [fact.model_dump() for fact in stored.user_confirmed_facts],
+        "pdf_bytes": stored.pdf_bytes,
+        "pdf_filename": stored.pdf_filename,
+    }
+
+
 def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
     """Return PDF bytes and filename for a stored result."""
     with _store_lock:
@@ -360,3 +379,47 @@ def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
         raise CvTailorError("Download link expired or not found")
 
     return stored.pdf_bytes, stored.pdf_filename
+
+
+def store_restored_session(
+    *,
+    user_id: str,
+    cv_text: str,
+    job_description: str,
+    tailored_cv: TailoredCvData,
+    job_analysis: JobAnalysis,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+    pdf_bytes: bytes | None = None,
+    pdf_filename: str | None = None,
+) -> TailoredCvResult:
+    """Rehydrate a persisted job-history version into an editable in-memory session."""
+    facts = list(user_confirmed_facts or [])
+    bytes_payload = pdf_bytes or b""
+    filename = (pdf_filename or "").strip() or pdf_filename_for_cv(tailored_cv)
+    if not bytes_payload:
+        try:
+            bytes_payload = render_tailored_cv_pdf(tailored_cv)
+            filename = pdf_filename_for_cv(tailored_cv)
+        except Exception as exc:
+            logger.warning("Could not re-render PDF while restoring session: %s", exc)
+
+    result_id = str(uuid.uuid4())
+    with _store_lock:
+        _cleanup_expired()
+        _store[result_id] = _StoredResult(
+            user_id=user_id,
+            cv_text=cv_text or "",
+            job_description=job_description or "",
+            tailored_cv=tailored_cv,
+            job_analysis=job_analysis,
+            user_confirmed_facts=facts,
+            pdf_bytes=bytes_payload,
+            pdf_filename=filename,
+            created_at=datetime.now(timezone.utc),
+        )
+    return _build_result(
+        result_id=result_id,
+        tailored_cv=tailored_cv,
+        job_analysis=job_analysis,
+        user_confirmed_facts=facts,
+    )

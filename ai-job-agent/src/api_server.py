@@ -41,6 +41,8 @@ Multi-CV endpoints (each CV has isolated data; require Bearer JWT):
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-pdf  download tailored CV as PDF
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/download-docx download tailored CV as DOCX
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/versions      list tailored versions + reports
+    GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/mvp-session   restore CV Tailor edit session
+    DELETE /cvs/{cv_id}/jobs/{job_id}/tailored-cv/versions/{version_id}  delete one history entry
     GET    /cvs/{cv_id}/jobs/{job_id}/tailored-cv/report        fetch structured change report
     POST   /cvs/{cv_id}/jobs/{job_id}/tailored-cv/changes      accept/reject individual changes
     POST   /cvs/{cv_id}/jobs/{job_id}/tailored-cv/regenerate-section  regenerate one section
@@ -143,6 +145,10 @@ from tailor_cv_service import (
     tailor_cv_for_job,
 )
 from cv_tailor.routes import router as cv_tailor_router
+from cv_tailor.job_persist import (
+    delete_tailored_cv_version_for_user,
+    restore_mvp_session_for_user,
+)
 
 SRC = PROJECT_ROOT / "src"
 PYTHON = sys.executable
@@ -2490,6 +2496,48 @@ def list_tailored_versions(
         resolved_cv_id, job_id, db_path=cv_db
     )
     return {"versions": versions, "reports": reports}
+
+
+@app.get("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/mvp-session")
+def restore_mvp_tailored_session(
+    cv_id: str,
+    job_id: int,
+    version_id: int | None = None,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Restore a saved tailored CV into an editable CV Tailor session."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    try:
+        return restore_mvp_session_for_user(
+            cv_id=cv_id,
+            job_id=job_id,
+            user_id=user["id"],
+            version_id=version_id,
+        )
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@app.delete("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/versions/{version_id}")
+def delete_tailored_version(
+    cv_id: str,
+    job_id: int,
+    version_id: int,
+    user: dict = Depends(auth.get_current_user),
+):
+    """Delete one tailored-CV history entry for a resume/job pair."""
+    db.ensure_multi_cv_storage()
+    _require_owned_cv(cv_id, user)
+    try:
+        return delete_tailored_cv_version_for_user(
+            cv_id=cv_id,
+            job_id=job_id,
+            version_id=version_id,
+            user_id=user["id"],
+        )
+    except TailorCvError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @app.post("/cvs/{cv_id}/jobs/{job_id}/tailored-cv/save-mvp")

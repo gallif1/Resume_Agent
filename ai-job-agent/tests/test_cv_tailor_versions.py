@@ -341,3 +341,161 @@ def test_tailor_cv_records_a_version_and_publishes_the_honest_score(
     # The frozen scan baseline is untouched.
     assert match["initial_score"] == 76
     assert db.get_match_baseline_score(cv_id, job_id, db_path=db_path) == 76
+
+
+def test_persist_mvp_session_fields_and_restore(cvs_dir, db_path, monkeypatch):
+    from conftest import register_test_user
+    from cv_tailor.job_persist import restore_mvp_session_for_user
+
+    db.init_db(db_path)
+    monkeypatch.setattr("config.CVS_DIR", cvs_dir)
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+    monkeypatch.setattr("config.cv_db_path", lambda _cv_id: db_path)
+    monkeypatch.setattr("cv_tailor.job_persist.cv_db_path", lambda _cv_id: db_path)
+
+    user = register_test_user(email="restore@example.com", db_path=db_path)
+    cv_id = "cv_restore"
+    db.create_cv(
+        cv_id,
+        user_id=user["id"],
+        file_name="resume.pdf",
+        display_name="Resume",
+        stored_path=str(cvs_dir / "resume.pdf"),
+        db_path=db_path,
+    )
+    job_id = db.insert_job(
+        title="Engineer",
+        job_url="https://example.com/job/restore",
+        company="Acme",
+        description="Need Python and FastAPI experience for backend services.",
+        db_path=db_path,
+    )
+    db.upsert_cv_job_match(
+        cv_id,
+        job_id,
+        {"match_score": 70, "match_reason": "test"},
+        db_path=db_path,
+    )
+
+    tailored = {
+        "name": "Jane Doe",
+        "summary": "Backend engineer",
+        "skills": ["Python"],
+        "experience": [],
+        "projects": [],
+        "education": [],
+        "certifications": [],
+    }
+    analysis = {
+        "strong_matches": ["Python"],
+        "gaps": [
+            {
+                "gap_id": "fastapi",
+                "title": "FastAPI",
+                "requirement": "FastAPI",
+                "confirmation_text": "I have FastAPI experience",
+                "status": "unsupported",
+            }
+        ],
+    }
+    saved = svc.persist_tailored_cv_markdown(
+        cv_id,
+        job_id,
+        "# Jane Doe\n\nBackend engineer",
+        db_path=db_path,
+        pdf_bytes=b"%PDF-1.4 session",
+        mvp_tailored_cv=tailored,
+        mvp_job_analysis=analysis,
+        mvp_user_confirmed_facts=[],
+        mvp_cv_text="Original CV text with Python",
+        mvp_model="test-model",
+    )
+    assert saved["version_id"] is not None
+
+    restored = restore_mvp_session_for_user(
+        cv_id=cv_id,
+        job_id=job_id,
+        user_id=user["id"],
+        version_id=saved["version_id"],
+    )
+    assert restored["result_id"]
+    assert restored["restored"] is True
+    assert restored["job_analysis"]["gaps"][0]["gap_id"] == "fastapi"
+    assert "Jane Doe" in restored["preview_text"]
+    assert restored["model"] == "test-model"
+
+
+def test_delete_tailored_cv_version_promotes_previous(cvs_dir, db_path, monkeypatch):
+    from conftest import register_test_user
+    from cv_tailor.job_persist import delete_tailored_cv_version_for_user
+
+    db.init_db(db_path)
+    monkeypatch.setattr("config.CVS_DIR", cvs_dir)
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+    monkeypatch.setattr("config.cv_db_path", lambda _cv_id: db_path)
+    monkeypatch.setattr("cv_tailor.job_persist.cv_db_path", lambda _cv_id: db_path)
+
+    user = register_test_user(email="delete@example.com", db_path=db_path)
+    cv_id = "cv_delete"
+    db.create_cv(
+        cv_id,
+        user_id=user["id"],
+        file_name="resume.pdf",
+        display_name="Resume",
+        stored_path=str(cvs_dir / "resume.pdf"),
+        db_path=db_path,
+    )
+    job_id = db.insert_job(
+        title="Engineer",
+        job_url="https://example.com/job/delete",
+        company="Acme",
+        description="Python backend role with APIs and databases required here.",
+        db_path=db_path,
+    )
+    db.upsert_cv_job_match(
+        cv_id,
+        job_id,
+        {"match_score": 65, "match_reason": "test"},
+        db_path=db_path,
+    )
+
+    first = svc.persist_tailored_cv_markdown(
+        cv_id,
+        job_id,
+        "# Version One",
+        db_path=db_path,
+        pdf_bytes=b"%PDF-1.4 one",
+        mvp_tailored_cv={"name": "One", "summary": "one"},
+    )
+    second = svc.persist_tailored_cv_markdown(
+        cv_id,
+        job_id,
+        "# Version Two",
+        db_path=db_path,
+        pdf_bytes=b"%PDF-1.4 two",
+        mvp_tailored_cv={"name": "Two", "summary": "two"},
+    )
+
+    deleted = delete_tailored_cv_version_for_user(
+        cv_id=cv_id,
+        job_id=job_id,
+        version_id=second["version_id"],
+        user_id=user["id"],
+    )
+    assert deleted["deleted"] is True
+    assert deleted["remaining_count"] == 1
+    assert deleted["has_tailored_cv"] is True
+    assert deleted["latest_version_id"] == first["version_id"]
+    assert "Version One" in svc.tailored_cv_path(cv_id, job_id).read_text(encoding="utf-8")
+    assert svc.tailored_cv_pdf_path(cv_id, job_id).read_bytes() == b"%PDF-1.4 one"
+
+    deleted_last = delete_tailored_cv_version_for_user(
+        cv_id=cv_id,
+        job_id=job_id,
+        version_id=first["version_id"],
+        user_id=user["id"],
+    )
+    assert deleted_last["remaining_count"] == 0
+    assert deleted_last["has_tailored_cv"] is False
+    match = db.get_cv_job_match(cv_id, job_id, db_path=db_path)
+    assert not match.get("tailored_cv_path")
