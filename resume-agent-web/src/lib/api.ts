@@ -1081,6 +1081,23 @@ export function listTailoredCvVersions(
   return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/versions`);
 }
 
+/** Delete one tailored-CV history entry for a job. */
+export function deleteTailoredCvVersion(
+  cvId: string,
+  jobId: number,
+  versionId: number
+): Promise<{
+  deleted: boolean;
+  version_id: number;
+  remaining_count: number;
+  has_tailored_cv: boolean;
+  latest_version_id?: number;
+}> {
+  return request(`/cvs/${cvId}/jobs/${jobId}/tailored-cv/versions/${versionId}`, {
+    method: "DELETE",
+  });
+}
+
 /** Open the tailored CV PDF in a new tab for on-screen preview (no export gates). */
 export async function openTailoredCvPdfPreview(
   cvId: string,

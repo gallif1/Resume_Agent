@@ -3399,6 +3399,65 @@ def mark_cv_match_tailored(
         return dict(row) if row is not None else None
 
 
+def clear_cv_match_tailored(
+    cv_id: str,
+    job_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> None:
+    """Clear tailored-CV pointer on a match after the last version is deleted."""
+    now = _utc_now()
+    with get_connection(db_path) as conn:
+        conn.execute(
+            """
+            UPDATE cv_job_matches
+            SET tailored_cv_path = NULL, tailored_cv_updated_at = NULL, updated_at = ?
+            WHERE cv_id = ? AND job_id = ?
+            """,
+            (now, cv_id, job_id),
+        )
+        conn.commit()
+
+
+def delete_cv_tailor_version(
+    version_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> bool:
+    """Delete one tailored-CV version row. Returns True when a row was removed."""
+    with get_connection(db_path) as conn:
+        if "cv_tailor_versions" not in _table_names(conn):
+            return False
+        cursor = conn.execute(
+            "DELETE FROM cv_tailor_versions WHERE id = ?",
+            (version_id,),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0) > 0
+
+
+def delete_tailored_resume_reports_for_version(
+    cv_id: str,
+    job_id: int,
+    version_id: int,
+    *,
+    db_path: Path = DB_PATH,
+) -> int:
+    """Delete report rows tied to one tailored-CV version."""
+    with get_connection(db_path) as conn:
+        if "tailored_resume_reports" not in _table_names(conn):
+            return 0
+        cursor = conn.execute(
+            """
+            DELETE FROM tailored_resume_reports
+            WHERE cv_id = ? AND job_id = ? AND version_id = ?
+            """,
+            (cv_id, job_id, version_id),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+
+
 def apply_honest_match_score(
     cv_id: str,
     job_id: int,

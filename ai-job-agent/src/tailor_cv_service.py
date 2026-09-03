@@ -1346,6 +1346,10 @@ def persist_tailored_cv_markdown(
     score_after: int | None = None,
     pdf_bytes: bytes | None = None,
     mvp_tailored_cv: dict[str, Any] | None = None,
+    mvp_job_analysis: dict[str, Any] | None = None,
+    mvp_user_confirmed_facts: list[dict[str, Any]] | None = None,
+    mvp_cv_text: str | None = None,
+    mvp_model: str | None = None,
 ) -> dict[str, Any]:
     """Save markdown to disk, record version history, and return metadata."""
     text = (markdown or "").strip()
@@ -1367,10 +1371,14 @@ def persist_tailored_cv_markdown(
 
     path = save_tailored_cv(cv_id, job_id, text)
     report = None
-    if mvp_tailored_cv:
+    if mvp_tailored_cv or mvp_job_analysis or mvp_cv_text:
         report = {
-            "tailored_cv": mvp_tailored_cv,
-            "tailored_resume": mvp_tailored_cv,
+            "tailored_cv": mvp_tailored_cv or {},
+            "tailored_resume": mvp_tailored_cv or {},
+            "job_analysis": mvp_job_analysis or {},
+            "user_confirmed_facts": mvp_user_confirmed_facts or [],
+            "cv_text": (mvp_cv_text or "").strip(),
+            "model": (mvp_model or "").strip(),
             "source": "cv_tailor_mvp",
             "preview_text": text,
         }
@@ -1412,6 +1420,10 @@ def persist_mvp_tailored_cv_for_user(
     score_after: int | None = None,
     pdf_bytes: bytes | None = None,
     mvp_tailored_cv: dict[str, Any] | None = None,
+    mvp_job_analysis: dict[str, Any] | None = None,
+    mvp_user_confirmed_facts: list[dict[str, Any]] | None = None,
+    mvp_cv_text: str | None = None,
+    mvp_model: str | None = None,
 ) -> dict[str, Any]:
     """Persist CV Tailor MVP markdown for an owned CV/job pair."""
     import db as db_module
@@ -1433,6 +1445,10 @@ def persist_mvp_tailored_cv_for_user(
         score_after=score_after,
         pdf_bytes=pdf_bytes,
         mvp_tailored_cv=mvp_tailored_cv,
+        mvp_job_analysis=mvp_job_analysis,
+        mvp_user_confirmed_facts=mvp_user_confirmed_facts,
+        mvp_cv_text=mvp_cv_text,
+        mvp_model=mvp_model,
     )
 
 

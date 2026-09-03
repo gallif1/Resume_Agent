@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildCvTailorUrl } from "../lib/cvTailorApi";
 import Markdown from "react-markdown";
-import { ArrowRight, Loader2, RefreshCw, Search, Star } from "lucide-react";
+import { ArrowRight, Loader2, RefreshCw, Search, Star, Trash2 } from "lucide-react";
 import {
   applyTailoredChangeDecisions,
   applyToJob,
+  deleteTailoredCvVersion,
   downloadTailoredCvDocx,
   downloadTailoredCvPdf,
   DuplicateApplicationError,
@@ -13,7 +14,6 @@ import {
   getJobMatches,
   getJobMatchStatus,
   getJobApplication,
-  getTailoredCvPreview,
   listTailoredCvVersions,
   openTailoredCvPdfPreview,
   parseScanSummary,
@@ -334,6 +334,9 @@ export default function CvDetails({
   const [loadingSavedTailored, setLoadingSavedTailored] = useState<number | null>(
     null
   );
+  const [deletingTailorVersionId, setDeletingTailorVersionId] = useState<
+    number | null
+  >(null);
   const [regenerating, setRegenerating] = useState(false);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [stagnantAttempts, setStagnantAttempts] = useState(0);
@@ -878,7 +881,7 @@ export default function CvDetails({
     }
   };
 
-  const beginGenerationSession = (jobId: number) => {
+  const beginGenerationSession = (jobId: number, baselineScore?: number | null) => {
     generationCancelledRef.current = false;
     if (tailorAbortRef.current) {
       tailorAbortRef.current.abort();
@@ -889,6 +892,12 @@ export default function CvDetails({
     setTailoredCv((prev) => (prev?.job_id === jobId ? prev : null));
     if (bestSessionRef.current?.jobId !== jobId) {
       bestSessionRef.current = null;
+    }
+    if (baselineScore != null) {
+      setActiveMatchBaseline(baselineScore);
+    } else {
+      const match = matches.find((m) => m.job_id === jobId);
+      if (match) setActiveMatchBaseline(match.match_score);
     }
     // Clear prior run chrome immediately (openTailorStream also resets these).
     setTailorStages([]);
@@ -963,35 +972,66 @@ export default function CvDetails({
     }
   };
 
-  const handleOpenSavedTailored = async (
+  const handleOpenSavedTailored = (
     match: CvMatch,
     versionId?: number
   ) => {
-    setError(null);
-    setInfoMessage(null);
-    if (
-      versionId == null &&
-      tailoredCv?.job_id === match.job_id &&
-      tailoredCv.markdown
-    ) {
-      setActiveMatchBaseline(match.match_score);
-      setResultModalOpen(true);
-      return;
+    try {
+      sessionStorage.setItem(
+        `reload-tailor-${cvId}-${match.job_id}`,
+        String(Date.now())
+      );
+    } catch {
+      /* storage blocked */
     }
     setLoadingSavedTailored(match.job_id);
+    window.location.href = buildCvTailorUrl({
+      cvId,
+      jobId: match.job_id,
+      restore: true,
+      versionId,
+      auto: false,
+    });
+  };
+
+  const handleDeleteTailoredVersion = async (
+    match: CvMatch,
+    versionId: number
+  ) => {
+    if (
+      !window.confirm(
+        "למחוק את גרסת קורות החיים הזו מההיסטוריה? הפעולה לא ניתנת לביטול."
+      )
+    ) {
+      return;
+    }
+    setError(null);
+    setDeletingTailorVersionId(versionId);
     try {
-      const result = await getTailoredCvPreview(cvId, match.job_id, versionId);
-      applyTailoredResult(result);
-      setActiveMatchBaseline(match.match_score);
-      setResultModalOpen(true);
-      setGenerationUiOpen(false);
-      setGenerationBackground(false);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "לא ניתן לטעון את קורות החיים השמורים"
+      const result = await deleteTailoredCvVersion(cvId, match.job_id, versionId);
+      invalidateTailorVersions(match.job_id);
+      setMatches((prev) =>
+        prev.map((m) =>
+          m.job_id === match.job_id
+            ? {
+                ...m,
+                has_tailored_cv: Boolean(result.has_tailored_cv),
+                tailored_cv_updated_at: result.has_tailored_cv
+                  ? m.tailored_cv_updated_at
+                  : null,
+              }
+            : m
+        )
       );
+      if (tailoredCv?.job_id === match.job_id && !result.has_tailored_cv) {
+        setTailoredCv(null);
+        setResultModalOpen(false);
+      }
+      await loadTailorVersions(match.job_id, true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "מחיקת הגרסה נכשלה");
     } finally {
-      setLoadingSavedTailored(null);
+      setDeletingTailorVersionId(null);
     }
   };
 
@@ -1472,7 +1512,7 @@ export default function CvDetails({
                 }`}
                 disabled={busyTailor || loadingSavedTailored === m.job_id}
                 onClick={() => {
-                  void handleOpenSavedTailored(m);
+                  handleOpenSavedTailored(m);
                 }}
                 aria-busy={loadingSavedTailored === m.job_id}
               >
@@ -1595,11 +1635,7 @@ export default function CvDetails({
                             type="button"
                             className="btn btn-ghost btn-sm"
                             onClick={() => {
-                              void openTailoredCvPdfPreview(
-                                cvId,
-                                m.job_id,
-                                versionParam
-                              );
+                              handleOpenSavedTailored(m, versionParam);
                             }}
                           >
                             צפה
@@ -1643,6 +1679,24 @@ export default function CvDetails({
                           >
                             DOCX
                           </button>
+                          {version.id > 0 && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm tailor-version-delete"
+                              disabled={deletingTailorVersionId === version.id}
+                              aria-label="מחק גרסה"
+                              title="מחק גרסה"
+                              onClick={() => {
+                                void handleDeleteTailoredVersion(m, version.id);
+                              }}
+                            >
+                              {deletingTailorVersionId === version.id ? (
+                                <Loader2 size={14} className="spin" aria-hidden />
+                              ) : (
+                                <Trash2 size={14} aria-hidden />
+                              )}
+                            </button>
+                          )}
                         </div>
                       </li>
                       );
@@ -1652,7 +1706,7 @@ export default function CvDetails({
               </div>
             {m.has_tailored_cv && (
               <p className="cv-meta job-tailor-latest-hint">
-                הגרסה האחרונה זמינה גם בכפתור &quot;צפה בתוצאה&quot; למעלה.
+                &quot;צפה בתוצאה&quot; מחזיר לעמוד העריכה עם כל השינויים שנשמרו.
               </p>
             )}
             {app?.failure_reason && (

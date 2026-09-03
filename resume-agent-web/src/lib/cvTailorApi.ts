@@ -175,20 +175,42 @@ export type CvJobContext = {
   description: string;
 };
 
-/** Build a CV Tailor URL with optional prefill + auto-run query params. */
+/** Build a CV Tailor URL with optional prefill + auto-run / restore query params. */
 export function buildCvTailorUrl(options: {
   cvId: string;
   jobId: number;
   auto?: boolean;
+  restore?: boolean;
+  versionId?: number;
 }): string {
   const params = new URLSearchParams({
     cv_id: options.cvId,
     job_id: String(options.jobId),
   });
-  if (options.auto !== false) {
+  if (options.restore || options.versionId != null) {
+    params.set("restore", "1");
+    if (options.versionId != null) {
+      params.set("version_id", String(options.versionId));
+    }
+  } else if (options.auto !== false) {
     params.set("auto", "1");
   }
   return `/cv-tailor?${params.toString()}`;
+}
+
+/** Restore a saved job-history version into an editable CV Tailor session. */
+export function restoreMvpTailoredSession(
+  cvId: string,
+  jobId: number,
+  versionId?: number
+): Promise<CvTailorGenerateResponse> {
+  const query =
+    versionId != null ? `?version_id=${encodeURIComponent(String(versionId))}` : "";
+  return authJsonRequest<CvTailorGenerateResponse>(
+    `/cvs/${encodeURIComponent(cvId)}/jobs/${jobId}/tailored-cv/mvp-session${query}`,
+    {},
+    "לא ניתן לשחזר את עריכת קורות החיים"
+  );
 }
 
 /** Fetch the stored CV file for a CV record (for CV Tailor prefill). */

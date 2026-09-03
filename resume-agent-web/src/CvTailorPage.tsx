@@ -14,6 +14,7 @@ import {
   fetchStoredCvFile,
   generateTailoredCv,
   regenerateTailoredCv,
+  restoreMvpTailoredSession,
   type CvJobContext,
   type CvTailorGenerateResponse,
   type RequirementGap,
@@ -27,15 +28,22 @@ function readLaunchParams(): {
   cvId: string | null;
   jobId: number | null;
   autoRun: boolean;
+  restore: boolean;
+  versionId: number | null;
 } {
   const params = new URLSearchParams(window.location.search);
   const cvId = params.get("cv_id");
   const jobIdRaw = params.get("job_id");
   const jobId = jobIdRaw ? Number.parseInt(jobIdRaw, 10) : null;
+  const versionRaw = params.get("version_id");
+  const versionId = versionRaw ? Number.parseInt(versionRaw, 10) : null;
+  const restore = params.get("restore") === "1" || versionId != null;
   return {
     cvId,
     jobId: jobId != null && Number.isFinite(jobId) ? jobId : null,
-    autoRun: params.get("auto") === "1",
+    autoRun: !restore && params.get("auto") === "1",
+    restore,
+    versionId: versionId != null && Number.isFinite(versionId) ? versionId : null,
   };
 }
 
@@ -86,7 +94,11 @@ export default function CvTailorPage() {
   const [gapForm, setGapForm] = useState<Record<string, GapFormState>>({});
   const [generalAdditionalInfo, setGeneralAdditionalInfo] = useState("");
   const autoRunTriggeredRef = useRef(false);
+  const restoreTriggeredRef = useRef(false);
   const [savedToJobMessage, setSavedToJobMessage] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(
+    () => Boolean(launchParams.restore && launchParams.cvId && launchParams.jobId)
+  );
 
   const tailorJobContext = useMemo(
     () =>
@@ -223,9 +235,55 @@ export default function CvTailorPage() {
 
   useEffect(() => {
     if (
+      !launchParams.restore ||
+      restoreTriggeredRef.current ||
+      !authUser ||
+      !launchParams.cvId ||
+      !launchParams.jobId ||
+      prefillLoading
+    ) {
+      if (!launchParams.restore) setRestoring(false);
+      return;
+    }
+
+    restoreTriggeredRef.current = true;
+    let cancelled = false;
+    setRestoring(true);
+    setError(null);
+    setSavedToJobMessage(null);
+
+    restoreMvpTailoredSession(
+      launchParams.cvId,
+      launchParams.jobId,
+      launchParams.versionId ?? undefined
+    )
+      .then((data) => {
+        if (cancelled) return;
+        setResult(data);
+        syncGapForm(data);
+        setSavedToJobMessage("נטענה הגרסה השמורה — אפשר להמשיך לערוך ולעדכן.");
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(
+          e instanceof Error ? e.message : "שחזור עריכת קורות החיים נכשל"
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setRestoring(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser, launchParams, prefillLoading, syncGapForm]);
+
+  useEffect(() => {
+    if (
       !launchParams.autoRun ||
       autoRunTriggeredRef.current ||
       prefillLoading ||
+      restoring ||
       loading ||
       result ||
       !cvFile ||
@@ -241,6 +299,7 @@ export default function CvTailorPage() {
   }, [
     launchParams.autoRun,
     prefillLoading,
+    restoring,
     loading,
     result,
     cvFile,
@@ -328,12 +387,16 @@ export default function CvTailorPage() {
     []
   );
 
-  if (authChecking || prefillLoading) {
+  if (authChecking || prefillLoading || restoring) {
     return (
       <div className="app">
         <main className="main cv-tailor-main">
           <p className="muted">
-            {prefillLoading ? "טוען קורות חיים ופרטי משרה…" : "Loading…"}
+            {restoring
+              ? "טוען את עריכת קורות החיים השמורה…"
+              : prefillLoading
+                ? "טוען קורות חיים ופרטי משרה…"
+                : "Loading…"}
           </p>
         </main>
       </div>

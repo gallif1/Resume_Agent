@@ -17,6 +17,7 @@ from cv_tailor.service import (
     generate_tailored_cv,
     get_download_pdf,
     get_stored_pdf_bytes,
+    get_stored_session_snapshot,
     regenerate_tailored_cv,
 )
 
@@ -58,6 +59,12 @@ async def cv_tailor_generate(
         user_id=str(user["id"]),
         pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
         tailored_cv=result.tailored_cv.model_dump(),
+        job_analysis=result.job_analysis.model_dump(),
+        user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
+        cv_text=(get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}).get(
+            "cv_text"
+        ),
+        model=result.model,
     )
 
     return {
@@ -89,6 +96,7 @@ async def cv_tailor_regenerate(
         logger.warning("CV tailor regenerate error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}
     saved_to_job = maybe_persist_tailored_cv_to_job(
         cv_id=body.cv_id,
         job_id=body.job_id,
@@ -96,6 +104,10 @@ async def cv_tailor_regenerate(
         user_id=str(user["id"]),
         pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
         tailored_cv=result.tailored_cv.model_dump(),
+        job_analysis=result.job_analysis.model_dump(),
+        user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
+        cv_text=snapshot.get("cv_text"),
+        model=result.model,
     )
 
     return {
