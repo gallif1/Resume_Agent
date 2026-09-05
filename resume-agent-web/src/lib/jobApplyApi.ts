@@ -57,6 +57,12 @@ export async function submitJobApplication(
   try {
     data = (await res.json()) as JobApplyResult;
   } catch {
+    if (res.status === 500) {
+      throw new Error(
+        "שגיאת שרת (500) — ייתכן ש־Chromium קרס (למשל «הצג דפדפן בלייב» בלי מסך בשרת). " +
+          "בטלו את הצגת הדפדפן בלייב ונסו שוב, או הריצו את השרת מקומית."
+      );
+    }
     throw new Error(
       res.ok
         ? "השרת החזיר תשובה לא תקינה"
