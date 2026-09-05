@@ -177,17 +177,34 @@ app.include_router(cv_tailor_router)
 
 
 def _ensure_job_apply_on_path() -> Path | None:
-    """Add job-apply-automation/src to sys.path. Returns the src dir or None."""
+    """Add job-apply package root to sys.path. Returns that root or None.
+
+    Layouts supported (EC2 inject often ships ``job_apply`` under ai-job-agent/src
+    without rebuilding the image that originally lacked /app/job-apply-automation):
+    - <repo>/job-apply-automation/src/job_apply
+    - /app/job-apply-automation/src/job_apply  (Docker image / sidecar inject)
+    - <ai-job-agent>/src/job_apply            (vendored into backend inject tarball)
+    """
     candidates = [
         PROJECT_ROOT.parent / "job-apply-automation" / "src",
         Path("/app/job-apply-automation/src"),
+        PROJECT_ROOT / "src",
     ]
     for job_apply_src in candidates:
-        if job_apply_src.is_dir():
+        if (job_apply_src / "job_apply").is_dir():
             path_str = str(job_apply_src)
             if path_str not in sys.path:
                 sys.path.insert(0, path_str)
             return job_apply_src
+    # Already importable via PYTHONPATH / site-packages from an earlier inject.
+    try:
+        import job_apply as _job_apply_pkg  # type: ignore[import-not-found]
+
+        pkg_file = getattr(_job_apply_pkg, "__file__", None)
+        if pkg_file:
+            return Path(pkg_file).resolve().parent.parent
+    except Exception:  # noqa: BLE001
+        pass
     return None
 
 
@@ -217,11 +234,12 @@ def _register_job_apply_routes() -> None:
 
     @app.get("/api/job-apply/health")
     def job_apply_health() -> dict[str, str]:
-        available = _ensure_job_apply_on_path() is not None
+        pkg = _ensure_job_apply_on_path()
         return {
-            "status": "ok" if available else "degraded",
+            "status": "ok" if pkg is not None else "degraded",
             "service": "job-apply-automation",
-            "package_found": "true" if available else "false",
+            "package_found": "true" if pkg is not None else "false",
+            "package_path": str(pkg) if pkg is not None else "",
         }
 
     @app.post("/api/job-apply/apply")
@@ -242,7 +260,10 @@ def _register_job_apply_routes() -> None:
                 content={
                     "success": False,
                     "status": "failed",
-                    "message": "מודול ההגשה האוטומטית לא מותקן בשרת (job-apply-automation חסר)",
+                    "message": (
+                        "מודול ההגשה האוטומטית לא מותקן בשרת (job-apply-automation חסר). "
+                        "יש לפרוס מחדש עם הזרקת החבילה או rebuild_image=true."
+                    ),
                     "failure_category": "package_missing",
                 },
             )

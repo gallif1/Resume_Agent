@@ -217,8 +217,23 @@ jobs:
             # months-old modules while the workflow still reported success.
             # Missing imports are handled below (deps install + rollback) rather
             # than by shipping less code.
+            #
+            # Also vendor job-apply-automation into src/job_apply so fast
+            # --no-build deploys get Auto Apply without a full image rebuild
+            # (the base image often predates that package).
             printf '%s\n' "$BACKEND_REVISION" > ai-job-agent/src/BUILD_REVISION
-            tar -C ai-job-agent -czf /tmp/ra-backend-src.tgz src requirements.txt
+            rm -rf /tmp/ra-backend-bundle
+            mkdir -p /tmp/ra-backend-bundle
+            cp -a ai-job-agent/src /tmp/ra-backend-bundle/src
+            cp -a ai-job-agent/requirements.txt /tmp/ra-backend-bundle/requirements.txt
+            if [ -d job-apply-automation/src/job_apply ]; then
+              rm -rf /tmp/ra-backend-bundle/src/job_apply
+              cp -a job-apply-automation/src/job_apply /tmp/ra-backend-bundle/src/job_apply
+              echo "Bundled job_apply into backend inject tarball"
+            else
+              echo "WARN: job-apply-automation/src/job_apply missing on host" >&2
+            fi
+            tar -C /tmp/ra-backend-bundle -czf /tmp/ra-backend-src.tgz src requirements.txt
             sudo docker cp /tmp/ra-backend-src.tgz "$cid:/tmp/ra-backend-src.tgz"
             # Snapshot the code that is currently serving so a broken injection
             # can be undone in place, without waiting for an image recreate.
@@ -228,13 +243,27 @@ jobs:
               'tar -C /app/ai-job-agent -xzf /tmp/ra-backend-src.tgz && rm -f /tmp/ra-backend-src.tgz && find /app/ai-job-agent/src -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
           }
 
+          inject_job_apply_sidecar() {
+            local cid="$1"
+            # Keep the standalone layout used by Dockerfile PYTHONPATH as well.
+            if [ ! -d job-apply-automation/src/job_apply ]; then
+              echo "WARN: skip job-apply sidecar inject — package missing on host" >&2
+              return 0
+            fi
+            echo "Injecting job-apply-automation sidecar into $cid"
+            tar -C . -czf /tmp/ra-job-apply.tgz job-apply-automation
+            sudo docker cp /tmp/ra-job-apply.tgz "$cid:/tmp/ra-job-apply.tgz"
+            sudo docker exec "$cid" sh -c \
+              'rm -rf /app/job-apply-automation && tar -C /app -xzf /tmp/ra-job-apply.tgz && rm -f /tmp/ra-job-apply.tgz && find /app/job-apply-automation -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
+          }
+
           backend_imports_ok() {
             local cid="$1"
             # Freshly injected trees have no __pycache__. Importing api_server on a
             # small EC2 that is also serving traffic can take well over 60s — treat
             # that as slow, not as a missing dependency.
             timeout 180s sudo docker exec "$cid" python -c \
-              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True)' \
+              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True); from pathlib import Path; p=Path("/app/ai-job-agent/src/job_apply"); print("job_apply_vendored="+str(p.is_dir()), flush=True); p2=Path("/app/job-apply-automation/src/job_apply"); print("job_apply_sidecar="+str(p2.is_dir()), flush=True)' \
               >"$HOME/ra-import-check.log" 2>&1
           }
 
@@ -354,6 +383,7 @@ jobs:
           test -f /tmp/ra-frontend-dist.tgz
           echo "Target container: $CID"
           inject_backend "$CID"
+          inject_job_apply_sidecar "$CID"
 
           echo "Step R7b: check the injected backend imports before restarting"
           IMPORT_OK=0
@@ -445,6 +475,20 @@ jobs:
           cat "$HOME/ra-health.json" 2>/dev/null || echo "(no health json)"
           echo
 
+          echo "Step R9b: job-apply package health"
+          if curl -sf --max-time 8 http://127.0.0.1:8001/api/job-apply/health >"$HOME/ra-job-apply-health.json" \
+            || curl -sf --max-time 8 http://127.0.0.1:8000/api/job-apply/health >"$HOME/ra-job-apply-health.json"; then
+            cat "$HOME/ra-job-apply-health.json"
+            echo
+            if grep -q '"package_found"[[:space:]]*:[[:space:]]*"false"' "$HOME/ra-job-apply-health.json"; then
+              echo "::error::job-apply package still missing inside the container after inject." >&2
+              echo "Re-run with rebuild_image=true, or check inject_job_apply_sidecar logs." >&2
+              exit 1
+            fi
+          else
+            echo "WARN: /api/job-apply/health unreachable (older backend?)" >&2
+          fi
+          echo
           echo "Step R10: verify frontend bundle serves index.html"
           curl -sf --max-time 5 http://127.0.0.1:8001/ >/tmp/ra-index.html \
             || curl -sf --max-time 5 http://127.0.0.1:8000/ >/tmp/ra-index.html \
