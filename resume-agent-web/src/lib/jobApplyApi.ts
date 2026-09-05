@@ -45,6 +45,14 @@ export async function submitJobApplication(
     body,
   });
 
+  // Classic SPA catch-all bug: GET route matches the path → POST returns 405.
+  if (res.status === 405) {
+    throw new Error(
+      "ההגשה נכשלה (HTTP 405) — השרת עדיין מריץ גרסה ישנה בלי נתיב ההגשה. " +
+        "יש לפרוס מחדש את ה-backend (כולל תיקון SPA) ואז לרענן את הדף."
+    );
+  }
+
   let data: JobApplyResult;
   try {
     data = (await res.json()) as JobApplyResult;
@@ -55,12 +63,11 @@ export async function submitJobApplication(
         : `שגיאת שרת (${res.status}) — ודא שמודול ההגשה האוטומטית זמין`
     );
   }
-
   if (!res.ok && !data?.message) {
     throw new Error(`ההגשה נכשלה (HTTP ${res.status})`);
   }
   if (!res.ok && data?.message) {
-    // Keep body message, but make HTTP status visible for debugging (e.g. 405/422).
+    // Keep body message, but make HTTP status visible for debugging (e.g. 422).
     data.message = `${data.message} (HTTP ${res.status})`;
   }
 

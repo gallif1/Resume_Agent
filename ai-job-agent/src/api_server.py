@@ -178,41 +178,54 @@ app.include_router(cv_tailor_router)
 
 def _ensure_job_apply_on_path() -> Path | None:
     """Add job-apply-automation/src to sys.path. Returns the src dir or None."""
-    job_apply_src = PROJECT_ROOT.parent / "job-apply-automation" / "src"
-    if not job_apply_src.is_dir():
-        return None
-    path_str = str(job_apply_src)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-    return job_apply_src
+    candidates = [
+        PROJECT_ROOT.parent / "job-apply-automation" / "src",
+        Path("/app/job-apply-automation/src"),
+    ]
+    for job_apply_src in candidates:
+        if job_apply_src.is_dir():
+            path_str = str(job_apply_src)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+            return job_apply_src
+    return None
+
+
+def _parse_form_bool(value: str | bool | None, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _register_job_apply_routes() -> None:
-    """Expose job-apply as real API routes (not a mount).
+    """Always register /api/job-apply routes (lazy-import the engine inside handlers).
 
-    Mounting a sub-app under /api/job-apply often yields HTTP 405 because the
-    SPA catch-all GET /{path} still matches the path for non-GET methods.
-    Explicit routes on the main app avoid that.
+    Important: do NOT skip registration when the package import fails at startup.
+    If these POST routes are missing, the SPA catch-all GET /{path} makes Starlette
+    return HTTP 405 Method Not Allowed for POST /api/job-apply/apply.
     """
-    if _ensure_job_apply_on_path() is None:
-        print("[warn] job-apply-automation package not found — /api/job-apply disabled")
-        return
-
-    try:
-        from job_apply.engine import apply_to_job  # type: ignore[import-not-found]
-        from job_apply.models import Applicant, ApplyRequest  # type: ignore[import-not-found]
-    except Exception as exc:  # noqa: BLE001
-        print(f"[warn] job-apply automation import failed: {exc}")
-        return
-
-    uploads_dir = PROJECT_ROOT.parent / "job-apply-automation" / "data" / "uploads"
+    uploads_dir = (
+        (_ensure_job_apply_on_path() or Path("/tmp/job-apply")).parent / "data" / "uploads"
+    )
+    # Prefer package data dir when available.
+    pkg_src = _ensure_job_apply_on_path()
+    if pkg_src is not None:
+        uploads_dir = pkg_src.parent / "data" / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
     @app.get("/api/job-apply/health")
     def job_apply_health() -> dict[str, str]:
-        return {"status": "ok", "service": "job-apply-automation"}
+        available = _ensure_job_apply_on_path() is not None
+        return {
+            "status": "ok" if available else "degraded",
+            "service": "job-apply-automation",
+            "package_found": "true" if available else "false",
+        }
 
     @app.post("/api/job-apply/apply")
+    @app.post("/api/job-apply/apply/")
     async def job_apply_submit(
         job_url: str = Form(...),
         first_name: str = Form(...),
@@ -220,9 +233,34 @@ def _register_job_apply_routes() -> None:
         email: str = Form(...),
         phone: str = Form(...),
         cv: UploadFile = File(...),
-        dry_run: bool = Form(False),
-        headless: bool = Form(True),
+        dry_run: str = Form("false"),
+        headless: str = Form("true"),
     ):
+        if _ensure_job_apply_on_path() is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "status": "failed",
+                    "message": "מודול ההגשה האוטומטית לא מותקן בשרת (job-apply-automation חסר)",
+                    "failure_category": "package_missing",
+                },
+            )
+
+        try:
+            from job_apply.engine import apply_to_job  # type: ignore[import-not-found]
+            from job_apply.models import Applicant, ApplyRequest  # type: ignore[import-not-found]
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "status": "failed",
+                    "message": f"טעינת מודול ההגשה נכשלה: {exc}",
+                    "failure_category": "package_import_error",
+                },
+            )
+
         if not (job_url or "").strip():
             raise HTTPException(status_code=400, detail="job_url is required")
 
@@ -243,8 +281,8 @@ def _register_job_apply_routes() -> None:
                 email=email,
                 phone=phone,
             ),
-            dry_run=dry_run,
-            headless=headless,
+            dry_run=_parse_form_bool(dry_run, False),
+            headless=_parse_form_bool(headless, True),
         )
         result = await asyncio.to_thread(apply_to_job, request)
         status_code = 200 if result.success else 422
@@ -3370,16 +3408,26 @@ if FRONTEND_DIST.is_dir():
     async def frontend_icons():
         return FileResponse(FRONTEND_DIST / "icons.svg")
 
-    @app.get("/{page_path:path}")
-    async def frontend_spa(page_path: str):
-        # Never let the SPA catch-all shadow API routes if matching order slips.
-        first = (page_path or "").split("/", 1)[0]
-        if first in {"api", "cvs", "jobs"}:
-            raise HTTPException(status_code=404, detail="Not found")
-        candidate = FRONTEND_DIST / page_path
-        if candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(FRONTEND_DIST / "index.html")
+    # NOTE: Do NOT register @app.get("/{page_path:path}") here.
+    # A GET catch-all matching /api/... causes Starlette to answer POST /api/...
+    # with HTTP 405 when a more specific POST route is missing/unregistered.
+    # SPA deep links are handled by the middleware below (GET 404 → index.html).
+
+    @app.middleware("http")
+    async def spa_fallback_middleware(request: Request, call_next):
+        response = await call_next(request)
+        if response.status_code != 404 or request.method != "GET":
+            return response
+        path = request.url.path or "/"
+        if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/")):
+            return response
+        accept = request.headers.get("accept", "")
+        if "text/html" not in accept and "*/*" not in accept:
+            return response
+        index = FRONTEND_DIST / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+        return response
 
 
 if __name__ == "__main__":
