@@ -79,6 +79,22 @@ curl -X POST http://localhost:8010/apply \
 
 פרופיל דפדפן נשמר ב־`data/browser_profile/` (שימושי להתחברות ידנית חד־פעמית לאתרים שדורשים login).
 
+## צפייה בלייב ב־Playwright
+
+בדף `/job-apply` סמנו **הצג דפדפן בלייב** (ברירת מחדל). נפתח חלון Chromium על המחשב שמריץ את ה־API.
+
+מ־CLI:
+
+```bash
+PYTHONPATH=src python -m job_apply \
+  --url "https://..." --cv ./cv.pdf \
+  --first-name "..." --last-name "..." \
+  --email "..." --phone "..." \
+  --headed
+```
+
+> אם ה־API רץ בענן/שרת מרוחק — החלון נפתח שם. כדי לראות אצלכם על המסך, הריצו את ה־backend מקומית.
+
 ## מגבלות
 
 - טפסים עם CAPTCHA / אימות SMS דורשים השלמה ידנית

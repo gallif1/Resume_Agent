@@ -23,6 +23,7 @@ export default function JobApplyPage() {
   const [phone, setPhone] = useState("");
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [dryRun, setDryRun] = useState(false);
+  const [showBrowser, setShowBrowser] = useState(true);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +91,7 @@ export default function JobApplyPage() {
         phone,
         cv: cvFile,
         dryRun,
+        showBrowser,
       });
       setResult(data);
       if (!data.success) {
@@ -100,7 +102,7 @@ export default function JobApplyPage() {
     } finally {
       setLoading(false);
     }
-  }, [jobUrl, cvFile, firstName, lastName, email, phone, dryRun]);
+  }, [jobUrl, cvFile, firstName, lastName, email, phone, dryRun, showBrowser]);
 
   if (authChecking) {
     return (
@@ -250,6 +252,16 @@ export default function JobApplyPage() {
               />
             </div>
           </div>
+
+          <label className="job-apply-dry-run" htmlFor="show-browser">
+            <input
+              id="show-browser"
+              type="checkbox"
+              checked={showBrowser}
+              onChange={(e) => setShowBrowser(e.target.checked)}
+            />
+            הצג דפדפן בלייב (Playwright) — חלון Chromium נפתח על המחשב שמריץ את השרת
+          </label>
 
           <label className="job-apply-dry-run" htmlFor="dry-run">
             <input
