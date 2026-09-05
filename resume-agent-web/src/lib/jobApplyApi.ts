@@ -57,7 +57,11 @@ export async function submitJobApplication(
   }
 
   if (!res.ok && !data?.message) {
-    throw new Error(data?.message || `ההגשה נכשלה (${res.status})`);
+    throw new Error(`ההגשה נכשלה (HTTP ${res.status})`);
+  }
+  if (!res.ok && data?.message) {
+    // Keep body message, but make HTTP status visible for debugging (e.g. 405/422).
+    data.message = `${data.message} (HTTP ${res.status})`;
   }
 
   return data;

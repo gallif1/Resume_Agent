@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
-from playwright.sync_api import Locator, Page
+from playwright.sync_api import Frame, Locator, Page
 
 from job_apply.fields import (
     build_profile_values,
@@ -13,9 +14,12 @@ from job_apply.fields import (
     match_field_key,
 )
 
+# Comeet and similar boards host the form inside an iframe.
+FormTarget = Page | Frame
+
 APPLY_TEXTS = [
-    "apply now",
     "apply for this job",
+    "apply now",
     "submit application",
     "easy apply",
     "הגש מועמדות",
@@ -45,6 +49,7 @@ SUCCESS_MARKERS = (
     "your application has been",
     "successfully submitted",
     "we received your application",
+    "thanks for applying",
     "קורות החיים נשלחו",
     "המועמדות נשלחה",
     "המועמדות הוגשה",
@@ -61,11 +66,19 @@ LOGIN_MARKERS = (
 )
 
 
-def page_text(page: Page, limit: int = 8000) -> str:
+def _host_page(target: FormTarget) -> Page:
+    return target if isinstance(target, Page) else target.page
+
+
+def target_text(target: FormTarget, limit: int = 8000) -> str:
     try:
-        return (page.evaluate("() => document.body.innerText || ''") or "")[:limit]
+        return (target.evaluate("() => document.body.innerText || ''") or "")[:limit]
     except Exception:
         return ""
+
+
+def page_text(page: Page, limit: int = 8000) -> str:
+    return target_text(page, limit=limit)
 
 
 def get_field_attrs(locator: Locator) -> dict[str, str | None]:
@@ -78,11 +91,11 @@ def get_field_attrs(locator: Locator) -> dict[str, str | None]:
     return attrs
 
 
-def find_label_for(page: Page, locator: Locator) -> str:
+def find_label_for(target: FormTarget, locator: Locator) -> str:
     try:
         field_id = locator.get_attribute("id")
         if field_id:
-            label = page.locator(f"label[for='{field_id}']").first
+            label = target.locator(f"label[for='{field_id}']").first
             if label.count() and label.is_visible():
                 return (label.inner_text() or "").strip()
     except Exception:
@@ -96,22 +109,31 @@ def find_label_for(page: Page, locator: Locator) -> str:
     return ""
 
 
-def detect_captcha(page: Page) -> bool:
-    selectors = (
-        "iframe[src*='recaptcha']",
-        "iframe[src*='hcaptcha']",
-        ".g-recaptcha:visible",
-        ".h-captcha:visible",
-        "#cf-turnstile:visible",
+def detect_captcha(target: FormTarget) -> bool:
+    """True only for an active CAPTCHA challenge — not the idle reCAPTCHA badge."""
+    challenge_selectors = (
+        "iframe[src*='recaptcha/api2/bframe']",
+        "iframe[src*='hcaptcha.com'][src*='frame=challenge']",
+        "iframe[title*='recaptcha challenge' i]",
+        "iframe[title*='hCaptcha challenge' i]",
     )
-    for selector in selectors:
+    for selector in challenge_selectors:
         try:
-            locator = page.locator(selector).first
+            locator = target.locator(selector).first
             if locator.count() and locator.is_visible():
                 return True
         except Exception:
             continue
-    visible = page_text(page).lower()
+
+    if isinstance(target, Page):
+        for frame in target.frames:
+            url = (frame.url or "").lower()
+            if "recaptcha/api2/bframe" in url:
+                return True
+            if "hcaptcha.com" in url and "challenge" in url:
+                return True
+
+    visible = target_text(target).lower()
     phrases = (
         "verify you are human",
         "complete the captcha",
@@ -133,61 +155,120 @@ def detect_login_required(page: Page) -> bool:
     text = page_text(page).lower()
     if any(marker in text for marker in LOGIN_MARKERS):
         try:
-            if page.locator(
-                "input[type='email']:visible, input[type='password']:visible"
-            ).count() > 0:
+            if (
+                page.locator(
+                    "input[type='email']:visible, input[type='password']:visible"
+                ).count()
+                > 0
+            ):
                 return True
         except Exception:
             pass
     return False
 
 
-def detect_submission_success(page: Page) -> tuple[bool, str]:
-    text = page_text(page)
+def detect_submission_success(target: FormTarget) -> tuple[bool, str]:
+    text = target_text(target)
     lowered = text.lower()
     for marker in SUCCESS_MARKERS:
         if marker.lower() in lowered:
             idx = lowered.find(marker.lower())
             snippet = text[max(0, idx - 20) : idx + len(marker) + 40].strip()
             return True, snippet[:200]
-    url = (page.url or "").lower()
-    if any(token in url for token in ("/thank", "/confirmation", "/success", "/applied")):
-        return True, f"Redirected to success URL: {page.url}"
+    if isinstance(target, Page):
+        url = (target.url or "").lower()
+        if any(token in url for token in ("/thank", "/confirmation", "/success", "/applied")):
+            return True, f"Redirected to success URL: {target.url}"
+        for frame in target.frames:
+            if frame == target.main_frame:
+                continue
+            ok, snippet = detect_submission_success(frame)
+            if ok:
+                return True, snippet
     return False, ""
 
 
-def page_has_application_form(page: Page) -> bool:
-    """True when a visible application form is present (ignore hidden templates)."""
+def target_has_application_form(target: FormTarget) -> bool:
     try:
-        visible_files = page.locator("input[type='file']:visible")
-        if visible_files.count() > 0:
-            return True
-        inputs = page.locator(
+        text_inputs = target.locator(
             "input:visible:not([type='hidden']):not([type='submit']):not([type='button']):not([type='file'])"
         )
-        textareas = page.locator("textarea:visible")
-        # Need at least two visible contact-like fields, or a textarea.
-        return inputs.count() >= 2 or textareas.count() >= 1
+        textareas = target.locator("textarea:visible")
+        file_inputs = target.locator("input[type='file']")
+        if text_inputs.count() >= 2 and file_inputs.count() > 0:
+            return True
+        if text_inputs.count() >= 2 or textareas.count() >= 1:
+            return True
+        if file_inputs.count() > 0 and text_inputs.count() >= 1:
+            return True
+        return False
     except Exception:
         return False
 
 
-def click_by_texts(page: Page, texts: list[str], *, roles: tuple[str, ...] = ("button", "link")) -> bool:
+def page_has_application_form(page: Page) -> bool:
+    if target_has_application_form(page):
+        return True
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        url = (frame.url or "").lower()
+        if "recaptcha" in url or "hcaptcha" in url:
+            continue
+        try:
+            if target_has_application_form(frame):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def find_form_target(page: Page, *, wait_ms: int = 12000) -> FormTarget:
+    """Return the page or iframe that contains the application form."""
+    deadline = time.monotonic() + (wait_ms / 1000.0)
+    while True:
+        if target_has_application_form(page):
+            return page
+        for frame in page.frames:
+            if frame == page.main_frame:
+                continue
+            url = (frame.url or "").lower()
+            if "recaptcha" in url or "hcaptcha" in url:
+                continue
+            try:
+                if "/apply" in url or "comeet" in url or target_has_application_form(frame):
+                    if target_has_application_form(frame):
+                        return frame
+            except Exception:
+                continue
+        if time.monotonic() >= deadline:
+            break
+        page.wait_for_timeout(400)
+    return page
+
+
+def click_by_texts(
+    target: FormTarget,
+    texts: list[str],
+    *,
+    roles: tuple[str, ...] = ("button", "link"),
+) -> bool:
+    host = _host_page(target)
     for text in texts:
         for role in roles:
             try:
-                loc = page.get_by_role(role, name=re.compile(re.escape(text), re.I)).first
+                loc = target.get_by_role(role, name=re.compile(re.escape(text), re.I)).first
                 if loc.count() and loc.is_visible():
                     loc.click()
-                    page.wait_for_timeout(1500)
+                    host.wait_for_timeout(1500)
                     return True
             except Exception:
                 pass
         try:
-            loc = page.get_by_text(text, exact=False).first
+            loc = target.get_by_text(re.compile(text, re.I)).first
             if loc.count() and loc.is_visible():
                 loc.click()
-                page.wait_for_timeout(1500)
+                host.wait_for_timeout(1500)
                 return True
         except Exception:
             continue
@@ -198,21 +279,23 @@ def click_apply_entry(page: Page) -> bool:
     return click_by_texts(page, APPLY_TEXTS)
 
 
-def click_submit(page: Page) -> bool:
-    if click_by_texts(page, SUBMIT_TEXTS, roles=("button",)):
+def click_submit(target: FormTarget) -> bool:
+    if click_by_texts(target, SUBMIT_TEXTS, roles=("button",)):
         return True
     try:
-        loc = page.locator("button[type='submit']:visible, input[type='submit']:visible").first
+        loc = target.locator(
+            "button[type='submit']:visible, input[type='submit']:visible"
+        ).first
         if loc.count() and loc.is_visible():
             loc.click()
-            page.wait_for_timeout(2000)
+            _host_page(target).wait_for_timeout(2000)
             return True
     except Exception:
         pass
     return False
 
 
-def open_application_page(page: Page, *, wait_ms: int = 2500) -> Page:
+def open_application_page(page: Page, *, wait_ms: int = 3500) -> Page:
     """If needed, click Apply and follow popup / same-tab navigation."""
     if page_has_application_form(page):
         return page
@@ -226,6 +309,7 @@ def open_application_page(page: Page, *, wait_ms: int = 2500) -> Page:
         new_page = popup_info.value
         new_page.wait_for_load_state("domcontentloaded", timeout=30000)
         new_page.wait_for_timeout(wait_ms)
+        find_form_target(new_page, wait_ms=max(wait_ms, 8000))
         return new_page
     except Exception:
         if page.url != start_url or page_has_application_form(page):
@@ -235,11 +319,12 @@ def open_application_page(page: Page, *, wait_ms: int = 2500) -> Page:
     if not click_apply_entry(page):
         return page
     page.wait_for_timeout(wait_ms)
+    find_form_target(page, wait_ms=max(wait_ms, 8000))
     return page
 
 
 def fill_mapped_fields(
-    page: Page,
+    target: FormTarget,
     profile: dict[str, Any],
     *,
     max_fields: int = 40,
@@ -249,7 +334,7 @@ def fill_mapped_fields(
     skipped: list[str] = []
 
     try:
-        inputs = page.locator("input:visible, textarea:visible, select:visible")
+        inputs = target.locator("input:visible, textarea:visible, select:visible")
         count = min(inputs.count(), max_fields)
     except Exception:
         return filled, skipped
@@ -264,7 +349,7 @@ def fill_mapped_fields(
             if input_type in {"file", "checkbox", "radio", "hidden", "submit", "button"}:
                 continue
 
-            label_text = find_label_for(page, field)
+            label_text = find_label_for(target, field)
             blob = field_blob_from_element(attrs, label_text)
             key = match_field_key(blob)
             if not key:
@@ -304,34 +389,58 @@ def fill_mapped_fields(
             skipped.append(f"field_{i}")
             continue
 
+    _maybe_select_israel_dial_code(target, values.get("phone", ""))
     return filled, skipped
 
 
-def upload_cv_file(page: Page, cv_file_path: str) -> bool:
+def _maybe_select_israel_dial_code(target: FormTarget, phone: str) -> None:
+    normalized = re.sub(r"\D", "", phone or "")
+    if not (
+        normalized.startswith("972")
+        or normalized.startswith("05")
+        or (len(normalized) == 9 and normalized.startswith("5"))
+    ):
+        return
     try:
-        # Prefer visible inputs; fall back to any file input inside a visible form.
-        file_inputs = page.locator("input[type='file']:visible")
-        if file_inputs.count() == 0:
-            file_inputs = page.locator("form:visible input[type='file']")
+        btn = target.get_by_role("button", name=re.compile(r"\+\d+")).first
+        if not (btn.count() and btn.is_visible()):
+            return
+        btn.click()
+        _host_page(target).wait_for_timeout(600)
+        option = target.get_by_text(re.compile(r"Israel|\+972|ישראל"), exact=False).first
+        if option.count() and option.is_visible():
+            option.click()
+            _host_page(target).wait_for_timeout(400)
+    except Exception:
+        pass
+
+
+def upload_cv_file(target: FormTarget, cv_file_path: str) -> bool:
+    try:
+        file_inputs = target.locator("input[type='file']")
         if file_inputs.count() == 0:
             return False
         for i in range(min(file_inputs.count(), 5)):
             inp = file_inputs.nth(i)
+            name = (inp.get_attribute("name") or "").lower()
+            aria = (inp.get_attribute("aria-label") or "").lower()
+            if name in {"coverletter", "portfolio"} or "cover" in aria or "portfolio" in aria:
+                continue
             blob = field_blob_from_element(get_field_attrs(inp))
             key = match_field_key(blob)
-            if key == "cv_file" or i == 0:
+            if key == "cv_file" or name in {"cv", "resume", ""} or i == 0:
                 inp.set_input_files(cv_file_path)
-                page.wait_for_timeout(800)
+                _host_page(target).wait_for_timeout(800)
                 return True
         return False
     except Exception:
         return False
 
 
-def validate_required(page: Page) -> list[str]:
+def validate_required(target: FormTarget) -> list[str]:
     errors: list[str] = []
     try:
-        required = page.locator(
+        required = target.locator(
             "input:required:visible, textarea:required:visible, select:required:visible"
         )
         for i in range(required.count()):
@@ -347,9 +456,22 @@ def validate_required(page: Page) -> list[str]:
             value = (field.input_value() or "").strip()
             if not value:
                 attrs = get_field_attrs(field)
-                label = find_label_for(page, field)
+                label = find_label_for(target, field)
                 key = match_field_key(field_blob_from_element(attrs, label)) or "required_field"
                 errors.append(key)
+    except Exception:
+        pass
+
+    try:
+        cv_input = target.locator("input[type='file'][name='cv'], input#cv").first
+        if cv_input.count():
+            files = cv_input.evaluate(
+                "el => el.files ? Array.from(el.files).map(f => f.name) : []"
+            )
+            if not files and "cv_file" not in errors:
+                body = target_text(target).lower()
+                if "resume" in body or "קורות" in body:
+                    errors.append("cv_file")
     except Exception:
         pass
     return errors

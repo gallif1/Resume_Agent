@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Comeet-like Job Page</title>
+</head>
+<body>
+  <h1>Junior React Developer</h1>
+  <p>Engineering · Tel Aviv</p>
+  <button id="apply-btn" type="button">APPLY FOR THIS JOB</button>
+  <iframe id="apply-frame" name="apply-frame" hidden style="width:100%;height:520px;border:0"></iframe>
+  <script>
+    const frame = document.getElementById("apply-frame");
+    document.getElementById("apply-btn").addEventListener("click", () => {
+      frame.hidden = false;
+      const doc = frame.contentDocument;
+      doc.open();
+      doc.write(`<!DOCTYPE html><html><body>
+        <form id="comeet-form" onsubmit="document.getElementById('ok').hidden=false; return false;">
+          <label for="inputFirstName">First name *</label>
+          <input id="inputFirstName" name="firstName" type="text" aria-label="First name" required />
+          <label for="inputLastName">Last name *</label>
+          <input id="inputLastName" name="lastName" type="text" aria-label="Last name" required />
+          <label for="inputEmail">Email *</label>
+          <input id="inputEmail" name="email" type="email" aria-label="Email" required />
+          <label for="inputTel">Phone *</label>
+          <input id="inputTel" name="phone" type="tel" aria-label="Phone" required />
+          <label for="cv">Resume *</label>
+          <input id="cv" name="cv" type="file" aria-label="Attach Resume" required />
+          <button type="submit">SUBMIT APPLICATION</button>
+        </form>
+        <div id="ok" hidden><p>Thank you for applying! Your application has been submitted.</p></div>
+      </body></html>`);
+      doc.close();
+    });
+  </script>
+</body>
+</html>
