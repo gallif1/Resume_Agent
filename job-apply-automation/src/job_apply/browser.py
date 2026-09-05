@@ -41,9 +41,13 @@ def create_browser_context(
     *,
     headless: bool = True,
     user_data_dir: str | Path | None = None,
+    slow_mo_ms: int | None = None,
 ) -> tuple[BrowserContext, Page]:
+    # When showing the browser live, slow actions slightly so the user can follow.
+    effective_slow_mo = slow_mo_ms if slow_mo_ms is not None else (150 if not headless else 0)
     launch_kwargs: dict[str, Any] = {
         "headless": headless,
+        "slow_mo": effective_slow_mo,
         "args": list(STEALTH_LAUNCH_ARGS),
         "ignore_default_args": ["--enable-automation"],
     }

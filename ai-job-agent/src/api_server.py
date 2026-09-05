@@ -74,10 +74,12 @@ import logging
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -89,7 +91,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -174,24 +176,82 @@ app.add_middleware(
 app.include_router(cv_tailor_router)
 
 
-def _mount_job_apply_automation() -> None:
-    """Mount the standalone job-apply package under /api/job-apply (optional)."""
+def _ensure_job_apply_on_path() -> Path | None:
+    """Add job-apply-automation/src to sys.path. Returns the src dir or None."""
     job_apply_src = PROJECT_ROOT.parent / "job-apply-automation" / "src"
     if not job_apply_src.is_dir():
-        return
+        return None
     path_str = str(job_apply_src)
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
+    return job_apply_src
+
+
+def _register_job_apply_routes() -> None:
+    """Expose job-apply as real API routes (not a mount).
+
+    Mounting a sub-app under /api/job-apply often yields HTTP 405 because the
+    SPA catch-all GET /{path} still matches the path for non-GET methods.
+    Explicit routes on the main app avoid that.
+    """
+    if _ensure_job_apply_on_path() is None:
+        print("[warn] job-apply-automation package not found — /api/job-apply disabled")
+        return
+
     try:
-        from job_apply.api import app as job_apply_app  # type: ignore[import-not-found]
-
-        app.mount("/api/job-apply", job_apply_app)
+        from job_apply.engine import apply_to_job  # type: ignore[import-not-found]
+        from job_apply.models import Applicant, ApplyRequest  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
-        # Keep the main API up even if the optional package is missing/broken.
-        print(f"[warn] job-apply automation not mounted: {exc}")
+        print(f"[warn] job-apply automation import failed: {exc}")
+        return
+
+    uploads_dir = PROJECT_ROOT.parent / "job-apply-automation" / "data" / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+
+    @app.get("/api/job-apply/health")
+    def job_apply_health() -> dict[str, str]:
+        return {"status": "ok", "service": "job-apply-automation"}
+
+    @app.post("/api/job-apply/apply")
+    async def job_apply_submit(
+        job_url: str = Form(...),
+        first_name: str = Form(...),
+        last_name: str = Form(...),
+        email: str = Form(...),
+        phone: str = Form(...),
+        cv: UploadFile = File(...),
+        dry_run: bool = Form(False),
+        headless: bool = Form(True),
+    ):
+        if not (job_url or "").strip():
+            raise HTTPException(status_code=400, detail="job_url is required")
+
+        suffix = Path(cv.filename or "resume.pdf").suffix or ".pdf"
+        dest = uploads_dir / f"{uuid.uuid4().hex}{suffix}"
+        try:
+            with dest.open("wb") as out:
+                shutil.copyfileobj(cv.file, out)
+        finally:
+            await cv.close()
+
+        request = ApplyRequest(
+            job_url=job_url.strip(),
+            cv_path=dest,
+            applicant=Applicant(
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                phone=phone,
+            ),
+            dry_run=dry_run,
+            headless=headless,
+        )
+        result = await asyncio.to_thread(apply_to_job, request)
+        status_code = 200 if result.success else 422
+        return JSONResponse(status_code=status_code, content=result.to_dict())
 
 
-_mount_job_apply_automation()
+_register_job_apply_routes()
 
 
 def _utc_now() -> str:
