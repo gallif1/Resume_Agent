@@ -50,15 +50,29 @@ def test_job_apply_finds_vendored_src_layout(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(Path, "is_dir", fake_is_dir)
     # Drop any previously imported job_apply so import-fallback does not cheat.
-    sys_modules = __import__("sys").modules
-    sys_modules.pop("job_apply", None)
-    for key in list(sys_modules):
-        if key.startswith("job_apply."):
-            sys_modules.pop(key, None)
+    import sys
 
-    pkg = api_server._ensure_job_apply_on_path()
-    assert pkg == tmp_path / "src"
-    assert (pkg / "job_apply").is_dir()
+    saved = {
+        key: mod
+        for key, mod in list(sys.modules.items())
+        if key == "job_apply" or key.startswith("job_apply.")
+    }
+    for key in list(saved):
+        sys.modules.pop(key, None)
+
+    inserted = str(tmp_path / "src")
+    try:
+        pkg = api_server._ensure_job_apply_on_path()
+        assert pkg == tmp_path / "src"
+        assert (pkg / "job_apply").is_dir()
+    finally:
+        # Do not leave the stub package ahead of the real job-apply on sys.path.
+        while inserted in sys.path:
+            sys.path.remove(inserted)
+        for key in list(sys.modules):
+            if key == "job_apply" or key.startswith("job_apply."):
+                sys.modules.pop(key, None)
+        sys.modules.update(saved)
 
 
 def test_job_apply_apply_not_405(tmp_path: Path):

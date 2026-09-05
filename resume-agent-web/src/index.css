@@ -4980,3 +4980,21 @@ code {
   color: #b42318;
   border: 1px solid #fecdca;
 }
+
+.job-apply-screenshot {
+  margin-top: 16px;
+}
+
+.job-apply-screenshot h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.job-apply-screenshot-img {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  border-radius: 8px;
+  border: 1px solid #e4e7ec;
+  background: #f9fafb;
+}

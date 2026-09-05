@@ -231,6 +231,25 @@ def _register_job_apply_routes() -> None:
     if pkg_src is not None:
         uploads_dir = pkg_src.parent / "data" / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
+    screenshots_dir = uploads_dir.parent / "screenshots"
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    def _publish_screenshot(payload: dict) -> dict:
+        """Copy a local screenshot into a web-served folder and add screenshot_url."""
+        raw = payload.get("screenshot_path")
+        if not raw:
+            return payload
+        src = Path(str(raw))
+        if not src.is_file():
+            return payload
+        dest = screenshots_dir / src.name
+        try:
+            if src.resolve() != dest.resolve():
+                shutil.copy2(src, dest)
+            payload["screenshot_url"] = f"/api/job-apply/screenshots/{dest.name}"
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] job-apply screenshot publish failed: {exc}")
+        return payload
 
     @app.get("/api/job-apply/health")
     def job_apply_health() -> dict[str, str]:
@@ -241,6 +260,14 @@ def _register_job_apply_routes() -> None:
             "package_found": "true" if pkg is not None else "false",
             "package_path": str(pkg) if pkg is not None else "",
         }
+
+    @app.get("/api/job-apply/screenshots/{filename}")
+    def job_apply_screenshot(filename: str):
+        safe = Path(filename).name
+        path = screenshots_dir / safe
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="screenshot not found")
+        return FileResponse(path, media_type="image/png", filename=safe)
 
     @app.post("/api/job-apply/apply")
     @app.post("/api/job-apply/apply/")
@@ -322,7 +349,8 @@ def _register_job_apply_routes() -> None:
                 },
             )
         status_code = 200 if result.success else 422
-        return JSONResponse(status_code=status_code, content=result.to_dict())
+        payload = _publish_screenshot(result.to_dict())
+        return JSONResponse(status_code=status_code, content=payload)
 
 
 _register_job_apply_routes()

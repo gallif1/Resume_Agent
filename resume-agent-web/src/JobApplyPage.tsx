@@ -322,6 +322,18 @@ export default function JobApplyPage() {
                 URL: {result.final_url}
               </p>
             )}
+            {result.screenshot_url && (
+              <div className="job-apply-screenshot">
+                <h3>צילום מסך של הפרטים שמולאו</h3>
+                <a href={result.screenshot_url} target="_blank" rel="noreferrer">
+                  <img
+                    src={result.screenshot_url}
+                    alt="צילום מסך של טופס ההגשה אחרי מילוי"
+                    className="job-apply-screenshot-img"
+                  />
+                </a>
+              </div>
+            )}
           </section>
         )}
       </main>
