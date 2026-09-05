@@ -49,6 +49,7 @@ class ApplyResult:
     skipped_fields: list[str] = field(default_factory=list)
     confirmation_text: str | None = None
     screenshot_path: str | None = None
+    screenshot_url: str | None = None
     failure_category: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -63,5 +64,6 @@ class ApplyResult:
             "skipped_fields": self.skipped_fields,
             "confirmation_text": self.confirmation_text,
             "screenshot_path": self.screenshot_path,
+            "screenshot_url": self.screenshot_url,
             "failure_category": self.failure_category,
         }

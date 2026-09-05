@@ -11,6 +11,8 @@ export type JobApplyResult = {
   skipped_fields?: string[];
   confirmation_text?: string | null;
   screenshot_path?: string | null;
+  /** Browser-reachable URL for the filled-form screenshot (same origin). */
+  screenshot_url?: string | null;
   failure_category?: string | null;
 };
 

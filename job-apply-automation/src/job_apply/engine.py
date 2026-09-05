@@ -14,6 +14,7 @@ from job_apply.browser import (
     resolve_headless,
 )
 from job_apply.form_filler import (
+    accept_consent_checkboxes,
     click_submit,
     detect_captcha,
     detect_login_required,
@@ -210,6 +211,7 @@ def _run_apply_session(
 
     filled, skipped = fill_mapped_fields(form, profile)
     cv_ok = upload_cv_file(form, str(cv_path))
+    consent_checked = accept_consent_checkboxes(form)
 
     if not filled and not cv_ok:
         shot = _screenshot(active, "fill_failed")
@@ -240,47 +242,55 @@ def _run_apply_session(
             failure_category="required_field_missing",
         )
 
+    # Always capture the filled form so the UI can show what was entered.
+    filled_shot = _screenshot(active, "filled")
+    filled_fields = filled + (["cv_file"] if cv_ok else []) + (
+        ["consent"] if consent_checked else []
+    )
+
     if request.dry_run:
-        shot = _screenshot(active, "dry_run")
         return ApplyResult(
             success=True,
             status="filled",
             message="הטופס מולא (מצב ניסיון — ללא שליחה)",
             job_url=job_url,
             final_url=active.url,
-            filled_fields=filled + (["cv_file"] if cv_ok else []),
+            filled_fields=filled_fields,
             skipped_fields=skipped,
-            screenshot_path=shot,
+            screenshot_path=filled_shot,
         )
 
     if not click_submit(form):
-        shot = _screenshot(active, "no_submit")
+        shot = _screenshot(active, "no_submit") or filled_shot
         return ApplyResult(
             success=False,
             status="failed",
-            message="לא נמצא או לא נלחץ כפתור Submit",
+            message=(
+                "הטופס מולא, אבל כפתור השליחה לא נמצא או נשאר כבוי "
+                "(לעיתים חסר סימון מדיניות פרטיות / שדה חובה)."
+            ),
             job_url=job_url,
             final_url=active.url,
-            filled_fields=filled + (["cv_file"] if cv_ok else []),
+            filled_fields=filled_fields,
             skipped_fields=skipped,
             screenshot_path=shot,
-            failure_category="application_form_not_found",
+            failure_category="submit_failed",
         )
 
     active.wait_for_timeout(2500)
 
     if detect_captcha(form) or detect_captcha(active):
-        shot = _screenshot(active, "captcha_after_submit")
+        shot = _screenshot(active, "captcha_after_submit") or filled_shot
         return ApplyResult(
             success=False,
             status="requires_user_action",
             message=(
-                "הטופס מולא, אבל Comeet דורש CAPTCHA לפני שליחה. "
-                "הפעילו «הצג דפדפן בלייב», סמנו את האימות ידנית, ושלחו."
+                "הטופס מולא, אבל נדרש CAPTCHA לפני שליחה. "
+                "הפעילו «הצג דפדפן בלייב» (במחשב עם מסך), סמנו את האימות ידנית, ושלחו."
             ),
             job_url=job_url,
             final_url=active.url,
-            filled_fields=filled + (["cv_file"] if cv_ok else []),
+            filled_fields=filled_fields,
             skipped_fields=skipped,
             screenshot_path=shot,
             failure_category="captcha_detected",
@@ -289,7 +299,7 @@ def _run_apply_session(
     ok, snippet = detect_submission_success(form)
     if not ok:
         ok, snippet = detect_submission_success(active)
-    shot = _screenshot(active, "submitted" if ok else "submit_unclear")
+    shot = _screenshot(active, "submitted" if ok else "submit_unclear") or filled_shot
     if ok:
         return ApplyResult(
             success=True,
@@ -297,7 +307,7 @@ def _run_apply_session(
             message="המועמדות נשלחה",
             job_url=job_url,
             final_url=active.url,
-            filled_fields=filled + (["cv_file"] if cv_ok else []),
+            filled_fields=filled_fields,
             skipped_fields=skipped,
             confirmation_text=snippet,
             screenshot_path=shot,
@@ -309,7 +319,7 @@ def _run_apply_session(
         message="נלחץ Submit; לא זוהה טקסט אישור — בדקו את צילום המסך ידנית",
         job_url=job_url,
         final_url=active.url,
-        filled_fields=filled + (["cv_file"] if cv_ok else []),
+        filled_fields=filled_fields,
         skipped_fields=skipped,
         screenshot_path=shot,
         failure_category="submission_confirmation_not_found",

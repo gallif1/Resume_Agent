@@ -24,6 +24,7 @@ APPLY_TEXTS = [
     "easy apply",
     "הגש מועמדות",
     "הגשת מועמדות",
+    "שלח מועמדות",
     "שלח קורות חיים",
     "הגש קו\"ח",
     "הגש קוח",
@@ -35,12 +36,20 @@ SUBMIT_TEXTS = [
     "send application",
     "apply for this job",
     "apply",
+    "הגש מועמדות",
+    "הגשת מועמדות",
+    "שלח מועמדות",
     "שליחה",
     "שלח",
     "הגשה",
     "אישור ושליחה",
     "שלח קורות חיים",
 ]
+
+CONSENT_TEXT = re.compile(
+    r"פרטיות|privacy|terms|תקנון|מאשר|הסכמ|מדיניות|קראתי|agree|consent|עיון",
+    re.I,
+)
 
 SUCCESS_MARKERS = (
     "thank you for applying",
@@ -279,16 +288,98 @@ def click_apply_entry(page: Page) -> bool:
     return click_by_texts(page, APPLY_TEXTS)
 
 
+def accept_consent_checkboxes(target: FormTarget) -> int:
+    """Check privacy/terms checkboxes that often gate the submit button (e.g. Elbit)."""
+    checked = 0
+    try:
+        boxes = target.locator("input[type='checkbox']")
+        count = min(boxes.count(), 12)
+    except Exception:
+        return 0
+
+    for i in range(count):
+        box = boxes.nth(i)
+        try:
+            if not box.is_visible():
+                continue
+            if box.is_checked():
+                continue
+            label_text = ""
+            try:
+                label_text = find_label_for(target, box) or ""
+            except Exception:
+                pass
+            nearby = ""
+            try:
+                nearby = box.evaluate(
+                    """el => (el.closest('label, .MuiFormControlLabel-root, div')
+                      || el.parentElement)?.innerText || ''"""
+                ) or ""
+            except Exception:
+                pass
+            blob = f"{label_text} {nearby}"
+            # Prefer consent-looking boxes; if only one unchecked required-looking box, check it.
+            if CONSENT_TEXT.search(blob) or count <= 2:
+                box.check(force=True)
+                checked += 1
+                _host_page(target).wait_for_timeout(200)
+        except Exception:
+            continue
+    return checked
+
+
+def _click_when_enabled(locator: Locator, host: Page, *, timeout_ms: int = 8000) -> bool:
+    try:
+        if not locator.count():
+            return False
+        locator.wait_for(state="visible", timeout=min(timeout_ms, 3000))
+        # Elbit keeps submit disabled until name/phone/email + privacy are valid.
+        deadline = time.monotonic() + (timeout_ms / 1000.0)
+        while time.monotonic() < deadline:
+            try:
+                if locator.is_enabled():
+                    locator.click()
+                    host.wait_for_timeout(1500)
+                    return True
+            except Exception:
+                pass
+            host.wait_for_timeout(200)
+        # Last resort: some boards leave aria-disabled quirks; try force click.
+        try:
+            locator.click(force=True, timeout=2000)
+            host.wait_for_timeout(1500)
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 def click_submit(target: FormTarget) -> bool:
-    if click_by_texts(target, SUBMIT_TEXTS, roles=("button",)):
-        return True
+    host = _host_page(target)
+    for text in SUBMIT_TEXTS:
+        try:
+            loc = target.get_by_role(
+                "button", name=re.compile(re.escape(text), re.I)
+            ).first
+            if _click_when_enabled(loc, host):
+                return True
+        except Exception:
+            pass
+        try:
+            loc = target.locator(
+                f"button:visible, input[type='submit']:visible, [role='button']:visible"
+            ).filter(has_text=re.compile(re.escape(text), re.I)).first
+            if _click_when_enabled(loc, host):
+                return True
+        except Exception:
+            pass
+
     try:
         loc = target.locator(
             "button[type='submit']:visible, input[type='submit']:visible"
         ).first
-        if loc.count() and loc.is_visible():
-            loc.click()
-            _host_page(target).wait_for_timeout(2000)
+        if _click_when_enabled(loc, host):
             return True
     except Exception:
         pass
