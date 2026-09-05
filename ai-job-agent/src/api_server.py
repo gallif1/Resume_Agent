@@ -174,6 +174,26 @@ app.add_middleware(
 app.include_router(cv_tailor_router)
 
 
+def _mount_job_apply_automation() -> None:
+    """Mount the standalone job-apply package under /api/job-apply (optional)."""
+    job_apply_src = PROJECT_ROOT.parent / "job-apply-automation" / "src"
+    if not job_apply_src.is_dir():
+        return
+    path_str = str(job_apply_src)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
+    try:
+        from job_apply.api import app as job_apply_app  # type: ignore[import-not-found]
+
+        app.mount("/api/job-apply", job_apply_app)
+    except Exception as exc:  # noqa: BLE001
+        # Keep the main API up even if the optional package is missing/broken.
+        print(f"[warn] job-apply automation not mounted: {exc}")
+
+
+_mount_job_apply_automation()
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

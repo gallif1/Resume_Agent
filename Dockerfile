@@ -27,7 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install chromium
 
 COPY ai-job-agent/ ./
+COPY job-apply-automation/ /app/job-apply-automation/
 COPY --from=frontend /web/dist /app/resume-agent-web/dist
+ENV PYTHONPATH=/app/job-apply-automation/src:${PYTHONPATH}
 
 # Seed files to copy onto an empty persistent volume on first boot.
 # (Mounting a volume hides image contents under data/.)
