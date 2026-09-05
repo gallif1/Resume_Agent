@@ -305,7 +305,22 @@ def _register_job_apply_routes() -> None:
             dry_run=_parse_form_bool(dry_run, False),
             headless=_parse_form_bool(headless, True),
         )
-        result = await asyncio.to_thread(apply_to_job, request)
+        try:
+            result = await asyncio.to_thread(apply_to_job, request)
+        except Exception as exc:  # noqa: BLE001 — never return a bare/HTML 500 to the SPA
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "status": "failed",
+                    "message": (
+                        "שגיאה פנימית בהרצת מודול ההגשה האוטומטית. "
+                        "אם «הצג דפדפן בלייב» מסומן — בטלו אותו בשרת ללא מסך, או הריצו מקומית. "
+                        f"פרטים: {exc}"
+                    ),
+                    "failure_category": "server_error",
+                },
+            )
         status_code = 200 if result.success else 422
         return JSONResponse(status_code=status_code, content=result.to_dict())
 

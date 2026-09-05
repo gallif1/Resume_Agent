@@ -36,6 +36,46 @@ DATA_DIR = PACKAGE_ROOT / "data"
 BROWSER_PROFILE_DIR = DATA_DIR / "browser_profile"
 
 
+def display_available() -> bool:
+    """Return True when a headed Chromium window can open on this host."""
+    import os
+    import sys
+
+    if os.environ.get("JOB_APPLY_FORCE_HEADLESS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    if os.environ.get("JOB_APPLY_FORCE_HEADED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+    if sys.platform == "darwin" or sys.platform.startswith("win"):
+        return True
+    # Linux without DISPLAY/Wayland cannot open a headed browser (EC2/Docker).
+    if Path("/.dockerenv").exists():
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def resolve_headless(requested_headless: bool) -> tuple[bool, str | None]:
+    """Return (effective_headless, note). Force headless when no display exists."""
+    if requested_headless:
+        return True, None
+    if display_available():
+        return False, None
+    return (
+        True,
+        "אין תצוגה גרפית בשרת — הורצה במצב headless "
+        "(בטלו «הצג דפדפן בלייב» או הריצו את השרת מקומית עם מסך).",
+    )
+
+
 def create_browser_context(
     playwright: Playwright,
     *,
@@ -43,10 +83,14 @@ def create_browser_context(
     user_data_dir: str | Path | None = None,
     slow_mo_ms: int | None = None,
 ) -> tuple[BrowserContext, Page]:
+    # Never attempt headed Chromium without a display (crashes the API worker).
+    effective_headless, _note = resolve_headless(headless)
     # When showing the browser live, slow actions slightly so the user can follow.
-    effective_slow_mo = slow_mo_ms if slow_mo_ms is not None else (150 if not headless else 0)
+    effective_slow_mo = (
+        slow_mo_ms if slow_mo_ms is not None else (150 if not effective_headless else 0)
+    )
     launch_kwargs: dict[str, Any] = {
-        "headless": headless,
+        "headless": effective_headless,
         "slow_mo": effective_slow_mo,
         "args": list(STEALTH_LAUNCH_ARGS),
         "ignore_default_args": ["--enable-automation"],

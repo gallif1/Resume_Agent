@@ -23,7 +23,7 @@ export default function JobApplyPage() {
   const [phone, setPhone] = useState("");
   const [cvFile, setCvFile] = useState<File | null>(null);
   const [dryRun, setDryRun] = useState(false);
-  const [showBrowser, setShowBrowser] = useState(true);
+  const [showBrowser, setShowBrowser] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -262,6 +262,7 @@ export default function JobApplyPage() {
               onChange={(e) => setShowBrowser(e.target.checked)}
             />
             הצג דפדפן בלייב (Playwright) — חלון Chromium נפתח על המחשב שמריץ את השרת
+            (בשרת מרוחק ללא מסך זה עלול לגרום לשגיאה; השאירו כבוי או הריצו מקומית)
           </label>
 
           <label className="job-apply-dry-run" htmlFor="dry-run">
