@@ -1,4 +1,4 @@
-/** Client for the standalone job-apply automation (mounted at /api/job-apply). */
+/** Client for the standalone job-apply automation (/api/job-apply). */
 
 export type JobApplyResult = {
   success: boolean;
@@ -22,6 +22,8 @@ export type JobApplyPayload = {
   phone: string;
   cv: File;
   dryRun?: boolean;
+  /** When true, open a visible Chromium window so you can watch Playwright live. */
+  showBrowser?: boolean;
 };
 
 export async function submitJobApplication(
@@ -35,7 +37,8 @@ export async function submitJobApplication(
   body.append("phone", payload.phone.trim());
   body.append("cv", payload.cv, payload.cv.name);
   body.append("dry_run", payload.dryRun ? "true" : "false");
-  body.append("headless", "true");
+  // headless=false → live visible browser
+  body.append("headless", payload.showBrowser === false ? "true" : "false");
 
   const res = await fetch("/api/job-apply/apply", {
     method: "POST",
