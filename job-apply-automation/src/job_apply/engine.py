@@ -14,6 +14,7 @@ from job_apply.form_filler import (
     detect_login_required,
     detect_submission_success,
     fill_mapped_fields,
+    find_form_target,
     open_application_page,
     page_has_application_form,
     upload_cv_file,
@@ -40,7 +41,7 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
         return ApplyResult(
             success=False,
             status="failed",
-            message=f"CV file not found: {cv_path}",
+            message=f"קובץ קורות החיים לא נמצא: {cv_path}",
             job_url=request.job_url,
             failure_category="cv_missing",
         )
@@ -50,7 +51,7 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
         return ApplyResult(
             success=False,
             status="failed",
-            message="Invalid job URL",
+            message="קישור משרה לא תקין",
             job_url=job_url,
             failure_category="invalid_url",
         )
@@ -65,14 +66,19 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
         )
         try:
             page.goto(job_url, wait_until="domcontentloaded", timeout=request.timeout_ms)
-            page.wait_for_timeout(1500)
+            # Comeet / Angular boards need a moment to hydrate.
+            page.wait_for_timeout(2500)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
 
             if detect_captcha(page):
                 shot = _screenshot(page, "captcha")
                 return ApplyResult(
                     success=False,
                     status="requires_user_action",
-                    message="CAPTCHA detected — complete it manually and retry",
+                    message="זוהה CAPTCHA — השלימו ידנית בחלון הדפדפן ונסו שוב",
                     job_url=job_url,
                     final_url=page.url,
                     screenshot_path=shot,
@@ -84,7 +90,7 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 return ApplyResult(
                     success=False,
                     status="requires_user_action",
-                    message="Login required — sign in manually (browser profile is saved) and retry",
+                    message="נדרשת התחברות — התחברו ידנית (פרופיל הדפדפן נשמר) ונסו שוב",
                     job_url=job_url,
                     final_url=page.url,
                     screenshot_path=shot,
@@ -92,12 +98,14 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 )
 
             active = open_application_page(page)
-            if detect_captcha(active):
+            form = find_form_target(active, wait_ms=12000)
+
+            if detect_captcha(form) or detect_captcha(active):
                 shot = _screenshot(active, "captcha")
                 return ApplyResult(
                     success=False,
                     status="requires_user_action",
-                    message="CAPTCHA detected after opening apply form",
+                    message="זוהה CAPTCHA אחרי פתיחת טופס ההגשה — השלימו ידנית ונסו שוב",
                     job_url=job_url,
                     final_url=active.url,
                     screenshot_path=shot,
@@ -109,7 +117,7 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 return ApplyResult(
                     success=False,
                     status="requires_user_action",
-                    message="Login required to open the application form",
+                    message="נדרשת התחברות כדי לפתוח את טופס ההגשה",
                     job_url=job_url,
                     final_url=active.url,
                     screenshot_path=shot,
@@ -121,22 +129,26 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 return ApplyResult(
                     success=False,
                     status="failed",
-                    message="No application form found on this page",
+                    message=(
+                        "לא נמצא טופס הגשה בעמוד. "
+                        "ב־Comeet לוחצים Apply ואז הטופס נטען בתוך iframe — "
+                        "אם הכפתור לא נמצא, פתחו עם הצגת דפדפן בלייב."
+                    ),
                     job_url=job_url,
                     final_url=active.url,
                     screenshot_path=shot,
                     failure_category="application_form_not_found",
                 )
 
-            filled, skipped = fill_mapped_fields(active, profile)
-            cv_ok = upload_cv_file(active, str(cv_path))
+            filled, skipped = fill_mapped_fields(form, profile)
+            cv_ok = upload_cv_file(form, str(cv_path))
 
             if not filled and not cv_ok:
                 shot = _screenshot(active, "fill_failed")
                 return ApplyResult(
                     success=False,
                     status="failed",
-                    message="Could not fill any fields or upload CV",
+                    message="לא הצלחנו למלא שדות או להעלות קורות חיים",
                     job_url=job_url,
                     final_url=active.url,
                     filled_fields=filled,
@@ -145,13 +157,13 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                     failure_category="application_form_not_found",
                 )
 
-            missing = validate_required(active)
+            missing = validate_required(form)
             if missing:
                 shot = _screenshot(active, "validation")
                 return ApplyResult(
                     success=False,
                     status="failed",
-                    message=f"Required fields still empty: {', '.join(missing)}",
+                    message=f"שדות חובה עדיין ריקים: {', '.join(missing)}",
                     job_url=job_url,
                     final_url=active.url,
                     filled_fields=filled,
@@ -165,7 +177,7 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 return ApplyResult(
                     success=True,
                     status="filled",
-                    message="Form filled (dry-run — submit skipped)",
+                    message="הטופס מולא (מצב ניסיון — ללא שליחה)",
                     job_url=job_url,
                     final_url=active.url,
                     filled_fields=filled + (["cv_file"] if cv_ok else []),
@@ -173,12 +185,12 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                     screenshot_path=shot,
                 )
 
-            if not click_submit(active):
+            if not click_submit(form):
                 shot = _screenshot(active, "no_submit")
                 return ApplyResult(
                     success=False,
                     status="failed",
-                    message="Could not find or click the Submit button",
+                    message="לא נמצא או לא נלחץ כפתור Submit",
                     job_url=job_url,
                     final_url=active.url,
                     filled_fields=filled + (["cv_file"] if cv_ok else []),
@@ -188,13 +200,33 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 )
 
             active.wait_for_timeout(2500)
-            ok, snippet = detect_submission_success(active)
+
+            if detect_captcha(form) or detect_captcha(active):
+                shot = _screenshot(active, "captcha_after_submit")
+                return ApplyResult(
+                    success=False,
+                    status="requires_user_action",
+                    message=(
+                        "הטופס מולא, אבל Comeet דורש CAPTCHA לפני שליחה. "
+                        "הפעילו «הצג דפדפן בלייב», סמנו את האימות ידנית, ושלחו."
+                    ),
+                    job_url=job_url,
+                    final_url=active.url,
+                    filled_fields=filled + (["cv_file"] if cv_ok else []),
+                    skipped_fields=skipped,
+                    screenshot_path=shot,
+                    failure_category="captcha_detected",
+                )
+
+            ok, snippet = detect_submission_success(form)
+            if not ok:
+                ok, snippet = detect_submission_success(active)
             shot = _screenshot(active, "submitted" if ok else "submit_unclear")
             if ok:
                 return ApplyResult(
                     success=True,
                     status="submitted",
-                    message="Application submitted",
+                    message="המועמדות נשלחה",
                     job_url=job_url,
                     final_url=active.url,
                     filled_fields=filled + (["cv_file"] if cv_ok else []),
@@ -207,8 +239,7 @@ def apply_to_job(request: ApplyRequest) -> ApplyResult:
                 success=True,
                 status="submitted",
                 message=(
-                    "Submit clicked; confirmation text not detected — "
-                    "verify the page screenshot manually"
+                    "נלחץ Submit; לא זוהה טקסט אישור — בדקו את צילום המסך ידנית"
                 ),
                 job_url=job_url,
                 final_url=active.url,

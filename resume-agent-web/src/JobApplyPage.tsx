@@ -95,7 +95,8 @@ export default function JobApplyPage() {
       });
       setResult(data);
       if (!data.success) {
-        setError(data.message || "ההגשה נכשלה");
+        const category = data.failure_category ? ` [${data.failure_category}]` : "";
+        setError((data.message || "ההגשה נכשלה") + category);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "שגיאה לא צפויה");

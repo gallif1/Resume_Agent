@@ -67,7 +67,29 @@ def test_apply_dry_run_skips_submit():
     )
     assert result.success is True
     assert result.status == "filled"
-    assert "dry-run" in result.message.lower()
+    assert "ניסיון" in result.message or "dry" in result.message.lower()
+
+
+def test_comeet_style_iframe_form_submits():
+    result = apply_to_job(
+        ApplyRequest(
+            job_url=_file_url("comeet_iframe_apply.html"),
+            cv_path=CV_PDF,
+            applicant=Applicant(
+                first_name="Gal",
+                last_name="Lifshitz",
+                email="gal@example.com",
+                phone="0523527293",
+            ),
+            dry_run=False,
+            headless=True,
+        )
+    )
+    assert result.success is True
+    assert result.status == "submitted"
+    assert "first_name" in result.filled_fields
+    assert "email" in result.filled_fields
+    assert "cv_file" in result.filled_fields
 
 
 def test_hebrew_apply_entry_then_submit():
