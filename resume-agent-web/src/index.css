@@ -4928,3 +4928,55 @@ code {
   align-items: center;
   gap: 8px;
 }
+
+/* ── Auto Apply (/job-apply) ── */
+.job-apply-main .job-apply-input {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #d0d5dd);
+  border-radius: var(--radius-sm, 8px);
+  font: inherit;
+  background: var(--surface, #fff);
+  color: var(--text, #101828);
+  box-sizing: border-box;
+}
+
+.job-apply-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .job-apply-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.job-apply-dry-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 8px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.job-apply-submit {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-apply-main .error-banner {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm, 8px);
+  background: #fef3f2;
+  color: #b42318;
+  border: 1px solid #fecdca;
+}

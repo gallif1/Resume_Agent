@@ -6,10 +6,10 @@
 
 ```
 Resume_Agent/
-  ai-job-agent/      # Backend — Python, FastAPI, Playwright, matching pipeline
-  resume-agent-web/  # Frontend — React + TypeScript + Vite
+  ai-job-agent/           # Backend — Python, FastAPI, Playwright, matching pipeline
+  resume-agent-web/       # Frontend — React + TypeScript + Vite
+  job-apply-automation/   # Standalone apply bot — URL + CV + contact → fill & submit
 ```
-
 ## הרצה מהירה
 
 > **אין גישה לטרמינל?** (למשל מהפלאפון)  
@@ -60,3 +60,4 @@ npm run dev:public
 
 - [ai-job-agent/README.md](ai-job-agent/README.md) — פייפליין איסוף משרות, ניתוח קו"ח והגשה
 - [resume-agent-web/README.md](resume-agent-web/README.md) — ממשק המשתמש בעברית
+- [job-apply-automation/README.md](job-apply-automation/README.md) — אוטומציית הגשה נפרדת (URL + קו״ח + פרטים → Submit). בממשק: כפתור **Auto Apply** ליד Create Tailored CV → `/job-apply`

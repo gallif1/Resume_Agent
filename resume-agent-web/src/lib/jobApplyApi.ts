@@ -1,0 +1,61 @@
+/** Client for the standalone job-apply automation (mounted at /api/job-apply). */
+
+export type JobApplyResult = {
+  success: boolean;
+  status: string;
+  message: string;
+  provider?: string;
+  job_url?: string;
+  final_url?: string | null;
+  filled_fields?: string[];
+  skipped_fields?: string[];
+  confirmation_text?: string | null;
+  screenshot_path?: string | null;
+  failure_category?: string | null;
+};
+
+export type JobApplyPayload = {
+  jobUrl: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  cv: File;
+  dryRun?: boolean;
+};
+
+export async function submitJobApplication(
+  payload: JobApplyPayload
+): Promise<JobApplyResult> {
+  const body = new FormData();
+  body.append("job_url", payload.jobUrl.trim());
+  body.append("first_name", payload.firstName.trim());
+  body.append("last_name", payload.lastName.trim());
+  body.append("email", payload.email.trim());
+  body.append("phone", payload.phone.trim());
+  body.append("cv", payload.cv, payload.cv.name);
+  body.append("dry_run", payload.dryRun ? "true" : "false");
+  body.append("headless", "true");
+
+  const res = await fetch("/api/job-apply/apply", {
+    method: "POST",
+    body,
+  });
+
+  let data: JobApplyResult;
+  try {
+    data = (await res.json()) as JobApplyResult;
+  } catch {
+    throw new Error(
+      res.ok
+        ? "השרת החזיר תשובה לא תקינה"
+        : `שגיאת שרת (${res.status}) — ודא שמודול ההגשה האוטומטית זמין`
+    );
+  }
+
+  if (!res.ok && !data?.message) {
+    throw new Error(data?.message || `ההגשה נכשלה (${res.status})`);
+  }
+
+  return data;
+}

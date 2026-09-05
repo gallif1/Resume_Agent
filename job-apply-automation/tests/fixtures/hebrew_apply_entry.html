@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head><meta charset="UTF-8"><title>הגשת מועמדות</title></head>
+<body>
+  <h1>מפתח/ת תוכנה</h1>
+  <p><button id="open-apply">הגש מועמדות</button></p>
+  <form id="apply-form" hidden
+        onsubmit="document.getElementById('ok').hidden=false; return false;">
+    <label for="fname">שם פרטי</label>
+    <input id="fname" name="fname" type="text" required />
+
+    <label for="lname">שם משפחה</label>
+    <input id="lname" name="lname" type="text" required />
+
+    <label for="mail">אימייל</label>
+    <input id="mail" name="mail" type="email" required />
+
+    <label for="tel">טלפון</label>
+    <input id="tel" name="tel" type="tel" required />
+
+    <label for="cv">קורות חיים</label>
+    <input id="cv" name="cv" type="file" required />
+
+    <button type="submit">שליחה</button>
+  </form>
+  <div id="ok" hidden><p>המועמדות נשלחה בהצלחה</p></div>
+  <script>
+    document.getElementById('open-apply').addEventListener('click', function () {
+      document.getElementById('apply-form').hidden = false;
+    });
+  </script>
+</body>
+</html>

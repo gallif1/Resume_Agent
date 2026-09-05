@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+logs/*.png
+logs/*.json
+!logs/.gitkeep
+data/uploads/
+data/browser_profile/
+*.pdf
+!tests/fixtures/**
