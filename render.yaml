@@ -26,6 +26,8 @@ services:
         - .github/**
         - ai-job-agent/**
         - resume-agent-web/**
+        - job-apply-automation/**
+        - scripts/**
     envVars:
       - key: API_HOST
         value: 0.0.0.0

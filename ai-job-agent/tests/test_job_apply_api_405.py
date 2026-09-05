@@ -22,6 +22,45 @@ def test_job_apply_health_registered():
     assert body.get("package_found") in {"true", "false"}
 
 
+def test_job_apply_package_found_in_repo_layout():
+    """In the monorepo checkout, sibling job-apply-automation must resolve."""
+    pkg = api_server._ensure_job_apply_on_path()
+    assert pkg is not None
+    assert (pkg / "job_apply").is_dir()
+    client = TestClient(api_server.app)
+    body = client.get("/api/job-apply/health").json()
+    assert body["package_found"] == "true"
+    assert body.get("package_path")
+
+
+def test_job_apply_finds_vendored_src_layout(tmp_path: Path, monkeypatch):
+    """EC2 --no-build inject vendors job_apply under ai-job-agent/src/job_apply."""
+    vendored = tmp_path / "src" / "job_apply"
+    vendored.mkdir(parents=True)
+    (vendored / "__init__.py").write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setattr(api_server, "PROJECT_ROOT", tmp_path)
+    # Hide the real monorepo sibling + docker paths for this unit test.
+    real_is_dir = Path.is_dir
+
+    def fake_is_dir(self: Path) -> bool:  # noqa: ANN001
+        text = str(self)
+        if "job-apply-automation" in text or text.startswith("/app/"):
+            return False
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+    # Drop any previously imported job_apply so import-fallback does not cheat.
+    sys_modules = __import__("sys").modules
+    sys_modules.pop("job_apply", None)
+    for key in list(sys_modules):
+        if key.startswith("job_apply."):
+            sys_modules.pop(key, None)
+
+    pkg = api_server._ensure_job_apply_on_path()
+    assert pkg == tmp_path / "src"
+    assert (pkg / "job_apply").is_dir()
+
+
 def test_job_apply_apply_not_405(tmp_path: Path):
     """POST must hit the apply handler (not SPA) — never bare 405."""
     client = TestClient(api_server.app)
