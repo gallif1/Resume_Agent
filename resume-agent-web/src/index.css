@@ -328,6 +328,55 @@ body {
   margin: 0;
 }
 
+.trading-entry-btn {
+  border-color: rgba(15, 118, 110, 0.35) !important;
+  color: #0f766e !important;
+  background: rgba(15, 118, 110, 0.08) !important;
+  font-weight: 600;
+}
+
+.trading-entry-btn:hover {
+  background: rgba(15, 118, 110, 0.14) !important;
+}
+
+.trading-entry-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-top: 1.15rem;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(15, 118, 110, 0.25);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.08), rgba(37, 99, 235, 0.06));
+  text-decoration: none;
+  color: var(--text);
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.trading-entry-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(15, 118, 110, 0.45);
+  box-shadow: var(--shadow-sm);
+}
+
+.trading-entry-card-kicker {
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0f766e;
+  font-weight: 600;
+}
+
+.trading-entry-card strong {
+  font-size: 1.02rem;
+}
+
+.trading-entry-card-hint {
+  font-size: 0.84rem;
+  color: var(--text-muted);
+}
+
 /* Tabs */
 .tabs {
   display: flex;

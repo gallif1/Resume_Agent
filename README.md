@@ -9,7 +9,9 @@ Resume_Agent/
   ai-job-agent/           # Backend — Python, FastAPI, Playwright, matching pipeline
   resume-agent-web/       # Frontend — React + TypeScript + Vite
   job-apply-automation/   # Standalone apply bot — URL + CV + contact → fill & submit
+  trading/                # Isolated AI Trading System (temporary co-host under /trading)
 ```
+
 ## הרצה מהירה
 
 > **אין גישה לטרמינל?** (למשל מהפלאפון)  
@@ -36,6 +38,18 @@ cd resume-agent-web
 npm install
 npm run dev   # http://localhost:5173
 ```
+
+### AI Trading System (זמני תחת אותו שרת)
+
+המערכת זמינה ב־`/trading` על אותה כתובת ציבורית של Resume Agent.
+הקוד מבודד תחת `trading/` ומיועד לחילוץ לריפו נפרד בהמשך.
+
+```bash
+cd trading/frontend && npm install && npm run build
+# אחר כך הרץ את ה-Backend כרגיל — הוא מגיש את הדשבורד ב-/trading
+```
+
+תיעוד: [trading/README.md](trading/README.md)
 
 ### שיתוף לפלאפון (קישור ציבורי זמני)
 

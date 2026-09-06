@@ -27,6 +27,7 @@ services:
         - ai-job-agent/**
         - resume-agent-web/**
         - job-apply-automation/**
+        - trading/**
         - scripts/**
     envVars:
       - key: API_HOST
@@ -37,6 +38,10 @@ services:
         value: true
       - key: PYTHONUNBUFFERED
         value: "1"
+      - key: TRADING_BASE_PATH
+        value: /trading
+      - key: TRADING_DATA_DIR
+        value: /app/trading/data
       - key: OPENAI_API_KEY
         sync: false
       - key: DRUSHIM_EMAIL

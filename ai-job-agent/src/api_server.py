@@ -216,6 +216,81 @@ def _parse_form_bool(value: str | bool | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _ensure_trading_on_path() -> Path | None:
+    """Add the isolated trading package root to sys.path. Returns that root or None.
+
+    Layouts supported (mirrors job-apply inject patterns):
+    - <repo>/trading/backend
+    - /app/trading/backend                         (Docker image / sidecar inject)
+    - <ai-job-agent>/src/trading_system            (vendored into backend inject)
+    """
+    candidates = [
+        PROJECT_ROOT.parent / "trading" / "backend",
+        Path("/app/trading/backend"),
+        PROJECT_ROOT / "src",  # vendored trading_system next to api_server
+    ]
+    for root in candidates:
+        if (root / "trading_system").is_dir():
+            path_str = str(root)
+            if path_str not in sys.path:
+                sys.path.insert(0, path_str)
+            return root
+    try:
+        import trading_system as _trading_pkg  # type: ignore[import-not-found]
+
+        pkg_file = getattr(_trading_pkg, "__file__", None)
+        if pkg_file:
+            return Path(pkg_file).resolve().parent.parent
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _register_trading_routes() -> None:
+    """Mount the isolated AI Trading System under /trading without Resume Agent coupling."""
+    pkg = _ensure_trading_on_path()
+    if pkg is None:
+        @app.get("/trading/api/health")
+        def trading_missing() -> dict[str, str]:
+            return {
+                "ok": "false",
+                "status": "degraded",
+                "service": "ai-trading-system",
+                "package_found": "false",
+            }
+
+        return
+
+    try:
+        from trading_system.api import (  # type: ignore[import-not-found]
+            create_trading_router,
+            mount_trading_frontend,
+        )
+        from trading_system.config import PUBLIC_BASE_PATH  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] trading_system import failed: {exc}")
+
+        @app.get("/trading/api/health")
+        def trading_import_failed() -> dict[str, str]:
+            return {
+                "ok": "false",
+                "status": "degraded",
+                "service": "ai-trading-system",
+                "package_found": "true",
+                "error": str(exc)[:200],
+            }
+
+        return
+
+    base = PUBLIC_BASE_PATH or "/trading"
+    app.include_router(create_trading_router(), prefix=base)
+    mounted = mount_trading_frontend(app, base_path=base)
+    print(
+        f"[info] AI Trading System mounted at {base} "
+        f"(frontend={'yes' if mounted else 'no — build trading/frontend dist'})"
+    )
+
+
 def _register_job_apply_routes() -> None:
     """Always register /api/job-apply routes (lazy-import the engine inside handlers).
 
@@ -354,6 +429,7 @@ def _register_job_apply_routes() -> None:
 
 
 _register_job_apply_routes()
+_register_trading_routes()
 
 
 def _utc_now() -> str:
@@ -3483,7 +3559,8 @@ if FRONTEND_DIST.is_dir():
         if response.status_code != 404 or request.method != "GET":
             return response
         path = request.url.path or "/"
-        if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/")):
+        if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading")):
+            # /trading is owned by the isolated AI Trading System (API + SPA).
             return response
         accept = request.headers.get("accept", "")
         if "text/html" not in accept and "*/*" not in accept:

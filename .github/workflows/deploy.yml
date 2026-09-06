@@ -63,8 +63,39 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
+  build-trading-frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install and build trading UI
+        working-directory: trading/frontend
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+          test -f dist/index.html
+          echo "Trading frontend dist ready:"
+          du -sh dist
+          find dist -maxdepth 2 -type f | head -30
+
+      - name: Upload trading frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-frontend-dist
+          path: trading/frontend/dist
+          if-no-files-found: error
+          retention-days: 2
+
   deploy:
-    needs: build-frontend
+    needs: [build-frontend, build-trading-frontend]
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -74,6 +105,12 @@ jobs:
         with:
           name: frontend-dist
           path: frontend-dist
+
+      - name: Download trading frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: trading-frontend-dist
+          path: trading-frontend-dist
 
       - name: Prepare SSH key
         env:
@@ -145,6 +182,27 @@ jobs:
             /tmp/ra-frontend-dist.tgz \
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-frontend-dist.tgz"
           echo "Step 3 done: frontend uploaded"
+
+      - name: Upload trading frontend bundle to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          echo "Step 3b: upload trading frontend dist"
+          test -f trading-frontend-dist/index.html
+          tar -C trading-frontend-dist -czf /tmp/ra-trading-frontend-dist.tgz .
+          timeout 60s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            /tmp/ra-trading-frontend-dist.tgz \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-trading-frontend-dist.tgz"
+          echo "Step 3b done: trading frontend uploaded"
 
       - name: Deploy via SSH
         env:
@@ -233,6 +291,13 @@ jobs:
             else
               echo "WARN: job-apply-automation/src/job_apply missing on host" >&2
             fi
+            if [ -d trading/backend/trading_system ]; then
+              rm -rf /tmp/ra-backend-bundle/src/trading_system
+              cp -a trading/backend/trading_system /tmp/ra-backend-bundle/src/trading_system
+              echo "Bundled trading_system into backend inject tarball"
+            else
+              echo "WARN: trading/backend/trading_system missing on host" >&2
+            fi
             tar -C /tmp/ra-backend-bundle -czf /tmp/ra-backend-src.tgz src requirements.txt
             sudo docker cp /tmp/ra-backend-src.tgz "$cid:/tmp/ra-backend-src.tgz"
             # Snapshot the code that is currently serving so a broken injection
@@ -257,13 +322,36 @@ jobs:
               'rm -rf /app/job-apply-automation && tar -C /app -xzf /tmp/ra-job-apply.tgz && rm -f /tmp/ra-job-apply.tgz && find /app/job-apply-automation -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
           }
 
+          inject_trading_sidecar() {
+            local cid="$1"
+            if [ ! -d trading/backend/trading_system ]; then
+              echo "WARN: skip trading sidecar inject — package missing on host" >&2
+              return 0
+            fi
+            echo "Injecting trading package sidecar into $cid"
+            tar -C . -czf /tmp/ra-trading.tgz trading
+            sudo docker cp /tmp/ra-trading.tgz "$cid:/tmp/ra-trading.tgz"
+            sudo docker exec "$cid" sh -c \
+              'rm -rf /app/trading && tar -C /app -xzf /tmp/ra-trading.tgz && rm -f /tmp/ra-trading.tgz && mkdir -p /app/trading/data /app/trading/frontend/dist && find /app/trading -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
+          }
+
+          inject_trading_frontend() {
+            local cid="$1"
+            echo "Injecting trading frontend bundle into $cid"
+            sudo docker exec "$cid" mkdir -p /app/trading/frontend/dist
+            sudo docker exec "$cid" sh -c 'rm -rf /app/trading/frontend/dist/*'
+            sudo docker cp /tmp/ra-trading-frontend-dist.tgz "$cid:/tmp/ra-trading-frontend-dist.tgz"
+            sudo docker exec "$cid" sh -c \
+              'mkdir -p /app/trading/frontend/dist && tar -C /app/trading/frontend/dist -xzf /tmp/ra-trading-frontend-dist.tgz && rm -f /tmp/ra-trading-frontend-dist.tgz'
+          }
+
           backend_imports_ok() {
             local cid="$1"
             # Freshly injected trees have no __pycache__. Importing api_server on a
             # small EC2 that is also serving traffic can take well over 60s — treat
             # that as slow, not as a missing dependency.
             timeout 180s sudo docker exec "$cid" python -c \
-              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True); from pathlib import Path; p=Path("/app/ai-job-agent/src/job_apply"); print("job_apply_vendored="+str(p.is_dir()), flush=True); p2=Path("/app/job-apply-automation/src/job_apply"); print("job_apply_sidecar="+str(p2.is_dir()), flush=True)' \
+              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True); from pathlib import Path; p=Path("/app/ai-job-agent/src/job_apply"); print("job_apply_vendored="+str(p.is_dir()), flush=True); p2=Path("/app/job-apply-automation/src/job_apply"); print("job_apply_sidecar="+str(p2.is_dir()), flush=True); p3=Path("/app/ai-job-agent/src/trading_system"); print("trading_vendored="+str(p3.is_dir()), flush=True); p4=Path("/app/trading/backend/trading_system"); print("trading_sidecar="+str(p4.is_dir()), flush=True)' \
               >"$HOME/ra-import-check.log" 2>&1
           }
 
@@ -384,6 +472,7 @@ jobs:
           echo "Target container: $CID"
           inject_backend "$CID"
           inject_job_apply_sidecar "$CID"
+          inject_trading_sidecar "$CID"
 
           echo "Step R7b: check the injected backend imports before restarting"
           IMPORT_OK=0
@@ -421,6 +510,8 @@ jobs:
           echo "Injected backend imports cleanly"
 
           inject_frontend "$CID"
+          test -f /tmp/ra-trading-frontend-dist.tgz
+          inject_trading_frontend "$CID"
 
           echo "Restarting container to pick up backend + frontend updates"
           timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >"$HOME/ra-compose-restart.log" 2>&1 \
@@ -436,6 +527,9 @@ jobs:
             CID="$(find_container_id)"
             if [ -n "${CID:-}" ]; then
               inject_frontend "$CID"
+              if [ -f /tmp/ra-trading-frontend-dist.tgz ]; then
+                inject_trading_frontend "$CID"
+              fi
               timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >"$HOME/ra-compose-restart2.log" 2>&1 \
                 || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
                 || true
@@ -487,6 +581,15 @@ jobs:
             fi
           else
             echo "WARN: /api/job-apply/health unreachable (older backend?)" >&2
+          fi
+          echo
+          echo "Step R9c: trading system health"
+          if curl -sf --max-time 8 http://127.0.0.1:8001/trading/api/health >"$HOME/ra-trading-health.json" \
+            || curl -sf --max-time 8 http://127.0.0.1:8000/trading/api/health >"$HOME/ra-trading-health.json"; then
+            cat "$HOME/ra-trading-health.json"
+            echo
+          else
+            echo "WARN: /trading/api/health unreachable" >&2
           fi
           echo
           echo "Step R10: verify frontend bundle serves index.html"
