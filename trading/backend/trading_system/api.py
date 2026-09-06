@@ -30,6 +30,11 @@ async def trading_health() -> dict[str, Any]:
         "tick_count": rt.tick_count,
         "base_path": PUBLIC_BASE_PATH or "/",
         "resume_agent_home": RESUME_AGENT_HOME_URL,
+        "ws_path": f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
+        "ws_paths": [
+            f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
+            f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
+        ],
     }
 
 
@@ -55,16 +60,21 @@ async def trading_stop() -> dict[str, Any]:
 
 @router.get("/api/config")
 async def trading_config() -> dict[str, Any]:
+    ws_paths = [
+        f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
+        f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
+    ]
     return {
         "base_path": PUBLIC_BASE_PATH or "/",
         "resume_agent_home": RESUME_AGENT_HOME_URL,
-        "ws_path": f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
+        "ws_path": ws_paths[0],
+        "ws_paths": ws_paths,
         "api_base": f"{PUBLIC_BASE_PATH}/api" if PUBLIC_BASE_PATH else "/api",
     }
 
 
-@router.websocket("/ws")
-async def trading_ws(websocket: WebSocket) -> None:
+async def trading_ws_endpoint(websocket: WebSocket) -> None:
+    """Shared WebSocket handler (router + app-level registration)."""
     await websocket.accept()
     runtime = get_runtime()
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
@@ -133,9 +143,34 @@ async def trading_ws(websocket: WebSocket) -> None:
         runtime.unsubscribe(push)
 
 
+@router.websocket("/ws")
+async def trading_ws(websocket: WebSocket) -> None:
+    await trading_ws_endpoint(websocket)
+
+
+@router.websocket("/api/ws")
+async def trading_ws_api_alias(websocket: WebSocket) -> None:
+    """Alias under /api for proxies that only forward /trading/api/*."""
+    await trading_ws_endpoint(websocket)
+
+
 def create_trading_router() -> APIRouter:
     """Return the API/WS router (host mounts it at TRADING_BASE_PATH)."""
     return router
+
+
+def register_trading_websockets(app: Any, base_path: str | None = None) -> list[str]:
+    """Explicitly register WebSocket routes on the host app.
+
+    Some production ASGI / FastAPI combinations fail to expose WebSocket routes
+    that only live on an included APIRouter. Registering on the app itself is
+    the reliable path. Returns the registered paths.
+    """
+    base = (base_path if base_path is not None else PUBLIC_BASE_PATH) or ""
+    paths = [f"{base}/ws", f"{base}/api/ws"]
+    for path in paths:
+        app.add_api_websocket_route(path, trading_ws_endpoint)
+    return paths
 
 
 def mount_trading_frontend(app: Any, base_path: str | None = None) -> bool:

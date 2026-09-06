@@ -61,6 +61,14 @@ export type Snapshot = {
   tick_interval_sec: number;
 };
 
+export type TradingConfig = {
+  base_path: string;
+  resume_agent_home: string;
+  ws_path: string;
+  ws_paths?: string[];
+  api_base: string;
+};
+
 const API_BASE = "/trading/api";
 
 async function jsonFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -80,7 +88,7 @@ export function fetchSnapshot() {
 }
 
 export function fetchConfig() {
-  return jsonFetch<{ resume_agent_home: string; ws_path: string }>("/config");
+  return jsonFetch<TradingConfig>("/config");
 }
 
 export function startSystem() {
@@ -95,7 +103,22 @@ export function stopSystem() {
   return jsonFetch<Snapshot>("/stop", { method: "POST" });
 }
 
-export function tradingWsUrl(): string {
+export function tradingWsUrls(config?: TradingConfig | null): string[] {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/trading/ws`;
+  const host = window.location.host;
+  const paths =
+    config?.ws_paths?.length
+      ? config.ws_paths
+      : [config?.ws_path || "/trading/ws", "/trading/api/ws"];
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const p of paths) {
+    const path = p.startsWith("/") ? p : `/${p}`;
+    const url = `${proto}//${host}${path}`;
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
 }

@@ -265,6 +265,7 @@ def _register_trading_routes() -> None:
         from trading_system.api import (  # type: ignore[import-not-found]
             create_trading_router,
             mount_trading_frontend,
+            register_trading_websockets,
         )
         from trading_system.config import PUBLIC_BASE_PATH  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
@@ -284,10 +285,14 @@ def _register_trading_routes() -> None:
 
     base = PUBLIC_BASE_PATH or "/trading"
     app.include_router(create_trading_router(), prefix=base)
+    # Register WebSockets on the app itself — included-router WS routes have
+    # been observed as missing (HTTP 404 on upgrade) on the EC2 runtime.
+    ws_paths = register_trading_websockets(app, base_path=base)
     mounted = mount_trading_frontend(app, base_path=base)
     print(
         f"[info] AI Trading System mounted at {base} "
-        f"(frontend={'yes' if mounted else 'no — build trading/frontend dist'})"
+        f"(frontend={'yes' if mounted else 'no — build trading/frontend dist'}; "
+        f"ws={','.join(ws_paths)})"
     )
 
 

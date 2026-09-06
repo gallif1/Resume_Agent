@@ -5,12 +5,13 @@ import {
   pauseSystem,
   startSystem,
   stopSystem,
-  tradingWsUrl,
+  tradingWsUrls,
   type AgentVote,
   type Decision,
   type MarketEvent,
   type Snapshot,
   type Tick,
+  type TradingConfig,
 } from "./api";
 
 type LatestVotes = Record<string, AgentVote>;
@@ -28,16 +29,22 @@ export default function App() {
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [votes, setVotes] = useState<LatestVotes>({});
-  const [wsState, setWsState] = useState<"connecting" | "live" | "dead">("connecting");
+  const [wsState, setWsState] = useState<"connecting" | "live" | "dead" | "polling">(
+    "connecting"
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [homeUrl, setHomeUrl] = useState("/");
   const [flash, setFlash] = useState(false);
+  const [config, setConfig] = useState<TradingConfig | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     fetchConfig()
-      .then((c) => setHomeUrl(c.resume_agent_home || "/"))
+      .then((c) => {
+        setConfig(c);
+        setHomeUrl(c.resume_agent_home || "/");
+      })
       .catch(() => setHomeUrl("/"));
     fetchSnapshot()
       .then((s) => {
@@ -52,15 +59,29 @@ export default function App() {
     let closed = false;
     let retry: number | undefined;
     let attempt = 0;
+    let urlIndex = 0;
 
     const connect = () => {
       if (closed) return;
-      setWsState(attempt === 0 ? "connecting" : "connecting");
-      const ws = new WebSocket(tradingWsUrl());
+      const urls = tradingWsUrls(config);
+      if (!urls.length) return;
+      if (urlIndex >= urls.length) {
+        urlIndex = 0;
+        attempt += 1;
+        setWsState("dead");
+        retry = window.setTimeout(connect, Math.min(8000, 500 * Math.max(1, attempt)));
+        return;
+      }
+
+      setWsState("connecting");
+      let opened = false;
+      const ws = new WebSocket(urls[urlIndex]);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        opened = true;
         attempt = 0;
+        urlIndex = 0;
         setWsState("live");
       };
 
@@ -96,9 +117,7 @@ export default function App() {
                   }
                 : prev
             );
-            if (p.events?.length) {
-              setEvents((prev) => [...p.events, ...prev].slice(0, 40));
-            }
+            if (p.events?.length) setEvents((prev) => [...p.events, ...prev].slice(0, 40));
             if (p.decisions?.length) {
               setDecisions((prev) => [...p.decisions, ...prev].slice(0, 40));
             }
@@ -114,21 +133,25 @@ export default function App() {
             setError(payload.message || "Runtime error");
           }
         } catch {
-          /* ignore malformed */
+          /* ignore */
         }
       };
 
       ws.onclose = () => {
-        setWsState("dead");
         wsRef.current = null;
         if (closed) return;
+        if (!opened) {
+          urlIndex += 1;
+          retry = window.setTimeout(connect, 150);
+          return;
+        }
+        setWsState("dead");
         attempt += 1;
+        urlIndex = 0;
         retry = window.setTimeout(connect, Math.min(8000, 500 * attempt));
       };
 
-      ws.onerror = () => {
-        ws.close();
-      };
+      ws.onerror = () => ws.close();
     };
 
     connect();
@@ -137,7 +160,22 @@ export default function App() {
       if (retry) window.clearTimeout(retry);
       wsRef.current?.close();
     };
-  }, []);
+  }, [config]);
+
+  useEffect(() => {
+    if (wsState === "live") return;
+    const id = window.setInterval(() => {
+      fetchSnapshot()
+        .then((s) => {
+          setSnap(s);
+          setEvents(s.events || []);
+          setDecisions(s.decisions || []);
+          setWsState((prev) => (prev === "live" ? prev : "polling"));
+        })
+        .catch(() => undefined);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [wsState]);
 
   const run = async (action: "start" | "pause" | "stop") => {
     setBusy(true);
@@ -161,6 +199,14 @@ export default function App() {
   const market = snap?.market ?? [];
   const agents = snap?.agents ?? [];
   const portfolio = snap?.portfolio;
+  const wsLabel =
+    wsState === "live"
+      ? "WS connected"
+      : wsState === "polling"
+        ? "WS dead · polling"
+        : wsState === "connecting"
+          ? "WS connecting"
+          : "WS dead";
 
   return (
     <div className="app">
@@ -203,8 +249,12 @@ export default function App() {
         >
           STOP
         </button>
-        <span className={`ws-badge ${wsState === "live" ? "live" : "dead"}`}>
-          WS {wsState === "live" ? "connected" : wsState}
+        <span
+          className={`ws-badge ${
+            wsState === "live" ? "live" : wsState === "polling" ? "polling" : "dead"
+          }`}
+        >
+          {wsLabel}
         </span>
         <span className="meta mono">
           ticks {snap?.tick_count ?? 0}
@@ -264,9 +314,7 @@ export default function App() {
             </div>
             <div className="stat">
               <div className="label">Positions</div>
-              <div className="value">
-                {Object.keys(portfolio?.positions || {}).length}
-              </div>
+              <div className="value">{Object.keys(portfolio?.positions || {}).length}</div>
             </div>
           </div>
           <div className="list">
@@ -292,10 +340,7 @@ export default function App() {
             {agents.map((a) => {
               const vote = votes[a.id];
               return (
-                <div
-                  key={a.id}
-                  className={`agent-card ${flash && vote ? "flash" : ""}`}
-                >
+                <div key={a.id} className={`agent-card ${flash && vote ? "flash" : ""}`}>
                   <h3>{a.name}</h3>
                   {vote ? (
                     <>

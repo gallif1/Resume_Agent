@@ -592,6 +592,35 @@ jobs:
             echo "WARN: /trading/api/health unreachable" >&2
           fi
           echo
+          echo "Step R9d: trading WebSocket upgrade"
+          TRADING_BASE=""
+          if curl -sf --max-time 5 http://127.0.0.1:8001/trading/api/health >/dev/null; then
+            TRADING_BASE="http://127.0.0.1:8001"
+          elif curl -sf --max-time 5 http://127.0.0.1:8000/trading/api/health >/dev/null; then
+            TRADING_BASE="http://127.0.0.1:8000"
+          fi
+          if [ -n "$TRADING_BASE" ]; then
+            WS_CODE="$(curl -sS -m 5 -o /tmp/ra-trading-ws.body -w '%{http_code}' \
+              -H 'Connection: Upgrade' \
+              -H 'Upgrade: websocket' \
+              -H 'Sec-WebSocket-Version: 13' \
+              -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+              "$TRADING_BASE/trading/ws" || true)"
+            echo "WS /trading/ws HTTP $WS_CODE"
+            if [ "$WS_CODE" != "101" ]; then
+              WS_CODE2="$(curl -sS -m 5 -o /tmp/ra-trading-ws2.body -w '%{http_code}' \
+                -H 'Connection: Upgrade' \
+                -H 'Upgrade: websocket' \
+                -H 'Sec-WebSocket-Version: 13' \
+                -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+                "$TRADING_BASE/trading/api/ws" || true)"
+              echo "WS /trading/api/ws HTTP $WS_CODE2"
+              if [ "$WS_CODE2" != "101" ]; then
+                echo "::warning::Trading WebSocket upgrade did not return 101 (got ${WS_CODE}/${WS_CODE2}). Dashboard will fall back to HTTP polling."
+              fi
+            fi
+          fi
+          echo
           echo "Step R10: verify frontend bundle serves index.html"
           curl -sf --max-time 5 http://127.0.0.1:8001/ >/tmp/ra-index.html \
             || curl -sf --max-time 5 http://127.0.0.1:8000/ >/tmp/ra-index.html \

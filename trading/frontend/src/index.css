@@ -368,6 +368,10 @@ a {
   color: var(--danger);
 }
 
+.ws-badge.polling {
+  color: var(--accent-2);
+}
+
 @keyframes rise {
   from {
     opacity: 0;
