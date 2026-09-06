@@ -637,6 +637,13 @@ export default function App() {
           </div>
 
           <div className="header-actions">
+            <a
+              href="/trading"
+              className="btn btn-secondary btn-sm trading-entry-btn"
+              title="Open AI Trading System"
+            >
+              AI Trading System
+            </a>
             {authUser && (
               <>
                 <a href="/cv-tailor" className="btn btn-secondary btn-sm">

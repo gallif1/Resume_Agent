@@ -9,3 +9,5 @@ ai-job-agent/data/cv_profile.json
 ai-job-agent/data/database_export.txt
 ai-job-agent/logs
 resume-agent-web/dist
+trading/frontend/dist
+trading/data/*.json

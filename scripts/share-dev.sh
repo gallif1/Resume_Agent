@@ -54,10 +54,22 @@ echo ""
 if port_open "$API_PORT"; then
   echo "✓ Backend כבר רץ על פורט ${API_PORT}"
 else
+  # Ensure trading UI is built so /trading is served from the same origin.
+  if [[ ! -f "$ROOT/trading/frontend/dist/index.html" ]]; then
+    echo "→ בונה את ממשק AI Trading System..."
+    (
+      cd "$ROOT/trading/frontend"
+      if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+      npm run build
+    )
+  fi
   echo "→ מפעיל Backend על פורט ${API_PORT}..."
   (
     cd "$ROOT/ai-job-agent"
     export PATH="${HOME}/.local/bin:${PATH}"
+    export PYTHONPATH="${ROOT}/trading/backend:${PYTHONPATH:-}"
+    export TRADING_BASE_PATH="/trading"
+    export TRADING_DATA_DIR="${ROOT}/trading/data"
     python3 src/api_server.py --port "$API_PORT"
   ) &
   API_PID=$!

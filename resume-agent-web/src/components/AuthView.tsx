@@ -135,6 +135,12 @@ export default function AuthView({ onAuthenticated }: Props) {
                 : "צור חשבון"}
           </button>
         </form>
+
+        <a href="/trading" className="trading-entry-card" dir="ltr">
+          <span className="trading-entry-card-kicker">Also available</span>
+          <strong>AI Trading System</strong>
+          <span className="trading-entry-card-hint">Open the live paper-trading dashboard →</span>
+        </a>
       </div>
     </section>
   );

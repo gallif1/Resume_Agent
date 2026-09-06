@@ -15,6 +15,11 @@ export default defineConfig(({ mode }) => {
         "/api": apiTarget,
         "/cvs": apiTarget,
         "/jobs": apiTarget,
+        "/trading": {
+          target: apiTarget,
+          changeOrigin: true,
+          ws: true,
+        },
       },
     },
     test: {

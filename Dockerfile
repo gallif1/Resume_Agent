@@ -16,6 +16,14 @@ COPY resume-agent-web/ ./
 ENV VITE_API_URL=
 RUN npm run build
 
+# Isolated AI Trading System UI (served under /trading)
+FROM node:22-bookworm-slim AS trading-frontend
+WORKDIR /trading-web
+COPY trading/frontend/package.json trading/frontend/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY trading/frontend/ ./
+RUN npm run build
+
 # Playwright Python image version must match the pinned playwright package.
 FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
 WORKDIR /app/ai-job-agent
@@ -28,8 +36,10 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY ai-job-agent/ ./
 COPY job-apply-automation/ /app/job-apply-automation/
+COPY trading/ /app/trading/
 COPY --from=frontend /web/dist /app/resume-agent-web/dist
-ENV PYTHONPATH=/app/job-apply-automation/src:${PYTHONPATH}
+COPY --from=trading-frontend /trading-web/dist /app/trading/frontend/dist
+ENV PYTHONPATH=/app/job-apply-automation/src:/app/trading/backend:${PYTHONPATH}
 
 # Seed files to copy onto an empty persistent volume on first boot.
 # (Mounting a volume hides image contents under data/.)
@@ -54,6 +64,8 @@ ENV COLLECT_MAX_QUERIES=6
 ENV COLLECT_MAX_CATEGORIES=5
 ENV LINKEDIN_MAX_PAGES=5
 ENV GOTFRIENDS_ENABLED=false
+ENV TRADING_BASE_PATH=/trading
+ENV TRADING_DATA_DIR=/app/trading/data
 # Set a strong JWT_SECRET in production so auth tokens cannot be forged.
 # ENV JWT_SECRET=
 
