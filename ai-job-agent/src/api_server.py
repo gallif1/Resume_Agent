@@ -289,10 +289,19 @@ def _register_trading_routes() -> None:
     # been observed as missing (HTTP 404 on upgrade) on the EC2 runtime.
     ws_paths = register_trading_websockets(app, base_path=base)
     mounted = mount_trading_frontend(app, base_path=base)
+    import importlib.util
+
+    ws_lib = any(importlib.util.find_spec(n) for n in ("websockets", "wsproto"))
+    if not ws_lib:
+        print(
+            "[warn] No WebSocket library (websockets/wsproto) installed — "
+            "uvicorn will 404 /trading WebSocket upgrades. "
+            "Install uvicorn[standard] or websockets."
+        )
     print(
         f"[info] AI Trading System mounted at {base} "
         f"(frontend={'yes' if mounted else 'no — build trading/frontend dist'}; "
-        f"ws={','.join(ws_paths)})"
+        f"ws={','.join(ws_paths)}; ws_runtime={'ok' if ws_lib else 'MISSING'})"
     )
 
 

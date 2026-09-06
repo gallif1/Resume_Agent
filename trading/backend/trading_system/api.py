@@ -20,9 +20,17 @@ from .runtime import get_runtime
 router = APIRouter(tags=["trading"])
 
 
+def _websocket_runtime_ok() -> bool:
+    """True when uvicorn can upgrade WebSocket connections (needs websockets or wsproto)."""
+    import importlib.util
+
+    return any(importlib.util.find_spec(name) for name in ("websockets", "wsproto"))
+
+
 @router.get("/api/health")
 async def trading_health() -> dict[str, Any]:
     rt = get_runtime()
+    ws_runtime_ok = _websocket_runtime_ok()
     return {
         "ok": True,
         "service": "ai-trading-system",
@@ -35,6 +43,7 @@ async def trading_health() -> dict[str, Any]:
             f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
             f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
         ],
+        "ws_runtime_ok": ws_runtime_ok,
     }
 
 
