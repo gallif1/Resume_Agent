@@ -379,6 +379,33 @@ jobs:
             wait "$pip_pid"
           }
 
+          # Plain `uvicorn` (no websockets/wsproto) accepts the TCP connection but
+          # logs "Unsupported upgrade request" and answers the WebSocket handshake
+          # as a normal HTTP GET → FastAPI 404. Trading live updates need this.
+          # api_server imports succeed without websockets, so the import-check path
+          # never installs it — always ensure the runtime WS stack is present.
+          ensure_websocket_runtime() {
+            local cid="$1"
+            echo "Ensuring uvicorn WebSocket runtime (websockets/wsproto) in $cid"
+            if timeout 60s sudo docker exec "$cid" python -c \
+              'import importlib.util,sys; ok=any(importlib.util.find_spec(n) for n in ("websockets","wsproto")); print("websocket_lib_present="+str(ok), flush=True); sys.exit(0 if ok else 1)' \
+              >"$HOME/ra-ws-runtime-check.log" 2>&1; then
+              echo "WebSocket library already present"
+              cat "$HOME/ra-ws-runtime-check.log" 2>/dev/null || true
+              return 0
+            fi
+            echo "WebSocket library missing — installing uvicorn[standard] + websockets"
+            timeout 120s sudo docker exec "$cid" pip install --no-input \
+              --disable-pip-version-check 'uvicorn[standard]' 'websockets>=12.0' \
+              >"$HOME/ra-ws-pip-install.log" 2>&1 \
+              || echo "WARN: websocket runtime pip install failed/timed out" >&2
+            tail -n 20 "$HOME/ra-ws-pip-install.log" 2>/dev/null || true
+            timeout 30s sudo docker exec "$cid" python -c \
+              'import importlib.util; print("websockets="+str(bool(importlib.util.find_spec("websockets"))), "wsproto="+str(bool(importlib.util.find_spec("wsproto"))), flush=True)' \
+              >"$HOME/ra-ws-runtime-check.log" 2>&1 || true
+            cat "$HOME/ra-ws-runtime-check.log" 2>/dev/null || true
+          }
+
           restore_backend() {
             local cid="$1"
             echo "Restoring the backend source that was serving before this deploy"
@@ -509,6 +536,9 @@ jobs:
           fi
           echo "Injected backend imports cleanly"
 
+          echo "Step R7c: ensure WebSocket runtime deps for /trading"
+          ensure_websocket_runtime "$CID"
+
           inject_frontend "$CID"
           test -f /tmp/ra-trading-frontend-dist.tgz
           inject_trading_frontend "$CID"
@@ -588,6 +618,9 @@ jobs:
             || curl -sf --max-time 8 http://127.0.0.1:8000/trading/api/health >"$HOME/ra-trading-health.json"; then
             cat "$HOME/ra-trading-health.json"
             echo
+            if grep -q '"ws_runtime_ok"[[:space:]]*:[[:space:]]*false' "$HOME/ra-trading-health.json"; then
+              echo "::warning::Trading health reports ws_runtime_ok=false — uvicorn lacks websockets/wsproto."
+            fi
           else
             echo "WARN: /trading/api/health unreachable" >&2
           fi
@@ -617,6 +650,10 @@ jobs:
               echo "WS /trading/api/ws HTTP $WS_CODE2"
               if [ "$WS_CODE2" != "101" ]; then
                 echo "::warning::Trading WebSocket upgrade did not return 101 (got ${WS_CODE}/${WS_CODE2}). Dashboard will fall back to HTTP polling."
+                echo "If logs show 'No supported WebSocket library detected', the container is missing websockets/wsproto (uvicorn[standard])." >&2
+                sudo docker exec "$CID" python -c \
+                  'import importlib.util; print("websockets", bool(importlib.util.find_spec("websockets"))); print("wsproto", bool(importlib.util.find_spec("wsproto")))' \
+                  2>/dev/null || true
               fi
             fi
           fi
