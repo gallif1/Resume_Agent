@@ -8,3 +8,8 @@ __pycache__/
 data/*.json
 !data/.gitkeep
 tsconfig.tsbuildinfo
+
+# runtime artifacts
+data/*.jsonl
+data/runtime_state.json
+
