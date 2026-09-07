@@ -140,7 +140,17 @@ export default function LiveChart({
       <div className="chart-stage">
         {points.length < 2 ? (
           <div className="chart-empty muted">
-            Loading real candles… If stocks show empty, set FINNHUB_API_KEY or wait for market open.
+            {realData ? (
+              <>
+                No chart data yet for <strong>{active}</strong> ({timeframe}).
+                {active === "AAPL" || active === "NVDA"
+                  ? " Stocks load candles from Yahoo — wait one poll cycle, or check network."
+                  : " Crypto loads from Coinbase — wait a moment after START."}
+                {meta?.stale_reason ? ` (${meta.stale_reason})` : ""}
+              </>
+            ) : (
+              "Waiting for simulated price history…"
+            )}
           </div>
         ) : (
           <svg

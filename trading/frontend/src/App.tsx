@@ -382,7 +382,7 @@ export default function App() {
 
   const state = snap?.state ?? "stopped";
   const market = snap?.market ?? [];
-  const agents = snap?.agents ?? [];
+  const agents = (snap?.agents ?? []).filter((a) => a.id !== "ai_analyst");
   const portfolio = snap?.portfolio;
   const symbols = snap?.symbols?.length
     ? snap.symbols
