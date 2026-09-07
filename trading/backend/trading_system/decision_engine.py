@@ -38,12 +38,21 @@ class DecisionEngine:
             side, score = actionable[0]
         else:
             side, score = Side.HOLD, hold_score
-        total = sum(weights.values()) or 1.0
-        confidence = min(0.99, score / total)
+
+        # Confidence for UI / threshold must NOT dilute the winning side by the
+        # opposing side's weight (that previously blocked almost all SELLs at ~44%
+        # whenever mean-reversion also voted BUY into a dip).
+        action_total = weights[Side.BUY] + weights[Side.SELL]
+        if side == Side.HOLD:
+            total = sum(weights.values()) or 1.0
+            confidence = min(0.99, hold_score / total)
+        else:
+            confidence = min(0.99, score / (action_total or score or 1.0))
+
         counts = Counter(v.side.value for v in votes)
         rationale = (
             f"Votes {dict(counts)} → {side.value} "
-            f"(weighted confidence {confidence:.0%})"
+            f"(action score {score:.2f}, confidence {confidence:.0%})"
         )
         decision = Decision(
             id=uuid.uuid4().hex[:12],
@@ -53,10 +62,10 @@ class DecisionEngine:
             votes=[v.to_dict() for v in votes],
             rationale=rationale,
         )
-        if side != Side.HOLD and confidence >= self.min_confidence:
+        # Execute on raw winning weight (same units as min_confidence), not diluted %.
+        if side != Side.HOLD and score >= self.min_confidence:
             decision.executed = True
             decision.fill_price = price
-            # Risk a small notional slice of portfolio later via Runtime.
             decision.quantity = 0.0
         self._decisions.append(decision)
         return decision
@@ -86,7 +95,9 @@ class DecisionEngine:
             if pos is None or pos.quantity <= 0:
                 decision.executed = False
                 return portfolio
-            qty = pos.quantity * 0.5
+            # Sell half by default; if confidence is strong (>=0.7), sell up to 75%.
+            frac = 0.75 if decision.confidence >= 0.7 else 0.5
+            qty = pos.quantity * frac
             proceeds = qty * price
             portfolio.cash += proceeds
             pnl = (price - pos.avg_price) * qty

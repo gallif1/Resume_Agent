@@ -57,6 +57,29 @@ def test_decision_engine_aggregates():
     assert decision.side == Side.BUY
 
 
+def test_decision_engine_executes_sell_against_opposing_buy():
+    """Winning SELL must not be diluted below threshold by a competing BUY vote."""
+    engine = DecisionEngine(min_confidence=0.45)
+    votes = [
+        AgentVote("momentum", "Momentum", "BTC-USD", Side.SELL, 0.80, "down"),
+        AgentVote("mean_reversion", "MeanRev", "BTC-USD", Side.BUY, 0.69, "fade"),
+        AgentVote("volatility", "Vol", "BTC-USD", Side.HOLD, 0.35, "calm"),
+    ]
+    decision = engine.decide("BTC-USD", votes, price=78000)
+    assert decision is not None
+    assert decision.side == Side.SELL
+    assert decision.executed is True
+    assert decision.confidence >= 0.45
+    # Fill should free cash from an open position.
+    from trading_system.models import Portfolio, Position
+
+    pf = Portfolio(cash=50.0, positions={"BTC-USD": Position("BTC-USD", 0.01, 79000)})
+    engine.apply_fill(pf, decision)
+    assert decision.executed is True
+    assert pf.cash > 50.0
+    assert pf.positions["BTC-USD"].quantity < 0.01
+
+
 def test_event_engine_builds_chart_history():
     engine = EventEngine()
     for i in range(5):

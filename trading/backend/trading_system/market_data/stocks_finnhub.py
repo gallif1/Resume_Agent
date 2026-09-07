@@ -67,18 +67,31 @@ class StockMarketProvider(MarketDataProvider):
     def get_current_price(self, symbol: str) -> Quote:
         symbol = symbol.upper()
         session = us_equity_session()
-        data = self._finnhub_get("/quote", {"symbol": symbol})
-        price = float(data.get("c") or 0.0)
+        price = 0.0
+        change_pct = 0.0
+        volume = 0.0
+        ts = time.time()
+        provider = "yahoo"
+
+        if self.configured:
+            try:
+                data = self._finnhub_get("/quote", {"symbol": symbol})
+                price = float(data.get("c") or 0.0)
+                if price > 0:
+                    prev = float(data.get("pc") or price)
+                    change_pct = (
+                        ((price - prev) / prev * 100) if prev else float(data.get("dp") or 0.0)
+                    )
+                    volume = 0.0
+                    ts = float(data.get("t") or time.time())
+                    provider = self.name
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Finnhub quote failed %s: %s — trying Yahoo", symbol, exc)
+
         if price <= 0:
-            # Fallback to Yahoo meta if Finnhub returns empty (rare).
             price, change_pct, volume, ts = self._yahoo_quote(symbol)
-        else:
-            prev = float(data.get("pc") or price)
-            change_pct = (
-                ((price - prev) / prev * 100) if prev else float(data.get("dp") or 0.0)
-            )
-            volume = 0.0
-            ts = float(data.get("t") or time.time())
+            provider = "yahoo" if not self.configured else "yahoo-fallback"
+
         freshness = DataFreshness.LIVE if session == MarketSession.OPEN else DataFreshness.STALE
         return Quote(
             symbol=symbol,
@@ -86,7 +99,7 @@ class StockMarketProvider(MarketDataProvider):
             change_pct=round(change_pct, 4),
             volume=volume,
             ts=ts,
-            provider=self.name,
+            provider=provider,
             asset_class=AssetClass.STOCK,
             session=session,
             freshness=freshness,

@@ -109,35 +109,34 @@ class MarketDataService:
         for symbol in self.symbols:
             if symbol not in STOCK_SYMBOLS:
                 continue
-            if not self.stocks.configured:
-                self._mark_unavailable(
-                    symbol,
-                    "FINNHUB_API_KEY missing",
-                    AssetClass.STOCK,
-                    session,
-                )
-                continue
             if session == MarketSession.CLOSED and symbol in self._quotes:
-                # Keep last quote; mark closed/stale — do not invent prices.
-                with self._lock:
-                    q = self._quotes[symbol]
-                    q.session = MarketSession.CLOSED
-                    q.freshness = DataFreshness.STALE
-                    q.stale_reason = "market_closed"
-                continue
+                existing = self._quotes.get(symbol)
+                if existing and existing.price > 0:
+                    # Keep last quote; mark closed/stale — do not invent prices.
+                    with self._lock:
+                        q = self._quotes[symbol]
+                        q.session = MarketSession.CLOSED
+                        q.freshness = DataFreshness.STALE
+                        q.stale_reason = "market_closed"
+                    continue
             try:
+                # Quotes: Finnhub when keyed, otherwise Yahoo (paper-trading friendly).
                 quote = self.stocks.get_current_price(symbol)
                 with self._lock:
                     self._quotes[symbol] = quote
                     self._errors.pop(symbol, None)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Stock quote failed %s: %s", symbol, exc)
-                self._mark_stale(symbol, str(exc), AssetClass.STOCK, session)
+                self._mark_unavailable(
+                    symbol,
+                    f"stock quote failed: {exc}"[:160],
+                    AssetClass.STOCK,
+                    session,
+                )
 
     def _poll_candles(self, symbol: str) -> None:
         provider = self.crypto if symbol in CRYPTO_SYMBOLS else self.stocks
-        if symbol in STOCK_SYMBOLS and not self.stocks.configured:
-            return
+        # Always attempt candles — Yahoo stock candles need no Finnhub key.
         for tf in SUPPORTED_TIMEFRAMES:
             try:
                 candles = provider.get_candles(symbol, tf, limit=120)
@@ -235,9 +234,11 @@ class MarketDataService:
             "source": "REAL MARKET DATA",
             "simulated": False,
             "crypto_provider": self.crypto.name,
-            "stock_provider": self.stocks.name if self.stocks.configured else "finnhub+yahoo(unconfigured)",
+            "stock_provider": (
+                self.stocks.name if self.stocks.configured else "yahoo(no-finnhub-key)"
+            ),
             "stock_provider_configured": self.stocks.configured,
-            "stock_quotes": "finnhub",
+            "stock_quotes": "finnhub+yahoo-fallback" if self.stocks.configured else "yahoo",
             "stock_candles": "yahoo",
             "crypto_poll_interval_sec": CRYPTO_POLL_INTERVAL_SECONDS,
             "stock_poll_interval_sec": STOCK_POLL_INTERVAL_SECONDS,
