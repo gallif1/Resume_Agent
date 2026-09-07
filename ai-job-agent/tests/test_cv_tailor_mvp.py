@@ -172,6 +172,89 @@ def test_generate_tailored_cv_rejects_short_job_description():
         assert "short" in str(exc).lower()
 
 
+def test_generate_succeeds_when_pdf_renderer_fails():
+    """Playwright/PDF failure must not wipe a successful tailor result."""
+    from pdf_generator_service import PdfGeneratorError
+
+    mock_llm = {
+        "tailored_cv": {
+            "name": "Jane Doe",
+            "summary": "Python backend engineer aligned with the role.",
+            "skills": ["Python"],
+            "experience": [
+                {
+                    "company": "Acme",
+                    "role": "Engineer",
+                    "dates": "2020–2024",
+                    "bullets": ["Built APIs"],
+                }
+            ],
+            "projects": [],
+            "education": [],
+            "certifications": [],
+        },
+        "job_analysis": {"strong_matches": ["Python"], "gaps": []},
+    }
+    with patch("cv_tailor.service.call_openai_json", return_value=mock_llm):
+        with patch(
+            "cv_tailor.parser.extract_text_from_resume",
+            return_value=("Long enough CV text " * 5, "docx"),
+        ):
+            with patch(
+                "cv_tailor.service.render_tailored_cv_pdf",
+                side_effect=PdfGeneratorError("chromium OOM", status_code=500),
+            ):
+                result = generate_tailored_cv(
+                    file_bytes=b"docx-bytes",
+                    filename="cv.docx",
+                    job_description="Looking for a Python engineer with API experience.",
+                    user_id="owner-user",
+                )
+
+    assert result.result_id
+    assert "Python" in result.preview_text
+
+    with patch(
+        "cv_tailor.service.render_tailored_cv_pdf",
+        return_value=b"%PDF-1.4 recovered",
+    ):
+        pdf_bytes, filename = get_download_pdf(
+            result_id=result.result_id, user_id="owner-user"
+        )
+    assert pdf_bytes.startswith(b"%PDF")
+    assert filename.endswith(".pdf")
+
+
+def test_api_generate_surfaces_unexpected_errors_as_json(db_path, monkeypatch):
+    monkeypatch.setattr(db, "REGISTRY_DB_PATH", db_path)
+    monkeypatch.setattr(api_server.db, "REGISTRY_DB_PATH", db_path)
+    user = register_test_user(email="boom@example.com", db_path=db_path)
+    client = TestClient(api_server.app)
+
+    with patch(
+        "cv_tailor.routes.generate_tailored_cv",
+        side_effect=RuntimeError("simulated crash"),
+    ):
+        res = client.post(
+            "/api/cv-tailor/generate",
+            headers=auth_header_for(user),
+            files={
+                "file": (
+                    "resume.docx",
+                    b"fake-docx-bytes",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+            data={"job_description": "We need a Python backend engineer with FastAPI experience."},
+        )
+
+    assert res.status_code == 500
+    body = res.json()
+    assert "detail" in body
+    assert "simulated crash" in body["detail"]
+    assert "יצירת קורות חיים מותאמים נכשלה" in body["detail"]
+
+
 def test_get_download_pdf_wrong_user():
     mock_llm = {
         "tailored_cv": {

@@ -26,6 +26,16 @@ logger = logging.getLogger("cv_tailor.routes")
 router = APIRouter(prefix="/api/cv-tailor", tags=["cv-tailor"])
 
 
+def _http_from_unexpected(exc: BaseException) -> HTTPException:
+    """Never leak Starlette's plain-text 500 — the UI treats that as a generic Hebrew failure."""
+    logger.exception("Unexpected CV tailor failure")
+    detail = str(exc).strip() or exc.__class__.__name__
+    return HTTPException(
+        status_code=500,
+        detail=f"יצירת קורות חיים מותאמים נכשלה: {detail}",
+    )
+
+
 @router.post("/generate")
 async def cv_tailor_generate(
     file: UploadFile = File(...),
@@ -51,6 +61,8 @@ async def cv_tailor_generate(
     except CvTailorError as exc:
         logger.warning("CV tailor generation error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface real cause instead of opaque 500
+        raise _http_from_unexpected(exc) from exc
 
     saved_to_job = maybe_persist_tailored_cv_to_job(
         cv_id=cv_id,
@@ -95,6 +107,8 @@ async def cv_tailor_regenerate(
     except CvTailorError as exc:
         logger.warning("CV tailor regenerate error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _http_from_unexpected(exc) from exc
 
     snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}
     saved_to_job = maybe_persist_tailored_cv_to_job(

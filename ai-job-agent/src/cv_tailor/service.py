@@ -84,6 +84,55 @@ def _build_result(
     )
 
 
+def _render_pdf_best_effort(tailored_cv: TailoredCvData) -> tuple[bytes, str]:
+    """Render PDF for download; never fail the tailor request if Playwright is unhealthy.
+
+    On small EC2 hosts Chromium can OOM or hang after a successful LLM call. Returning
+    the tailored preview without a PDF is far better than an opaque client-side failure.
+    Download can retry rendering later via ``get_download_pdf``.
+    """
+    filename = pdf_filename_for_cv(tailored_cv)
+    try:
+        return render_tailored_cv_pdf(tailored_cv), filename
+    except PdfGeneratorError as exc:
+        logger.error("PDF generation failed (continuing without PDF): %s", exc)
+    except Exception:
+        logger.exception("PDF generation failed (continuing without PDF)")
+    return b"", filename
+
+
+def _parse_and_guard(
+    raw: dict[str, Any],
+    *,
+    cv_text: str,
+    job_description: str,
+    user_confirmed_facts: list[CandidateFact] | None = None,
+    regenerate: bool = False,
+) -> tuple[TailoredCvData, JobAnalysis, list[CandidateFact]]:
+    """Parse LLM JSON + factual guards; map unexpected crashes to CvTailorError."""
+    try:
+        if regenerate:
+            tailored_cv, job_analysis, new_facts = parse_regenerate_response(raw)
+        else:
+            tailored_cv, job_analysis = parse_llm_response(raw)
+            new_facts = []
+        tailored_cv = apply_factual_guards(
+            cv_text,
+            tailored_cv,
+            job_description=job_description,
+            job_analysis=job_analysis,
+            user_confirmed_facts=user_confirmed_facts,
+        )
+    except CvTailorError:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to parse/guard CV tailor LLM response")
+        raise CvTailorError(
+            "תשובת ה-AI לא הייתה תקינה — נסה שוב בעוד רגע."
+        ) from exc
+    return tailored_cv, job_analysis, new_facts
+
+
 def _merge_confirmed_facts(
     existing: list[CandidateFact],
     new_facts: list[CandidateFact],
@@ -142,12 +191,10 @@ def generate_tailored_cv(
         logger.exception("Unexpected OpenAI CV tailor failure")
         raise CvTailorError("CV tailoring failed. Please try again.") from exc
 
-    tailored_cv, job_analysis = parse_llm_response(raw)
-    tailored_cv = apply_factual_guards(
-        cv_text,
-        tailored_cv,
+    tailored_cv, job_analysis, _ = _parse_and_guard(
+        raw,
+        cv_text=cv_text,
         job_description=job_description,
-        job_analysis=job_analysis,
     )
 
     if not (
@@ -166,15 +213,7 @@ def generate_tailored_cv(
         len(job_analysis.gaps),
     )
 
-    try:
-        pdf_bytes = render_tailored_cv_pdf(tailored_cv)
-        pdf_filename = pdf_filename_for_cv(tailored_cv)
-    except PdfGeneratorError as exc:
-        logger.error("PDF generation failed: %s", exc)
-        raise CvTailorError(str(exc)) from exc
-    except Exception as exc:
-        logger.exception("PDF generation failed")
-        raise CvTailorError("Could not generate downloadable CV PDF") from exc
+    pdf_bytes, pdf_filename = _render_pdf_best_effort(tailored_cv)
 
     result_id = str(uuid.uuid4())
     with _store_lock:
@@ -267,7 +306,14 @@ def regenerate_tailored_cv(
         logger.exception("Unexpected OpenAI CV tailor regenerate failure")
         raise CvTailorError("CV regeneration failed. Please try again.") from exc
 
-    tailored_cv, job_analysis, new_facts = parse_regenerate_response(raw)
+    try:
+        tailored_cv, job_analysis, new_facts = parse_regenerate_response(raw)
+    except Exception as exc:
+        logger.exception("Failed to parse CV tailor regenerate response")
+        raise CvTailorError(
+            "תשובת ה-AI לא הייתה תקינה — נסה שוב בעוד רגע."
+        ) from exc
+
     if general_info:
         new_facts.append(
             CandidateFact(
@@ -284,14 +330,20 @@ def regenerate_tailored_cv(
         checkbox_facts,
     )
 
-    tailored_cv = preserve_regeneration_baseline(stored.tailored_cv, tailored_cv)
-    tailored_cv = apply_factual_guards(
-        stored.cv_text,
-        tailored_cv,
-        job_description=stored.job_description,
-        job_analysis=job_analysis,
-        user_confirmed_facts=user_confirmed_facts,
-    )
+    try:
+        tailored_cv = preserve_regeneration_baseline(stored.tailored_cv, tailored_cv)
+        tailored_cv = apply_factual_guards(
+            stored.cv_text,
+            tailored_cv,
+            job_description=stored.job_description,
+            job_analysis=job_analysis,
+            user_confirmed_facts=user_confirmed_facts,
+        )
+    except Exception as exc:
+        logger.exception("Failed to guard CV tailor regenerate response")
+        raise CvTailorError(
+            "תשובת ה-AI לא הייתה תקינה — נסה שוב בעוד רגע."
+        ) from exc
 
     if not (
         tailored_cv.summary
@@ -302,15 +354,7 @@ def regenerate_tailored_cv(
     ):
         raise CvTailorError("Regenerated CV returned empty content")
 
-    try:
-        pdf_bytes = render_tailored_cv_pdf(tailored_cv)
-        pdf_filename = pdf_filename_for_cv(tailored_cv)
-    except PdfGeneratorError as exc:
-        logger.error("PDF generation failed on regenerate: %s", exc)
-        raise CvTailorError(str(exc)) from exc
-    except Exception as exc:
-        logger.exception("PDF generation failed on regenerate")
-        raise CvTailorError("Could not generate downloadable CV PDF") from exc
+    pdf_bytes, pdf_filename = _render_pdf_best_effort(tailored_cv)
 
     with _store_lock:
         _store[result_id] = _StoredResult(
@@ -368,7 +412,10 @@ def get_stored_session_snapshot(*, result_id: str, user_id: str) -> dict[str, An
 
 
 def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
-    """Return PDF bytes and filename for a stored result."""
+    """Return PDF bytes and filename for a stored result.
+
+    If generate/regenerate skipped PDF (Playwright failure), retry rendering now.
+    """
     with _store_lock:
         _cleanup_expired()
         stored = _store.get(result_id)
@@ -378,7 +425,26 @@ def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
     if stored.user_id != user_id:
         raise CvTailorError("Download link expired or not found")
 
-    return stored.pdf_bytes, stored.pdf_filename
+    if stored.pdf_bytes:
+        return stored.pdf_bytes, stored.pdf_filename or pdf_filename_for_cv(stored.tailored_cv)
+
+    try:
+        pdf_bytes = render_tailored_cv_pdf(stored.tailored_cv)
+        pdf_filename = pdf_filename_for_cv(stored.tailored_cv)
+    except PdfGeneratorError as exc:
+        logger.error("PDF re-render for download failed: %s", exc)
+        raise CvTailorError(str(exc)) from exc
+    except Exception as exc:
+        logger.exception("PDF re-render for download failed")
+        raise CvTailorError("Could not generate downloadable CV PDF") from exc
+
+    with _store_lock:
+        current = _store.get(result_id)
+        if current is not None and current.user_id == user_id:
+            current.pdf_bytes = pdf_bytes
+            current.pdf_filename = pdf_filename
+
+    return pdf_bytes, pdf_filename
 
 
 def store_restored_session(
