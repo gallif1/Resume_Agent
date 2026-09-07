@@ -20,6 +20,14 @@ from .config import (
     USE_SIMULATED_FEED,
 )
 from .decision_engine import DecisionEngine
+from .decision_log import (
+    DecisionLogBuffer,
+    build_agent_entries,
+    build_decision_log,
+    build_execution,
+    build_market_snapshot,
+    classify_kind,
+)
 from .event_engine import EventEngine
 from .indicators import IndicatorEngine
 from .market_data import MarketDataService
@@ -56,6 +64,7 @@ class TradingRuntime:
         self._persist_path = DATA_DIR / "runtime_state.json"
         self._eval_pending: list[dict[str, Any]] = []
         self._last_fill_ts: dict[str, float] = {}
+        self.decision_logs = DecisionLogBuffer()
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001 — never block route registration
@@ -184,6 +193,7 @@ class TradingRuntime:
             ),
             "events": self.events.recent,
             "decisions": decisions,
+            "decision_logs": self.decision_logs.recent,
             "trades": [
                 {
                     "id": d["id"],
@@ -357,21 +367,77 @@ class TradingRuntime:
             decision = self.decision_engine.decide(tick.symbol, all_votes, tick.price)
             if decision is None:
                 continue
+
+            block_reason: str | None = None
+            cooldown_remaining: float | None = None
             if decision.executed:
                 last_fill = self._last_fill_ts.get(tick.symbol, 0.0)
                 elapsed = time.time() - last_fill
-                if elapsed < FILL_COOLDOWN_SEC:
+                if last_fill and elapsed < FILL_COOLDOWN_SEC:
+                    cooldown_remaining = FILL_COOLDOWN_SEC - elapsed
                     decision.executed = False
                     decision.fill_price = None
                     decision.quantity = None
-                    decision.rationale = (
-                        f"{decision.rationale} · fill skipped "
-                        f"(cooldown {FILL_COOLDOWN_SEC:.0f}s, {elapsed:.0f}s ago)"
+                    block_reason = (
+                        f"Cooldown active ({FILL_COOLDOWN_SEC:.0f}s); "
+                        f"{cooldown_remaining:.0f}s remaining"
                     )
+                    decision.rationale = f"{decision.rationale} · {block_reason}"
                 else:
                     self.portfolio = self.decision_engine.apply_fill(self.portfolio, decision)
                     if decision.executed:
                         self._last_fill_ts[tick.symbol] = time.time()
+                    else:
+                        block_reason = (
+                            "Insufficient cash for minimum buy notional"
+                            if decision.side.value == "BUY"
+                            else "No open position to sell"
+                        )
+                        decision.rationale = f"{decision.rationale} · {block_reason}"
+
+            quote = None if self.use_simulated else self.market.get_quote(tick.symbol)
+            quote_meta = (
+                {
+                    "provider": quote.provider if quote else "simulated",
+                    "session": quote.session.value if quote else "open",
+                    "freshness": quote.freshness.value if quote else "live",
+                    "stale_reason": quote.stale_reason if quote else None,
+                    "asset_class": quote.asset_class.value if quote else "crypto",
+                }
+                if not self.use_simulated
+                else {"provider": "simulated", "session": "open", "freshness": "live"}
+            )
+            event_dicts = [e.to_dict() for e in new_events]
+            market_snap = build_market_snapshot(
+                symbol=tick.symbol,
+                price=tick.price,
+                ts=tick.ts,
+                volume=tick.volume,
+                indicator=indicator.to_dict(),
+                events=event_dicts,
+                quote_meta=quote_meta,
+            )
+            agent_entries = build_agent_entries(
+                [v.to_dict() for v in all_votes],
+                self.ai._last_by_symbol.get(tick.symbol),  # noqa: SLF001
+            )
+            execution = build_execution(
+                decision=decision,
+                block_reason=block_reason,
+                cooldown_remaining_sec=cooldown_remaining,
+                last_fill_ts=self._last_fill_ts.get(tick.symbol),
+            )
+            prev_log = self.decision_logs._last_by_symbol.get(tick.symbol)  # noqa: SLF001
+            kind = classify_kind(decision=decision, execution=execution, prev=prev_log)
+            log_record = build_decision_log(
+                decision=decision,
+                market=market_snap,
+                agents=agent_entries,
+                execution=execution,
+                kind=kind,
+            )
+            self.decision_logs.add(log_record)
+
             decisions_out.append(decision.to_dict())
 
             # Evaluation log for later "did AI help?" analysis.
@@ -386,6 +452,7 @@ class TradingRuntime:
                     "ai_vote": None if ai_vote is None else ai_vote.to_dict(),
                     "ai_meta": self.ai._last_by_symbol.get(tick.symbol),  # noqa: SLF001
                     "final_decision": decision.to_dict(),
+                    "decision_log": log_record,
                     "trade_executed": decision.executed,
                     "portfolio": self.portfolio.to_dict(),
                     "followup_targets": {
@@ -446,6 +513,7 @@ class TradingRuntime:
                     "votes": votes_out,
                     "ai_votes": ai_votes_out,
                     "decisions": decisions_out,
+                    "decision_logs": self.decision_logs.recent,
                     "trades": [
                         {
                             "id": d["id"],

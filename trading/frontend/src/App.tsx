@@ -10,6 +10,7 @@ import {
   type AgentVote,
   type AIStatus,
   type Decision,
+  type DecisionLog,
   type MarketEvent,
   type MarketMeta,
   type PricePoint,
@@ -18,6 +19,7 @@ import {
   type TradeMarker,
   type TradingConfig,
 } from "./api";
+import { formatDecisionLogsText } from "./decisionLogFormat";
 import LiveChart from "./LiveChart";
 
 type LatestVotes = Record<string, AgentVote>;
@@ -116,6 +118,9 @@ export default function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
+  const [decisionLogs, setDecisionLogs] = useState<DecisionLog[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
+  const [copyMsg, setCopyMsg] = useState<string | null>(null);
   const [votes, setVotes] = useState<LatestVotes>({});
   const [chartVotes, setChartVotes] = useState<AgentVote[]>([]);
   const [history, setHistory] = useState<Record<string, PricePoint[]>>({});
@@ -140,6 +145,7 @@ export default function App() {
     setSnap(s);
     setEvents(s.events || []);
     setDecisions(s.decisions || []);
+    if (s.decision_logs) setDecisionLogs(s.decision_logs);
     setHistory(mergeHistory({}, s.price_history));
     setTrades((s.trades || []).slice(0, TRADE_CAP));
     setChartVotes(votesFromDecisions(s.decisions || []));
@@ -218,6 +224,7 @@ export default function App() {
               events: MarketEvent[];
               votes: AgentVote[];
               decisions: Decision[];
+              decision_logs?: DecisionLog[];
               trades?: TradeMarker[];
               portfolio: Snapshot["portfolio"];
               market_meta?: MarketMeta;
@@ -264,6 +271,9 @@ export default function App() {
             if (p.events?.length) setEvents((prev) => [...p.events, ...prev].slice(0, 40));
             if (p.decisions?.length) {
               setDecisions((prev) => [...p.decisions, ...prev].slice(0, 40));
+            }
+            if (p.decision_logs) {
+              setDecisionLogs(p.decision_logs);
             }
             setTrades((prev) =>
               mergeTrades(
@@ -418,10 +428,26 @@ export default function App() {
   const aiCalls = aiStatus?.calls_this_hour ?? 0;
   const aiMax = aiStatus?.max_calls_per_hour ?? 0;
   const filledDecisions = decisions.filter((d) => d.executed);
-  const openDecisions = decisions.filter((d) => !d.executed && d.side !== "HOLD");
-  const visibleDecisions = [...filledDecisions, ...openDecisions, ...decisions.filter((d) => d.side === "HOLD")].filter(
-    (d, i, arr) => arr.findIndex((x) => x.id === d.id) === i
-  );
+  const copyLogs = async (limit: number | "all") => {
+    const n = limit === "all" ? decisionLogs.length : limit;
+    const text = formatDecisionLogsText(decisionLogs, n);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyMsg(`Copied ${Math.min(n, decisionLogs.length)} logs`);
+    } catch {
+      setCopyMsg("Copy failed — select text manually from Details");
+    }
+    window.setTimeout(() => setCopyMsg(null), 2500);
+  };
+
+  const execBadge = (log: DecisionLog) => {
+    const st = log.execution?.status;
+    if (st === "FILLED") return "FILLED";
+    if (log.kind === "SIGNAL_STILL_ACTIVE") return "Signal active";
+    if (String(log.execution?.reason || "").toLowerCase().includes("cooldown")) return "Cooldown";
+    if (st === "NOT_FILLED" && log.decision?.action !== "HOLD") return "Not filled";
+    return log.kind.replace(/_/g, " ");
+  };
   const wsLabel =
     wsState === "live"
       ? "WS connected"
@@ -667,7 +693,27 @@ export default function App() {
         </section>
 
         <section className="panel">
-          <h2>Decision Engine</h2>
+          <div className="panel-head-row">
+            <h2>Decision Engine</h2>
+            <div className="copy-logs-bar">
+              <button type="button" className="btn-copy" onClick={() => copyLogs(25)}>
+                Copy Recent Logs
+              </button>
+              <button type="button" className="btn-copy ghost" onClick={() => copyLogs(10)}>
+                10
+              </button>
+              <button type="button" className="btn-copy ghost" onClick={() => copyLogs(25)}>
+                25
+              </button>
+              <button type="button" className="btn-copy ghost" onClick={() => copyLogs(50)}>
+                50
+              </button>
+              <button type="button" className="btn-copy ghost" onClick={() => copyLogs("all")}>
+                All
+              </button>
+              {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
+            </div>
+          </div>
           {filledDecisions.length > 0 && (
             <div className="fills-strip" aria-label="Recent paper fills">
               {filledDecisions.slice(0, 8).map((d) => (
@@ -682,24 +728,123 @@ export default function App() {
               ))}
             </div>
           )}
-          <div className="list">
-            {visibleDecisions.map((d) => (
-              <div className={`item ${d.executed ? "filled" : ""}`} key={d.id + String(d.ts)}>
-                <div className="row">
-                  <span>
-                    <span className={`tag ${d.side}`}>{d.side}</span>{" "}
-                    <strong className="mono">{d.symbol}</strong>
-                  </span>
-                  <span className="mono muted">
-                    {(d.confidence * 100).toFixed(0)}%
-                    {d.executed ? " · FILLED" : d.side === "HOLD" ? "" : " · not filled"}
-                  </span>
+          <div className="list decision-log-list">
+            {decisionLogs.map((log) => {
+              const open = expandedLogId === log.id;
+              const action = log.decision?.action || log.signal?.action || "HOLD";
+              const conf = log.decision?.final_confidence ?? 0;
+              return (
+                <div
+                  className={`item decision-log-item ${log.execution?.status === "FILLED" ? "filled" : ""}`}
+                  key={log.id}
+                >
+                  <div className="row">
+                    <span>
+                      <span className={`tag ${action}`}>{action}</span>{" "}
+                      <strong className="mono">{log.symbol}</strong>
+                      <span className="muted mono" style={{ marginLeft: 8 }}>
+                        {log.kind.replace(/_/g, " ")}
+                      </span>
+                    </span>
+                    <span className="mono muted">
+                      {(conf * 100).toFixed(0)}% · {execBadge(log)}
+                    </span>
+                  </div>
+                  <div className="decision-log-summary muted">
+                    {log.execution?.reason || log.decision?.explanation || log.decision?.rationale}
+                  </div>
+                  <button
+                    type="button"
+                    className="why-btn"
+                    aria-expanded={open}
+                    onClick={() => setExpandedLogId(open ? null : log.id)}
+                  >
+                    {open ? "Hide details" : "Why?"}
+                  </button>
+                  {open && (
+                    <div className="decision-log-details">
+                      <div className="detail-block">
+                        <h4>SIGNAL</h4>
+                        <p className="mono">
+                          {log.signal?.action} · agents{" "}
+                          {(log.signal?.agents || [])
+                            .map(
+                              (a) =>
+                                `${a.agent_name?.replace(" Agent", "") || a.agent_id}:${a.action}`
+                            )
+                            .join(", ")}
+                        </p>
+                      </div>
+                      <div className="detail-block">
+                        <h4>MARKET SNAPSHOT</h4>
+                        <pre className="detail-pre">
+                          {`Price: ${log.market?.price ?? "—"}
+1m: ${log.market?.change_1m_pct ?? "—"}%
+5m: ${log.market?.change_5m_pct ?? "—"}%
+15m: ${log.market?.change_15m_pct ?? "—"}%
+RSI: ${log.market?.rsi_14 ?? "—"}
+SMA fast/slow: ${log.market?.sma_fast ?? "—"} / ${log.market?.sma_slow ?? "—"}
+EMA: ${log.market?.ema_fast ?? "—"}
+Trend: ${log.market?.trend ?? "—"}
+Volume: ${log.market?.volume_state ?? "—"}
+Volatility: ${log.market?.volatility ?? "—"}
+Events: ${(log.market?.detected_events || []).join(", ") || "—"}
+Provider: ${log.market?.provider ?? "—"} (${log.market?.freshness ?? "—"})`}
+                        </pre>
+                      </div>
+                      <div className="detail-block">
+                        <h4>AGENTS</h4>
+                        {(log.signal?.agents || []).map((a) => (
+                          <div className="agent-detail" key={`${log.id}-${a.agent_id}-${a.ts}`}>
+                            <div className="row">
+                              <strong>{a.agent_name}</strong>
+                              <span className={`tag ${a.action || "HOLD"}`}>{a.action}</span>
+                            </div>
+                            <div className="mono muted">
+                              {((a.confidence ?? 0) * 100).toFixed(0)}%
+                              {a.source ? ` · ${a.source}` : ""}
+                            </div>
+                            <p>{a.reason}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="detail-block">
+                        <h4>DECISION</h4>
+                        <pre className="detail-pre">
+                          {`Action: ${log.decision?.action}
+Final confidence: ${((log.decision?.final_confidence ?? 0) * 100).toFixed(0)}%
+Votes: BUY ${log.decision?.vote_counts?.BUY ?? 0} / SELL ${log.decision?.vote_counts?.SELL ?? 0} / HOLD ${log.decision?.vote_counts?.HOLD ?? 0}
+Weights: BUY=${log.decision?.weights?.BUY ?? 0} SELL=${log.decision?.weights?.SELL ?? 0} HOLD=${log.decision?.weights?.HOLD ?? 0}
+Action score: ${log.decision?.action_score ?? "—"}
+Threshold: ${log.decision?.threshold ?? "—"}
+Hold gate: ${log.decision?.hold_gate ?? "—"}
+Explanation: ${log.decision?.explanation || "—"}
+
+Confidence debug:
+  raw_score = ${log.decision?.confidence_debug?.raw_score ?? "—"}
+  denominator = ${log.decision?.confidence_debug?.denominator ?? "—"}
+  formula = ${log.decision?.confidence_debug?.formula ?? "—"}
+  before_cap = ${log.decision?.confidence_debug?.confidence_before_cap ?? "—"}
+  final = ${log.decision?.confidence_debug?.final_confidence ?? "—"}
+  note = ${log.decision?.confidence_debug?.note ?? "—"}`}
+                        </pre>
+                      </div>
+                      <div className="detail-block">
+                        <h4>EXECUTION</h4>
+                        <pre className="detail-pre">
+                          {`Status: ${log.execution?.status}
+Reason: ${log.execution?.reason}
+Cooldown remaining: ${log.execution?.cooldown_remaining_sec ?? "—"}s
+Fill: ${log.execution?.quantity ?? "—"} @ ${log.execution?.fill_price ?? "—"}`}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="muted">{d.rationale}</div>
-              </div>
-            ))}
-            {!visibleDecisions.length && (
-              <div className="muted">Decisions will appear once agents vote.</div>
+              );
+            })}
+            {!decisionLogs.length && (
+              <div className="muted">Structured decision logs appear after START.</div>
             )}
           </div>
         </section>

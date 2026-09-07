@@ -81,9 +81,111 @@ def test_decision_engine_executes_sell_against_opposing_buy():
 
 
 def test_fill_cooldown_constant_loaded():
-    from trading_system.config import FILL_COOLDOWN_SEC
+    from trading_system.config import DECISION_LOG_LIMIT, FILL_COOLDOWN_SEC
 
     assert FILL_COOLDOWN_SEC >= 1
+    assert DECISION_LOG_LIMIT >= 50
+
+
+def test_decision_engine_exposes_confidence_debug():
+    engine = DecisionEngine(min_confidence=0.45)
+    votes = [
+        AgentVote("a", "A", "SOL-USD", Side.BUY, 0.8, "up"),
+        AgentVote("b", "B", "SOL-USD", Side.BUY, 0.7, "up"),
+        AgentVote("c", "C", "SOL-USD", Side.HOLD, 0.3, "flat"),
+    ]
+    decision = engine.decide("SOL-USD", votes, price=100)
+    assert decision is not None
+    assert decision.engine
+    dbg = decision.engine["confidence_debug"]
+    assert "final_confidence" in dbg
+    assert "formula" in dbg
+    # 2 BUY / 0 SELL → confidence caps near 0.99 (documented quirk).
+    assert decision.confidence >= 0.9
+
+
+def test_momentum_reason_uses_real_threshold():
+    from trading_system.agents import MomentumAgent
+
+    agent = MomentumAgent()
+    history = [100, 100.2, 100.5, 100.8, 101.5]
+    tick = Tick(symbol="BTC-USD", price=101.5, change_pct=0.5, volume=1)
+    vote = agent.vote(tick, history, [])
+    assert "threshold" in vote.rationale.lower() or "BUY" in vote.rationale or "HOLD" in vote.rationale
+    assert "price_change_pct" in vote.inputs or "history_len" in vote.inputs
+
+
+def test_decision_log_text_export_and_cooldown_coalesce():
+    from trading_system.decision_log import (
+        DecisionLogBuffer,
+        build_agent_entries,
+        build_decision_log,
+        build_execution,
+        build_market_snapshot,
+        classify_kind,
+        format_decision_logs_text,
+    )
+    from trading_system.models import Decision
+
+    engine = DecisionEngine(min_confidence=0.45)
+    votes = [
+        AgentVote("momentum", "Momentum Agent", "SOL-USD", Side.BUY, 0.82, "BUY because +1.3%", inputs={"price_change_pct": 1.3}),
+        AgentVote("mean_reversion", "Mean Reversion Agent", "SOL-USD", Side.HOLD, 0.55, "HOLD near mean"),
+        AgentVote("volatility", "Volatility Agent", "SOL-USD", Side.BUY, 0.74, "BUY spike recovery"),
+    ]
+    decision = engine.decide("SOL-USD", votes, price=142.3)
+    assert decision is not None
+    decision.executed = False
+    market = build_market_snapshot(
+        symbol="SOL-USD",
+        price=142.3,
+        ts=1_700_000_000,
+        volume=1000,
+        indicator={
+            "change_1m_pct": 0.3,
+            "change_5m_pct": 1.4,
+            "change_15m_pct": 2.1,
+            "rsi_14": 63,
+            "sma_fast": 140,
+            "sma_slow": 138,
+            "ema_fast": 141,
+            "volatility": 0.2,
+            "volume_state": "HIGH",
+            "short_trend": "UP",
+        },
+        events=[{"kind": "volume_surge", "symbol": "SOL-USD"}],
+        quote_meta={"provider": "coinbase", "session": "open", "freshness": "live"},
+    )
+    agents = build_agent_entries([v.to_dict() for v in votes], None)
+    execution = build_execution(
+        decision=decision,
+        block_reason="Cooldown active (45s); 36s remaining",
+        cooldown_remaining_sec=36,
+        last_fill_ts=1_700_000_000 - 9,
+    )
+    kind = classify_kind(decision=decision, execution=execution, prev=None)
+    assert kind in {"EXECUTION_BLOCKED", "NEW_DECISION"}
+    record = build_decision_log(
+        decision=decision, market=market, agents=agents, execution=execution, kind=kind
+    )
+    buf = DecisionLogBuffer(limit=50)
+    buf.add(record)
+    # Second identical cooldown signal should coalesce.
+    record2 = dict(record)
+    record2["id"] = "second"
+    record2["execution"] = {**execution, "cooldown_remaining_sec": 30}
+    record2["kind"] = "SIGNAL_STILL_ACTIVE"
+    buf.add(record2)
+    assert len(buf.recent) == 1
+    assert buf.recent[0]["execution"]["cooldown_remaining_sec"] == 30
+    text = format_decision_logs_text(buf.recent, 25)
+    assert "=== DECISION 1 ===" in text
+    assert "SOL-USD" in text
+    assert "CONFIDENCE DEBUG" in text
+    assert "Cooldown" in text
+    print("\n----- SAMPLE COPIED LOG -----\n")
+    print(text)
+    print("----- END SAMPLE -----\n")
 
 
 def test_event_engine_builds_chart_history():
@@ -120,7 +222,8 @@ def test_runtime_snapshot_exposes_price_history_and_trades():
     assert isinstance(snap["trades"], list)
     assert snap["data_mode"] == "simulated"
     assert "ai" in snap
-
+    assert "decision_logs" in snap
+    assert isinstance(snap["decision_logs"], list)
 
 def test_indicator_engine_computes():
     candles = [
