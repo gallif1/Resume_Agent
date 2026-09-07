@@ -269,7 +269,10 @@ def _register_trading_routes() -> None:
         )
         from trading_system.config import PUBLIC_BASE_PATH  # type: ignore[import-not-found]
     except Exception as exc:  # noqa: BLE001
-        print(f"[warn] trading_system import failed: {exc}")
+        # Capture the message NOW — Python 3 clears `as exc` at the end of the
+        # except block, so a closure over `exc` NameErrors on every request (HTTP 500).
+        import_error = f"{type(exc).__name__}: {exc}"[:300]
+        print(f"[warn] trading_system import failed: {import_error}")
 
         @app.get("/trading/api/health")
         def trading_import_failed() -> dict[str, str]:
@@ -278,31 +281,45 @@ def _register_trading_routes() -> None:
                 "status": "degraded",
                 "service": "ai-trading-system",
                 "package_found": "true",
-                "error": str(exc)[:200],
+                "error": import_error,
             }
 
         return
 
-    base = PUBLIC_BASE_PATH or "/trading"
-    app.include_router(create_trading_router(), prefix=base)
-    # Register WebSockets on the app itself — included-router WS routes have
-    # been observed as missing (HTTP 404 on upgrade) on the EC2 runtime.
-    ws_paths = register_trading_websockets(app, base_path=base)
-    mounted = mount_trading_frontend(app, base_path=base)
-    import importlib.util
+    try:
+        base = PUBLIC_BASE_PATH or "/trading"
+        app.include_router(create_trading_router(), prefix=base)
+        # Register WebSockets on the app itself — included-router WS routes have
+        # been observed as missing (HTTP 404 on upgrade) on the EC2 runtime.
+        ws_paths = register_trading_websockets(app, base_path=base)
+        mounted = mount_trading_frontend(app, base_path=base)
+        import importlib.util
 
-    ws_lib = any(importlib.util.find_spec(n) for n in ("websockets", "wsproto"))
-    if not ws_lib:
+        ws_lib = any(importlib.util.find_spec(n) for n in ("websockets", "wsproto"))
+        if not ws_lib:
+            print(
+                "[warn] No WebSocket library (websockets/wsproto) installed — "
+                "uvicorn will 404 /trading WebSocket upgrades. "
+                "Install uvicorn[standard] or websockets."
+            )
         print(
-            "[warn] No WebSocket library (websockets/wsproto) installed — "
-            "uvicorn will 404 /trading WebSocket upgrades. "
-            "Install uvicorn[standard] or websockets."
+            f"[info] AI Trading System mounted at {base} "
+            f"(frontend={'yes' if mounted else 'no — build trading/frontend dist'}; "
+            f"ws={','.join(ws_paths)}; ws_runtime={'ok' if ws_lib else 'MISSING'})"
         )
-    print(
-        f"[info] AI Trading System mounted at {base} "
-        f"(frontend={'yes' if mounted else 'no — build trading/frontend dist'}; "
-        f"ws={','.join(ws_paths)}; ws_runtime={'ok' if ws_lib else 'MISSING'})"
-    )
+    except Exception as exc:  # noqa: BLE001
+        mount_error = f"{type(exc).__name__}: {exc}"[:300]
+        print(f"[warn] trading_system mount failed: {mount_error}")
+
+        @app.get("/trading/api/health")
+        def trading_mount_failed() -> dict[str, str]:
+            return {
+                "ok": "false",
+                "status": "degraded",
+                "service": "ai-trading-system",
+                "package_found": "true",
+                "error": mount_error,
+            }
 
 
 def _register_job_apply_routes() -> None:
