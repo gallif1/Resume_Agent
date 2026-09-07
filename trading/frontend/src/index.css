@@ -816,3 +816,37 @@ a {
 .chart-meta-line {
   font-size: 0.75rem;
 }
+
+.perf-block {
+  margin: 0.65rem 0 0.9rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.45rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.perf-title {
+  margin: 0 0 0.45rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.perf-grid {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.perf-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.perf-note {
+  margin: 0.45rem 0 0;
+  font-size: 0.72rem;
+}
+

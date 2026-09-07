@@ -51,7 +51,27 @@ FILL_COOLDOWN_SEC = float(os.getenv("TRADING_FILL_COOLDOWN_SEC", "45"))
 # Rolling structured decision logs kept in memory for UI / copy-export.
 DECISION_LOG_LIMIT = int(os.getenv("TRADING_DECISION_LOG_LIMIT", "200"))
 
+# Minimum seconds between full log rows when nothing meaningful changed.
+DECISION_LOG_HEARTBEAT_SECONDS = float(os.getenv("DECISION_LOG_HEARTBEAT_SECONDS", "45"))
+
 STARTING_CASH = float(os.getenv("TRADING_STARTING_CASH", "100000"))
+
+# Forward outcome horizons (label=seconds). Used for accuracy tracking only.
+_OUTCOME_RAW = os.getenv("OUTCOME_HORIZONS_SEC", "5m:300,15m:900,60m:3600")
+OUTCOME_HORIZONS_SEC: list[tuple[str, float]] = []
+for _part in _OUTCOME_RAW.split(","):
+    _part = _part.strip()
+    if not _part or ":" not in _part:
+        continue
+    _label, _secs = _part.split(":", 1)
+    try:
+        OUTCOME_HORIZONS_SEC.append((_label.strip(), float(_secs)))
+    except ValueError:
+        continue
+if not OUTCOME_HORIZONS_SEC:
+    OUTCOME_HORIZONS_SEC = [("5m", 300.0), ("15m", 900.0), ("60m", 3600.0)]
+
+OUTCOME_RESOLVE_INTERVAL_SEC = float(os.getenv("OUTCOME_RESOLVE_INTERVAL_SEC", "30"))
 
 # --- Real market data ---
 # Set TRADING_USE_SIMULATED_FEED=true only for offline unit tests.
@@ -78,3 +98,5 @@ AI_MAX_CALLS_PER_HOUR = int(os.getenv("AI_MAX_CALLS_PER_HOUR", "20"))
 AI_PRICE_TRIGGER_PERCENT = float(os.getenv("AI_PRICE_TRIGGER_PERCENT", "0.35"))
 AI_AGENT_WEIGHT = float(os.getenv("AI_AGENT_WEIGHT", "1.0"))
 AI_CACHE_TTL_SECONDS = float(os.getenv("AI_CACHE_TTL_SECONDS", "180"))
+# Max age of an AI analysis that can be reused for pre-trade validation.
+AI_PRETRADE_MAX_AGE_SECONDS = float(os.getenv("AI_PRETRADE_MAX_AGE_SECONDS", "90"))

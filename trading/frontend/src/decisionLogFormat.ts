@@ -12,6 +12,37 @@ function pct(v?: number | null): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 }
 
+function yesNo(v?: boolean | null): string {
+  if (v === true) return "YES";
+  if (v === false) return "NO";
+  return "PENDING";
+}
+
+function formatOutcome(log: DecisionLog): string[] {
+  const lines = ["OUTCOME"];
+  const outcome = log.outcome;
+  if (!outcome) {
+    lines.push("PENDING (no actionable outcome tracked)");
+    return lines;
+  }
+  lines.push(`Entry price: ${outcome.entry_price ?? "—"}`);
+  const horizons = outcome.horizons || {};
+  for (const key of ["5m", "15m", "60m"] as const) {
+    const h = horizons[key] || {};
+    const status = h.status || "pending";
+    if (status === "resolved") {
+      lines.push(`${key} price: ${h.price ?? "—"}`);
+      lines.push(`${key} return: ${pct(h.return_pct)}`);
+      lines.push(`${key} direction correct: ${yesNo(h.direction_correct)}`);
+    } else if (status === "unavailable" || status === "no_history") {
+      lines.push(`${key}: ${status.toUpperCase()} (price not recoverable)`);
+    } else {
+      lines.push(`${key}: PENDING`);
+    }
+  }
+  return lines;
+}
+
 export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): string {
   const rows = logs.slice(0, limit ?? logs.length);
   const chunks: string[] = [];
@@ -23,6 +54,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
     const dbg = decision.confidence_debug || {};
     const weights = decision.weights || {};
     const counts = decision.vote_counts || {};
+    const pretrade = log.pretrade || null;
 
     const lines: string[] = [
       `=== DECISION ${idx + 1} ===`,
@@ -68,6 +100,17 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
       lines.push("");
     }
 
+    if (pretrade) {
+      lines.push(
+        "AI PRETRADE",
+        `Source: ${pretrade.source ?? "—"}`,
+        `Skip reason: ${pretrade.skip_reason ?? "—"}`,
+        `Action: ${pretrade.action ?? "—"}`,
+        `Confidence: ${pretrade.confidence ?? "—"}`,
+        ""
+      );
+    }
+
     lines.push(
       "DECISION ENGINE",
       `Votes: BUY ${counts.BUY ?? 0} / SELL ${counts.SELL ?? 0} / HOLD ${counts.HOLD ?? 0}`,
@@ -80,10 +123,15 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
       `Explanation: ${decision.explanation || decision.rationale || "—"}`,
       "",
       "CONFIDENCE DEBUG",
-      `raw_score = ${dbg.raw_score ?? "—"}`,
-      `denominator = ${dbg.denominator ?? "—"} (${dbg.formula ?? "—"})`,
-      `confidence_before_cap = ${dbg.confidence_before_cap ?? "—"}`,
-      `final_confidence = ${dbg.final_confidence ?? "—"} (cap ${dbg.cap ?? 0.99})`,
+      `winning_action = ${dbg.winning_action ?? "—"}`,
+      `winning_score = ${dbg.winning_score ?? dbg.raw_score ?? "—"}`,
+      `total_weight = ${dbg.total_weight ?? dbg.total_all_weights ?? "—"}`,
+      `action_support = ${dbg.action_support ?? "—"}`,
+      `agreement_factor = ${dbg.agreement_factor ?? "—"}`,
+      `hold_ratio = ${dbg.hold_ratio ?? "—"}`,
+      `opposition_ratio = ${dbg.opposition_ratio ?? "—"}`,
+      `final_confidence = ${dbg.final_confidence ?? "—"}`,
+      `formula = ${dbg.formula ?? "—"}`,
       `note: ${dbg.note ?? "—"}`,
       "",
       "EXECUTION",
@@ -97,7 +145,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
       lines.push(`Fill price: ${execution.fill_price ?? "—"}`);
       lines.push(`Quantity: ${execution.quantity ?? "—"}`);
     }
-    lines.push("", "=".repeat(32), "");
+    lines.push("", ...formatOutcome(log), "", "=".repeat(32), "");
     chunks.push(lines.join("\n"));
   });
 

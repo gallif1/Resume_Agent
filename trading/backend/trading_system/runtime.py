@@ -15,6 +15,7 @@ from .config import (
     DEFAULT_CHART_TIMEFRAME,
     DEFAULT_SYMBOLS,
     FILL_COOLDOWN_SEC,
+    OUTCOME_RESOLVE_INTERVAL_SEC,
     STARTING_CASH,
     TICK_INTERVAL_SEC,
     USE_SIMULATED_FEED,
@@ -33,7 +34,8 @@ from .indicators import IndicatorEngine
 from .market_data import MarketDataService
 from .market_data.models import DataFreshness
 from .market_feed import MarketFeed
-from .models import AgentVote, Portfolio, SystemState, Tick
+from .models import AgentVote, Portfolio, Side, SystemState, Tick
+from .outcomes import OutcomeStore
 
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
@@ -65,6 +67,9 @@ class TradingRuntime:
         self._eval_pending: list[dict[str, Any]] = []
         self._last_fill_ts: dict[str, float] = {}
         self.decision_logs = DecisionLogBuffer()
+        self.outcomes = OutcomeStore()
+        self._last_outcome_resolve = 0.0
+        self._sim_price_history: dict[str, list[tuple[float, float]]] = {}
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001 — never block route registration
@@ -223,8 +228,10 @@ class TradingRuntime:
             + [{"id": "ai_analyst", "name": "AI Market Analyst"}],
             "ai": self.ai.status(),
             "portfolio": self.portfolio.to_dict(),
+            "performance": self.outcomes.performance_stats(),
             "tick_interval_sec": TICK_INTERVAL_SEC,
             "data_mode": "simulated" if self.use_simulated else "real",
+            "paper_trading_only": True,
         }
 
     async def start(self) -> dict[str, Any]:
@@ -309,6 +316,79 @@ class TradingRuntime:
             self.state = SystemState.STOPPED
             await self._broadcast({"type": "error", "payload": {"message": str(exc)}})
 
+    def _remember_sim_price(self, symbol: str, ts: float, price: float) -> None:
+        hist = self._sim_price_history.setdefault(symbol, [])
+        hist.append((ts, price))
+        if len(hist) > 5000:
+            self._sim_price_history[symbol] = hist[-5000:]
+
+    def _price_near(self, symbol: str, target_ts: float) -> tuple[float | None, str]:
+        if self.use_simulated:
+            hist = self._sim_price_history.get(symbol) or []
+            if not hist:
+                return None, "no_history"
+            best = min(hist, key=lambda p: abs(p[0] - target_ts))
+            if abs(best[0] - target_ts) > 180:
+                return None, "unavailable"
+            return best[1], "ok"
+        return self.market.price_near(symbol, target_ts)
+
+    def _resolve_outcomes_if_due(self) -> None:
+        now = time.time()
+        if now - self._last_outcome_resolve < OUTCOME_RESOLVE_INTERVAL_SEC:
+            return
+        self._last_outcome_resolve = now
+        written = self.outcomes.resolve_due(self._price_near, now=now)
+        if written:
+            # Patch in-memory logs with updated outcome summaries.
+            for row in list(self.outcomes._by_id.values()):  # noqa: SLF001
+                did = str(row.get("decision_id") or "")
+                if not did:
+                    continue
+                summary = self.outcomes.attach_outcome_summary(did)
+                if summary:
+                    self.decision_logs.patch_outcome(did, summary)
+
+    def _maybe_pretrade_ai(
+        self,
+        tick: Tick,
+        ai_snapshot: dict[str, Any],
+        heuristic_votes: list[AgentVote],
+        all_votes: list[AgentVote],
+        decision,
+    ):
+        """If candidate BUY/SELL is about to fill, ensure fresh AI and re-decide."""
+        pretrade_meta: dict[str, Any] | None = None
+        if decision.side == Side.HOLD or not decision.executed:
+            return all_votes, decision, pretrade_meta
+
+        # Skip pretrade when cooldown would block anyway (save API calls).
+        last_fill = self._last_fill_ts.get(tick.symbol, 0.0)
+        if last_fill and (time.time() - last_fill) < FILL_COOLDOWN_SEC:
+            return all_votes, decision, pretrade_meta
+
+        try:
+            ai_vote, meta = self.ai.pretrade_vote(tick, ai_snapshot)
+            pretrade_meta = meta
+        except Exception as exc:  # noqa: BLE001 — never crash trading loop
+            pretrade_meta = {
+                "source": "PRETRADE_UNAVAILABLE",
+                "skip_reason": "exception",
+                "reason": str(exc)[:200],
+            }
+            return all_votes, decision, pretrade_meta
+
+        if ai_vote is None:
+            return all_votes, decision, pretrade_meta
+
+        # Replace any prior AI vote, then re-aggregate.
+        without_ai = [v for v in all_votes if v.agent_id != "ai_analyst"]
+        refreshed = without_ai + [ai_vote]
+        new_decision = self.decision_engine.decide(tick.symbol, refreshed, tick.price)
+        if new_decision is None:
+            return refreshed, decision, pretrade_meta
+        return refreshed, new_decision, pretrade_meta
+
     async def _tick_once(self) -> None:
         ticks = self._market_ticks()
         if not ticks:
@@ -327,6 +407,7 @@ class TradingRuntime:
                         "trades": [],
                         "portfolio": self.portfolio.to_dict(),
                         "ai": self.ai.status(),
+                        "performance": self.outcomes.performance_stats(),
                         "market_meta": self.snapshot()["market_meta"],
                     },
                 }
@@ -340,6 +421,9 @@ class TradingRuntime:
         ai_votes_out: list[dict[str, Any]] = []
 
         for tick in ticks:
+            if self.use_simulated:
+                self._remember_sim_price(tick.symbol, tick.ts or time.time(), tick.price)
+
             # Prefer real candle closes for heuristics; fall back to short event history.
             candles = []
             if not self.use_simulated:
@@ -368,8 +452,24 @@ class TradingRuntime:
             if decision is None:
                 continue
 
+            # Candidate BUY/SELL → pretrade AI validation + re-decide before fill.
+            all_votes, decision, pretrade_meta = self._maybe_pretrade_ai(
+                tick, ai_snapshot, heuristic_votes, all_votes, decision
+            )
+            if pretrade_meta and any(v.agent_id == "ai_analyst" for v in all_votes):
+                ai_v = next(v for v in all_votes if v.agent_id == "ai_analyst")
+                if not any(x.get("agent_id") == "ai_analyst" for x in ai_votes_out):
+                    ai_votes_out.append(ai_v.to_dict())
+                    votes_out.append(ai_v.to_dict())
+
             block_reason: str | None = None
             cooldown_remaining: float | None = None
+            cash_before = self.portfolio.cash
+            pos_before = None
+            if decision.symbol in self.portfolio.positions:
+                p = self.portfolio.positions[decision.symbol]
+                pos_before = {"quantity": p.quantity, "avg_price": p.avg_price}
+
             if decision.executed:
                 last_fill = self._last_fill_ts.get(tick.symbol, 0.0)
                 elapsed = time.time() - last_fill
@@ -428,15 +528,72 @@ class TradingRuntime:
                 last_fill_ts=self._last_fill_ts.get(tick.symbol),
             )
             prev_log = self.decision_logs._last_by_symbol.get(tick.symbol)  # noqa: SLF001
-            kind = classify_kind(decision=decision, execution=execution, prev=prev_log)
+            kind = classify_kind(
+                decision=decision,
+                execution=execution,
+                prev=prev_log,
+                pretrade=pretrade_meta,
+            )
+
+            trade_payload = None
+            if decision.executed and decision.side != Side.HOLD:
+                pos_after = None
+                if decision.symbol in self.portfolio.positions:
+                    p = self.portfolio.positions[decision.symbol]
+                    pos_after = {"quantity": p.quantity, "avg_price": p.avg_price}
+                trade_payload = {
+                    "fill_price": decision.fill_price,
+                    "quantity": decision.quantity,
+                    "position_before": pos_before,
+                    "position_after": pos_after,
+                    "cash_before": cash_before,
+                    "cash_after": self.portfolio.cash,
+                    "realized_pnl": self.portfolio.realized_pnl,
+                }
+
+            outcome_summary = None
+            if decision.side in {Side.BUY, Side.SELL}:
+                # Track signal quality for new actionable decisions / fills.
+                should_track = kind in {
+                    "NEW_DECISION",
+                    "TRADE_EXECUTED",
+                    "EXECUTION_BLOCKED",
+                } or bool(pretrade_meta)
+                if should_track:
+                    self.outcomes.record_actionable(
+                        decision_id=decision.id,
+                        symbol=decision.symbol,
+                        action=decision.side.value,
+                        entry_price=tick.price,
+                        entry_ts=time.time(),
+                        final_confidence=decision.confidence,
+                        agent_votes=[v.to_dict() for v in all_votes],
+                        executed=bool(decision.executed),
+                        trade=trade_payload,
+                        kind=kind,
+                    )
+                    outcome_summary = self.outcomes.attach_outcome_summary(decision.id)
+                else:
+                    existing = self.outcomes.get_by_decision(
+                        (prev_log or {}).get("id") or ""
+                    )
+                    if existing:
+                        outcome_summary = self.outcomes.attach_outcome_summary(
+                            str(existing.get("decision_id"))
+                        )
+
             log_record = build_decision_log(
                 decision=decision,
                 market=market_snap,
                 agents=agent_entries,
                 execution=execution,
                 kind=kind,
+                pretrade=pretrade_meta,
+                outcome=outcome_summary,
             )
-            self.decision_logs.add(log_record)
+            stored = self.decision_logs.add(log_record)
+            if stored is None and outcome_summary and prev_log:
+                self.decision_logs.patch_outcome(str(prev_log.get("id")), outcome_summary)
 
             decisions_out.append(decision.to_dict())
 
@@ -451,8 +608,9 @@ class TradingRuntime:
                     "heuristic_votes": [v.to_dict() for v in heuristic_votes],
                     "ai_vote": None if ai_vote is None else ai_vote.to_dict(),
                     "ai_meta": self.ai._last_by_symbol.get(tick.symbol),  # noqa: SLF001
+                    "pretrade": pretrade_meta,
                     "final_decision": decision.to_dict(),
-                    "decision_log": log_record,
+                    "decision_log": log_record if stored is not None else None,
                     "trade_executed": decision.executed,
                     "portfolio": self.portfolio.to_dict(),
                     "followup_targets": {
@@ -462,6 +620,8 @@ class TradingRuntime:
                     },
                 }
             )
+
+        self._resolve_outcomes_if_due()
 
         if self.tick_count % 5 == 0:
             self._save_state()
@@ -539,6 +699,7 @@ class TradingRuntime:
                     ],
                     "portfolio": self.portfolio.to_dict(),
                     "ai": self.ai.status(),
+                    "performance": self.outcomes.performance_stats(),
                     "market_meta": self.snapshot()["market_meta"],
                 },
             }

@@ -1,10 +1,22 @@
 """Aggregate agent votes into actionable decisions and paper fills.
 
-Confidence formula (unchanged — exposed in engine.confidence_debug):
-  For actionable sides: final = min(0.99, winning_score / (BUY_weight + SELL_weight))
-  For HOLD:             final = min(0.99, HOLD_weight / sum(all_weights))
-Note: when all actionable votes agree (no opposing BUY/SELL), action_total ≈ winning_score
-so confidence caps at 0.99 — this is why 2 BUY + 1 HOLD often shows 99%.
+Calibrated confidence (exposed in engine.confidence_debug):
+
+  action_support   = winning_score / total_vote_weight   # BUY+SELL+HOLD
+  agreement_factor = n_agents_supporting_winner / n_agents
+  opposition_ratio = opposing_BUY_or_SELL_score / total_vote_weight
+  hold_ratio       = HOLD_score / total_vote_weight
+
+  confidence = clamp(
+      action_support
+      * (0.75 + 0.25 * agreement_factor)
+      * (1 - 0.55 * opposition_ratio)
+      * (1 - 0.28 * hold_ratio),
+      0.05, 0.95,
+  )
+
+HOLD disagreement and opposing BUY/SELL both reduce confidence. Near-99%
+requires near-unanimous strong support with minimal HOLD/opposition.
 """
 
 from __future__ import annotations
@@ -14,6 +26,79 @@ from collections import Counter
 from typing import Any
 
 from .models import AgentVote, Decision, Portfolio, Position, Side
+
+
+def calibrated_confidence(
+    side: Side,
+    weights: dict[Side, float],
+    votes: list[AgentVote],
+) -> tuple[float, dict[str, Any]]:
+    """Return (confidence, debug_dict) using the calibrated formula."""
+    total_weight = sum(weights.values()) or 1.0
+    winning_score = float(weights.get(side, 0.0))
+    hold_score = float(weights.get(Side.HOLD, 0.0))
+    buy_score = float(weights.get(Side.BUY, 0.0))
+    sell_score = float(weights.get(Side.SELL, 0.0))
+
+    if side == Side.BUY:
+        opposing_score = sell_score
+    elif side == Side.SELL:
+        opposing_score = buy_score
+    else:
+        opposing_score = max(buy_score, sell_score)
+
+    action_support = winning_score / total_weight
+    n_agents = len(votes) or 1
+    n_support = sum(1 for v in votes if v.side == side)
+    n_disagree = n_agents - n_support
+    agreement_factor = n_support / n_agents
+    opposition_ratio = opposing_score / total_weight
+    hold_ratio = hold_score / total_weight if side != Side.HOLD else 0.0
+
+    agreement_adj = 0.75 + 0.25 * agreement_factor
+    opposition_adj = 1.0 - 0.55 * opposition_ratio
+    hold_adj = 1.0 - 0.28 * hold_ratio
+
+    raw = action_support * agreement_adj * opposition_adj * hold_adj
+    confidence = max(0.05, min(0.95, raw))
+
+    formula = (
+        "action_support * (0.75 + 0.25*agreement_factor) "
+        "* (1 - 0.55*opposition_ratio) * (1 - 0.28*hold_ratio); "
+        "clamp[0.05, 0.95]"
+    )
+    debug = {
+        "winning_action": side.value,
+        "winning_score": round(winning_score, 4),
+        "total_weight": round(total_weight, 4),
+        "action_support": round(action_support, 4),
+        "agreement_factor": round(agreement_factor, 4),
+        "n_supporting": n_support,
+        "n_disagreeing": n_disagree,
+        "n_agents": n_agents,
+        "hold_ratio": round(hold_ratio, 4),
+        "opposition_ratio": round(opposition_ratio, 4),
+        "agreement_adj": round(agreement_adj, 4),
+        "opposition_adj": round(opposition_adj, 4),
+        "hold_adj": round(hold_adj, 4),
+        "raw_before_clamp": round(raw, 6),
+        "clamp_min": 0.05,
+        "clamp_max": 0.95,
+        "final_confidence": round(confidence, 4),
+        "formula": formula,
+        # Backward-compatible aliases used by older UI copy formatters
+        "raw_score": round(winning_score, 4),
+        "action_total_buy_sell": round(buy_score + sell_score, 4),
+        "total_all_weights": round(total_weight, 4),
+        "denominator": round(total_weight, 4),
+        "confidence_before_cap": round(raw, 6),
+        "cap": 0.95,
+        "note": (
+            "HOLD and opposing BUY/SELL dilute confidence; "
+            "0.95 reserved for near-unanimous strong agreement."
+        ),
+    }
+    return confidence, debug
 
 
 class DecisionEngine:
@@ -59,17 +144,7 @@ class DecisionEngine:
         else:
             side, score = Side.HOLD, hold_score
 
-        action_total = weights[Side.BUY] + weights[Side.SELL]
-        total_all = sum(weights.values()) or 1.0
-        if side == Side.HOLD:
-            confidence_before_cap = hold_score / total_all
-            formula = "hold_score / sum(BUY+SELL+HOLD weights)"
-            denom = total_all
-        else:
-            confidence_before_cap = score / (action_total or score or 1.0)
-            formula = "winning_action_score / (BUY_weight + SELL_weight)"
-            denom = action_total or score or 1.0
-        confidence = min(0.99, confidence_before_cap)
+        confidence, conf_debug = calibrated_confidence(side, weights, votes)
 
         counts = Counter(v.side.value for v in votes)
         buy_n = counts.get("BUY", 0)
@@ -93,7 +168,12 @@ class DecisionEngine:
         explanation = (
             f"{buy_n} BUY / {sell_n} SELL / {hold_n} HOLD votes. "
             f"Weighted BUY={weights[Side.BUY]:.3f}, SELL={weights[Side.SELL]:.3f}, "
-            f"HOLD={weights[Side.HOLD]:.3f}. {why}"
+            f"HOLD={weights[Side.HOLD]:.3f}. {why} "
+            f"Calibrated confidence {confidence:.0%} "
+            f"(support={conf_debug['action_support']:.2f}, "
+            f"agree={conf_debug['agreement_factor']:.2f}, "
+            f"hold_pen={conf_debug['hold_ratio']:.2f}, "
+            f"opp_pen={conf_debug['opposition_ratio']:.2f})."
         )
         rationale = (
             f"Votes {dict(counts)} → {side.value} "
@@ -115,20 +195,7 @@ class DecisionEngine:
             "ai_weight": self.ai_weight,
             "winning_action": side.value,
             "explanation": explanation,
-            "confidence_debug": {
-                "raw_score": round(float(score), 4),
-                "action_total_buy_sell": round(action_total, 4),
-                "total_all_weights": round(total_all, 4),
-                "denominator": round(float(denom), 4),
-                "formula": formula,
-                "confidence_before_cap": round(confidence_before_cap, 6),
-                "cap": 0.99,
-                "final_confidence": round(confidence, 4),
-                "note": (
-                    "When every actionable vote agrees (no opposing BUY/SELL), "
-                    "denominator ≈ raw_score so confidence caps at 0.99."
-                ),
-            },
+            "confidence_debug": conf_debug,
         }
 
         decision = Decision(
