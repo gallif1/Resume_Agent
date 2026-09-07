@@ -23,6 +23,12 @@ class EventEngine:
     def recent(self) -> list[dict]:
         return [e.to_dict() for e in list(self._events)[-40:]]
 
+    def clear_session(self) -> None:
+        """Clear detected events and short history buffers (paper session reset)."""
+        self._events.clear()
+        self._history.clear()
+        self._chart_history.clear()
+
     def chart_history(self, symbol: str | None = None) -> dict[str, list[dict[str, Any]]]:
         """Timed price points for live charts (all symbols, or one)."""
         if symbol:

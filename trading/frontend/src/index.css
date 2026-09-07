@@ -170,6 +170,23 @@ a {
   border: 1px solid var(--line);
 }
 
+.btn-clear-logs {
+  background: transparent;
+  color: #c4b5a0;
+  border: 1px solid rgba(196, 181, 160, 0.35);
+}
+
+.btn-reset {
+  background: transparent;
+  color: #e8a0a0;
+  border: 1px solid rgba(232, 160, 160, 0.4);
+}
+
+.btn-copy.danger {
+  color: #e8a0a0;
+  border-color: rgba(232, 160, 160, 0.35);
+}
+
 .meta {
   color: var(--muted);
   font-size: 0.85rem;

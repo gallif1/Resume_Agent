@@ -81,6 +81,18 @@ async def trading_stop() -> dict[str, Any]:
     return await get_runtime().stop()
 
 
+@router.post("/api/clear-logs")
+async def trading_clear_logs() -> dict[str, Any]:
+    """Clear recent decision logs (paper portfolio unchanged)."""
+    return await get_runtime().clear_decision_logs()
+
+
+@router.post("/api/reset")
+async def trading_reset() -> dict[str, Any]:
+    """Reset paper trading: portfolio, logs, outcomes, cooldowns — no broker."""
+    return await get_runtime().reset_paper_system()
+
+
 @router.post("/api/chart-timeframe")
 async def trading_set_timeframe(payload: dict[str, Any]) -> dict[str, Any]:
     tf = str((payload or {}).get("timeframe") or "")
