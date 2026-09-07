@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# Force simulated feed for unit tests (no external HTTP).
+os.environ["TRADING_USE_SIMULATED_FEED"] = "true"
+os.environ["AI_ENABLED"] = "false"
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(BACKEND))
 
 from trading_system.decision_engine import DecisionEngine
 from trading_system.event_engine import EventEngine
+from trading_system.indicators import IndicatorEngine
+from trading_system.market_data.models import Candle
 from trading_system.market_feed import MarketFeed
 from trading_system.models import AgentVote, Side, Tick
 from trading_system.agents import default_agents
@@ -69,6 +76,7 @@ def test_runtime_snapshot_exposes_price_history_and_trades():
     from trading_system.runtime import TradingRuntime
 
     rt = TradingRuntime()
+    assert rt.use_simulated is True
     rt.state = SystemState.RUNNING
 
     async def run_ticks():
@@ -81,3 +89,29 @@ def test_runtime_snapshot_exposes_price_history_and_trades():
     assert any(len(v) > 0 for v in snap["price_history"].values())
     assert "trades" in snap
     assert isinstance(snap["trades"], list)
+    assert snap["data_mode"] == "simulated"
+    assert "ai" in snap
+
+
+def test_indicator_engine_computes():
+    candles = [
+        Candle(ts=float(i), open=100 + i, high=101 + i, low=99 + i, close=100 + i, volume=10)
+        for i in range(40)
+    ]
+    snap = IndicatorEngine().compute("BTC-USD", candles)
+    assert snap.price > 0
+    assert snap.sma_fast is not None
+    assert snap.rsi_14 is not None
+    compact = snap.compact_for_ai()
+    assert "symbol" in compact and "short_trend" in compact
+
+
+def test_ai_trigger_skips_without_key():
+    from trading_system.ai import AIMarketAnalyst
+    from trading_system.models import Tick
+
+    ai = AIMarketAnalyst()
+    tick = Tick(symbol="BTC-USD", price=100, change_pct=1.0, volume=1)
+    vote = ai.maybe_vote(tick, {"symbol": "BTC-USD", "price": 100}, [], [])
+    assert vote is None
+    assert ai.status()["calls_this_hour"] == 0

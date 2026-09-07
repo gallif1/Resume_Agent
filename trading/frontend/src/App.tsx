@@ -3,12 +3,15 @@ import {
   fetchConfig,
   fetchSnapshot,
   pauseSystem,
+  setChartTimeframe,
   startSystem,
   stopSystem,
   tradingWsUrls,
   type AgentVote,
+  type AIStatus,
   type Decision,
   type MarketEvent,
+  type MarketMeta,
   type PricePoint,
   type Snapshot,
   type Tick,
@@ -22,6 +25,7 @@ type LatestVotes = Record<string, AgentVote>;
 const HISTORY_CAP = 360;
 const VOTE_CAP = 120;
 const TRADE_CAP = 80;
+const DEFAULT_TIMEFRAMES = ["1m", "5m", "15m", "1h"];
 
 function formatMoney(n: number) {
   return n.toLocaleString(undefined, {
@@ -83,6 +87,31 @@ function votesFromDecisions(decisions: Decision[]): AgentVote[] {
   return out.slice(0, VOTE_CAP);
 }
 
+function sessionBadge(t: Tick): { label: string; cls: string } {
+  const freshness = (t.freshness || "").toLowerCase();
+  const session = (t.session || "").toLowerCase();
+  if (freshness === "unavailable") return { label: "UNAVAILABLE", cls: "unavailable" };
+  if (freshness === "stale") return { label: "STALE DATA", cls: "stale" };
+  if (session === "closed") return { label: "MARKET CLOSED", cls: "closed" };
+  if (session === "open") return { label: "MARKET OPEN", cls: "open" };
+  if (freshness === "live") return { label: "MARKET OPEN", cls: "open" };
+  return { label: "UNAVAILABLE", cls: "unavailable" };
+}
+
+function pickAiSymbol(
+  ai: AIStatus | null,
+  symbols: string[]
+): { symbol: string; entry: NonNullable<AIStatus["last_by_symbol"]>[string] } | null {
+  const by = ai?.last_by_symbol || {};
+  const preferred = [...symbols, "BTC-USD"];
+  for (const sym of preferred) {
+    if (by[sym]) return { symbol: sym, entry: by[sym] };
+  }
+  const first = Object.entries(by)[0];
+  if (first) return { symbol: first[0], entry: first[1] };
+  return null;
+}
+
 export default function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<MarketEvent[]>([]);
@@ -91,6 +120,11 @@ export default function App() {
   const [chartVotes, setChartVotes] = useState<AgentVote[]>([]);
   const [history, setHistory] = useState<Record<string, PricePoint[]>>({});
   const [trades, setTrades] = useState<TradeMarker[]>([]);
+  const [chartTimeframe, setChartTimeframeState] = useState("5m");
+  const [timeframes, setTimeframes] = useState<string[]>(DEFAULT_TIMEFRAMES);
+  const [marketMeta, setMarketMeta] = useState<MarketMeta | null>(null);
+  const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
+  const [dataMode, setDataMode] = useState<string>("simulated");
   const [wsState, setWsState] = useState<"connecting" | "live" | "dead" | "polling">(
     "connecting"
   );
@@ -108,6 +142,13 @@ export default function App() {
     setHistory(mergeHistory({}, s.price_history));
     setTrades((s.trades || []).slice(0, TRADE_CAP));
     setChartVotes(votesFromDecisions(s.decisions || []));
+    if (s.chart_timeframe) setChartTimeframeState(s.chart_timeframe);
+    if (s.market_meta) {
+      setMarketMeta(s.market_meta);
+      if (s.market_meta.timeframes?.length) setTimeframes(s.market_meta.timeframes);
+    }
+    if (s.ai) setAiStatus(s.ai);
+    if (s.data_mode) setDataMode(s.data_mode);
   };
 
   useEffect(() => {
@@ -115,6 +156,11 @@ export default function App() {
       .then((c) => {
         setConfig(c);
         setHomeUrl(c.resume_agent_home || "/");
+        if (c.chart_timeframes?.length) setTimeframes(c.chart_timeframes);
+        if (c.default_chart_timeframe) setChartTimeframeState(c.default_chart_timeframe);
+        if (c.data_mode) setDataMode(c.data_mode);
+        if (c.market_meta) setMarketMeta(c.market_meta);
+        if (c.ai) setAiStatus(c.ai);
       })
       .catch(() => setHomeUrl("/"));
     fetchSnapshot()
@@ -166,11 +212,16 @@ export default function App() {
               state: Snapshot["state"];
               market: Tick[];
               price_points?: Array<PricePoint & { symbol: string }>;
+              price_history?: Record<string, PricePoint[]>;
+              chart_timeframe?: string;
               events: MarketEvent[];
               votes: AgentVote[];
               decisions: Decision[];
               trades?: TradeMarker[];
               portfolio: Snapshot["portfolio"];
+              market_meta?: MarketMeta;
+              ai?: AIStatus;
+              data_mode?: string;
             };
             setSnap((prev) =>
               prev
@@ -180,20 +231,35 @@ export default function App() {
                     state: p.state,
                     market: p.market,
                     portfolio: p.portfolio,
+                    chart_timeframe: p.chart_timeframe ?? prev.chart_timeframe,
+                    market_meta: p.market_meta ?? prev.market_meta,
+                    ai: p.ai ?? prev.ai,
+                    data_mode: p.data_mode ?? prev.data_mode,
                   }
                 : prev
             );
-            const points =
-              p.price_points?.length
-                ? p.price_points
-                : (p.market || []).map((t) => ({
-                    symbol: t.symbol,
-                    ts: t.ts,
-                    price: t.price,
-                    volume: t.volume,
-                    change_pct: t.change_pct,
-                  }));
-            setHistory((prev) => appendPoints(prev, points));
+            if (p.price_history) {
+              setHistory(mergeHistory({}, p.price_history));
+            } else {
+              const points =
+                p.price_points?.length
+                  ? p.price_points
+                  : (p.market || []).map((t) => ({
+                      symbol: t.symbol,
+                      ts: t.ts,
+                      price: t.price,
+                      volume: t.volume,
+                      change_pct: t.change_pct,
+                    }));
+              setHistory((prev) => appendPoints(prev, points));
+            }
+            if (p.chart_timeframe) setChartTimeframeState(p.chart_timeframe);
+            if (p.market_meta) {
+              setMarketMeta(p.market_meta);
+              if (p.market_meta.timeframes?.length) setTimeframes(p.market_meta.timeframes);
+            }
+            if (p.ai) setAiStatus(p.ai);
+            if (p.data_mode) setDataMode(p.data_mode);
             if (p.events?.length) setEvents((prev) => [...p.events, ...prev].slice(0, 40));
             if (p.decisions?.length) {
               setDecisions((prev) => [...p.decisions, ...prev].slice(0, 40));
@@ -300,6 +366,20 @@ export default function App() {
     }
   };
 
+  const onTimeframe = async (tf: string) => {
+    if (tf === chartTimeframe) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const s = await setChartTimeframe(tf);
+      applySnapshot(s);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const state = snap?.state ?? "stopped";
   const market = snap?.market ?? [];
   const agents = snap?.agents ?? [];
@@ -307,6 +387,10 @@ export default function App() {
   const symbols = snap?.symbols?.length
     ? snap.symbols
     : market.map((t) => t.symbol);
+  const realData = dataMode !== "simulated";
+  const aiPick = pickAiSymbol(aiStatus, symbols);
+  const aiCalls = aiStatus?.calls_this_hour ?? 0;
+  const aiMax = aiStatus?.max_calls_per_hour ?? 0;
   const wsLabel =
     wsState === "live"
       ? "WS connected"
@@ -357,6 +441,9 @@ export default function App() {
         >
           STOP
         </button>
+        <span className={`data-badge ${realData ? "real" : "sim"}`}>
+          {realData ? "REAL MARKET DATA" : "SIMULATED DATA"}
+        </span>
         <span
           className={`ws-badge ${
             wsState === "live" ? "live" : wsState === "polling" ? "polling" : "dead"
@@ -375,6 +462,11 @@ export default function App() {
         history={history}
         trades={trades}
         votes={chartVotes}
+        timeframe={chartTimeframe}
+        timeframes={timeframes}
+        onTimeframe={onTimeframe}
+        marketMeta={marketMeta}
+        realData={realData}
       />
 
       <div className="grid">
@@ -387,23 +479,37 @@ export default function App() {
                 <th>Price</th>
                 <th>Change</th>
                 <th>Volume</th>
+                <th>Session</th>
+                <th>Provider</th>
               </tr>
             </thead>
             <tbody>
-              {market.map((t) => (
-                <tr key={t.symbol}>
-                  <td className="mono">{t.symbol}</td>
-                  <td className="mono">{t.price.toLocaleString()}</td>
-                  <td className={`mono ${t.change_pct >= 0 ? "up" : "down"}`}>
-                    {t.change_pct >= 0 ? "+" : ""}
-                    {t.change_pct.toFixed(3)}%
-                  </td>
-                  <td className="mono muted">{Math.round(t.volume).toLocaleString()}</td>
-                </tr>
-              ))}
+              {market.map((t) => {
+                const badge = sessionBadge(t);
+                return (
+                  <tr key={t.symbol}>
+                    <td className="mono">{t.symbol}</td>
+                    <td className="mono">{t.price.toLocaleString()}</td>
+                    <td className={`mono ${t.change_pct >= 0 ? "up" : "down"}`}>
+                      {t.change_pct >= 0 ? "+" : ""}
+                      {t.change_pct.toFixed(3)}%
+                    </td>
+                    <td className="mono muted">{Math.round(t.volume).toLocaleString()}</td>
+                    <td>
+                      <span className={`session-badge ${badge.cls}`}>{badge.label}</span>
+                      {t.freshness ? (
+                        <div className="muted mono" style={{ fontSize: "0.7rem", marginTop: 2 }}>
+                          {t.freshness.toUpperCase()}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="mono muted">{t.provider || "—"}</td>
+                  </tr>
+                );
+              })}
               {!market.length && (
                 <tr>
-                  <td colSpan={4} className="muted">
+                  <td colSpan={6} className="muted">
                     Waiting for market data…
                   </td>
                 </tr>
@@ -477,6 +583,38 @@ export default function App() {
                 </div>
               );
             })}
+            <div className="ai-card">
+              <div className="ai-card-head">
+                <h3>AI Market Analyst</h3>
+                <span className="ai-source">
+                  {aiPick?.entry.source || (aiStatus?.enabled ? "IDLE" : "OFF")}
+                </span>
+              </div>
+              {aiPick ? (
+                <>
+                  <div className="row" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                    <span className={`tag ${aiPick.entry.action || "HOLD"}`}>
+                      {aiPick.entry.action || "HOLD"}
+                    </span>
+                    <span className="mono muted">
+                      {((aiPick.entry.confidence ?? 0) * 100).toFixed(0)}% · {aiPick.symbol}
+                    </span>
+                  </div>
+                  <p className="muted" style={{ margin: "0.45rem 0 0" }}>
+                    {aiPick.entry.reason || "No rationale yet."}
+                  </p>
+                </>
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  {aiStatus?.api_key_configured === false
+                    ? "AI API key not configured — heuristics only."
+                    : "Waiting for AI analysis…"}
+                </p>
+              )}
+              <div className="ai-calls mono">
+                AI calls this hour: {aiCalls} / {aiMax || "—"}
+              </div>
+            </div>
           </div>
         </section>
 

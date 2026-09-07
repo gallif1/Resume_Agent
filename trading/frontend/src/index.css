@@ -566,3 +566,113 @@ a {
     min-height: 240px;
   }
 }
+
+.data-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--line);
+}
+
+.data-badge.real {
+  color: #06221f;
+  background: linear-gradient(135deg, #2fbfa8, #3dd6c6);
+  border-color: transparent;
+}
+
+.data-badge.sim {
+  color: var(--accent-2);
+  background: rgba(240, 180, 41, 0.12);
+  border-color: rgba(240, 180, 41, 0.35);
+}
+
+.session-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.18rem 0.45rem;
+  border-radius: 0.35rem;
+  white-space: nowrap;
+}
+
+.session-badge.open {
+  color: var(--buy);
+  background: rgba(62, 207, 142, 0.14);
+}
+
+.session-badge.closed {
+  color: var(--hold);
+  background: rgba(142, 160, 184, 0.14);
+}
+
+.session-badge.stale {
+  color: var(--accent-2);
+  background: rgba(240, 180, 41, 0.14);
+}
+
+.session-badge.unavailable {
+  color: var(--danger);
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.ai-card {
+  border: 1px solid rgba(192, 132, 252, 0.28);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background:
+    linear-gradient(160deg, rgba(192, 132, 252, 0.12), rgba(11, 18, 32, 0.45));
+  min-height: 96px;
+  grid-column: 1 / -1;
+}
+
+.ai-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.ai-card-head h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.ai-source {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #c084fc;
+  border: 1px solid rgba(192, 132, 252, 0.35);
+  border-radius: 0.35rem;
+  padding: 0.12rem 0.4rem;
+}
+
+.ai-calls {
+  margin-top: 0.55rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.chart-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+}
+
+.tf-tabs {
+  margin-top: 0.35rem;
+}
+
+.chart-meta-line {
+  font-size: 0.75rem;
+}

@@ -209,9 +209,30 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           REBUILD_IMAGE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.rebuild_image || 'false' }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: |
           set -euo pipefail
           echo "Step 4: run remote deploy (REBUILD_IMAGE=${REBUILD_IMAGE})"
+
+          # Ship trading secrets to the host without echoing values into logs.
+          : > /tmp/ra-trading-secrets.env
+          if [ -n "${FINNHUB_API_KEY:-}" ]; then
+            printf 'FINNHUB_API_KEY=%s\n' "$FINNHUB_API_KEY" >> /tmp/ra-trading-secrets.env
+            echo "FINNHUB_API_KEY secret is present (will inject into container .env)"
+          else
+            echo "WARN: FINNHUB_API_KEY GitHub secret is empty — stock quotes will be unavailable"
+          fi
+          timeout 30s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            /tmp/ra-trading-secrets.env \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-trading-secrets.env" \
+            || echo "WARN: could not upload trading secrets file"
 
           cat > /tmp/ra-remote-deploy.sh <<'REMOTE'
           #!/bin/bash
@@ -406,6 +427,36 @@ jobs:
             cat "$HOME/ra-ws-runtime-check.log" 2>/dev/null || true
           }
 
+          inject_trading_secrets() {
+            local cid="$1"
+            if [ ! -f /tmp/ra-trading-secrets.env ]; then
+              echo "WARN: /tmp/ra-trading-secrets.env missing — skip trading secret inject"
+              return 0
+            fi
+            if ! grep -q '^FINNHUB_API_KEY=.' /tmp/ra-trading-secrets.env; then
+              echo "WARN: FINNHUB_API_KEY not in secrets file — stock quotes unavailable"
+              return 0
+            fi
+            echo "Injecting trading API secrets into $cid (.env) — values not logged"
+            sudo docker cp /tmp/ra-trading-secrets.env "$cid:/tmp/ra-trading-secrets.env"
+            sudo docker exec "$cid" sh -c '
+              set -eu
+              mkdir -p /app/ai-job-agent
+              touch /app/ai-job-agent/.env
+              grep -v "^FINNHUB_API_KEY=" /app/ai-job-agent/.env > /tmp/ra-env-merged.env || true
+              grep "^FINNHUB_API_KEY=" /tmp/ra-trading-secrets.env >> /tmp/ra-env-merged.env
+              mv /tmp/ra-env-merged.env /app/ai-job-agent/.env
+              rm -f /tmp/ra-trading-secrets.env
+              # Ensure AI trading can reuse Resume Agent OpenAI key if already present.
+              if grep -q "^OPENAI_API_KEY=." /app/ai-job-agent/.env; then
+                echo "OPENAI_API_KEY already present in container .env"
+              else
+                echo "WARN: OPENAI_API_KEY missing in container .env — AI Market Analyst will skip"
+              fi
+            '
+            rm -f /tmp/ra-trading-secrets.env
+          }
+
           restore_backend() {
             local cid="$1"
             echo "Restoring the backend source that was serving before this deploy"
@@ -538,6 +589,9 @@ jobs:
 
           echo "Step R7c: ensure WebSocket runtime deps for /trading"
           ensure_websocket_runtime "$CID"
+
+          echo "Step R7d: inject trading market secrets (FINNHUB)"
+          inject_trading_secrets "$CID"
 
           inject_frontend "$CID"
           test -f /tmp/ra-trading-frontend-dist.tgz
