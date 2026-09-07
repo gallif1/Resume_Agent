@@ -228,6 +228,44 @@ class MarketDataService:
             ]
         return out
 
+    def price_near(
+        self,
+        symbol: str,
+        target_ts: float,
+        *,
+        max_skew_sec: float = 180.0,
+    ) -> tuple[float | None, str]:
+        """Best available close near target_ts from cached candles.
+
+        Returns (price, status) where status is ok | no_history | unavailable.
+        Does not fabricate prices.
+        """
+        symbol = symbol.upper()
+        best: tuple[float, float] | None = None  # (abs_skew, price)
+        for tf in ("1m", "5m", "15m", "1h"):
+            candles = self.get_candles(symbol, tf)
+            for c in candles:
+                skew = abs(float(c.ts) - target_ts)
+                if skew > max_skew_sec and tf != "1h":
+                    # Allow slightly looser match on coarser TFs.
+                    continue
+                allow = max_skew_sec if tf in {"1m", "5m"} else max_skew_sec * 2
+                if tf == "1h":
+                    allow = max(max_skew_sec * 4, 900.0)
+                if skew > allow:
+                    continue
+                if best is None or skew < best[0]:
+                    best = (skew, float(c.close))
+        if best is not None:
+            return best[1], "ok"
+        # Fall back to live quote only when target is recent.
+        q = self.get_quote(symbol)
+        if q and q.price > 0 and abs(time.time() - target_ts) <= max_skew_sec:
+            return float(q.price), "ok"
+        if not self.get_candles(symbol, "1m") and not self.get_candles(symbol, "5m"):
+            return None, "no_history"
+        return None, "unavailable"
+
     def market_meta(self) -> dict[str, Any]:
         quotes = self.get_quotes()
         return {

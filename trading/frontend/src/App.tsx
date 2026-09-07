@@ -18,6 +18,7 @@ import {
   type Tick,
   type TradeMarker,
   type TradingConfig,
+  type PerformanceStats,
 } from "./api";
 import { formatDecisionLogsText } from "./decisionLogFormat";
 import { copyTextToClipboard } from "./clipboard";
@@ -115,6 +116,33 @@ function pickAiSymbol(
   return null;
 }
 
+function accLabel(v?: number | null): string {
+  if (v == null || Number.isNaN(v)) return "N/A";
+  return `${v.toFixed(0)}%`;
+}
+
+function outcomeLine(
+  key: string,
+  h?: {
+    status?: string;
+    price?: number | null;
+    return_pct?: number | null;
+    direction_correct?: boolean | null;
+  }
+): string {
+  if (!h || h.status === "pending" || !h.status) return `${key}: PENDING`;
+  if (h.status === "unavailable" || h.status === "no_history") {
+    return `${key}: ${h.status.toUpperCase()}`;
+  }
+  const dir =
+    h.direction_correct === true ? "correct" : h.direction_correct === false ? "incorrect" : "—";
+  const ret =
+    h.return_pct == null
+      ? "—"
+      : `${h.return_pct >= 0 ? "+" : ""}${h.return_pct.toFixed(2)}%`;
+  return `${key}: price ${h.price ?? "—"} · return ${ret} · ${dir}`;
+}
+
 export default function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<MarketEvent[]>([]);
@@ -131,6 +159,7 @@ export default function App() {
   const [timeframes, setTimeframes] = useState<string[]>(DEFAULT_TIMEFRAMES);
   const [marketMeta, setMarketMeta] = useState<MarketMeta | null>(null);
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
+  const [performance, setPerformance] = useState<PerformanceStats | null>(null);
   const [dataMode, setDataMode] = useState<string>("simulated");
   const [wsState, setWsState] = useState<"connecting" | "live" | "dead" | "polling">(
     "connecting"
@@ -157,6 +186,7 @@ export default function App() {
       if (s.market_meta.timeframes?.length) setTimeframes(s.market_meta.timeframes);
     }
     if (s.ai) setAiStatus(s.ai);
+    if (s.performance) setPerformance(s.performance);
     if (s.data_mode) setDataMode(s.data_mode);
   };
 
@@ -231,6 +261,7 @@ export default function App() {
               portfolio: Snapshot["portfolio"];
               market_meta?: MarketMeta;
               ai?: AIStatus;
+              performance?: PerformanceStats;
               data_mode?: string;
             };
             setSnap((prev) =>
@@ -269,6 +300,7 @@ export default function App() {
               if (p.market_meta.timeframes?.length) setTimeframes(p.market_meta.timeframes);
             }
             if (p.ai) setAiStatus(p.ai);
+            if (p.performance) setPerformance(p.performance);
             if (p.data_mode) setDataMode(p.data_mode);
             if (p.events?.length) setEvents((prev) => [...p.events, ...prev].slice(0, 40));
             if (p.decisions?.length) {
@@ -729,6 +761,31 @@ export default function App() {
               {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
             </div>
           </div>
+          <div className="perf-block" aria-label="System performance">
+            <h3 className="perf-title">SYSTEM PERFORMANCE</h3>
+            <div className="perf-grid">
+              {(
+                [
+                  ["Decision Engine", performance?.decision_engine],
+                  ["Momentum", performance?.agents?.momentum],
+                  ["Mean Reversion", performance?.agents?.mean_reversion],
+                  ["Volatility", performance?.agents?.volatility],
+                  ["AI Market Analyst", performance?.agents?.ai_analyst],
+                ] as const
+              ).map(([label, row]) => (
+                <div className="perf-row" key={label}>
+                  <strong>{label}</strong>
+                  <span className="mono muted">
+                    5m {accLabel(row?.accuracy_5m_pct)} · 15m {accLabel(row?.accuracy_15m_pct)} ·
+                    60m {accLabel(row?.accuracy_60m_pct)}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="muted perf-note">
+              Directional accuracy after BUY/SELL signals. Weights are not auto-tuned.
+            </p>
+          </div>
           {manualCopyText ? (
             <div className="manual-copy-box">
               <div className="row" style={{ marginBottom: "0.35rem" }}>
@@ -859,12 +916,35 @@ Hold gate: ${log.decision?.hold_gate ?? "—"}
 Explanation: ${log.decision?.explanation || "—"}
 
 Confidence debug:
-  raw_score = ${log.decision?.confidence_debug?.raw_score ?? "—"}
-  denominator = ${log.decision?.confidence_debug?.denominator ?? "—"}
-  formula = ${log.decision?.confidence_debug?.formula ?? "—"}
-  before_cap = ${log.decision?.confidence_debug?.confidence_before_cap ?? "—"}
+  winning_action = ${log.decision?.confidence_debug?.winning_action ?? "—"}
+  winning_score = ${log.decision?.confidence_debug?.winning_score ?? log.decision?.confidence_debug?.raw_score ?? "—"}
+  total_weight = ${log.decision?.confidence_debug?.total_weight ?? log.decision?.confidence_debug?.total_all_weights ?? "—"}
+  action_support = ${log.decision?.confidence_debug?.action_support ?? "—"}
+  agreement_factor = ${log.decision?.confidence_debug?.agreement_factor ?? "—"}
+  hold_ratio = ${log.decision?.confidence_debug?.hold_ratio ?? "—"}
+  opposition_ratio = ${log.decision?.confidence_debug?.opposition_ratio ?? "—"}
   final = ${log.decision?.confidence_debug?.final_confidence ?? "—"}
-  note = ${log.decision?.confidence_debug?.note ?? "—"}`}
+  formula = ${log.decision?.confidence_debug?.formula ?? "—"}`}
+                        </pre>
+                      </div>
+                      {log.pretrade ? (
+                        <div className="detail-block">
+                          <h4>AI PRETRADE</h4>
+                          <pre className="detail-pre">
+                            {`Source: ${log.pretrade.source ?? "—"}
+Skip: ${log.pretrade.skip_reason ?? "—"}
+Action: ${log.pretrade.action ?? "—"}
+Confidence: ${log.pretrade.confidence ?? "—"}`}
+                          </pre>
+                        </div>
+                      ) : null}
+                      <div className="detail-block">
+                        <h4>OUTCOME</h4>
+                        <pre className="detail-pre">
+                          {`Entry: ${log.outcome?.entry_price ?? "—"}
+${outcomeLine("5m", log.outcome?.horizons?.["5m"])}
+${outcomeLine("15m", log.outcome?.horizons?.["15m"])}
+${outcomeLine("60m", log.outcome?.horizons?.["60m"])}`}
                         </pre>
                       </div>
                       <div className="detail-block">

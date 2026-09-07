@@ -16,6 +16,7 @@ from ..config import (
     AI_MAX_CALLS_PER_HOUR,
     AI_MIN_INTERVAL_SECONDS,
     AI_MODEL,
+    AI_PRETRADE_MAX_AGE_SECONDS,
     AI_PRICE_TRIGGER_PERCENT,
     AI_PROVIDER,
     DATA_DIR,
@@ -31,7 +32,7 @@ class AIResult:
     action: str
     confidence: float
     reason: str
-    source: str  # API | CACHE | SKIPPED
+    source: str  # API | CACHE | SKIPPED | PRETRADE_API | PRETRADE_CACHE | ...
     skip_reason: str | None = None
 
     def to_vote(self, symbol: str) -> AgentVote:
@@ -44,6 +45,10 @@ class AIResult:
             "API": "AI_API",
             "CACHE": "AI_CACHE",
             "SKIPPED": "AI_SKIPPED",
+            "PRETRADE_API": "AI_PRETRADE_API",
+            "PRETRADE_CACHE": "AI_PRETRADE_CACHE",
+            "PRETRADE_SKIPPED": "AI_PRETRADE_SKIPPED",
+            "PRETRADE_UNAVAILABLE": "AI_PRETRADE_UNAVAILABLE",
         }.get(self.source, self.source)
         return AgentVote(
             agent_id="ai_analyst",
@@ -152,8 +157,30 @@ class AIMarketAnalyst:
             "calls_this_hour": self.trigger.calls_this_hour,
             "max_calls_per_hour": AI_MAX_CALLS_PER_HOUR,
             "min_interval_sec": AI_MIN_INTERVAL_SECONDS,
+            "pretrade_max_age_sec": AI_PRETRADE_MAX_AGE_SECONDS,
             "last_by_symbol": self._last_by_symbol,
         }
+
+    def is_fresh_for_pretrade(self, symbol: str, snapshot: dict[str, Any]) -> bool:
+        """True when a recent analysis exists for a similar market state."""
+        meta = self._last_by_symbol.get(symbol) or {}
+        ts = float(meta.get("ts") or 0)
+        if not ts or (time.time() - ts) > AI_PRETRADE_MAX_AGE_SECONDS:
+            return False
+        src = str(meta.get("source") or "").upper()
+        if src in {"SKIPPED", "PRETRADE_SKIPPED", "PRETRADE_UNAVAILABLE"}:
+            return False
+        if float(meta.get("confidence") or 0) <= 0 and str(meta.get("action") or "").upper() == "HOLD":
+            # Skipped placeholder — not a real analysis.
+            if meta.get("skip_reason"):
+                return False
+        cache_key = self._cache_key(snapshot)
+        cached = self._cache.get(cache_key)
+        if cached and time.time() - cached[0] < AI_CACHE_TTL_SECONDS:
+            return True
+        # Same-symbol analysis recent enough and snapshot hash matches last key.
+        last_key = meta.get("cache_key")
+        return bool(last_key and last_key == cache_key)
 
     def maybe_vote(
         self,
@@ -169,14 +196,7 @@ class AIMarketAnalyst:
         if cached and time.time() - cached[0] < AI_CACHE_TTL_SECONDS:
             result = cached[1]
             result.source = "CACHE"
-            self._last_by_symbol[tick.symbol] = {
-                "action": result.action,
-                "confidence": result.confidence,
-                "reason": result.reason,
-                "source": "CACHE",
-                "ts": time.time(),
-            }
-            self.trigger.note_price(tick.symbol, tick.price)
+            self._remember(tick.symbol, result, cache_key=cache_key, price=tick.price)
             return result.to_vote(tick.symbol)
 
         if not ok:
@@ -187,6 +207,7 @@ class AIMarketAnalyst:
                 "source": "SKIPPED",
                 "skip_reason": why,
                 "ts": time.time(),
+                "cache_key": cache_key,
             }
             self.trigger.note_price(tick.symbol, tick.price)
             return None
@@ -196,14 +217,7 @@ class AIMarketAnalyst:
             result.source = "API"
             self.trigger.record_call()
             self._cache[cache_key] = (time.time(), result)
-            self._last_by_symbol[tick.symbol] = {
-                "action": result.action,
-                "confidence": result.confidence,
-                "reason": result.reason,
-                "source": "API",
-                "ts": time.time(),
-            }
-            self.trigger.note_price(tick.symbol, tick.price)
+            self._remember(tick.symbol, result, cache_key=cache_key, price=tick.price)
             return result.to_vote(tick.symbol)
         except Exception as exc:  # noqa: BLE001
             logger.warning("AI call failed: %s", exc)
@@ -214,9 +228,122 @@ class AIMarketAnalyst:
                 "source": "SKIPPED",
                 "skip_reason": "api_error",
                 "ts": time.time(),
+                "cache_key": cache_key,
             }
             self.trigger.note_price(tick.symbol, tick.price)
             return None
+
+    def pretrade_vote(
+        self,
+        tick: Tick,
+        snapshot: dict[str, Any],
+    ) -> tuple[AgentVote | None, dict[str, Any]]:
+        """Ensure a fresh AI vote before paper fill.
+
+        Bypasses normal min_interval / no_trigger only. Still respects:
+        disabled AI, missing key, hourly limit, provider failures.
+        """
+        meta: dict[str, Any] = {"source": "PRETRADE_SKIPPED", "skip_reason": None}
+        cache_key = self._cache_key(snapshot)
+
+        if self.is_fresh_for_pretrade(tick.symbol, snapshot):
+            cached = self._cache.get(cache_key)
+            if cached:
+                result = cached[1]
+                result.source = "PRETRADE_CACHE"
+                self._remember(tick.symbol, result, cache_key=cache_key, price=tick.price)
+                meta = {
+                    "source": "PRETRADE_CACHE",
+                    "action": result.action,
+                    "confidence": result.confidence,
+                    "reason": result.reason,
+                    "ts": time.time(),
+                }
+                return result.to_vote(tick.symbol), meta
+            # Fresh last_by_symbol without exact cache entry — rebuild vote from meta.
+            last = self._last_by_symbol.get(tick.symbol) or {}
+            result = AIResult(
+                action=str(last.get("action") or "HOLD"),
+                confidence=float(last.get("confidence") or 0),
+                reason=str(last.get("reason") or "Reused fresh AI analysis"),
+                source="PRETRADE_CACHE",
+            )
+            meta = {
+                "source": "PRETRADE_CACHE",
+                "action": result.action,
+                "confidence": result.confidence,
+                "reason": result.reason,
+                "ts": float(last.get("ts") or time.time()),
+            }
+            return result.to_vote(tick.symbol), meta
+
+        if not AI_ENABLED:
+            meta = {"source": "PRETRADE_UNAVAILABLE", "skip_reason": "ai_disabled"}
+            self._mark_pretrade_skip(tick, cache_key, meta)
+            return None, meta
+        if AI_PROVIDER != "openai" or not OPENAI_API_KEY:
+            meta = {"source": "PRETRADE_UNAVAILABLE", "skip_reason": "missing_api_key"}
+            self._mark_pretrade_skip(tick, cache_key, meta)
+            return None, meta
+        self.trigger._roll_hour()  # noqa: SLF001
+        if self.trigger.calls_this_hour >= AI_MAX_CALLS_PER_HOUR:
+            meta = {"source": "PRETRADE_SKIPPED", "skip_reason": "hourly_limit"}
+            self._mark_pretrade_skip(tick, cache_key, meta)
+            return None, meta
+
+        try:
+            result = self._call_llm(snapshot)
+            result.source = "PRETRADE_API"
+            self.trigger.record_call()
+            self._cache[cache_key] = (time.time(), result)
+            self._remember(tick.symbol, result, cache_key=cache_key, price=tick.price)
+            meta = {
+                "source": "PRETRADE_API",
+                "action": result.action,
+                "confidence": result.confidence,
+                "reason": result.reason,
+                "ts": time.time(),
+            }
+            return result.to_vote(tick.symbol), meta
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Pretrade AI call failed: %s", exc)
+            meta = {
+                "source": "PRETRADE_UNAVAILABLE",
+                "skip_reason": "api_error",
+                "reason": f"AI error: {exc}"[:200],
+            }
+            self._mark_pretrade_skip(tick, cache_key, meta)
+            return None, meta
+
+    def _mark_pretrade_skip(self, tick: Tick, cache_key: str, meta: dict[str, Any]) -> None:
+        self._last_by_symbol[tick.symbol] = {
+            "action": "HOLD",
+            "confidence": 0.0,
+            "reason": meta.get("reason") or f"Pretrade: {meta.get('skip_reason')}",
+            "source": meta.get("source") or "PRETRADE_SKIPPED",
+            "skip_reason": meta.get("skip_reason"),
+            "ts": time.time(),
+            "cache_key": cache_key,
+        }
+        self.trigger.note_price(tick.symbol, tick.price)
+
+    def _remember(
+        self,
+        symbol: str,
+        result: AIResult,
+        *,
+        cache_key: str,
+        price: float,
+    ) -> None:
+        self._last_by_symbol[symbol] = {
+            "action": result.action,
+            "confidence": result.confidence,
+            "reason": result.reason,
+            "source": result.source,
+            "ts": time.time(),
+            "cache_key": cache_key,
+        }
+        self.trigger.note_price(symbol, price)
 
     def _cache_key(self, snapshot: dict[str, Any]) -> str:
         # Bucket numeric fields to reuse similar states.

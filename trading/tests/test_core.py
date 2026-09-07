@@ -69,7 +69,9 @@ def test_decision_engine_executes_sell_against_opposing_buy():
     assert decision is not None
     assert decision.side == Side.SELL
     assert decision.executed is True
-    assert decision.confidence >= 0.45
+    # Action score still clears the gate; calibrated confidence is reduced by opposition.
+    assert decision.engine["action_score"] >= 0.45
+    assert decision.engine["confidence_debug"]["opposition_ratio"] > 0
     # Fill should free cash from an open position.
     from trading_system.models import Portfolio, Position
 
@@ -100,8 +102,10 @@ def test_decision_engine_exposes_confidence_debug():
     dbg = decision.engine["confidence_debug"]
     assert "final_confidence" in dbg
     assert "formula" in dbg
-    # 2 BUY / 0 SELL → confidence caps near 0.99 (documented quirk).
-    assert decision.confidence >= 0.9
+    assert "action_support" in dbg
+    # 2 BUY + 1 HOLD must NOT auto-cap near 0.99 anymore.
+    assert decision.confidence < 0.90
+    assert decision.confidence >= 0.55
 
 
 def test_momentum_reason_uses_real_threshold():

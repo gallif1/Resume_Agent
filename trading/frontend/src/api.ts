@@ -103,6 +103,13 @@ export type DecisionLog = {
     threshold?: number;
     winning_action?: string;
     confidence_debug?: {
+      winning_action?: string;
+      winning_score?: number;
+      total_weight?: number;
+      action_support?: number;
+      agreement_factor?: number;
+      hold_ratio?: number;
+      opposition_ratio?: number;
       raw_score?: number;
       action_total_buy_sell?: number;
       total_all_weights?: number;
@@ -122,6 +129,56 @@ export type DecisionLog = {
     cooldown_remaining_sec?: number | null;
     last_fill_ts?: number | null;
   };
+  pretrade?: {
+    source?: string;
+    skip_reason?: string | null;
+    action?: string;
+    confidence?: number;
+    reason?: string;
+    ts?: number;
+  } | null;
+  outcome?: {
+    outcome_id?: string;
+    entry_price?: number;
+    action?: string;
+    executed?: boolean;
+    trade?: Record<string, unknown> | null;
+    horizons?: Record<
+      string,
+      {
+        status?: string;
+        price?: number | null;
+        return_pct?: number | null;
+        direction_correct?: boolean | null;
+        due_at?: number;
+      }
+    >;
+  } | null;
+};
+
+export type ActorPerformance = {
+  id?: string;
+  name?: string;
+  total_actionable?: number;
+  buy_predictions?: number;
+  sell_predictions?: number;
+  accuracy_5m_pct?: number | null;
+  accuracy_15m_pct?: number | null;
+  accuracy_60m_pct?: number | null;
+  avg_buy_return_5m?: number | null;
+  avg_buy_return_15m?: number | null;
+  avg_buy_return_60m?: number | null;
+  n_5m?: number;
+  n_15m?: number;
+  n_60m?: number;
+};
+
+export type PerformanceStats = {
+  decision_engine?: ActorPerformance;
+  agents?: Record<string, ActorPerformance>;
+  horizons?: string[];
+  outcome_count?: number;
+  resolved_enough?: boolean;
 };
 
 export type PricePoint = {
@@ -219,8 +276,10 @@ export type Snapshot = {
   agents: { id: string; name: string }[];
   ai?: AIStatus;
   portfolio: Portfolio;
+  performance?: PerformanceStats;
   tick_interval_sec: number;
   data_mode?: string;
+  paper_trading_only?: boolean;
 };
 
 export type TradingConfig = {
