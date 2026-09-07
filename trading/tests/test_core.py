@@ -48,3 +48,36 @@ def test_decision_engine_aggregates():
     decision = engine.decide("AAPL", votes, price=100)
     assert decision is not None
     assert decision.side == Side.BUY
+
+
+def test_event_engine_builds_chart_history():
+    engine = EventEngine()
+    for i in range(5):
+        engine.process(
+            [Tick(symbol="BTC-USD", price=100 + i, change_pct=0.1, volume=900, ts=1_000 + i)]
+        )
+    hist = engine.chart_history("BTC-USD")["BTC-USD"]
+    assert len(hist) == 5
+    assert hist[0]["price"] == 100
+    assert hist[-1]["ts"] == 1_004
+
+
+def test_runtime_snapshot_exposes_price_history_and_trades():
+    import asyncio
+
+    from trading_system.models import SystemState
+    from trading_system.runtime import TradingRuntime
+
+    rt = TradingRuntime()
+    rt.state = SystemState.RUNNING
+
+    async def run_ticks():
+        for _ in range(8):
+            await rt._tick_once()
+
+    asyncio.run(run_ticks())
+    snap = rt.snapshot()
+    assert "price_history" in snap
+    assert any(len(v) > 0 for v in snap["price_history"].values())
+    assert "trades" in snap
+    assert isinstance(snap["trades"], list)

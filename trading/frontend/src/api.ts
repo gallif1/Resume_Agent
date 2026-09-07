@@ -38,7 +38,33 @@ export type Decision = {
   executed: boolean;
   fill_price?: number | null;
   quantity?: number | null;
+  votes?: AgentVote[];
   ts: number;
+};
+
+export type PricePoint = {
+  ts: number;
+  price: number;
+  volume?: number;
+  change_pct?: number;
+};
+
+export type TradeAgent = {
+  id?: string;
+  name?: string;
+  side?: "BUY" | "SELL" | "HOLD";
+  confidence?: number;
+};
+
+export type TradeMarker = {
+  id: string;
+  symbol: string;
+  side: "BUY" | "SELL";
+  price?: number | null;
+  quantity?: number | null;
+  ts: number;
+  confidence?: number;
+  agents?: TradeAgent[];
 };
 
 export type Portfolio = {
@@ -54,8 +80,10 @@ export type Snapshot = {
   last_error: string | null;
   symbols: string[];
   market: Tick[];
+  price_history?: Record<string, PricePoint[]>;
   events: MarketEvent[];
   decisions: Decision[];
+  trades?: TradeMarker[];
   agents: { id: string; name: string }[];
   portfolio: Portfolio;
   tick_interval_sec: number;

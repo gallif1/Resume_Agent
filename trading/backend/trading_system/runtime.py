@@ -96,6 +96,7 @@ class TradingRuntime:
     # -- control ---------------------------------------------------------
 
     def snapshot(self) -> dict[str, Any]:
+        decisions = self.decision_engine.recent
         return {
             "state": self.state.value,
             "tick_count": self.tick_count,
@@ -103,8 +104,32 @@ class TradingRuntime:
             "last_error": self.last_error,
             "symbols": list(self.feed.symbols),
             "market": self.feed.snapshot(),
+            "price_history": self.events.chart_history(),
             "events": self.events.recent,
-            "decisions": self.decision_engine.recent,
+            "decisions": decisions,
+            "trades": [
+                {
+                    "id": d["id"],
+                    "symbol": d["symbol"],
+                    "side": d["side"],
+                    "price": d.get("fill_price"),
+                    "quantity": d.get("quantity"),
+                    "ts": d["ts"],
+                    "confidence": d.get("confidence"),
+                    "agents": [
+                        {
+                            "id": v.get("agent_id"),
+                            "name": v.get("agent_name"),
+                            "side": v.get("side"),
+                            "confidence": v.get("confidence"),
+                        }
+                        for v in (d.get("votes") or [])
+                        if v.get("side") in ("BUY", "SELL")
+                    ],
+                }
+                for d in decisions
+                if d.get("executed") and d.get("side") in ("BUY", "SELL")
+            ],
             "agents": [
                 {"id": a.agent_id, "name": a.agent_name} for a in self.agents
             ],
@@ -195,9 +220,42 @@ class TradingRuntime:
                     "tick_count": self.tick_count,
                     "state": self.state.value,
                     "market": [t.to_dict() for t in ticks],
+                    "price_points": [
+                        {
+                            "symbol": t.symbol,
+                            "ts": t.ts,
+                            "price": t.price,
+                            "volume": t.volume,
+                            "change_pct": t.change_pct,
+                        }
+                        for t in ticks
+                    ],
                     "events": [e.to_dict() for e in new_events],
                     "votes": votes_out,
                     "decisions": decisions_out,
+                    "trades": [
+                        {
+                            "id": d["id"],
+                            "symbol": d["symbol"],
+                            "side": d["side"],
+                            "price": d.get("fill_price"),
+                            "quantity": d.get("quantity"),
+                            "ts": d["ts"],
+                            "confidence": d.get("confidence"),
+                            "agents": [
+                                {
+                                    "id": v.get("agent_id"),
+                                    "name": v.get("agent_name"),
+                                    "side": v.get("side"),
+                                    "confidence": v.get("confidence"),
+                                }
+                                for v in (d.get("votes") or [])
+                                if v.get("side") in ("BUY", "SELL")
+                            ],
+                        }
+                        for d in decisions_out
+                        if d.get("executed") and d.get("side") in ("BUY", "SELL")
+                    ],
                     "portfolio": self.portfolio.to_dict(),
                 },
             }

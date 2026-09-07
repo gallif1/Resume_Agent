@@ -9,12 +9,19 @@ import {
   type AgentVote,
   type Decision,
   type MarketEvent,
+  type PricePoint,
   type Snapshot,
   type Tick,
+  type TradeMarker,
   type TradingConfig,
 } from "./api";
+import LiveChart from "./LiveChart";
 
 type LatestVotes = Record<string, AgentVote>;
+
+const HISTORY_CAP = 360;
+const VOTE_CAP = 120;
+const TRADE_CAP = 80;
 
 function formatMoney(n: number) {
   return n.toLocaleString(undefined, {
@@ -24,11 +31,66 @@ function formatMoney(n: number) {
   });
 }
 
+function mergeHistory(
+  prev: Record<string, PricePoint[]>,
+  incoming: Record<string, PricePoint[]> | undefined
+): Record<string, PricePoint[]> {
+  if (!incoming) return prev;
+  const next: Record<string, PricePoint[]> = { ...prev };
+  for (const [sym, points] of Object.entries(incoming)) {
+    if (!points?.length) continue;
+    next[sym] = points.slice(-HISTORY_CAP);
+  }
+  return next;
+}
+
+function appendPoints(
+  prev: Record<string, PricePoint[]>,
+  points: Array<PricePoint & { symbol: string }>
+): Record<string, PricePoint[]> {
+  if (!points.length) return prev;
+  const next: Record<string, PricePoint[]> = { ...prev };
+  for (const p of points) {
+    const series = next[p.symbol] ? [...next[p.symbol]] : [];
+    const last = series[series.length - 1];
+    if (last && last.ts === p.ts && last.price === p.price) continue;
+    series.push({
+      ts: p.ts,
+      price: p.price,
+      volume: p.volume,
+      change_pct: p.change_pct,
+    });
+    next[p.symbol] = series.slice(-HISTORY_CAP);
+  }
+  return next;
+}
+
+function mergeTrades(prev: TradeMarker[], incoming: TradeMarker[] | undefined): TradeMarker[] {
+  if (!incoming?.length) return prev;
+  const seen = new Set(prev.map((t) => t.id));
+  const added = incoming.filter((t) => t.id && !seen.has(t.id));
+  if (!added.length) return prev;
+  return [...added, ...prev].slice(0, TRADE_CAP);
+}
+
+function votesFromDecisions(decisions: Decision[]): AgentVote[] {
+  const out: AgentVote[] = [];
+  for (const d of decisions) {
+    for (const v of d.votes || []) {
+      if (v.side === "BUY" || v.side === "SELL") out.push(v);
+    }
+  }
+  return out.slice(0, VOTE_CAP);
+}
+
 export default function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [votes, setVotes] = useState<LatestVotes>({});
+  const [chartVotes, setChartVotes] = useState<AgentVote[]>([]);
+  const [history, setHistory] = useState<Record<string, PricePoint[]>>({});
+  const [trades, setTrades] = useState<TradeMarker[]>([]);
   const [wsState, setWsState] = useState<"connecting" | "live" | "dead" | "polling">(
     "connecting"
   );
@@ -39,6 +101,15 @@ export default function App() {
   const [config, setConfig] = useState<TradingConfig | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  const applySnapshot = (s: Snapshot) => {
+    setSnap(s);
+    setEvents(s.events || []);
+    setDecisions(s.decisions || []);
+    setHistory(mergeHistory({}, s.price_history));
+    setTrades((s.trades || []).slice(0, TRADE_CAP));
+    setChartVotes(votesFromDecisions(s.decisions || []));
+  };
+
   useEffect(() => {
     fetchConfig()
       .then((c) => {
@@ -47,11 +118,7 @@ export default function App() {
       })
       .catch(() => setHomeUrl("/"));
     fetchSnapshot()
-      .then((s) => {
-        setSnap(s);
-        setEvents(s.events || []);
-        setDecisions(s.decisions || []);
-      })
+      .then(applySnapshot)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
 
@@ -92,18 +159,17 @@ export default function App() {
             payload: unknown;
           };
           if (msg.type === "hello" || msg.type === "state") {
-            const s = msg.payload as Snapshot;
-            setSnap(s);
-            setEvents(s.events || []);
-            setDecisions(s.decisions || []);
+            applySnapshot(msg.payload as Snapshot);
           } else if (msg.type === "tick") {
             const p = msg.payload as {
               tick_count: number;
               state: Snapshot["state"];
               market: Tick[];
+              price_points?: Array<PricePoint & { symbol: string }>;
               events: MarketEvent[];
               votes: AgentVote[];
               decisions: Decision[];
+              trades?: TradeMarker[];
               portfolio: Snapshot["portfolio"];
             };
             setSnap((prev) =>
@@ -117,14 +183,55 @@ export default function App() {
                   }
                 : prev
             );
+            const points =
+              p.price_points?.length
+                ? p.price_points
+                : (p.market || []).map((t) => ({
+                    symbol: t.symbol,
+                    ts: t.ts,
+                    price: t.price,
+                    volume: t.volume,
+                    change_pct: t.change_pct,
+                  }));
+            setHistory((prev) => appendPoints(prev, points));
             if (p.events?.length) setEvents((prev) => [...p.events, ...prev].slice(0, 40));
             if (p.decisions?.length) {
               setDecisions((prev) => [...p.decisions, ...prev].slice(0, 40));
             }
+            setTrades((prev) =>
+              mergeTrades(
+                prev,
+                p.trades?.length
+                  ? p.trades
+                  : (p.decisions || [])
+                      .filter((d) => d.executed && (d.side === "BUY" || d.side === "SELL"))
+                      .map((d) => ({
+                        id: d.id,
+                        symbol: d.symbol,
+                        side: d.side as "BUY" | "SELL",
+                        price: d.fill_price,
+                        quantity: d.quantity,
+                        ts: d.ts,
+                        confidence: d.confidence,
+                        agents: (d.votes || [])
+                          .filter((v) => v.side === "BUY" || v.side === "SELL")
+                          .map((v) => ({
+                            id: v.agent_id,
+                            name: v.agent_name,
+                            side: v.side,
+                            confidence: v.confidence,
+                          })),
+                      }))
+              )
+            );
             if (p.votes?.length) {
               const next: LatestVotes = {};
               for (const v of p.votes) next[v.agent_id] = v;
               setVotes(next);
+              const actionable = p.votes.filter((v) => v.side === "BUY" || v.side === "SELL");
+              if (actionable.length) {
+                setChartVotes((prev) => [...actionable, ...prev].slice(0, VOTE_CAP));
+              }
               setFlash(true);
               window.setTimeout(() => setFlash(false), 350);
             }
@@ -167,9 +274,7 @@ export default function App() {
     const id = window.setInterval(() => {
       fetchSnapshot()
         .then((s) => {
-          setSnap(s);
-          setEvents(s.events || []);
-          setDecisions(s.decisions || []);
+          applySnapshot(s);
           setWsState((prev) => (prev === "live" ? prev : "polling"));
         })
         .catch(() => undefined);
@@ -187,7 +292,7 @@ export default function App() {
           : action === "pause"
             ? await pauseSystem()
             : await stopSystem();
-      setSnap(s);
+      applySnapshot(s);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -199,6 +304,9 @@ export default function App() {
   const market = snap?.market ?? [];
   const agents = snap?.agents ?? [];
   const portfolio = snap?.portfolio;
+  const symbols = snap?.symbols?.length
+    ? snap.symbols
+    : market.map((t) => t.symbol);
   const wsLabel =
     wsState === "live"
       ? "WS connected"
@@ -261,6 +369,13 @@ export default function App() {
           {error ? ` · ${error}` : ""}
         </span>
       </section>
+
+      <LiveChart
+        symbols={symbols.length ? symbols : ["BTC-USD"]}
+        history={history}
+        trades={trades}
+        votes={chartVotes}
+      />
 
       <div className="grid">
         <section className="panel">
