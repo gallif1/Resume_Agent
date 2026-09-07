@@ -73,6 +73,8 @@ class AgentVote:
     confidence: float
     rationale: str
     ts: float = field(default_factory=time.time)
+    # Numeric inputs used by the rule (for transparent logs). Optional.
+    inputs: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -92,6 +94,8 @@ class Decision:
     fill_price: float | None = None
     quantity: float | None = None
     ts: float = field(default_factory=time.time)
+    # Structured Decision Engine explanation (weights, confidence math).
+    engine: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

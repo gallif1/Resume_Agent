@@ -40,6 +40,11 @@ class AIResult:
             side = Side.BUY
         elif self.action.upper() == "SELL":
             side = Side.SELL
+        src = {
+            "API": "AI_API",
+            "CACHE": "AI_CACHE",
+            "SKIPPED": "AI_SKIPPED",
+        }.get(self.source, self.source)
         return AgentVote(
             agent_id="ai_analyst",
             agent_name="AI Market Analyst",
@@ -47,6 +52,11 @@ class AIResult:
             side=side,
             confidence=float(self.confidence),
             rationale=self.reason[:240],
+            inputs={
+                "source": src,
+                "raw_source": self.source,
+                "skip_reason": self.skip_reason,
+            },
         )
 
 

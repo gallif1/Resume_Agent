@@ -279,6 +279,100 @@ a {
   font-size: 0.78rem;
 }
 
+.panel-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+
+.panel-head-row h2 {
+  margin: 0;
+}
+
+.copy-logs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.btn-copy {
+  border: 1px solid rgba(61, 214, 198, 0.35);
+  background: rgba(61, 214, 198, 0.12);
+  color: var(--text);
+  border-radius: 0.55rem;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-copy.ghost {
+  background: transparent;
+  border-color: rgba(148, 176, 214, 0.22);
+}
+
+.copy-toast {
+  font-size: 0.72rem;
+  color: var(--buy);
+}
+
+.why-btn {
+  margin-top: 0.35rem;
+  border: 1px solid rgba(148, 176, 214, 0.25);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 0.45rem;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.decision-log-summary {
+  font-size: 0.8rem;
+  margin-top: 0.2rem;
+}
+
+.decision-log-details {
+  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.detail-block h4 {
+  margin: 0 0 0.25rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.detail-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.agent-detail {
+  border-top: 1px solid rgba(148, 176, 214, 0.12);
+  padding: 0.35rem 0;
+}
+
+.agent-detail p {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+}
+
+.decision-log-list {
+  max-height: 420px;
+}
+
 .item .row {
   display: flex;
   justify-content: space-between;

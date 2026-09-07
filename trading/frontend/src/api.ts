@@ -32,6 +32,7 @@ export type AgentVote = {
   confidence: number;
   rationale: string;
   ts: number;
+  inputs?: Record<string, unknown>;
 };
 
 export type Decision = {
@@ -44,7 +45,83 @@ export type Decision = {
   fill_price?: number | null;
   quantity?: number | null;
   votes?: AgentVote[];
+  engine?: Record<string, unknown>;
   ts: number;
+};
+
+export type DecisionLogAgent = {
+  agent_id?: string;
+  agent_name?: string;
+  action?: string;
+  confidence?: number;
+  reason?: string;
+  inputs?: Record<string, unknown>;
+  source?: string;
+  ts?: number;
+};
+
+export type DecisionLog = {
+  id: string;
+  timestamp: number;
+  symbol: string;
+  kind: string;
+  signal: { action?: string; agents?: DecisionLogAgent[] };
+  market: {
+    symbol?: string;
+    price?: number;
+    timestamp?: number;
+    volume?: number;
+    change_1m_pct?: number | null;
+    change_5m_pct?: number | null;
+    change_15m_pct?: number | null;
+    change_1h_pct?: number | null;
+    sma_fast?: number | null;
+    sma_slow?: number | null;
+    ema_fast?: number | null;
+    rsi_14?: number | null;
+    volatility?: number | null;
+    volume_state?: string;
+    trend?: string;
+    detected_events?: string[];
+    provider?: string;
+    session?: string;
+    freshness?: string;
+    stale_reason?: string | null;
+    asset_class?: string;
+  };
+  decision: {
+    action?: string;
+    final_confidence?: number;
+    rationale?: string;
+    explanation?: string;
+    vote_counts?: Record<string, number>;
+    weighted_contributions?: Array<Record<string, unknown>>;
+    weights?: Record<string, number>;
+    action_score?: number;
+    hold_score?: number;
+    hold_gate?: number;
+    threshold?: number;
+    winning_action?: string;
+    confidence_debug?: {
+      raw_score?: number;
+      action_total_buy_sell?: number;
+      total_all_weights?: number;
+      denominator?: number;
+      formula?: string;
+      confidence_before_cap?: number;
+      cap?: number;
+      final_confidence?: number;
+      note?: string;
+    };
+  };
+  execution: {
+    status?: string;
+    reason?: string;
+    fill_price?: number | null;
+    quantity?: number | null;
+    cooldown_remaining_sec?: number | null;
+    last_fill_ts?: number | null;
+  };
 };
 
 export type PricePoint = {
@@ -137,6 +214,7 @@ export type Snapshot = {
   market_meta?: MarketMeta;
   events: MarketEvent[];
   decisions: Decision[];
+  decision_logs?: DecisionLog[];
   trades?: TradeMarker[];
   agents: { id: string; name: string }[];
   ai?: AIStatus;
