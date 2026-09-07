@@ -372,8 +372,13 @@ jobs:
             # small EC2 that is also serving traffic can take well over 60s — treat
             # that as slow, not as a missing dependency.
             timeout 180s sudo docker exec "$cid" python -c \
-              'import sys; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True); from pathlib import Path; p=Path("/app/ai-job-agent/src/job_apply"); print("job_apply_vendored="+str(p.is_dir()), flush=True); p2=Path("/app/job-apply-automation/src/job_apply"); print("job_apply_sidecar="+str(p2.is_dir()), flush=True); p3=Path("/app/ai-job-agent/src/trading_system"); print("trading_vendored="+str(p3.is_dir()), flush=True); p4=Path("/app/trading/backend/trading_system"); print("trading_sidecar="+str(p4.is_dir()), flush=True)' \
+              'import sys; from pathlib import Path; sys.path.insert(0, "/app/ai-job-agent/src"); print("importing api_server", flush=True); import api_server; print("ok", flush=True); print("job_apply_vendored="+str(Path("/app/ai-job-agent/src/job_apply").is_dir()), flush=True); print("job_apply_sidecar="+str(Path("/app/job-apply-automation/src/job_apply").is_dir()), flush=True); print("trading_vendored="+str(Path("/app/ai-job-agent/src/trading_system").is_dir()), flush=True); print("trading_sidecar="+str(Path("/app/trading/backend/trading_system").is_dir()), flush=True); print("trading_dist="+str(Path("/app/trading/frontend/dist/index.html").is_file()), flush=True)' \
               >"$HOME/ra-import-check.log" 2>&1
+            # Explicit trading package probe (api_server import succeeds even when trading fails).
+            timeout 60s sudo docker exec "$cid" python -c \
+              'import sys; sys.path[:0]=["/app/trading/backend","/app/ai-job-agent/src"]; import trading_system.api; print("trading_import=ok", flush=True)' \
+              >>"$HOME/ra-import-check.log" 2>&1 \
+              || echo "trading_import=FAIL (see log above)" >>"$HOME/ra-import-check.log"
           }
 
           import_check_missing_dep() {
@@ -398,6 +403,38 @@ jobs:
               sleep 15
             done
             wait "$pip_pid"
+          }
+
+          # Lightweight trading deps (tzdata/requests/openai) — avoid full requirements
+          # sync on every deploy. Missing tzdata breaks ZoneInfo("America/New_York")
+          # and previously left only a broken /trading/api/health stub (HTTP 500).
+          ensure_trading_runtime() {
+            local cid="$1"
+            echo "Ensuring trading runtime deps (tzdata/requests/openai) in $cid"
+            if timeout 90s sudo docker exec "$cid" python -c \
+              'import importlib.util,sys; missing=[n for n in ("tzdata","requests","openai") if importlib.util.find_spec(n) is None]; print("trading_deps_missing="+(",".join(missing) if missing else "none"), flush=True); sys.exit(0 if not missing else 1)' \
+              >"$HOME/ra-trading-deps-check.log" 2>&1; then
+              echo "Trading deps already present"
+              cat "$HOME/ra-trading-deps-check.log" 2>/dev/null || true
+              return 0
+            fi
+            cat "$HOME/ra-trading-deps-check.log" 2>/dev/null || true
+            echo "Installing missing trading deps"
+            if sudo docker exec "$cid" test -f /app/trading/backend/requirements.txt; then
+              timeout 120s sudo docker exec "$cid" pip install --no-input \
+                --disable-pip-version-check -r /app/trading/backend/requirements.txt \
+                >"$HOME/ra-trading-pip.log" 2>&1 \
+                || timeout 120s sudo docker exec "$cid" pip install --no-input \
+                  --disable-pip-version-check 'tzdata>=2024.1' 'requests>=2.31' 'openai>=1.40' \
+                  >"$HOME/ra-trading-pip.log" 2>&1 \
+                || echo "WARN: trading deps pip install failed/timed out" >&2
+            else
+              timeout 120s sudo docker exec "$cid" pip install --no-input \
+                --disable-pip-version-check 'tzdata>=2024.1' 'requests>=2.31' 'openai>=1.40' \
+                >"$HOME/ra-trading-pip.log" 2>&1 \
+                || echo "WARN: trading deps pip install failed/timed out" >&2
+            fi
+            tail -n 30 "$HOME/ra-trading-pip.log" 2>/dev/null || true
           }
 
           # Plain `uvicorn` (no websockets/wsproto) accepts the TCP connection but
@@ -552,6 +589,9 @@ jobs:
           inject_job_apply_sidecar "$CID"
           inject_trading_sidecar "$CID"
 
+          echo "Step R7b0: ensure trading runtime deps before import check"
+          ensure_trading_runtime "$CID"
+
           echo "Step R7b: check the injected backend imports before restarting"
           IMPORT_OK=0
           backend_imports_ok "$CID" && IMPORT_OK=1 || true
@@ -586,6 +626,7 @@ jobs:
             fi
           fi
           echo "Injected backend imports cleanly"
+          grep -E 'trading_|AI Trading|import failed|mounted' "$HOME/ra-import-check.log" 2>/dev/null || true
 
           echo "Step R7c: ensure WebSocket runtime deps for /trading"
           ensure_websocket_runtime "$CID"
@@ -668,16 +709,35 @@ jobs:
           fi
           echo
           echo "Step R9c: trading system health"
-          if curl -sf --max-time 8 http://127.0.0.1:8001/trading/api/health >"$HOME/ra-trading-health.json" \
-            || curl -sf --max-time 8 http://127.0.0.1:8000/trading/api/health >"$HOME/ra-trading-health.json"; then
+          TRADING_HEALTH_CODE="$(curl -sS -m 8 -o "$HOME/ra-trading-health.json" -w '%{http_code}' http://127.0.0.1:8001/trading/api/health \
+            || curl -sS -m 8 -o "$HOME/ra-trading-health.json" -w '%{http_code}' http://127.0.0.1:8000/trading/api/health \
+            || echo 000)"
+          echo "HTTP $TRADING_HEALTH_CODE"
+          if [ -f "$HOME/ra-trading-health.json" ]; then
             cat "$HOME/ra-trading-health.json"
             echo
+          fi
+          if [ "$TRADING_HEALTH_CODE" = "200" ]; then
+            if grep -q '"ok"[[:space:]]*:[[:space:]]*false' "$HOME/ra-trading-health.json" \
+              || grep -q '"status"[[:space:]]*:[[:space:]]*"degraded"' "$HOME/ra-trading-health.json"; then
+              echo "::warning::Trading health is degraded — UI/API may be incomplete. Check error field above."
+            fi
             if grep -q '"ws_runtime_ok"[[:space:]]*:[[:space:]]*false' "$HOME/ra-trading-health.json"; then
               echo "::warning::Trading health reports ws_runtime_ok=false — uvicorn lacks websockets/wsproto."
             fi
           else
-            echo "WARN: /trading/api/health unreachable" >&2
+            echo "WARN: /trading/api/health unreachable (HTTP $TRADING_HEALTH_CODE)" >&2
+            echo "--- import check log (trading) ---" >&2
+            grep -E 'trading_|AI Trading|import failed|mounted' "$HOME/ra-import-check.log" 2>/dev/null || true
+            echo "--- recent container logs ---" >&2
+            sudo docker logs --tail 80 "$CID" 2>&1 | grep -E 'trading_|AI Trading|import failed|mounted|Error|Traceback|ZoneInfo' || true
           fi
+          # SPA probe — the original user-facing 404
+          TRADING_SPA_CODE="$(curl -sS -m 8 -o /tmp/ra-trading-spa.body -w '%{http_code}' -H 'Accept: text/html' http://127.0.0.1:8001/trading/ \
+            || curl -sS -m 8 -o /tmp/ra-trading-spa.body -w '%{http_code}' -H 'Accept: text/html' http://127.0.0.1:8000/trading/ \
+            || echo 000)"
+          echo "SPA /trading/ HTTP $TRADING_SPA_CODE"
+          head -c 120 /tmp/ra-trading-spa.body 2>/dev/null || true
           echo
           echo "Step R9d: trading WebSocket upgrade"
           TRADING_BASE=""

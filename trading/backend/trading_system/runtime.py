@@ -54,10 +54,16 @@ class TradingRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._persist_path = DATA_DIR / "runtime_state.json"
         self._eval_pending: list[dict[str, Any]] = []
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:  # noqa: BLE001 — never block route registration
+            self.last_error = f"data_dir: {exc}"[:200]
         self._load_state()
         if not self.use_simulated:
-            self.market.start()
+            try:
+                self.market.start()
+            except Exception as exc:  # noqa: BLE001 — serve UI even if poller fails
+                self.last_error = f"market_start: {exc}"[:200]
 
     # -- persistence -----------------------------------------------------
 

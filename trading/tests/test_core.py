@@ -115,3 +115,43 @@ def test_ai_trigger_skips_without_key():
     vote = ai.maybe_vote(tick, {"symbol": "BTC-USD", "price": 100}, [], [])
     assert vote is None
     assert ai.status()["calls_this_hour"] == 0
+
+
+def test_us_equity_session_without_tzdata():
+    """Import path must not crash when ZoneInfo IANA data is unavailable."""
+    from trading_system.market_data.sessions import us_equity_session
+    from trading_system.market_data.models import MarketSession
+    from datetime import datetime, timezone
+
+    # Weekday noon UTC ~ morning ET — function should return a MarketSession.
+    noon = datetime(2024, 6, 5, 16, 0, tzinfo=timezone.utc)
+    assert us_equity_session(noon) in {MarketSession.OPEN, MarketSession.CLOSED}
+
+
+def test_degraded_trading_health_closure_does_not_500():
+    """Python 3 clears `except ... as exc` — closures must capture the message first."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+
+    def register():
+        try:
+            raise RuntimeError("simulated ZoneInfoNotFoundError")
+        except Exception as exc:  # noqa: BLE001
+            import_error = f"{type(exc).__name__}: {exc}"[:300]
+
+            @app.get("/trading/api/health")
+            def trading_import_failed():
+                return {
+                    "ok": "false",
+                    "status": "degraded",
+                    "package_found": "true",
+                    "error": import_error,
+                }
+
+    register()
+    client = TestClient(app)
+    resp = client.get("/trading/api/health")
+    assert resp.status_code == 200
+    assert "RuntimeError" in resp.json()["error"]

@@ -29,26 +29,36 @@ def _websocket_runtime_ok() -> bool:
 
 @router.get("/api/health")
 async def trading_health() -> dict[str, Any]:
-    rt = get_runtime()
     ws_runtime_ok = _websocket_runtime_ok()
-    snap = rt.snapshot()
-    return {
-        "ok": True,
-        "service": "ai-trading-system",
-        "state": rt.state.value,
-        "tick_count": rt.tick_count,
-        "base_path": PUBLIC_BASE_PATH or "/",
-        "resume_agent_home": RESUME_AGENT_HOME_URL,
-        "ws_path": f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
-        "ws_paths": [
-            f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
-            f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
-        ],
-        "ws_runtime_ok": ws_runtime_ok,
-        "data_mode": snap.get("data_mode"),
-        "market_meta": snap.get("market_meta"),
-        "ai": snap.get("ai"),
-    }
+    try:
+        rt = get_runtime()
+        snap = rt.snapshot()
+        return {
+            "ok": True,
+            "service": "ai-trading-system",
+            "state": rt.state.value,
+            "tick_count": rt.tick_count,
+            "base_path": PUBLIC_BASE_PATH or "/",
+            "resume_agent_home": RESUME_AGENT_HOME_URL,
+            "ws_path": f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
+            "ws_paths": [
+                f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
+                f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
+            ],
+            "ws_runtime_ok": ws_runtime_ok,
+            "data_mode": snap.get("data_mode"),
+            "market_meta": snap.get("market_meta"),
+            "ai": snap.get("ai"),
+            "last_error": rt.last_error,
+        }
+    except Exception as exc:  # noqa: BLE001 — never 500 the mount probe
+        return {
+            "ok": False,
+            "service": "ai-trading-system",
+            "status": "degraded",
+            "ws_runtime_ok": ws_runtime_ok,
+            "error": f"{type(exc).__name__}: {exc}"[:300],
+        }
 
 
 @router.get("/api/snapshot")
@@ -227,7 +237,7 @@ def mount_trading_frontend(app: Any, base_path: str | None = None) -> bool:
         Path(__file__).resolve().parents[2] / "frontend" / "dist",
         Path("/app/trading/frontend/dist"),
     ]
-    dist: Path | None = next((p for p in candidates if p.is_dir()), None)
+    dist: Path | None = next((p for p in candidates if (p / "index.html").is_file()), None)
     if dist is None:
         return False
 
