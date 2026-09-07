@@ -256,6 +256,29 @@ a {
   font-size: 0.86rem;
 }
 
+.item.filled {
+  border-color: rgba(61, 214, 198, 0.35);
+  background: rgba(61, 214, 198, 0.08);
+}
+
+.fills-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 0.75rem;
+}
+
+.fill-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 176, 214, 0.18);
+  background: rgba(11, 18, 32, 0.55);
+  font-size: 0.78rem;
+}
+
 .item .row {
   display: flex;
   justify-content: space-between;

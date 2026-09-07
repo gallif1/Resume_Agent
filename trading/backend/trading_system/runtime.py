@@ -14,6 +14,7 @@ from .config import (
     DATA_DIR,
     DEFAULT_CHART_TIMEFRAME,
     DEFAULT_SYMBOLS,
+    FILL_COOLDOWN_SEC,
     STARTING_CASH,
     TICK_INTERVAL_SEC,
     USE_SIMULATED_FEED,
@@ -54,6 +55,7 @@ class TradingRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._persist_path = DATA_DIR / "runtime_state.json"
         self._eval_pending: list[dict[str, Any]] = []
+        self._last_fill_ts: dict[str, float] = {}
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001 — never block route registration
@@ -264,13 +266,21 @@ class TradingRuntime:
             raise ValueError("timeframe must be one of 1m,5m,15m,1h")
         self.chart_timeframe = tf
         if not self.use_simulated:
-            # Warm candles for the new timeframe.
-            for symbol in DEFAULT_SYMBOLS:
-                try:
-                    self.market._poll_candles(symbol)  # noqa: SLF001 — intentional warm
-                except Exception:  # noqa: BLE001
-                    pass
+            # Warm in the background — blocking poll of all symbols made the UI
+            # freeze for several seconds on every 1m/5m/15m/1h click.
+            threading.Thread(
+                target=self._warm_candles_background,
+                name="trading-warm-candles",
+                daemon=True,
+            ).start()
         return self.snapshot()
+
+    def _warm_candles_background(self) -> None:
+        for symbol in DEFAULT_SYMBOLS:
+            try:
+                self.market._poll_candles(symbol)  # noqa: SLF001 — intentional warm
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _run_loop(self) -> None:
         try:
@@ -348,7 +358,20 @@ class TradingRuntime:
             if decision is None:
                 continue
             if decision.executed:
-                self.portfolio = self.decision_engine.apply_fill(self.portfolio, decision)
+                last_fill = self._last_fill_ts.get(tick.symbol, 0.0)
+                elapsed = time.time() - last_fill
+                if elapsed < FILL_COOLDOWN_SEC:
+                    decision.executed = False
+                    decision.fill_price = None
+                    decision.quantity = None
+                    decision.rationale = (
+                        f"{decision.rationale} · fill skipped "
+                        f"(cooldown {FILL_COOLDOWN_SEC:.0f}s, {elapsed:.0f}s ago)"
+                    )
+                else:
+                    self.portfolio = self.decision_engine.apply_fill(self.portfolio, decision)
+                    if decision.executed:
+                        self._last_fill_ts[tick.symbol] = time.time()
             decisions_out.append(decision.to_dict())
 
             # Evaluation log for later "did AI help?" analysis.

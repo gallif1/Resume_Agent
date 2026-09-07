@@ -17,6 +17,7 @@ type Props = {
   timeframe: string;
   timeframes: string[];
   onTimeframe: (tf: string) => void;
+  timeframeBusy?: boolean;
   marketMeta?: MarketMeta | null;
   realData: boolean;
 };
@@ -35,6 +36,7 @@ export default function LiveChart({
   timeframe,
   timeframes,
   onTimeframe,
+  timeframeBusy = false,
   marketMeta,
   realData,
 }: Props) {
@@ -130,11 +132,13 @@ export default function LiveChart({
             role="tab"
             aria-selected={tf === timeframe}
             className={`symbol-tab ${tf === timeframe ? "active" : ""}`}
+            disabled={timeframeBusy}
             onClick={() => onTimeframe(tf)}
           >
             {tf}
           </button>
         ))}
+        {timeframeBusy ? <span className="muted mono">updating…</span> : null}
       </div>
 
       <div className="chart-stage">
