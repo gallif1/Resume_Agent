@@ -109,6 +109,11 @@ class DecisionEngine:
         self.ai_weight = AI_AGENT_WEIGHT if ai_weight is None else ai_weight
         self._decisions: list[Decision] = []
 
+    def clear(self) -> int:
+        n = len(self._decisions)
+        self._decisions.clear()
+        return n
+
     @property
     def recent(self) -> list[dict]:
         return [d.to_dict() for d in self._decisions[-50:]]

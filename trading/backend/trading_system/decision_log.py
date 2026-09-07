@@ -319,6 +319,14 @@ class DecisionLogBuffer:
     def recent(self) -> list[dict[str, Any]]:
         return list(reversed(self._logs[-self.limit :]))
 
+    def clear(self) -> int:
+        """Drop all in-memory decision logs. Returns how many were removed."""
+        n = len(self._logs)
+        self._logs.clear()
+        self._last_by_symbol.clear()
+        self._last_recorded_ts.clear()
+        return n
+
     def add(self, record: dict[str, Any], *, force: bool = False) -> dict[str, Any] | None:
         """Append or coalesce. Returns record if stored/updated, None if skipped as noise."""
         symbol = str(record.get("symbol") or "")

@@ -100,6 +100,19 @@ class OutcomeStore:
             row = self._by_id.get(oid)
             return dict(row) if row else None
 
+    def clear(self) -> int:
+        """Erase all outcomes from memory and the JSONL file."""
+        with self._lock:
+            n = len(self._by_id)
+            self._by_id.clear()
+            self._by_decision.clear()
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                self.path.write_text("", encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed clearing outcomes file: %s", exc)
+            return n
+
     def record_actionable(
         self,
         *,

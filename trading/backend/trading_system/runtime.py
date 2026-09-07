@@ -277,6 +277,46 @@ class TradingRuntime:
         await self._broadcast({"type": "state", "payload": self.snapshot()})
         return self.snapshot()
 
+    async def clear_decision_logs(self) -> dict[str, Any]:
+        """Delete recent structured decision logs only (paper portfolio untouched)."""
+        async with self._lock:
+            cleared = self.decision_logs.clear()
+            self.last_error = None
+        snap = self.snapshot()
+        snap["cleared_logs"] = cleared
+        await self._broadcast({"type": "state", "payload": snap})
+        return snap
+
+    async def reset_paper_system(self) -> dict[str, Any]:
+        """Full paper-trading reset: stop, wipe portfolio/logs/outcomes, start clean."""
+        # Stop outside the lock path used by stop() — avoid nested lock.
+        await self.stop()
+        async with self._lock:
+            self.portfolio = Portfolio(cash=STARTING_CASH)
+            self.tick_count = 0
+            self.started_at = None
+            self.last_error = None
+            self._last_fill_ts.clear()
+            self._eval_pending.clear()
+            self._sim_price_history.clear()
+            self._last_outcome_resolve = 0.0
+            logs_cleared = self.decision_logs.clear()
+            decisions_cleared = self.decision_engine.clear()
+            outcomes_cleared = self.outcomes.clear()
+            self.events.clear_session()
+            self.ai.clear_session()
+            self._save_state()
+        snap = self.snapshot()
+        snap["reset"] = {
+            "cash": STARTING_CASH,
+            "logs_cleared": logs_cleared,
+            "decisions_cleared": decisions_cleared,
+            "outcomes_cleared": outcomes_cleared,
+            "paper_trading_only": True,
+        }
+        await self._broadcast({"type": "state", "payload": snap})
+        return snap
+
     def set_chart_timeframe(self, timeframe: str) -> dict[str, Any]:
         tf = timeframe.strip().lower()
         if tf not in {"1m", "5m", "15m", "1h"}:

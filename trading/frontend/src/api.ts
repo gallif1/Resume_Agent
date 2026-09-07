@@ -329,6 +329,24 @@ export function stopSystem() {
   return jsonFetch<Snapshot>("/stop", { method: "POST" });
 }
 
+export function clearDecisionLogs() {
+  return jsonFetch<Snapshot & { cleared_logs?: number }>("/clear-logs", { method: "POST" });
+}
+
+export function resetPaperSystem() {
+  return jsonFetch<
+    Snapshot & {
+      reset?: {
+        cash?: number;
+        logs_cleared?: number;
+        decisions_cleared?: number;
+        outcomes_cleared?: number;
+        paper_trading_only?: boolean;
+      };
+    }
+  >("/reset", { method: "POST" });
+}
+
 export function setChartTimeframe(timeframe: string) {
   return jsonFetch<Snapshot>("/chart-timeframe", {
     method: "POST",

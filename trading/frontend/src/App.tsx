@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  clearDecisionLogs,
   fetchConfig,
   fetchSnapshot,
   pauseSystem,
+  resetPaperSystem,
   setChartTimeframe,
   startSystem,
   stopSystem,
@@ -176,7 +178,7 @@ export default function App() {
     setSnap(s);
     setEvents(s.events || []);
     setDecisions(s.decisions || []);
-    if (s.decision_logs) setDecisionLogs(s.decision_logs);
+    setDecisionLogs(s.decision_logs || []);
     setHistory(mergeHistory({}, s.price_history));
     setTrades((s.trades || []).slice(0, TRADE_CAP));
     setChartVotes(votesFromDecisions(s.decisions || []));
@@ -434,6 +436,62 @@ export default function App() {
     }
   };
 
+  const onClearLogs = async () => {
+    if (!decisionLogs.length) {
+      setCopyMsg("No logs to clear");
+      window.setTimeout(() => setCopyMsg(null), 2500);
+      return;
+    }
+    if (!window.confirm("Clear recent decision logs? Paper portfolio stays unchanged.")) {
+      return;
+    }
+    setControlBusy(true);
+    setError(null);
+    try {
+      const s = await clearDecisionLogs();
+      applySnapshot(s);
+      setExpandedLogId(null);
+      setManualCopyText(null);
+      setCopyMsg(`Cleared ${s.cleared_logs ?? 0} logs`);
+      window.setTimeout(() => setCopyMsg(null), 3000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setControlBusy(false);
+    }
+  };
+
+  const onResetPaper = async () => {
+    if (
+      !window.confirm(
+        "Reset paper trading from scratch?\n\nThis stops the system, clears cash/positions back to starting cash, and deletes logs + outcome stats.\n\nNo real money / no broker."
+      )
+    ) {
+      return;
+    }
+    setControlBusy(true);
+    setError(null);
+    try {
+      const s = await resetPaperSystem();
+      applySnapshot(s);
+      setVotes({});
+      setChartVotes([]);
+      setTrades([]);
+      setEvents([]);
+      setDecisions([]);
+      setDecisionLogs([]);
+      setExpandedLogId(null);
+      setManualCopyText(null);
+      setPerformance(s.performance ?? null);
+      setCopyMsg("Paper system reset — press START");
+      window.setTimeout(() => setCopyMsg(null), 3500);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setControlBusy(false);
+    }
+  };
+
   const onTimeframe = async (tf: string) => {
     if (tf === chartTimeframe) return;
     setChartBusy(true);
@@ -544,6 +602,24 @@ export default function App() {
           onClick={() => run("stop")}
         >
           STOP
+        </button>
+        <button
+          type="button"
+          className="btn btn-clear-logs"
+          disabled={controlBusy || !decisionLogs.length}
+          onClick={() => onClearLogs()}
+          title="Delete recent decision logs only"
+        >
+          Clear Logs
+        </button>
+        <button
+          type="button"
+          className="btn btn-reset"
+          disabled={controlBusy}
+          onClick={() => onResetPaper()}
+          title="Reset paper portfolio, logs, and stats from scratch"
+        >
+          Reset Paper
         </button>
         <span className={`data-badge ${realData ? "real" : "sim"}`}>
           {realData ? "REAL MARKET DATA" : "SIMULATED DATA"}
@@ -757,6 +833,14 @@ export default function App() {
               </button>
               <button type="button" className="btn-copy ghost" onClick={() => copyLogs("all")}>
                 All
+              </button>
+              <button
+                type="button"
+                className="btn-copy ghost danger"
+                disabled={controlBusy || !decisionLogs.length}
+                onClick={() => onClearLogs()}
+              >
+                Clear Logs
               </button>
               {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
             </div>

@@ -161,6 +161,16 @@ class AIMarketAnalyst:
             "last_by_symbol": self._last_by_symbol,
         }
 
+    def clear_session(self) -> None:
+        """Clear AI cache / last votes for a fresh paper session (keeps hourly counter)."""
+        self._cache.clear()
+        self._last_by_symbol.clear()
+        try:
+            if self._log_path.is_file():
+                self._log_path.write_text("", encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
     def is_fresh_for_pretrade(self, symbol: str, snapshot: dict[str, Any]) -> bool:
         """True when a recent analysis exists for a similar market state."""
         meta = self._last_by_symbol.get(symbol) or {}
