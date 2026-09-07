@@ -16,7 +16,7 @@ from ..config import (
 from .crypto_coinbase import CoinbaseCryptoProvider
 from .models import AssetClass, Candle, DataFreshness, MarketSession, Quote
 from .sessions import us_equity_session
-from .stocks_finnhub import FinnhubStockProvider
+from .stocks_finnhub import FinnhubStockProvider, StockMarketProvider
 
 logger = logging.getLogger("trading.market.service")
 

@@ -44,6 +44,18 @@ services:
         value: /app/trading/data
       - key: OPENAI_API_KEY
         sync: false
+      - key: FINNHUB_API_KEY
+        sync: false
+      - key: AI_ENABLED
+        value: "true"
+      - key: AI_PROVIDER
+        value: openai
+      - key: AI_MODEL
+        value: gpt-4o-mini
+      - key: CRYPTO_POLL_INTERVAL_SECONDS
+        value: "30"
+      - key: STOCK_POLL_INTERVAL_SECONDS
+        value: "60"
       - key: DRUSHIM_EMAIL
         sync: false
       - key: DRUSHIM_PASSWORD

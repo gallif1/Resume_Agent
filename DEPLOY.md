@@ -69,7 +69,8 @@ PR ממוזג ל-master → בדיקות → פריסה אוטומטית ל-Rend
 
 | משתנה | תיאור |
 |--------|--------|
-| `OPENAI_API_KEY` | ניתוח חכם של קו"ח והתאמות |
+| `OPENAI_API_KEY` | ניתוח חכם של קו"ח והתאמות + AI Market Analyst במסחר |
+| `FINNHUB_API_KEY` | מחירי מניות אמיתיים ל־`/trading` (AAPL/NVDA) |
 | `JWT_SECRET` | מפתח לחתימת JWT (מומלץ חזק בפרודקשן) |
 | `DRUSHIM_EMAIL` | התחברות לדרושים |
 | `DRUSHIM_PASSWORD` | סיסמת דרושים |

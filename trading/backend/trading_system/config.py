@@ -5,6 +5,27 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None  # type: ignore[assignment]
+
+# Load the same .env files Resume Agent uses so OPENAI_API_KEY / FINNHUB_API_KEY
+# are visible when trading is mounted inside api_server.
+_CONFIG_DIR = Path(__file__).resolve().parent
+_ENV_CANDIDATES = [
+    Path("/app/ai-job-agent/.env"),  # Docker
+    _CONFIG_DIR.parents[2] / "ai-job-agent" / ".env",  # repo: ai-job-agent/.env
+    _CONFIG_DIR.parents[2] / ".env",
+    _CONFIG_DIR.parents[1] / ".env",  # trading/backend/.env
+    _CONFIG_DIR.parents[2] / "trading" / ".env",
+    Path.cwd() / ".env",
+]
+if load_dotenv is not None:
+    for _env_path in _ENV_CANDIDATES:
+        if _env_path.is_file():
+            load_dotenv(_env_path, override=False)
+
 # Public URL path prefix when hosted under Resume Agent (or alone at root).
 PUBLIC_BASE_PATH = os.getenv("TRADING_BASE_PATH", "/trading").rstrip("/") or ""
 
@@ -41,6 +62,7 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 DEFAULT_CHART_TIMEFRAME = os.getenv("TRADING_CHART_TIMEFRAME", "5m").strip() or "5m"
 
 # --- AI Market Analyst (LLM) ---
+# Reuses the same OPENAI_API_KEY as Resume Agent.
 AI_ENABLED = os.getenv("AI_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
 AI_PROVIDER = os.getenv("AI_PROVIDER", "openai").strip().lower()
 AI_MODEL = os.getenv("AI_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o-mini")).strip()
