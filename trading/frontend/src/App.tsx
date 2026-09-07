@@ -128,7 +128,8 @@ export default function App() {
   const [wsState, setWsState] = useState<"connecting" | "live" | "dead" | "polling">(
     "connecting"
   );
-  const [busy, setBusy] = useState(false);
+  const [controlBusy, setControlBusy] = useState(false);
+  const [chartBusy, setChartBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [homeUrl, setHomeUrl] = useState("/");
   const [flash, setFlash] = useState(false);
@@ -291,15 +292,26 @@ export default function App() {
               )
             );
             if (p.votes?.length) {
+              const byAgent: Record<string, AgentVote[]> = {};
+              for (const v of p.votes) {
+                (byAgent[v.agent_id] ||= []).push(v);
+              }
               const next: LatestVotes = {};
-              for (const v of p.votes) next[v.agent_id] = v;
+              for (const [id, list] of Object.entries(byAgent)) {
+                // Prefer last actionable vote in the tick so HOLD on NVDA does not
+                // hide a BUY/SELL that just moved cash on SOL/AAPL.
+                const actionableSym = list.filter((v) => v.side === "BUY" || v.side === "SELL");
+                next[id] = actionableSym.length
+                  ? actionableSym[actionableSym.length - 1]
+                  : list[list.length - 1];
+              }
               setVotes(next);
               const actionable = p.votes.filter((v) => v.side === "BUY" || v.side === "SELL");
               if (actionable.length) {
                 setChartVotes((prev) => [...actionable, ...prev].slice(0, VOTE_CAP));
+                setFlash(true);
+                window.setTimeout(() => setFlash(false), 450);
               }
-              setFlash(true);
-              window.setTimeout(() => setFlash(false), 350);
             }
           } else if (msg.type === "error") {
             const payload = msg.payload as { message?: string };
@@ -349,7 +361,19 @@ export default function App() {
   }, [wsState]);
 
   const run = async (action: "start" | "pause" | "stop") => {
-    setBusy(true);
+    if (action === "start" && snap?.state === "running") {
+      setError("Already running — cash changes come from paper fills in Decision Engine.");
+      return;
+    }
+    if (action === "pause" && snap?.state !== "running") {
+      setError("System is not running.");
+      return;
+    }
+    if (action === "stop" && snap?.state === "stopped") {
+      setError("Already stopped.");
+      return;
+    }
+    setControlBusy(true);
     setError(null);
     try {
       const s =
@@ -362,21 +386,23 @@ export default function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setControlBusy(false);
     }
   };
 
   const onTimeframe = async (tf: string) => {
     if (tf === chartTimeframe) return;
-    setBusy(true);
+    setChartBusy(true);
     setError(null);
+    // Optimistic UI — backend warms candles in the background.
+    setChartTimeframeState(tf);
     try {
       const s = await setChartTimeframe(tf);
       applySnapshot(s);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setChartBusy(false);
     }
   };
 
@@ -391,6 +417,11 @@ export default function App() {
   const aiPick = pickAiSymbol(aiStatus, symbols);
   const aiCalls = aiStatus?.calls_this_hour ?? 0;
   const aiMax = aiStatus?.max_calls_per_hour ?? 0;
+  const filledDecisions = decisions.filter((d) => d.executed);
+  const openDecisions = decisions.filter((d) => !d.executed && d.side !== "HOLD");
+  const visibleDecisions = [...filledDecisions, ...openDecisions, ...decisions.filter((d) => d.side === "HOLD")].filter(
+    (d, i, arr) => arr.findIndex((x) => x.id === d.id) === i
+  );
   const wsLabel =
     wsState === "live"
       ? "WS connected"
@@ -420,7 +451,7 @@ export default function App() {
         <button
           type="button"
           className="btn btn-start"
-          disabled={busy || state === "running"}
+          disabled={controlBusy || state === "running"}
           onClick={() => run("start")}
         >
           START
@@ -428,7 +459,7 @@ export default function App() {
         <button
           type="button"
           className="btn btn-pause"
-          disabled={busy || state !== "running"}
+          disabled={controlBusy || state !== "running"}
           onClick={() => run("pause")}
         >
           PAUSE
@@ -436,7 +467,7 @@ export default function App() {
         <button
           type="button"
           className="btn btn-stop"
-          disabled={busy || state === "stopped"}
+          disabled={controlBusy || state === "stopped"}
           onClick={() => run("stop")}
         >
           STOP
@@ -465,6 +496,7 @@ export default function App() {
         timeframe={chartTimeframe}
         timeframes={timeframes}
         onTimeframe={onTimeframe}
+        timeframeBusy={chartBusy}
         marketMeta={marketMeta}
         realData={realData}
       />
@@ -636,9 +668,23 @@ export default function App() {
 
         <section className="panel">
           <h2>Decision Engine</h2>
+          {filledDecisions.length > 0 && (
+            <div className="fills-strip" aria-label="Recent paper fills">
+              {filledDecisions.slice(0, 8).map((d) => (
+                <div className="fill-chip" key={`fill-${d.id}`}>
+                  <span className={`tag ${d.side}`}>{d.side}</span>
+                  <strong className="mono">{d.symbol}</strong>
+                  <span className="mono muted">
+                    {d.quantity != null ? d.quantity.toFixed(4) : ""} @{" "}
+                    {d.fill_price != null ? d.fill_price.toLocaleString() : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="list">
-            {decisions.map((d) => (
-              <div className="item" key={d.id + String(d.ts)}>
+            {visibleDecisions.map((d) => (
+              <div className={`item ${d.executed ? "filled" : ""}`} key={d.id + String(d.ts)}>
                 <div className="row">
                   <span>
                     <span className={`tag ${d.side}`}>{d.side}</span>{" "}
@@ -646,13 +692,13 @@ export default function App() {
                   </span>
                   <span className="mono muted">
                     {(d.confidence * 100).toFixed(0)}%
-                    {d.executed ? " · filled" : ""}
+                    {d.executed ? " · FILLED" : d.side === "HOLD" ? "" : " · not filled"}
                   </span>
                 </div>
                 <div className="muted">{d.rationale}</div>
               </div>
             ))}
-            {!decisions.length && (
+            {!visibleDecisions.length && (
               <div className="muted">Decisions will appear once agents vote.</div>
             )}
           </div>

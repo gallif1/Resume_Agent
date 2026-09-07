@@ -80,6 +80,12 @@ def test_decision_engine_executes_sell_against_opposing_buy():
     assert pf.positions["BTC-USD"].quantity < 0.01
 
 
+def test_fill_cooldown_constant_loaded():
+    from trading_system.config import FILL_COOLDOWN_SEC
+
+    assert FILL_COOLDOWN_SEC >= 1
+
+
 def test_event_engine_builds_chart_history():
     engine = EventEngine()
     for i in range(5):

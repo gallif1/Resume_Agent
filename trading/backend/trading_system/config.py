@@ -45,6 +45,9 @@ DEFAULT_SYMBOLS = tuple(
 # Internal decision-loop cadence (reads cache — does NOT hit market APIs).
 TICK_INTERVAL_SEC = float(os.getenv("TRADING_TICK_INTERVAL_SEC", "2.0"))
 
+# Minimum seconds between paper fills on the same symbol (prevents 2%-of-cash spam).
+FILL_COOLDOWN_SEC = float(os.getenv("TRADING_FILL_COOLDOWN_SEC", "45"))
+
 STARTING_CASH = float(os.getenv("TRADING_STARTING_CASH", "100000"))
 
 # --- Real market data ---
