@@ -81,19 +81,27 @@ function looksLikeHtml(text: string): boolean {
 /** Actionable message when the server body is not JSON (common on Safari / timeouts). */
 function nonJsonResponseMessage(res: Response, text: string, errorFallback: string): string {
   const trimmed = text.trim();
+  const isTimeoutStatus = res.status === 502 || res.status === 504 || res.status === 524;
   if (!trimmed) {
-    if (res.ok) {
+    if (res.ok || isTimeoutStatus) {
       return "הבקשה נקטעה לפני שהשרת החזיר תוצאה — יצירת קורות חיים לוקחת 1–2 דקות, נסה שוב ואל תסגור את הדף.";
     }
-    return errorFallback;
+    return `${errorFallback} (שגיאה ${res.status})`;
   }
   if (looksLikeHtml(trimmed)) {
+    if (isTimeoutStatus) {
+      return "השרת חתך את הבקשה באמצע (timeout) — יצירת קורות חיים לוקחת 1–2 דקות. נסה שוב ואל תסגור את הדף.";
+    }
     return "השרת החזיר דף שגיאה במקום תשובת API — ודא שהכתובת כוללת :8001 (למשל http://18.195.208.12:8001/cv-tailor).";
   }
   if (res.ok) {
     return "יצירת קורות החיים נכשלה — נסה קובץ DOCX מ-Word (לא PDF סרוק), והמתן 1–2 דקות בזמן העיבוד.";
   }
-  return errorFallback;
+  // Plain-text "Internal Server Error" from Starlette — keep fallback but attach status.
+  if (/^internal server error$/i.test(trimmed)) {
+    return `${errorFallback} (שגיאה ${res.status})`;
+  }
+  return trimmed.length <= 240 ? trimmed : errorFallback;
 }
 
 /** Parse JSON safely — Safari throws opaque errors from Response.json() on bad bodies. */
