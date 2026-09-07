@@ -320,6 +320,29 @@ a {
   color: var(--buy);
 }
 
+.manual-copy-box {
+  margin: 0 0 0.75rem;
+  padding: 0.55rem;
+  border: 1px solid rgba(148, 176, 214, 0.22);
+  border-radius: 0.7rem;
+  background: rgba(11, 18, 32, 0.55);
+}
+
+.manual-copy-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 160px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text);
+  background: rgba(7, 12, 22, 0.9);
+  border: 1px solid rgba(148, 176, 214, 0.18);
+  border-radius: 0.5rem;
+  padding: 0.55rem;
+}
+
 .why-btn {
   margin-top: 0.35rem;
   border: 1px solid rgba(148, 176, 214, 0.25);

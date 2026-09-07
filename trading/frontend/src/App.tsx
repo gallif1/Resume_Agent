@@ -20,6 +20,7 @@ import {
   type TradingConfig,
 } from "./api";
 import { formatDecisionLogsText } from "./decisionLogFormat";
+import { copyTextToClipboard } from "./clipboard";
 import LiveChart from "./LiveChart";
 
 type LatestVotes = Record<string, AgentVote>;
@@ -121,6 +122,7 @@ export default function App() {
   const [decisionLogs, setDecisionLogs] = useState<DecisionLog[]>([]);
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
+  const [manualCopyText, setManualCopyText] = useState<string | null>(null);
   const [votes, setVotes] = useState<LatestVotes>({});
   const [chartVotes, setChartVotes] = useState<AgentVote[]>([]);
   const [history, setHistory] = useState<Record<string, PricePoint[]>>({});
@@ -430,14 +432,27 @@ export default function App() {
   const filledDecisions = decisions.filter((d) => d.executed);
   const copyLogs = async (limit: number | "all") => {
     const n = limit === "all" ? decisionLogs.length : limit;
-    const text = formatDecisionLogsText(decisionLogs, n);
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopyMsg(`Copied ${Math.min(n, decisionLogs.length)} logs`);
-    } catch {
-      setCopyMsg("Copy failed — select text manually from Details");
+    if (!decisionLogs.length) {
+      setCopyMsg("No logs yet — press START first");
+      window.setTimeout(() => setCopyMsg(null), 2500);
+      return;
     }
-    window.setTimeout(() => setCopyMsg(null), 2500);
+    const text = formatDecisionLogsText(decisionLogs, n);
+    const count = Math.min(n, decisionLogs.length);
+    try {
+      const result = await copyTextToClipboard(text);
+      if (result === "ok") {
+        setManualCopyText(null);
+        setCopyMsg(`Copied ${count} logs`);
+      } else {
+        setManualCopyText(text);
+        setCopyMsg("Clipboard blocked on HTTP — select all below and Ctrl/Cmd+C");
+      }
+    } catch {
+      setManualCopyText(text);
+      setCopyMsg("Copy failed — use the text box below");
+    }
+    window.setTimeout(() => setCopyMsg(null), 4000);
   };
 
   const execBadge = (log: DecisionLog) => {
@@ -714,6 +729,29 @@ export default function App() {
               {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
             </div>
           </div>
+          {manualCopyText ? (
+            <div className="manual-copy-box">
+              <div className="row" style={{ marginBottom: "0.35rem" }}>
+                <span className="muted">
+                  Select all (Ctrl/Cmd+A) then copy (Ctrl/Cmd+C)
+                </span>
+                <button
+                  type="button"
+                  className="btn-copy ghost"
+                  onClick={() => setManualCopyText(null)}
+                >
+                  Close
+                </button>
+              </div>
+              <textarea
+                className="manual-copy-textarea"
+                readOnly
+                value={manualCopyText}
+                onFocus={(e) => e.currentTarget.select()}
+                rows={12}
+              />
+            </div>
+          ) : null}
           {filledDecisions.length > 0 && (
             <div className="fills-strip" aria-label="Recent paper fills">
               {filledDecisions.slice(0, 8).map((d) => (
