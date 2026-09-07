@@ -31,6 +31,7 @@ def _websocket_runtime_ok() -> bool:
 async def trading_health() -> dict[str, Any]:
     rt = get_runtime()
     ws_runtime_ok = _websocket_runtime_ok()
+    snap = rt.snapshot()
     return {
         "ok": True,
         "service": "ai-trading-system",
@@ -44,6 +45,9 @@ async def trading_health() -> dict[str, Any]:
             f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
         ],
         "ws_runtime_ok": ws_runtime_ok,
+        "data_mode": snap.get("data_mode"),
+        "market_meta": snap.get("market_meta"),
+        "ai": snap.get("ai"),
     }
 
 
@@ -67,18 +71,51 @@ async def trading_stop() -> dict[str, Any]:
     return await get_runtime().stop()
 
 
+@router.post("/api/chart-timeframe")
+async def trading_set_timeframe(payload: dict[str, Any]) -> dict[str, Any]:
+    tf = str((payload or {}).get("timeframe") or "")
+    try:
+        return get_runtime().set_chart_timeframe(tf)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@router.get("/api/candles/{symbol}")
+async def trading_candles(symbol: str, timeframe: str = "5m", limit: int = 120) -> dict[str, Any]:
+    rt = get_runtime()
+    tf = timeframe.strip().lower()
+    if tf not in {"1m", "5m", "15m", "1h"}:
+        return JSONResponse({"ok": False, "error": "invalid timeframe"}, status_code=400)
+    if rt.use_simulated:
+        hist = rt.events.chart_history(symbol.upper()).get(symbol.upper(), [])
+        return {"symbol": symbol.upper(), "timeframe": tf, "candles": hist, "source": "simulated"}
+    candles = rt.market.get_candles(symbol.upper(), tf)[-limit:]
+    return {
+        "symbol": symbol.upper(),
+        "timeframe": tf,
+        "candles": [c.to_dict() for c in candles],
+        "source": "real",
+    }
+
+
 @router.get("/api/config")
 async def trading_config() -> dict[str, Any]:
     ws_paths = [
         f"{PUBLIC_BASE_PATH}/ws" if PUBLIC_BASE_PATH else "/ws",
         f"{PUBLIC_BASE_PATH}/api/ws" if PUBLIC_BASE_PATH else "/api/ws",
     ]
+    rt = get_runtime()
     return {
         "base_path": PUBLIC_BASE_PATH or "/",
         "resume_agent_home": RESUME_AGENT_HOME_URL,
         "ws_path": ws_paths[0],
         "ws_paths": ws_paths,
         "api_base": f"{PUBLIC_BASE_PATH}/api" if PUBLIC_BASE_PATH else "/api",
+        "data_mode": "simulated" if rt.use_simulated else "real",
+        "chart_timeframes": ["1m", "5m", "15m", "1h"],
+        "default_chart_timeframe": rt.chart_timeframe,
+        "market_meta": rt.snapshot().get("market_meta"),
+        "ai": rt.ai.status(),
     }
 
 

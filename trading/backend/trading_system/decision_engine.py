@@ -9,8 +9,11 @@ from .models import AgentVote, Decision, Portfolio, Position, Side
 
 
 class DecisionEngine:
-    def __init__(self, min_confidence: float = 0.45):
+    def __init__(self, min_confidence: float = 0.45, ai_weight: float | None = None):
+        from .config import AI_AGENT_WEIGHT
+
         self.min_confidence = min_confidence
+        self.ai_weight = AI_AGENT_WEIGHT if ai_weight is None else ai_weight
         self._decisions: list[Decision] = []
 
     @property
@@ -22,7 +25,8 @@ class DecisionEngine:
             return None
         weights: dict[Side, float] = {Side.BUY: 0.0, Side.SELL: 0.0, Side.HOLD: 0.0}
         for vote in votes:
-            weights[vote.side] += vote.confidence
+            w = self.ai_weight if vote.agent_id == "ai_analyst" else 1.0
+            weights[vote.side] += vote.confidence * w
         # Prefer action over HOLD when action confidence is competitive.
         actionable = sorted(
             ((side, score) for side, score in weights.items() if side != Side.HOLD),

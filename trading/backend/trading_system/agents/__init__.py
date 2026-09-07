@@ -149,3 +149,8 @@ class VolatilityAgent(BaseAgent):
 
 def default_agents() -> list[BaseAgent]:
     return [MomentumAgent(), MeanReversionAgent(), VolatilityAgent()]
+
+
+# Stable ids for UI coloring / logging
+HEURISTIC_AGENT_IDS = ("momentum", "mean_reversion", "volatility")
+AI_AGENT_ID = "ai_analyst"

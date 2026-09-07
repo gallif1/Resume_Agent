@@ -8,6 +8,11 @@ export type Tick = {
   change_pct: number;
   volume: number;
   ts: number;
+  provider?: string;
+  session?: string;
+  freshness?: string;
+  stale_reason?: string | null;
+  asset_class?: string;
 };
 
 export type MarketEvent = {
@@ -47,6 +52,9 @@ export type PricePoint = {
   price: number;
   volume?: number;
   change_pct?: number;
+  open?: number;
+  high?: number;
+  low?: number;
 };
 
 export type TradeAgent = {
@@ -73,6 +81,50 @@ export type Portfolio = {
   positions: Record<string, { symbol: string; quantity: number; avg_price: number }>;
 };
 
+export type SymbolMeta = {
+  provider: string;
+  asset_class: string;
+  session: string;
+  freshness: string;
+  stale_reason?: string | null;
+  last_update_ts?: number;
+  price?: number;
+  change_pct?: number;
+};
+
+export type MarketMeta = {
+  source?: string;
+  simulated?: boolean;
+  crypto_provider?: string;
+  stock_provider?: string;
+  stock_provider_configured?: boolean;
+  us_equity_session?: string;
+  default_timeframe?: string;
+  timeframes?: string[];
+  symbols?: Record<string, SymbolMeta>;
+};
+
+export type AIStatus = {
+  enabled?: boolean;
+  provider?: string;
+  model?: string;
+  api_key_configured?: boolean;
+  calls_this_hour?: number;
+  max_calls_per_hour?: number;
+  min_interval_sec?: number;
+  last_by_symbol?: Record<
+    string,
+    {
+      action?: string;
+      confidence?: number;
+      reason?: string;
+      source?: string;
+      skip_reason?: string;
+      ts?: number;
+    }
+  >;
+};
+
 export type Snapshot = {
   state: SystemState;
   tick_count: number;
@@ -81,12 +133,16 @@ export type Snapshot = {
   symbols: string[];
   market: Tick[];
   price_history?: Record<string, PricePoint[]>;
+  chart_timeframe?: string;
+  market_meta?: MarketMeta;
   events: MarketEvent[];
   decisions: Decision[];
   trades?: TradeMarker[];
   agents: { id: string; name: string }[];
+  ai?: AIStatus;
   portfolio: Portfolio;
   tick_interval_sec: number;
+  data_mode?: string;
 };
 
 export type TradingConfig = {
@@ -95,6 +151,11 @@ export type TradingConfig = {
   ws_path: string;
   ws_paths?: string[];
   api_base: string;
+  data_mode?: string;
+  chart_timeframes?: string[];
+  default_chart_timeframe?: string;
+  market_meta?: MarketMeta;
+  ai?: AIStatus;
 };
 
 const API_BASE = "/trading/api";
@@ -129,6 +190,14 @@ export function pauseSystem() {
 
 export function stopSystem() {
   return jsonFetch<Snapshot>("/stop", { method: "POST" });
+}
+
+export function setChartTimeframe(timeframe: string) {
+  return jsonFetch<Snapshot>("/chart-timeframe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timeframe }),
+  });
 }
 
 export function tradingWsUrls(config?: TradingConfig | null): string[] {

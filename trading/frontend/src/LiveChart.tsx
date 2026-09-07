@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
-import type { AgentVote, PricePoint, TradeMarker } from "./api";
+import type { AgentVote, MarketMeta, PricePoint, TradeMarker } from "./api";
 
 const PAD = { top: 18, right: 16, bottom: 28, left: 56 };
 const AGENT_COLORS: Record<string, string> = {
   momentum: "#3dd6c6",
   mean_reversion: "#f0b429",
   volatility: "#7aa2ff",
+  ai_analyst: "#c084fc",
 };
 
 type Props = {
@@ -13,6 +14,11 @@ type Props = {
   history: Record<string, PricePoint[]>;
   trades: TradeMarker[];
   votes: AgentVote[];
+  timeframe: string;
+  timeframes: string[];
+  onTimeframe: (tf: string) => void;
+  marketMeta?: MarketMeta | null;
+  realData: boolean;
 };
 
 function formatPrice(n: number) {
@@ -21,15 +27,25 @@ function formatPrice(n: number) {
   return n.toFixed(3);
 }
 
-export default function LiveChart({ symbols, history, trades, votes }: Props) {
+export default function LiveChart({
+  symbols,
+  history,
+  trades,
+  votes,
+  timeframe,
+  timeframes,
+  onTimeframe,
+  marketMeta,
+  realData,
+}: Props) {
   const [symbol, setSymbol] = useState(symbols[0] || "BTC-USD");
   const active = symbols.includes(symbol) ? symbol : symbols[0] || symbol;
-
   const points = history[active] || [];
   const symbolTrades = trades.filter((t) => t.symbol === active && t.price != null);
   const symbolVotes = votes.filter(
     (v) => v.symbol === active && (v.side === "BUY" || v.side === "SELL")
   );
+  const meta = marketMeta?.symbols?.[active];
 
   const chart = useMemo(() => {
     const width = 920;
@@ -62,7 +78,22 @@ export default function LiveChart({ symbols, history, trades, votes }: Props) {
   return (
     <section className="panel live-chart-panel">
       <div className="chart-head">
-        <h2>Live Chart</h2>
+        <div>
+          <h2>Live Chart</h2>
+          <div className="chart-source-row">
+            <span className={`data-badge ${realData ? "real" : "sim"}`}>
+              {realData ? "REAL MARKET DATA" : "SIMULATED DATA"}
+            </span>
+            {meta && (
+              <span className="muted mono chart-meta-line">
+                {meta.provider} · {meta.session.toUpperCase()} · {meta.freshness.toUpperCase()}
+                {meta.last_update_ts
+                  ? ` · upd ${new Date(meta.last_update_ts * 1000).toLocaleTimeString()}`
+                  : ""}
+              </span>
+            )}
+          </div>
+        </div>
         <div className="chart-legend">
           <span className="legend-item">
             <i className="swatch buy-tri" /> Buy fill
@@ -91,10 +122,25 @@ export default function LiveChart({ symbols, history, trades, votes }: Props) {
         ))}
       </div>
 
+      <div className="symbol-tabs tf-tabs" role="tablist" aria-label="Chart timeframe">
+        {timeframes.map((tf) => (
+          <button
+            key={tf}
+            type="button"
+            role="tab"
+            aria-selected={tf === timeframe}
+            className={`symbol-tab ${tf === timeframe ? "active" : ""}`}
+            onClick={() => onTimeframe(tf)}
+          >
+            {tf}
+          </button>
+        ))}
+      </div>
+
       <div className="chart-stage">
         {points.length < 2 ? (
           <div className="chart-empty muted">
-            Waiting for live ticks — press START to stream prices and agent moves.
+            Loading real candles… If stocks show empty, set FINNHUB_API_KEY or wait for market open.
           </div>
         ) : (
           <svg
@@ -204,7 +250,8 @@ export default function LiveChart({ symbols, history, trades, votes }: Props) {
       </div>
 
       <div className="chart-foot muted">
-        Price stream with agent votes (dots) and executed fills (triangles) overlaid in realtime.
+        Real historical candles ({timeframe}) with agent votes and paper fills overlaid. Paper trading
+        only — no real broker orders.
       </div>
     </section>
   );
