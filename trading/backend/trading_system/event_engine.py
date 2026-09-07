@@ -3,25 +3,46 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from typing import Deque
+from typing import Any, Deque
 
 from .models import MarketEvent, Tick
 
+# Chart history kept longer than the short agent window.
+CHART_HISTORY_LEN = 360
+
 
 class EventEngine:
-    def __init__(self, window: int = 30):
+    def __init__(self, window: int = 30, chart_window: int = CHART_HISTORY_LEN):
         self._history: dict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=window))
+        self._chart_history: dict[str, Deque[dict[str, Any]]] = defaultdict(
+            lambda: deque(maxlen=chart_window)
+        )
         self._events: Deque[MarketEvent] = deque(maxlen=200)
 
     @property
     def recent(self) -> list[dict]:
         return [e.to_dict() for e in list(self._events)[-40:]]
 
+    def chart_history(self, symbol: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        """Timed price points for live charts (all symbols, or one)."""
+        if symbol:
+            key = symbol.upper()
+            return {key: list(self._chart_history.get(key, ()))}
+        return {sym: list(points) for sym, points in self._chart_history.items()}
+
     def process(self, ticks: list[Tick]) -> list[MarketEvent]:
         emitted: list[MarketEvent] = []
         for tick in ticks:
             hist = self._history[tick.symbol]
             hist.append(tick.price)
+            self._chart_history[tick.symbol].append(
+                {
+                    "ts": tick.ts,
+                    "price": tick.price,
+                    "volume": tick.volume,
+                    "change_pct": tick.change_pct,
+                }
+            )
             if abs(tick.change_pct) >= 0.35:
                 severity = "warn" if abs(tick.change_pct) < 0.8 else "critical"
                 kind = "spike_up" if tick.change_pct > 0 else "spike_down"
