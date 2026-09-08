@@ -78,6 +78,32 @@ function looksLikeHtml(text: string): boolean {
   return sample.startsWith("<!doctype") || sample.startsWith("<html") || sample.startsWith("<head");
 }
 
+function looksLikeHtmlResponse(res: Pick<Response, "headers">, text: string): boolean {
+  const contentType = (res.headers?.get?.("content-type") || "").toLowerCase();
+  if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
+    return true;
+  }
+  return looksLikeHtml(text);
+}
+
+/** True when a thrown API error is a flaky SPA/HTML or dropped-network response. */
+export function isTransientApiError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message || "";
+  return (
+    msg.includes("דף HTML") ||
+    msg.includes("דף שגיאה") ||
+    msg.includes("במקום תשובת API") ||
+    msg.includes("החיבור נקטע") ||
+    msg.includes("timeout") ||
+    msg.includes("לא זמין") ||
+    msg.includes("נקטעה") ||
+    msg.includes("Failed to fetch") ||
+    msg.includes("NetworkError") ||
+    msg.includes("Load failed")
+  );
+}
+
 /** Gateway / proxy statuses that often return HTML instead of JSON. */
 export function isGatewayOrTimeoutStatus(status: number): boolean {
   return (
@@ -110,9 +136,13 @@ export function missingApiPortHint(
   return ` — ודא שהכתובת כוללת :8001 (למשל ${protocol}//${host}:8001/cv-tailor)`;
 }
 
+type NonJsonResponse = Pick<Response, "ok" | "status"> & {
+  headers?: { get(name: string): string | null };
+};
+
 /** Actionable message when the server body is not JSON (common on Safari / timeouts). */
 export function nonJsonResponseMessage(
-  res: Pick<Response, "ok" | "status">,
+  res: NonJsonResponse,
   text: string,
   errorFallback: string,
   location: Pick<Location, "protocol" | "hostname" | "port"> | null = typeof window !== "undefined"
@@ -126,7 +156,7 @@ export function nonJsonResponseMessage(
     }
     return `${errorFallback} (שגיאה ${res.status})`;
   }
-  if (looksLikeHtml(trimmed)) {
+  if (looksLikeHtmlResponse(res, trimmed)) {
     if (isGatewayOrTimeoutStatus(res.status)) {
       return "השרת חתך את הבקשה באמצע (timeout) — נסה שוב ואל תסגור את הדף.";
     }
@@ -154,6 +184,9 @@ async function parseResponseBody<T>(
   options?: { handleUnauthorized?: boolean }
 ): Promise<T> {
   const text = await res.text();
+  if (looksLikeHtmlResponse(res, text)) {
+    throw new Error(nonJsonResponseMessage(res, text || "<!doctype html>", errorFallback));
+  }
   let body: unknown = null;
   if (text.trim()) {
     try {

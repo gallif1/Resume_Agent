@@ -74,7 +74,7 @@ _store: dict[str, _StoredResult] = {}
 _store_lock = Lock()
 _jobs: dict[str, _AsyncJob] = {}
 _jobs_lock = Lock()
-_job_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cv-tailor-job")
+_job_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cv-tailor-job")
 
 
 class CvTailorError(RuntimeError):

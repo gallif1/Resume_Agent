@@ -143,7 +143,7 @@ def call_openai_json(
         create_kwargs["temperature"] = temperature
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=120.0)
         response = client.chat.completions.create(**create_kwargs)
     except Exception as exc:
         # Some snapshots still accept temperature — retry once with it dropped.
@@ -152,7 +152,7 @@ def call_openai_json(
             raise OpenAIAPIError(f"OpenAI request failed: {exc}") from exc
         try:
             create_kwargs.pop("temperature", None)
-            client = OpenAI(api_key=OPENAI_API_KEY)
+            client = OpenAI(api_key=OPENAI_API_KEY, timeout=120.0)
             response = client.chat.completions.create(**create_kwargs)
         except Exception as retry_exc:
             raise OpenAIAPIError(f"OpenAI request failed: {retry_exc}") from retry_exc
