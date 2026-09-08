@@ -125,7 +125,7 @@ export type CvTailorJobStatusResponse = CvTailorGenerateResponse & {
   error?: string;
 };
 
-const JOB_POLL_MS = 2000;
+const JOB_POLL_MS = 800;
 const JOB_TIMEOUT_MS = 4 * 60 * 1000;
 const JOB_POLL_TRANSIENT_RETRIES = 8;
 const GENERATE_START_ATTEMPTS = 3;

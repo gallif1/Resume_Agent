@@ -109,6 +109,9 @@ def call_openai_json(
     cache_namespace: str = "openai",
     cache_payload: str | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
+    verbosity: str | None = None,
+    max_completion_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Call OpenAI with JSON response format. Optional file cache on cache_payload."""
     require_openai_api()
@@ -141,19 +144,36 @@ def call_openai_json(
     }
     if supports_temperature:
         create_kwargs["temperature"] = temperature
+    if reasoning_effort:
+        create_kwargs["reasoning_effort"] = reasoning_effort
+    if verbosity:
+        create_kwargs["verbosity"] = verbosity
+    if max_completion_tokens is not None and max_completion_tokens > 0:
+        create_kwargs["max_completion_tokens"] = int(max_completion_tokens)
+
+    def _create(kwargs: dict[str, Any]):
+        client = OpenAI(api_key=OPENAI_API_KEY, timeout=120.0)
+        return client.chat.completions.create(**kwargs)
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY, timeout=120.0)
-        response = client.chat.completions.create(**create_kwargs)
+        response = _create(create_kwargs)
     except Exception as exc:
-        # Some snapshots still accept temperature — retry once with it dropped.
+        # Drop unsupported knobs once and retry (temperature / reasoning / verbosity).
         err = str(exc).lower()
-        if supports_temperature is False or "temperature" not in err:
+        dropped = []
+        for key in ("temperature", "reasoning_effort", "verbosity", "max_completion_tokens"):
+            if key in create_kwargs and key in err:
+                create_kwargs.pop(key, None)
+                dropped.append(key)
+        if not dropped and "temperature" in create_kwargs and (
+            not supports_temperature or "temperature" in err
+        ):
+            create_kwargs.pop("temperature", None)
+            dropped.append("temperature")
+        if not dropped:
             raise OpenAIAPIError(f"OpenAI request failed: {exc}") from exc
         try:
-            create_kwargs.pop("temperature", None)
-            client = OpenAI(api_key=OPENAI_API_KEY, timeout=120.0)
-            response = client.chat.completions.create(**create_kwargs)
+            response = _create(create_kwargs)
         except Exception as retry_exc:
             raise OpenAIAPIError(f"OpenAI request failed: {retry_exc}") from retry_exc
 
@@ -164,6 +184,22 @@ def call_openai_json(
         raise OpenAIAPIError(f"Invalid OpenAI response: {exc}") from exc
     result["_from_cache"] = False
     result["_cached_at"] = datetime.now(timezone.utc).isoformat()
+    # Surface token timing hints for ops (not part of the tailored CV schema).
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            result["_usage"] = {
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            }
+            details = getattr(usage, "completion_tokens_details", None)
+            if details is not None:
+                result["_usage"]["reasoning_tokens"] = getattr(
+                    details, "reasoning_tokens", None
+                )
+    except Exception:  # noqa: BLE001 — never fail parse because of usage metadata
+        pass
 
     if use_cache:
         write_cache(cache_namespace, payload, result)
