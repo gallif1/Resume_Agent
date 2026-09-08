@@ -237,12 +237,77 @@ jobs:
           cat > /tmp/ra-remote-deploy.sh <<'REMOTE'
           #!/bin/bash
           set -eu
+          echo "Step R0: free disk space before git pull"
+          # Small EC2 roots fill up from Docker layers, /tmp deploy tarballs, and
+          # journal logs. git pull then dies with "No space left on device".
+          free_kb() {
+            df -Pk / | awk 'NR==2 {print $4}'
+          }
+          echo "Disk before cleanup:"
+          df -h / /tmp 2>/dev/null || df -h /
+          df -i / 2>/dev/null || true
+          # Drop leftover deploy scratch — keep freshly SCP'd frontend/trading
+          # bundles and secrets that later steps still need.
+          rm -rf /tmp/ra-backend-bundle /tmp/ra-backend-src.tgz \
+            /tmp/ra-job-apply.tgz /tmp/ra-trading.tgz \
+            /tmp/ra-health.json /tmp/ra-index.html /tmp/ra-trading-spa.body \
+            /tmp/ra-trading-ws.body /tmp/ra-trading-ws2.body 2>/dev/null || true
+          # Prune unused Docker data but NEVER volumes (user CVs / DB live there).
+          if command -v docker >/dev/null 2>&1; then
+            sudo docker container prune -f >/dev/null 2>&1 || true
+            sudo docker image prune -af >/dev/null 2>&1 || true
+            sudo docker builder prune -af >/dev/null 2>&1 || true
+            # system prune without --volumes: dangling nets/build cache only.
+            sudo docker system prune -f >/dev/null 2>&1 || true
+            # Container JSON logs often eat the whole root volume on small hosts.
+            sudo sh -c 'truncate -s 0 /var/lib/docker/containers/*/*-json.log' \
+              >/dev/null 2>&1 || true
+          fi
+          sudo journalctl --vacuum-size=80M >/dev/null 2>&1 || true
+          sudo apt-get clean >/dev/null 2>&1 || true
+          rm -rf "$HOME/.cache/pip" "$HOME/.npm" /var/tmp/ra-* 2>/dev/null || true
+          # Drop unreachable git objects in the checkout if present.
+          if [ -d "$HOME/resume-backend/Resume_Agent/.git" ]; then
+            git -C "$HOME/resume-backend/Resume_Agent" \
+              gc --prune=now --quiet 2>/dev/null || true
+          fi
+          echo "Disk after cleanup:"
+          df -h / /tmp 2>/dev/null || df -h /
+          FREE_KB="$(free_kb)"
+          # Need ~400MB headroom for unpack + inject tarballs on this host.
+          if [ "${FREE_KB:-0}" -lt 400000 ]; then
+            echo "::error::EC2 root filesystem still low on space (${FREE_KB} KB free after cleanup)."
+            echo "Expand the EBS volume or manually remove large files, then re-run deploy."
+            du -xh --max-depth=2 /var/lib/docker 2>/dev/null | sort -h | tail -n 20 || true
+            du -xh --max-depth=2 "$HOME" 2>/dev/null | sort -h | tail -n 20 || true
+            exit 1
+          fi
+
           echo "Step R1: enter project directory"
           cd "$HOME/resume-backend/Resume_Agent"
           pwd
 
           echo "Step R2: pull latest master"
-          git pull origin master
+          # Retry once after an emergency prune if git still hits ENOSPC.
+          set +e
+          PULL_OUT="$(git pull origin master 2>&1)"
+          PULL_RC=$?
+          set -e
+          printf '%s\n' "$PULL_OUT"
+          if [ "$PULL_RC" -ne 0 ]; then
+            if printf '%s' "$PULL_OUT" | grep -qiE 'No space left on device|ENOSPC'; then
+              echo "WARN: git pull hit ENOSPC — emergency disk prune + retry"
+              sudo docker system prune -af >/dev/null 2>&1 || true
+              # Keep freshly uploaded frontend/trading bundles + secrets.
+              rm -rf /tmp/ra-backend-bundle /tmp/ra-backend-src.tgz \
+                /tmp/ra-job-apply.tgz /tmp/ra-trading.tgz 2>/dev/null || true
+              git gc --prune=now --quiet 2>/dev/null || true
+              df -h /
+              git pull origin master
+            else
+              exit "$PULL_RC"
+            fi
+          fi
           BACKEND_REVISION="$(git rev-parse HEAD)"
           echo "Backend revision to deploy: $BACKEND_REVISION"
 
