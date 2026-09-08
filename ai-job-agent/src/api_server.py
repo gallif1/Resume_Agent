@@ -3564,6 +3564,17 @@ async def health():
 
 FRONTEND_DIST = PROJECT_ROOT.parent / "resume-agent-web" / "dist"
 
+# Only these frontend entrypoints should soft-404 into index.html.
+# Broader fallbacks (e.g. /cv-tailor/jobs/<uuid>) used to return the SPA shell
+# as HTTP 200 HTML — CV Tailor then reported "HTML instead of API".
+_SPA_EXACT_PATHS = frozenset({"/", "/cv-tailor", "/job-apply"})
+
+
+def _is_spa_navigation_path(path: str) -> bool:
+    normalized = (path or "/").rstrip("/") or "/"
+    return normalized in _SPA_EXACT_PATHS
+
+
 if FRONTEND_DIST.is_dir():
     _assets = FRONTEND_DIST / "assets"
     if _assets.is_dir():
@@ -3584,29 +3595,31 @@ if FRONTEND_DIST.is_dir():
     # NOTE: Do NOT register @app.get("/{page_path:path}") here.
     # A GET catch-all matching /api/... causes Starlette to answer POST /api/...
     # with HTTP 405 when a more specific POST route is missing/unregistered.
-    # SPA deep links are handled by the middleware below (GET 404 → index.html).
 
-    @app.middleware("http")
-    async def spa_fallback_middleware(request: Request, call_next):
-        response = await call_next(request)
-        if response.status_code != 404 or request.method != "GET":
-            return response
-        path = request.url.path or "/"
-        if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading")):
-            # /trading is owned by the isolated AI Trading System (API + SPA).
-            return response
-        accept = request.headers.get("accept", "").lower()
-        # Safari/WebKit often sends "application/json, */*". The old check treated
-        # "*/*" as "wants HTML", so a mistaken non-/api URL returned index.html as
-        # HTTP 200 — the CV Tailor UI then showed a fake "connection interrupted".
-        if "application/json" in accept:
-            return response
-        if "text/html" not in accept and "*/*" not in accept:
-            return response
-        index = FRONTEND_DIST / "index.html"
-        if index.is_file():
-            return FileResponse(index)
+
+# SPA deep links: GET 404 → index.html for known entrypoints only.
+@app.middleware("http")
+async def spa_fallback_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if response.status_code != 404 or request.method != "GET":
         return response
+    path = request.url.path or "/"
+    if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading")):
+        # /trading is owned by the isolated AI Trading System (API + SPA).
+        return response
+    if not _is_spa_navigation_path(path):
+        return response
+    accept = request.headers.get("accept", "").lower()
+    # Safari/WebKit often sends "application/json, */*". Prefer JSON 404 over
+    # faking a successful HTML document for API-shaped clients.
+    if "application/json" in accept:
+        return response
+    if "text/html" not in accept and "*/*" not in accept:
+        return response
+    index = FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    return response
 
 
 if __name__ == "__main__":

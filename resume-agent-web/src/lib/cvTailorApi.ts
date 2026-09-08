@@ -1,4 +1,4 @@
-import { authFetch, authJsonRequest } from "./api";
+import { authFetch, authJsonRequest, isTransientApiError } from "./api";
 
 export type TailoredCvExperience = {
   company: string;
@@ -126,8 +126,9 @@ export type CvTailorJobStatusResponse = CvTailorGenerateResponse & {
 };
 
 const JOB_POLL_MS = 2000;
-const JOB_TIMEOUT_MS = 3 * 60 * 1000;
-const JOB_POLL_TRANSIENT_RETRIES = 4;
+const JOB_TIMEOUT_MS = 4 * 60 * 1000;
+const JOB_POLL_TRANSIENT_RETRIES = 8;
+const GENERATE_START_ATTEMPTS = 3;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -135,19 +136,21 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-function isTransientPollError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const msg = err.message || "";
-  return (
-    msg.includes("דף שגיאה") ||
-    msg.includes("החיבור נקטע") ||
-    msg.includes("timeout") ||
-    msg.includes("לא זמין") ||
-    msg.includes("נקטעה") ||
-    msg.includes("Failed to fetch") ||
-    msg.includes("NetworkError") ||
-    msg.includes("Load failed")
-  );
+function buildGenerateForm(
+  file: File,
+  jobDescription: string,
+  jobContext?: CvTailorJobContext
+): FormData {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("job_description", jobDescription);
+  if (jobContext?.cvId) {
+    form.append("cv_id", jobContext.cvId);
+  }
+  if (jobContext?.jobId != null) {
+    form.append("job_id", String(jobContext.jobId));
+  }
+  return form;
 }
 
 async function pollCvTailorJob(
@@ -171,7 +174,7 @@ async function pollCvTailorJob(
     } catch (err) {
       // Mobile Safari occasionally returns the SPA HTML (HTTP 200) or drops a
       // short poll; keep waiting — the server job is still running.
-      if (isTransientPollError(err) && transientFailures < JOB_POLL_TRANSIENT_RETRIES) {
+      if (isTransientApiError(err) && transientFailures < JOB_POLL_TRANSIENT_RETRIES) {
         transientFailures += 1;
         delayMs = Math.min(JOB_POLL_MS * (transientFailures + 1), 8000);
         continue;
@@ -199,41 +202,30 @@ export async function generateTailoredCv(
   jobDescription: string,
   jobContext?: CvTailorJobContext
 ): Promise<CvTailorGenerateResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("job_description", jobDescription);
-  if (jobContext?.cvId) {
-    form.append("cv_id", jobContext.cvId);
+  let started: CvTailorJobStartResponse | null = null;
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= GENERATE_START_ATTEMPTS; attempt += 1) {
+    try {
+      started = await authJsonRequest<CvTailorJobStartResponse>(
+        "/api/cv-tailor/generate",
+        { method: "POST", body: buildGenerateForm(file, jobDescription, jobContext) },
+        "יצירת קורות חיים מותאמים נכשלה"
+      );
+      break;
+    } catch (err) {
+      lastError = err;
+      // Mobile Safari sometimes returns the SPA HTML shell on the first
+      // multipart POST even though the API is healthy — retry a few times.
+      if (!isTransientApiError(err) || attempt >= GENERATE_START_ATTEMPTS) {
+        throw err;
+      }
+      await sleep(300 * attempt);
+    }
   }
-  if (jobContext?.jobId != null) {
-    form.append("job_id", String(jobContext.jobId));
-  }
-
-  let started: CvTailorJobStartResponse;
-  try {
-    started = await authJsonRequest<CvTailorJobStartResponse>(
-      "/api/cv-tailor/generate",
-      { method: "POST", body: form },
-      "יצירת קורות חיים מותאמים נכשלה"
-    );
-  } catch (err) {
-    // One retry — mobile Safari sometimes returns the SPA HTML shell on the
-    // first multipart POST even though the API is healthy.
-    if (!isTransientPollError(err)) throw err;
-    await sleep(400);
-    const retryForm = new FormData();
-    retryForm.append("file", file);
-    retryForm.append("job_description", jobDescription);
-    if (jobContext?.cvId) retryForm.append("cv_id", jobContext.cvId);
-    if (jobContext?.jobId != null) retryForm.append("job_id", String(jobContext.jobId));
-    started = await authJsonRequest<CvTailorJobStartResponse>(
-      "/api/cv-tailor/generate",
-      { method: "POST", body: retryForm },
-      "יצירת קורות חיים מותאמים נכשלה"
-    );
-  }
-  if (!started.job_id) {
-    throw new Error("יצירת קורות חיים מותאמים נכשלה");
+  if (!started?.job_id) {
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("יצירת קורות חיים מותאמים נכשלה");
   }
   return pollCvTailorJob(started.job_id, "יצירת קורות חיים מותאמים נכשלה");
 }

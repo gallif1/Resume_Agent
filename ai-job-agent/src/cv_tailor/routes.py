@@ -34,6 +34,7 @@ def _http_from_unexpected(exc: BaseException) -> HTTPException:
 
 
 @router.post("/generate")
+@router.post("/generate/")
 async def cv_tailor_generate(
     file: UploadFile = File(...),
     job_description: str = Form(...),
@@ -94,6 +95,7 @@ async def cv_tailor_regenerate(
 
 
 @router.get("/jobs/{job_id}")
+@router.get("/jobs/{job_id}/")
 async def cv_tailor_job_status(
     job_id: str,
     user: dict = Depends(auth.get_current_user),
