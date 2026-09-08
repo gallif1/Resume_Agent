@@ -73,12 +73,16 @@ function detailFromApiBody(body: unknown, fallback: string): string {
   return fallback;
 }
 
+type NonJsonResponse = Pick<Response, "ok" | "status"> & {
+  headers?: { get(name: string): string | null };
+};
+
 function looksLikeHtml(text: string): boolean {
   const sample = text.trim().slice(0, 200).toLowerCase();
   return sample.startsWith("<!doctype") || sample.startsWith("<html") || sample.startsWith("<head");
 }
 
-function looksLikeHtmlResponse(res: Pick<Response, "headers">, text: string): boolean {
+function looksLikeHtmlResponse(res: NonJsonResponse, text: string): boolean {
   const contentType = (res.headers?.get?.("content-type") || "").toLowerCase();
   if (contentType.includes("text/html") || contentType.includes("application/xhtml")) {
     return true;
@@ -135,10 +139,6 @@ export function missingApiPortHint(
   const host = hostname || "18.195.208.12";
   return ` — ודא שהכתובת כוללת :8001 (למשל ${protocol}//${host}:8001/cv-tailor)`;
 }
-
-type NonJsonResponse = Pick<Response, "ok" | "status"> & {
-  headers?: { get(name: string): string | null };
-};
 
 /** Actionable message when the server body is not JSON (common on Safari / timeouts). */
 export function nonJsonResponseMessage(
