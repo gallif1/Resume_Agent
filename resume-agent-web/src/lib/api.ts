@@ -128,14 +128,13 @@ export function nonJsonResponseMessage(
   }
   if (looksLikeHtml(trimmed)) {
     if (isGatewayOrTimeoutStatus(res.status)) {
-      return "השרת חתך את הבקשה באמצע (timeout) — יצירת קורות חיים לוקחת 1–2 דקות. נסה שוב ואל תסגור את הדף.";
+      return "השרת חתך את הבקשה באמצע (timeout) — נסה שוב ואל תסגור את הדף.";
     }
-    if (res.status === 200) {
-      return "החיבור נקטע באמצע העיבוד (נפוץ במובייל אחרי כ־דקה) — השאר את הדף פתוח ברקע הקדמי ונסה שוב.";
-    }
+    // HTML 200 is almost always the SPA shell, not a real API response — can
+    // happen immediately (wrong/non-API path) or after a dropped mobile request.
     return (
-      `השרת החזיר דף שגיאה במקום תשובת API (שגיאה ${res.status || "?"}). ` +
-      `נסה שוב — העיבוד לוקח 1–2 דקות ואל תסגור את הדף.${missingApiPortHint(location)}`
+      `השרת החזיר דף HTML במקום תשובת API (שגיאה ${res.status || "?"}). ` +
+      `רענן את הדף ונסה שוב.${missingApiPortHint(location)}`
     );
   }
   if (res.ok) {

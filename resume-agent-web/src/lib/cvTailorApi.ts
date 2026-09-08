@@ -209,11 +209,29 @@ export async function generateTailoredCv(
     form.append("job_id", String(jobContext.jobId));
   }
 
-  const started = await authJsonRequest<CvTailorJobStartResponse>(
-    "/api/cv-tailor/generate",
-    { method: "POST", body: form },
-    "יצירת קורות חיים מותאמים נכשלה"
-  );
+  let started: CvTailorJobStartResponse;
+  try {
+    started = await authJsonRequest<CvTailorJobStartResponse>(
+      "/api/cv-tailor/generate",
+      { method: "POST", body: form },
+      "יצירת קורות חיים מותאמים נכשלה"
+    );
+  } catch (err) {
+    // One retry — mobile Safari sometimes returns the SPA HTML shell on the
+    // first multipart POST even though the API is healthy.
+    if (!isTransientPollError(err)) throw err;
+    await sleep(400);
+    const retryForm = new FormData();
+    retryForm.append("file", file);
+    retryForm.append("job_description", jobDescription);
+    if (jobContext?.cvId) retryForm.append("cv_id", jobContext.cvId);
+    if (jobContext?.jobId != null) retryForm.append("job_id", String(jobContext.jobId));
+    started = await authJsonRequest<CvTailorJobStartResponse>(
+      "/api/cv-tailor/generate",
+      { method: "POST", body: retryForm },
+      "יצירת קורות חיים מותאמים נכשלה"
+    );
+  }
   if (!started.job_id) {
     throw new Error("יצירת קורות חיים מותאמים נכשלה");
   }

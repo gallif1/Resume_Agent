@@ -3595,7 +3595,12 @@ if FRONTEND_DIST.is_dir():
         if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading")):
             # /trading is owned by the isolated AI Trading System (API + SPA).
             return response
-        accept = request.headers.get("accept", "")
+        accept = request.headers.get("accept", "").lower()
+        # Safari/WebKit often sends "application/json, */*". The old check treated
+        # "*/*" as "wants HTML", so a mistaken non-/api URL returned index.html as
+        # HTTP 200 — the CV Tailor UI then showed a fake "connection interrupted".
+        if "application/json" in accept:
+            return response
         if "text/html" not in accept and "*/*" not in accept:
             return response
         index = FRONTEND_DIST / "index.html"
