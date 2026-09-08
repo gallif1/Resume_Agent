@@ -12,7 +12,13 @@ from threading import Lock
 from typing import Any
 
 from ai_client import OpenAIAPIError, call_openai_json, truncate_text
-from config import OPENAI_CV_MAX_CHARS, OPENAI_CV_TAILOR_MODEL, OPENAI_JOB_MAX_CHARS
+from config import (
+    OPENAI_CV_MAX_CHARS,
+    OPENAI_CV_TAILOR_MODEL,
+    OPENAI_CV_TAILOR_REASONING_EFFORT,
+    OPENAI_CV_TAILOR_VERBOSITY,
+    OPENAI_JOB_MAX_CHARS,
+)
 from cv_tailor.models import (
     CandidateFact,
     JobAnalysis,
@@ -43,6 +49,16 @@ SESSION_TTL = timedelta(hours=1)
 # Generate/regenerate skip PDF entirely; download retries with a hard timeout.
 PDF_DOWNLOAD_TIMEOUT_SEC = 45
 JOB_TTL = timedelta(hours=1)
+
+
+def _cv_tailor_llm_kwargs() -> dict[str, Any]:
+    """GPT-5 latency knobs for CV Tailor — does not alter prompt text."""
+    kwargs: dict[str, Any] = {}
+    if OPENAI_CV_TAILOR_REASONING_EFFORT:
+        kwargs["reasoning_effort"] = OPENAI_CV_TAILOR_REASONING_EFFORT
+    if OPENAI_CV_TAILOR_VERBOSITY:
+        kwargs["verbosity"] = OPENAI_CV_TAILOR_VERBOSITY
+    return kwargs
 
 
 @dataclass
@@ -215,12 +231,23 @@ def generate_tailored_cv(
     )
 
     try:
+        started = datetime.now(timezone.utc)
         raw = call_openai_json(
             SYSTEM_PROMPT,
             user_prompt,
             use_cache=False,
             cache_namespace="cv_tailor_mvp_v3",
             model=OPENAI_CV_TAILOR_MODEL,
+            **_cv_tailor_llm_kwargs(),
+        )
+        elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        usage = raw.get("_usage") if isinstance(raw, dict) else None
+        logger.info(
+            "CV tailor OpenAI call finished (model=%s, elapsed_ms=%d, usage=%s, effort=%s)",
+            OPENAI_CV_TAILOR_MODEL,
+            elapsed_ms,
+            usage,
+            OPENAI_CV_TAILOR_REASONING_EFFORT or "default",
         )
     except OpenAIAPIError as exc:
         logger.error("OpenAI CV tailor request failed: %s", exc)
@@ -330,12 +357,23 @@ def regenerate_tailored_cv(
     )
 
     try:
+        started = datetime.now(timezone.utc)
         raw = call_openai_json(
             REGENERATE_SYSTEM_PROMPT,
             user_prompt,
             use_cache=False,
             cache_namespace="cv_tailor_regen_v2",
             model=OPENAI_CV_TAILOR_MODEL,
+            **_cv_tailor_llm_kwargs(),
+        )
+        elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        usage = raw.get("_usage") if isinstance(raw, dict) else None
+        logger.info(
+            "CV tailor regenerate OpenAI call finished (model=%s, elapsed_ms=%d, usage=%s, effort=%s)",
+            OPENAI_CV_TAILOR_MODEL,
+            elapsed_ms,
+            usage,
+            OPENAI_CV_TAILOR_REASONING_EFFORT or "default",
         )
     except OpenAIAPIError as exc:
         logger.error("OpenAI CV tailor regenerate failed: %s", exc)
@@ -467,6 +505,8 @@ def _run_generate_job(
             job_description=job_description,
             user_id=user_id,
         )
+        # Mark done before durable persist so the UI unblocks immediately.
+        _set_job_status(job_id, status="done", result=result, saved_to_job=None, error=None)
         saved = maybe_persist_tailored_cv_to_job(
             cv_id=cv_id,
             job_id=link_job_id,
@@ -481,7 +521,8 @@ def _run_generate_job(
             ),
             model=result.model,
         )
-        _set_job_status(job_id, status="done", result=result, saved_to_job=saved, error=None)
+        if saved is not None:
+            _set_job_status(job_id, status="done", result=result, saved_to_job=saved, error=None)
     except (CvTailorError, CvParseError) as exc:
         logger.warning("Async CV tailor generate failed: %s", exc)
         _set_job_status(job_id, status="error", error=str(exc))
@@ -512,6 +553,7 @@ def _run_regenerate_job(
             request=request,
         )
         snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=user_id) or {}
+        _set_job_status(job_id, status="done", result=result, saved_to_job=None, error=None)
         saved = maybe_persist_tailored_cv_to_job(
             cv_id=request.cv_id,
             job_id=request.job_id,
@@ -524,7 +566,8 @@ def _run_regenerate_job(
             cv_text=snapshot.get("cv_text"),
             model=result.model,
         )
-        _set_job_status(job_id, status="done", result=result, saved_to_job=saved, error=None)
+        if saved is not None:
+            _set_job_status(job_id, status="done", result=result, saved_to_job=saved, error=None)
     except CvTailorError as exc:
         logger.warning("Async CV tailor regenerate failed: %s", exc)
         _set_job_status(job_id, status="error", error=str(exc))

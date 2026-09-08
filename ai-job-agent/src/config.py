@@ -180,6 +180,12 @@ OPENAI_TAILOR_MODEL = os.getenv("OPENAI_TAILOR_MODEL", "gpt-5").strip() or "gpt-
 OPENAI_CV_TAILOR_MODEL = (
     os.getenv("OPENAI_CV_TAILOR_MODEL", "").strip() or OPENAI_TAILOR_MODEL
 )
+# GPT-5 reasoning knobs for /cv-tailor only. Lower effort cuts latency a lot while
+# keeping the same prompts/model. Empty string disables the parameter.
+OPENAI_CV_TAILOR_REASONING_EFFORT = os.getenv(
+    "OPENAI_CV_TAILOR_REASONING_EFFORT", "low"
+).strip().lower()
+OPENAI_CV_TAILOR_VERBOSITY = os.getenv("OPENAI_CV_TAILOR_VERBOSITY", "low").strip().lower()
 OPENAI_CV_MAX_CHARS = int(os.getenv("OPENAI_CV_MAX_CHARS", "24000"))
 OPENAI_CV_SUMMARY_MAX_CHARS = int(os.getenv("OPENAI_CV_SUMMARY_MAX_CHARS", "3500"))
 OPENAI_JOB_MAX_CHARS = int(os.getenv("OPENAI_JOB_MAX_CHARS", "4000"))
