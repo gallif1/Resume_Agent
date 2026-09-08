@@ -336,7 +336,9 @@ def render_tailored_cv_pdf(cv: TailoredCvData) -> bytes:
             )
             try:
                 page = browser.new_page()
-                page.set_content(document, wait_until="load")
+                # Bound Chromium work so a hung page never blocks CV Tailor generate.
+                page.set_default_timeout(15_000)
+                page.set_content(document, wait_until="load", timeout=15_000)
                 pdf_bytes = page.pdf(
                     format="A4",
                     margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},

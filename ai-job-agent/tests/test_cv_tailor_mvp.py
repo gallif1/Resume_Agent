@@ -172,6 +172,55 @@ def test_generate_tailored_cv_rejects_short_job_description():
         assert "short" in str(exc).lower()
 
 
+def test_generate_succeeds_when_pdf_renderer_hangs():
+    """A hung Chromium PDF must not block the tailor JSON response forever."""
+    import time
+
+    mock_llm = {
+        "tailored_cv": {
+            "name": "Jane Doe",
+            "summary": "Python backend engineer aligned with the role.",
+            "skills": ["Python"],
+            "experience": [
+                {
+                    "company": "Acme",
+                    "role": "Engineer",
+                    "dates": "2020–2024",
+                    "bullets": ["Built APIs"],
+                }
+            ],
+            "projects": [],
+            "education": [],
+            "certifications": [],
+        },
+        "job_analysis": {"strong_matches": ["Python"], "gaps": []},
+    }
+
+    def _hang(_cv):
+        time.sleep(60)
+        return b"%PDF-1.4 too-late"
+
+    with patch("cv_tailor.service.PDF_RENDER_TIMEOUT_SEC", 0.2):
+        with patch("cv_tailor.service.call_openai_json", return_value=mock_llm):
+            with patch(
+                "cv_tailor.parser.extract_text_from_resume",
+                return_value=("Long enough CV text " * 5, "docx"),
+            ):
+                with patch("cv_tailor.service.render_tailored_cv_pdf", side_effect=_hang):
+                    started = time.monotonic()
+                    result = generate_tailored_cv(
+                        file_bytes=b"docx-bytes",
+                        filename="cv.docx",
+                        job_description="Looking for a Python engineer with API experience.",
+                        user_id="owner-user",
+                    )
+                    elapsed = time.monotonic() - started
+
+    assert result.result_id
+    assert "Python" in result.preview_text
+    assert elapsed < 5, f"hung PDF should time out quickly, took {elapsed:.1f}s"
+
+
 def test_generate_succeeds_when_pdf_renderer_fails():
     """Playwright/PDF failure must not wipe a successful tailor result."""
     from pdf_generator_service import PdfGeneratorError

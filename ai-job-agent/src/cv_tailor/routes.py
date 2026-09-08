@@ -55,40 +55,40 @@ async def cv_tailor_generate(
             job_description=job_description,
             user_id=str(user["id"]),
         )
+        saved_to_job = maybe_persist_tailored_cv_to_job(
+            cv_id=cv_id,
+            job_id=job_id,
+            preview_text=result.preview_text,
+            user_id=str(user["id"]),
+            pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
+            tailored_cv=result.tailored_cv.model_dump(),
+            job_analysis=result.job_analysis.model_dump(),
+            user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
+            cv_text=(get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}).get(
+                "cv_text"
+            ),
+            model=result.model,
+        )
+        return {
+            "result_id": result.result_id,
+            "model": result.model,
+            "preview_text": result.preview_text,
+            "tailored_cv": result.tailored_cv.model_dump(),
+            "job_analysis": result.job_analysis.model_dump(),
+            "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
+            "saved_to_job": saved_to_job is not None,
+            "job_version_id": (saved_to_job or {}).get("version_id"),
+        }
     except CvParseError as exc:
         logger.warning("CV tailor parse error: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except CvTailorError as exc:
         logger.warning("CV tailor generation error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001 — surface real cause instead of opaque 500
         raise _http_from_unexpected(exc) from exc
-
-    saved_to_job = maybe_persist_tailored_cv_to_job(
-        cv_id=cv_id,
-        job_id=job_id,
-        preview_text=result.preview_text,
-        user_id=str(user["id"]),
-        pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
-        tailored_cv=result.tailored_cv.model_dump(),
-        job_analysis=result.job_analysis.model_dump(),
-        user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
-        cv_text=(get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}).get(
-            "cv_text"
-        ),
-        model=result.model,
-    )
-
-    return {
-        "result_id": result.result_id,
-        "model": result.model,
-        "preview_text": result.preview_text,
-        "tailored_cv": result.tailored_cv.model_dump(),
-        "job_analysis": result.job_analysis.model_dump(),
-        "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
-        "saved_to_job": saved_to_job is not None,
-        "job_version_id": (saved_to_job or {}).get("version_id"),
-    }
 
 
 @router.post("/regenerate/{result_id}")
@@ -104,36 +104,36 @@ async def cv_tailor_regenerate(
             user_id=str(user["id"]),
             request=body,
         )
+        snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}
+        saved_to_job = maybe_persist_tailored_cv_to_job(
+            cv_id=body.cv_id,
+            job_id=body.job_id,
+            preview_text=result.preview_text,
+            user_id=str(user["id"]),
+            pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
+            tailored_cv=result.tailored_cv.model_dump(),
+            job_analysis=result.job_analysis.model_dump(),
+            user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
+            cv_text=snapshot.get("cv_text"),
+            model=result.model,
+        )
+        return {
+            "result_id": result.result_id,
+            "model": result.model,
+            "preview_text": result.preview_text,
+            "tailored_cv": result.tailored_cv.model_dump(),
+            "job_analysis": result.job_analysis.model_dump(),
+            "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
+            "saved_to_job": saved_to_job is not None,
+            "job_version_id": (saved_to_job or {}).get("version_id"),
+        }
     except CvTailorError as exc:
         logger.warning("CV tailor regenerate error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise _http_from_unexpected(exc) from exc
-
-    snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}
-    saved_to_job = maybe_persist_tailored_cv_to_job(
-        cv_id=body.cv_id,
-        job_id=body.job_id,
-        preview_text=result.preview_text,
-        user_id=str(user["id"]),
-        pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
-        tailored_cv=result.tailored_cv.model_dump(),
-        job_analysis=result.job_analysis.model_dump(),
-        user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
-        cv_text=snapshot.get("cv_text"),
-        model=result.model,
-    )
-
-    return {
-        "result_id": result.result_id,
-        "model": result.model,
-        "preview_text": result.preview_text,
-        "tailored_cv": result.tailored_cv.model_dump(),
-        "job_analysis": result.job_analysis.model_dump(),
-        "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
-        "saved_to_job": saved_to_job is not None,
-        "job_version_id": (saved_to_job or {}).get("version_id"),
-    }
 
 
 @router.get("/download/{result_id}")

@@ -78,21 +78,63 @@ function looksLikeHtml(text: string): boolean {
   return sample.startsWith("<!doctype") || sample.startsWith("<html") || sample.startsWith("<head");
 }
 
+/** Gateway / proxy statuses that often return HTML instead of JSON. */
+export function isGatewayOrTimeoutStatus(status: number): boolean {
+  return (
+    status === 408 ||
+    status === 499 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    status === 520 ||
+    status === 521 ||
+    status === 522 ||
+    status === 523 ||
+    status === 524
+  );
+}
+
+export function missingApiPortHint(
+  location: Pick<Location, "protocol" | "hostname" | "port"> | null = typeof window !== "undefined"
+    ? window.location
+    : null
+): string {
+  if (!location) return "";
+  const { protocol, hostname, port } = location;
+  // Same-origin deploys on :8001 already hit the API; blaming the port is misleading.
+  if (port === "8001" || port === "8000") return "";
+  if (hostname === "localhost" || hostname === "127.0.0.1") return "";
+  // Non-empty custom ports other than http(s) defaults are already explicit.
+  if (port && port !== "80" && port !== "443") return "";
+  const host = hostname || "18.195.208.12";
+  return ` — ודא שהכתובת כוללת :8001 (למשל ${protocol}//${host}:8001/cv-tailor)`;
+}
+
 /** Actionable message when the server body is not JSON (common on Safari / timeouts). */
-function nonJsonResponseMessage(res: Response, text: string, errorFallback: string): string {
+export function nonJsonResponseMessage(
+  res: Pick<Response, "ok" | "status">,
+  text: string,
+  errorFallback: string,
+  location: Pick<Location, "protocol" | "hostname" | "port"> | null = typeof window !== "undefined"
+    ? window.location
+    : null
+): string {
   const trimmed = text.trim();
-  const isTimeoutStatus = res.status === 502 || res.status === 504 || res.status === 524;
   if (!trimmed) {
-    if (res.ok || isTimeoutStatus) {
+    if (res.ok || isGatewayOrTimeoutStatus(res.status)) {
       return "הבקשה נקטעה לפני שהשרת החזיר תוצאה — יצירת קורות חיים לוקחת 1–2 דקות, נסה שוב ואל תסגור את הדף.";
     }
     return `${errorFallback} (שגיאה ${res.status})`;
   }
   if (looksLikeHtml(trimmed)) {
-    if (isTimeoutStatus) {
+    if (isGatewayOrTimeoutStatus(res.status)) {
       return "השרת חתך את הבקשה באמצע (timeout) — יצירת קורות חיים לוקחת 1–2 דקות. נסה שוב ואל תסגור את הדף.";
     }
-    return "השרת החזיר דף שגיאה במקום תשובת API — ודא שהכתובת כוללת :8001 (למשל http://18.195.208.12:8001/cv-tailor).";
+    // HTML with a non-gateway status is often a hung upstream / process restart.
+    return (
+      `השרת החזיר דף שגיאה במקום תשובת API (שגיאה ${res.status || "?"}). ` +
+      `נסה שוב — העיבוד לוקח 1–2 דקות ואל תסגור את הדף.${missingApiPortHint(location)}`
+    );
   }
   if (res.ok) {
     return "יצירת קורות החיים נכשלה — נסה קובץ DOCX מ-Word (לא PDF סרוק), והמתן 1–2 דקות בזמן העיבוד.";
