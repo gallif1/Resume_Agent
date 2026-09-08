@@ -477,8 +477,8 @@ export default function CvTailorPage() {
             information from the original — no fabricated experience.
           </p>
           <p className="cv-tailor-section-note">
-            מומלץ DOCX מ-Word. PDF סרוק עלול להיכשל. העיבוד לוקח 1–2 דקות — השאירו את הדף פתוח (במובייל אל
-            תעבירו לרקע).
+            מומלץ DOCX מ-Word (לא PDF סרוק). העיבוד בדרך־כלל פחות מדקה — במובייל השאירו את הדף
+            פתוח בקדמה עד שמופיעה התוצאה.
           </p>
 
           <label className="field-label" htmlFor="cv-upload">

@@ -110,6 +110,7 @@ from config import (
     API_PORT,
     CV_PROFILE_PATH,
     DATA_DIR,
+    OPENAI_CV_TAILOR_MODEL,
     PROJECT_ROOT,
     RESUMES_DIR,
     _find_cv_file,
@@ -3543,6 +3544,7 @@ async def health():
     return {
         "ok": True,
         **build_info(),
+        "cv_tailor_model": OPENAI_CV_TAILOR_MODEL,
         "pipeline_running": _pipeline_state["running"],
         "scan_running": _scan_state["running"],
         "playwright_ready": browser_ok,
