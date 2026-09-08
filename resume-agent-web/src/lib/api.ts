@@ -122,7 +122,7 @@ export function nonJsonResponseMessage(
   const trimmed = text.trim();
   if (!trimmed) {
     if (res.ok || isGatewayOrTimeoutStatus(res.status)) {
-      return "הבקשה נקטעה לפני שהשרת החזיר תוצאה — יצירת קורות חיים לוקחת 1–2 דקות, נסה שוב ואל תסגור את הדף.";
+      return "הבקשה נקטעה לפני שהשרת החזיר תוצאה — יצירת קורות חיים לוקחת 1–2 דקות, נסה שוב ואל תסגור את הדף (ובמיוחד במובייל אל תעביר לרקע).";
     }
     return `${errorFallback} (שגיאה ${res.status})`;
   }
@@ -130,7 +130,9 @@ export function nonJsonResponseMessage(
     if (isGatewayOrTimeoutStatus(res.status)) {
       return "השרת חתך את הבקשה באמצע (timeout) — יצירת קורות חיים לוקחת 1–2 דקות. נסה שוב ואל תסגור את הדף.";
     }
-    // HTML with a non-gateway status is often a hung upstream / process restart.
+    if (res.status === 200) {
+      return "החיבור נקטע באמצע העיבוד (נפוץ במובייל אחרי כ־דקה) — השאר את הדף פתוח ברקע הקדמי ונסה שוב.";
+    }
     return (
       `השרת החזיר דף שגיאה במקום תשובת API (שגיאה ${res.status || "?"}). ` +
       `נסה שוב — העיבוד לוקח 1–2 דקות ואל תסגור את הדף.${missingApiPortHint(location)}`

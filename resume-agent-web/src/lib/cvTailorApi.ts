@@ -114,6 +114,56 @@ async function parseBlobError(res: Response, fallback: string): Promise<string> 
   }
 }
 
+export type CvTailorJobStartResponse = {
+  job_id: string;
+  status: string;
+};
+
+export type CvTailorJobStatusResponse = CvTailorGenerateResponse & {
+  job_id: string;
+  status: "pending" | "running" | "done" | "error" | string;
+  error?: string;
+};
+
+const JOB_POLL_MS = 2000;
+const JOB_TIMEOUT_MS = 3 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function pollCvTailorJob(
+  jobId: string,
+  errorFallback: string
+): Promise<CvTailorGenerateResponse> {
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+  let delayMs = 500;
+  while (Date.now() < deadline) {
+    await sleep(delayMs);
+    delayMs = JOB_POLL_MS;
+    const status = await authJsonRequest<CvTailorJobStatusResponse>(
+      `/api/cv-tailor/jobs/${encodeURIComponent(jobId)}`,
+      {},
+      errorFallback
+    );
+    if (status.status === "done") {
+      const { job_id: _jobId, status: _status, error: _error, ...result } = status;
+      if (!result.result_id || !result.tailored_cv) {
+        throw new Error(errorFallback);
+      }
+      return result;
+    }
+    if (status.status === "error") {
+      throw new Error(status.error?.trim() || errorFallback);
+    }
+  }
+  throw new Error(
+    "יצירת קורות החיים לוקחת יותר מדי זמן — נסה שוב ואל תסגור או תעביר את הדף לרקע בזמן העיבוד."
+  );
+}
+
 export async function generateTailoredCv(
   file: File,
   jobDescription: string,
@@ -129,11 +179,15 @@ export async function generateTailoredCv(
     form.append("job_id", String(jobContext.jobId));
   }
 
-  return authJsonRequest<CvTailorGenerateResponse>(
+  const started = await authJsonRequest<CvTailorJobStartResponse>(
     "/api/cv-tailor/generate",
     { method: "POST", body: form },
     "יצירת קורות חיים מותאמים נכשלה"
   );
+  if (!started.job_id) {
+    throw new Error("יצירת קורות חיים מותאמים נכשלה");
+  }
+  return pollCvTailorJob(started.job_id, "יצירת קורות חיים מותאמים נכשלה");
 }
 
 export async function regenerateTailoredCv(
@@ -148,7 +202,7 @@ export async function regenerateTailoredCv(
   if (jobContext?.jobId != null) {
     payload.job_id = jobContext.jobId;
   }
-  return authJsonRequest<CvTailorGenerateResponse>(
+  const started = await authJsonRequest<CvTailorJobStartResponse>(
     `/api/cv-tailor/regenerate/${encodeURIComponent(resultId)}`,
     {
       method: "POST",
@@ -157,6 +211,10 @@ export async function regenerateTailoredCv(
     },
     "עדכון קורות החיים נכשל"
   );
+  if (!started.job_id) {
+    throw new Error("עדכון קורות החיים נכשל");
+  }
+  return pollCvTailorJob(started.job_id, "עדכון קורות החיים נכשל");
 }
 
 export async function downloadTailoredCv(resultId: string): Promise<Blob> {

@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 import auth
-from cv_tailor.job_persist import maybe_persist_tailored_cv_to_job
 from cv_tailor.parser import CvParseError
 from cv_tailor.models import RegenerateCvRequest
 from cv_tailor.service import (
     CvTailorError,
-    generate_tailored_cv,
     get_download_pdf,
-    get_stored_pdf_bytes,
-    get_stored_session_snapshot,
-    regenerate_tailored_cv,
+    get_job_status,
+    start_generate_job,
+    start_regenerate_job,
 )
 
 logger = logging.getLogger("cv_tailor.routes")
@@ -44,41 +41,23 @@ async def cv_tailor_generate(
     job_id: int | None = Form(default=None),
     user: dict = Depends(auth.get_current_user),
 ):
+    """Start async generate; poll GET /api/cv-tailor/jobs/{job_id} for the result.
+
+    Mobile browsers often kill long POSTs (~60–90s) and surface the SPA HTML as a
+    fake HTTP 200. Returning immediately + short polls avoids that failure mode.
+    """
     filename = file.filename or "cv.pdf"
     try:
         file_bytes = await file.read()
-        # Playwright sync API must not run on the asyncio event loop.
-        result = await asyncio.to_thread(
-            generate_tailored_cv,
+        job_id_async = start_generate_job(
             file_bytes=file_bytes,
             filename=filename,
             job_description=job_description,
             user_id=str(user["id"]),
-        )
-        saved_to_job = maybe_persist_tailored_cv_to_job(
             cv_id=cv_id,
-            job_id=job_id,
-            preview_text=result.preview_text,
-            user_id=str(user["id"]),
-            pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
-            tailored_cv=result.tailored_cv.model_dump(),
-            job_analysis=result.job_analysis.model_dump(),
-            user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
-            cv_text=(get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}).get(
-                "cv_text"
-            ),
-            model=result.model,
+            link_job_id=job_id,
         )
-        return {
-            "result_id": result.result_id,
-            "model": result.model,
-            "preview_text": result.preview_text,
-            "tailored_cv": result.tailored_cv.model_dump(),
-            "job_analysis": result.job_analysis.model_dump(),
-            "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
-            "saved_to_job": saved_to_job is not None,
-            "job_version_id": (saved_to_job or {}).get("version_id"),
-        }
+        return {"job_id": job_id_async, "status": "pending"}
     except CvParseError as exc:
         logger.warning("CV tailor parse error: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -87,7 +66,7 @@ async def cv_tailor_generate(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except HTTPException:
         raise
-    except Exception as exc:  # noqa: BLE001 — surface real cause instead of opaque 500
+    except Exception as exc:  # noqa: BLE001
         raise _http_from_unexpected(exc) from exc
 
 
@@ -97,41 +76,32 @@ async def cv_tailor_regenerate(
     body: RegenerateCvRequest,
     user: dict = Depends(auth.get_current_user),
 ):
+    """Start async regenerate; poll GET /api/cv-tailor/jobs/{job_id} for the result."""
     try:
-        result = await asyncio.to_thread(
-            regenerate_tailored_cv,
+        job_id_async = start_regenerate_job(
             result_id=result_id,
             user_id=str(user["id"]),
             request=body,
         )
-        snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=str(user["id"])) or {}
-        saved_to_job = maybe_persist_tailored_cv_to_job(
-            cv_id=body.cv_id,
-            job_id=body.job_id,
-            preview_text=result.preview_text,
-            user_id=str(user["id"]),
-            pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=str(user["id"])),
-            tailored_cv=result.tailored_cv.model_dump(),
-            job_analysis=result.job_analysis.model_dump(),
-            user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
-            cv_text=snapshot.get("cv_text"),
-            model=result.model,
-        )
-        return {
-            "result_id": result.result_id,
-            "model": result.model,
-            "preview_text": result.preview_text,
-            "tailored_cv": result.tailored_cv.model_dump(),
-            "job_analysis": result.job_analysis.model_dump(),
-            "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
-            "saved_to_job": saved_to_job is not None,
-            "job_version_id": (saved_to_job or {}).get("version_id"),
-        }
+        return {"job_id": job_id_async, "status": "pending"}
     except CvTailorError as exc:
         logger.warning("CV tailor regenerate error: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except HTTPException:
         raise
+    except Exception as exc:  # noqa: BLE001
+        raise _http_from_unexpected(exc) from exc
+
+
+@router.get("/jobs/{job_id}")
+async def cv_tailor_job_status(
+    job_id: str,
+    user: dict = Depends(auth.get_current_user),
+):
+    try:
+        return get_job_status(job_id=job_id, user_id=str(user["id"]))
+    except CvTailorError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise _http_from_unexpected(exc) from exc
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import patch
 
 import api_server
@@ -23,6 +24,19 @@ from cv_tailor.validation import (
     preserve_regeneration_baseline,
 )
 from fastapi.testclient import TestClient
+
+
+def _poll_job(client: TestClient, headers: dict, job_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        res = client.get(f"/api/cv-tailor/jobs/{job_id}", headers=headers)
+        assert res.status_code == 200, res.text
+        last = res.json()
+        if last.get("status") in {"done", "error"}:
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish; last={last}")
 
 GAL_TEL_HAI_SOURCE = """
 Gal Lifshitz
@@ -367,9 +381,13 @@ def test_api_cv_tailor_regenerate_endpoint(db_path, monkeypatch):
 
     user = register_test_user(email="gaps@example.com", db_path=db_path)
     client = TestClient(api_server.app)
+    headers = auth_header_for(user)
     fake_pdf = b"%PDF-1.4 tailored"
 
-    with patch("cv_tailor.service.call_openai_json", side_effect=[INITIAL_MINUTE_MEDIA_RESPONSE, REGENERATED_MINUTE_MEDIA_RESPONSE]):
+    with patch(
+        "cv_tailor.service.call_openai_json",
+        side_effect=[INITIAL_MINUTE_MEDIA_RESPONSE, REGENERATED_MINUTE_MEDIA_RESPONSE],
+    ):
         with patch(
             "cv_tailor.parser.extract_text_from_resume",
             return_value=(GAL_TEL_HAI_SOURCE, "pdf:test"),
@@ -377,20 +395,21 @@ def test_api_cv_tailor_regenerate_endpoint(db_path, monkeypatch):
             with patch("cv_tailor.service.render_tailored_cv_pdf", return_value=fake_pdf):
                 generate_res = client.post(
                     "/api/cv-tailor/generate",
-                    headers=auth_header_for(user),
+                    headers=headers,
                     files={"file": ("resume.pdf", b"pdf-bytes", "application/pdf")},
                     data={"job_description": MINUTE_MEDIA_FULLSTACK_JD},
                 )
-
                 assert generate_res.status_code == 200, generate_res.text
-                result_id = generate_res.json()["result_id"]
-                gaps = generate_res.json()["job_analysis"]["gaps"]
+                body = _poll_job(client, headers, generate_res.json()["job_id"])
+                assert body["status"] == "done", body
+                result_id = body["result_id"]
+                gaps = body["job_analysis"]["gaps"]
                 assert len(gaps) >= 3
 
                 js_gap = next(g for g in gaps if "javascript" in g["gap_id"])
                 regen_res = client.post(
                     f"/api/cv-tailor/regenerate/{result_id}",
-                    headers=auth_header_for(user),
+                    headers=headers,
                     json={
                         "gap_confirmations": [
                             {"gap_id": js_gap["gap_id"], "confirmed": True, "details": ""},
@@ -403,12 +422,13 @@ def test_api_cv_tailor_regenerate_endpoint(db_path, monkeypatch):
                         "general_additional_info": "Also used Cursor for AI-assisted coding.",
                     },
                 )
+                assert regen_res.status_code == 200, regen_res.text
+                regen_body = _poll_job(client, headers, regen_res.json()["job_id"])
 
-    assert regen_res.status_code == 200, regen_res.text
-    body = regen_res.json()
-    assert body["result_id"] == result_id
-    assert body["user_confirmed_facts"]
-    remaining_ids = {gap["gap_id"] for gap in body["job_analysis"]["gaps"]}
+    assert regen_body["status"] == "done", regen_body
+    assert regen_body["result_id"] == result_id
+    assert regen_body["user_confirmed_facts"]
+    remaining_ids = {gap["gap_id"] for gap in regen_body["job_analysis"]["gaps"]}
     assert js_gap["gap_id"] not in remaining_ids
 
 
