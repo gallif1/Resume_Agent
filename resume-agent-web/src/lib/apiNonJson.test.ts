@@ -12,6 +12,17 @@ describe("nonJsonResponseMessage", () => {
     expect(msg).not.toContain(":8001");
   });
 
+  it("treats HTML 200 as a mobile mid-request disconnect", () => {
+    const msg = nonJsonResponseMessage(
+      { ok: true, status: 200 },
+      "<!DOCTYPE html><html><body>SPA shell</body></html>",
+      "fallback",
+      { protocol: "http:", hostname: "18.195.208.12", port: "8001" }
+    );
+    expect(msg).toContain("מובייל");
+    expect(msg).not.toContain(":8001");
+  });
+
   it("does not blame :8001 when the page is already on that port", () => {
     const msg = nonJsonResponseMessage(
       { ok: false, status: 500 },

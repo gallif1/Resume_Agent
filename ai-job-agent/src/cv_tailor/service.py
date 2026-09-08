@@ -20,7 +20,7 @@ from cv_tailor.models import (
     TailoredCvData,
     TailoredCvResult,
 )
-from cv_tailor.parser import parse_cv_bytes
+from cv_tailor.parser import CvParseError, parse_cv_bytes
 from cv_tailor.prompt import (
     REGENERATE_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
@@ -39,10 +39,10 @@ from pdf_generator_service import PdfGeneratorError
 logger = logging.getLogger("cv_tailor.service")
 
 SESSION_TTL = timedelta(hours=1)
-# Chromium on small EC2 hosts can hang indefinitely after a successful LLM call.
-# Cap PDF work so /api/cv-tailor/generate always returns JSON preview in time.
-PDF_RENDER_TIMEOUT_SEC = 20
+# Chromium on small EC2 hosts can hang/OOM after a successful LLM call.
+# Generate/regenerate skip PDF entirely; download retries with a hard timeout.
 PDF_DOWNLOAD_TIMEOUT_SEC = 45
+JOB_TTL = timedelta(hours=1)
 
 
 @dataclass
@@ -58,19 +58,41 @@ class _StoredResult:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+@dataclass
+class _AsyncJob:
+    job_id: str
+    user_id: str
+    kind: str  # generate | regenerate
+    status: str = "pending"  # pending | running | done | error
+    error: str | None = None
+    result: TailoredCvResult | None = None
+    saved_to_job: dict[str, Any] | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 _store: dict[str, _StoredResult] = {}
 _store_lock = Lock()
+_jobs: dict[str, _AsyncJob] = {}
+_jobs_lock = Lock()
+_job_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cv-tailor-job")
 
 
 class CvTailorError(RuntimeError):
     """User-facing CV tailor failure."""
 
 
-def _cleanup_expired() -> None:
+def _cleanup_store_unlocked() -> None:
     cutoff = datetime.now(timezone.utc) - SESSION_TTL
     expired = [key for key, item in _store.items() if item.created_at < cutoff]
     for key in expired:
         _store.pop(key, None)
+
+
+def _cleanup_jobs_unlocked() -> None:
+    job_cutoff = datetime.now(timezone.utc) - JOB_TTL
+    expired_jobs = [key for key, item in _jobs.items() if item.created_at < job_cutoff]
+    for key in expired_jobs:
+        _jobs.pop(key, None)
 
 
 def _build_result(
@@ -95,11 +117,7 @@ def _render_pdf_with_timeout(
     *,
     timeout_sec: float,
 ) -> bytes:
-    """Run Playwright PDF render in a worker thread with a hard timeout.
-
-    On timeout the worker may keep running briefly; we must not join it or the
-    request thread would hang for the full Chromium stall.
-    """
+    """Run Playwright PDF render in a worker thread with a hard timeout."""
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cv-tailor-pdf")
     future = pool.submit(render_tailored_cv_pdf, tailored_cv)
     try:
@@ -112,25 +130,13 @@ def _render_pdf_with_timeout(
 
 
 def _render_pdf_best_effort(tailored_cv: TailoredCvData) -> tuple[bytes, str]:
-    """Optionally render PDF after tailor; never fail or hang the JSON response.
+    """Defer Chromium PDF work to download — never block generate/regenerate.
 
-    Chromium on small EC2 hosts can OOM/hang after a successful LLM call. We try a
-    short timed render so job-history can store a PDF when Playwright is healthy,
-    but always return the tailored preview even when PDF work is skipped.
-    Download retries via ``get_download_pdf``.
+    Long synchronous generate requests fail on mobile networks with HTML/200
+    bodies. Skipping Playwright here keeps the LLM path fast and OOM-safe;
+    ``get_download_pdf`` still renders with a timeout when the user downloads.
     """
-    filename = pdf_filename_for_cv(tailored_cv)
-    try:
-        return _render_pdf_with_timeout(
-            tailored_cv, timeout_sec=PDF_RENDER_TIMEOUT_SEC
-        ), filename
-    except TimeoutError as exc:
-        logger.error("PDF generation timed out (continuing without PDF): %s", exc)
-    except PdfGeneratorError as exc:
-        logger.error("PDF generation failed (continuing without PDF): %s", exc)
-    except Exception:
-        logger.exception("PDF generation failed (continuing without PDF)")
-    return b"", filename
+    return b"", pdf_filename_for_cv(tailored_cv)
 
 
 def _parse_and_guard(
@@ -249,7 +255,7 @@ def generate_tailored_cv(
 
     result_id = str(uuid.uuid4())
     with _store_lock:
-        _cleanup_expired()
+        _cleanup_store_unlocked()
         _store[result_id] = _StoredResult(
             user_id=user_id,
             cv_text=cv_text,
@@ -279,7 +285,7 @@ def regenerate_tailored_cv(
 ) -> TailoredCvResult:
     """Apply user-confirmed gap information and regenerate the tailored CV."""
     with _store_lock:
-        _cleanup_expired()
+        _cleanup_store_unlocked()
         stored = _store.get(result_id)
 
     if stored is None:
@@ -415,10 +421,212 @@ def regenerate_tailored_cv(
     )
 
 
+def _result_payload(
+    result: TailoredCvResult,
+    *,
+    saved_to_job: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "result_id": result.result_id,
+        "model": result.model,
+        "preview_text": result.preview_text,
+        "tailored_cv": result.tailored_cv.model_dump(),
+        "job_analysis": result.job_analysis.model_dump(),
+        "user_confirmed_facts": [fact.model_dump() for fact in result.user_confirmed_facts],
+        "saved_to_job": saved_to_job is not None,
+        "job_version_id": (saved_to_job or {}).get("version_id"),
+    }
+
+
+def _set_job_status(job_id: str, **patch: Any) -> None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return
+        for key, value in patch.items():
+            setattr(job, key, value)
+
+
+def _run_generate_job(
+    *,
+    job_id: str,
+    file_bytes: bytes,
+    filename: str,
+    job_description: str,
+    user_id: str,
+    cv_id: str | None,
+    link_job_id: int | None,
+) -> None:
+    from cv_tailor.job_persist import maybe_persist_tailored_cv_to_job
+
+    _set_job_status(job_id, status="running", error=None)
+    try:
+        result = generate_tailored_cv(
+            file_bytes=file_bytes,
+            filename=filename,
+            job_description=job_description,
+            user_id=user_id,
+        )
+        saved = maybe_persist_tailored_cv_to_job(
+            cv_id=cv_id,
+            job_id=link_job_id,
+            preview_text=result.preview_text,
+            user_id=user_id,
+            pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=user_id),
+            tailored_cv=result.tailored_cv.model_dump(),
+            job_analysis=result.job_analysis.model_dump(),
+            user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
+            cv_text=(get_stored_session_snapshot(result_id=result.result_id, user_id=user_id) or {}).get(
+                "cv_text"
+            ),
+            model=result.model,
+        )
+        _set_job_status(job_id, status="done", result=result, saved_to_job=saved, error=None)
+    except (CvTailorError, CvParseError) as exc:
+        logger.warning("Async CV tailor generate failed: %s", exc)
+        _set_job_status(job_id, status="error", error=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected async CV tailor generate failure")
+        detail = str(exc).strip() or exc.__class__.__name__
+        _set_job_status(
+            job_id,
+            status="error",
+            error=f"יצירת קורות חיים מותאמים נכשלה: {detail}",
+        )
+
+
+def _run_regenerate_job(
+    *,
+    job_id: str,
+    result_id: str,
+    user_id: str,
+    request: RegenerateCvRequest,
+) -> None:
+    from cv_tailor.job_persist import maybe_persist_tailored_cv_to_job
+
+    _set_job_status(job_id, status="running", error=None)
+    try:
+        result = regenerate_tailored_cv(
+            result_id=result_id,
+            user_id=user_id,
+            request=request,
+        )
+        snapshot = get_stored_session_snapshot(result_id=result.result_id, user_id=user_id) or {}
+        saved = maybe_persist_tailored_cv_to_job(
+            cv_id=request.cv_id,
+            job_id=request.job_id,
+            preview_text=result.preview_text,
+            user_id=user_id,
+            pdf_bytes=get_stored_pdf_bytes(result_id=result.result_id, user_id=user_id),
+            tailored_cv=result.tailored_cv.model_dump(),
+            job_analysis=result.job_analysis.model_dump(),
+            user_confirmed_facts=[fact.model_dump() for fact in result.user_confirmed_facts],
+            cv_text=snapshot.get("cv_text"),
+            model=result.model,
+        )
+        _set_job_status(job_id, status="done", result=result, saved_to_job=saved, error=None)
+    except CvTailorError as exc:
+        logger.warning("Async CV tailor regenerate failed: %s", exc)
+        _set_job_status(job_id, status="error", error=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected async CV tailor regenerate failure")
+        detail = str(exc).strip() or exc.__class__.__name__
+        _set_job_status(
+            job_id,
+            status="error",
+            error=f"עדכון קורות החיים נכשל: {detail}",
+        )
+
+
+def start_generate_job(
+    *,
+    file_bytes: bytes,
+    filename: str,
+    job_description: str,
+    user_id: str,
+    cv_id: str | None = None,
+    link_job_id: int | None = None,
+) -> str:
+    """Enqueue generate work and return a pollable job id immediately."""
+    # Fail fast on trivial validation before accepting the upload.
+    if len((job_description or "").strip()) < 20:
+        raise CvTailorError("Job description is too short")
+    if not file_bytes:
+        raise CvParseError("הקובץ שהועלה ריק")
+
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _cleanup_jobs_unlocked()
+        _jobs[job_id] = _AsyncJob(
+            job_id=job_id,
+            user_id=user_id,
+            kind="generate",
+            status="pending",
+        )
+    _job_pool.submit(
+        _run_generate_job,
+        job_id=job_id,
+        file_bytes=file_bytes,
+        filename=filename,
+        job_description=job_description,
+        user_id=user_id,
+        cv_id=cv_id,
+        link_job_id=link_job_id,
+    )
+    return job_id
+
+
+def start_regenerate_job(
+    *,
+    result_id: str,
+    user_id: str,
+    request: RegenerateCvRequest,
+) -> str:
+    """Enqueue regenerate work and return a pollable job id immediately."""
+    job_id = str(uuid.uuid4())
+    with _jobs_lock:
+        _cleanup_jobs_unlocked()
+        _jobs[job_id] = _AsyncJob(
+            job_id=job_id,
+            user_id=user_id,
+            kind="regenerate",
+            status="pending",
+        )
+    _job_pool.submit(
+        _run_regenerate_job,
+        job_id=job_id,
+        result_id=result_id,
+        user_id=user_id,
+        request=request,
+    )
+    return job_id
+
+
+def get_job_status(*, job_id: str, user_id: str) -> dict[str, Any]:
+    """Return poll payload for an async CV tailor job."""
+    with _jobs_lock:
+        _cleanup_jobs_unlocked()
+        job = _jobs.get(job_id)
+        if job is None or job.user_id != user_id:
+            raise CvTailorError("המשימה לא נמצאה או שפג תוקפה — נסה ליצור מחדש.")
+        status = job.status
+        error = job.error
+        result = job.result
+        saved = job.saved_to_job
+
+    payload: dict[str, Any] = {"job_id": job_id, "status": status}
+    if status == "error":
+        payload["error"] = error or "יצירת קורות חיים מותאמים נכשלה"
+        return payload
+    if status == "done" and result is not None:
+        payload.update(_result_payload(result, saved_to_job=saved))
+    return payload
+
+
 def get_stored_pdf_bytes(*, result_id: str, user_id: str) -> bytes | None:
     """Return PDF bytes for a recent CV Tailor session, if still in memory."""
     with _store_lock:
-        _cleanup_expired()
+        _cleanup_store_unlocked()
         stored = _store.get(result_id)
     if stored is None or stored.user_id != user_id:
         return None
@@ -428,7 +636,7 @@ def get_stored_pdf_bytes(*, result_id: str, user_id: str) -> bytes | None:
 def get_stored_session_snapshot(*, result_id: str, user_id: str) -> dict[str, Any] | None:
     """Return serializable session fields needed for durable job-history restore."""
     with _store_lock:
-        _cleanup_expired()
+        _cleanup_store_unlocked()
         stored = _store.get(result_id)
     if stored is None or stored.user_id != user_id:
         return None
@@ -449,7 +657,7 @@ def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
     If generate/regenerate skipped PDF (Playwright failure), retry rendering now.
     """
     with _store_lock:
-        _cleanup_expired()
+        _cleanup_store_unlocked()
         stored = _store.get(result_id)
 
     if stored is None:
@@ -504,7 +712,7 @@ def store_restored_session(
     if not bytes_payload:
         try:
             bytes_payload = _render_pdf_with_timeout(
-                tailored_cv, timeout_sec=PDF_RENDER_TIMEOUT_SEC
+                tailored_cv, timeout_sec=PDF_DOWNLOAD_TIMEOUT_SEC
             )
             filename = pdf_filename_for_cv(tailored_cv)
         except Exception as exc:
@@ -512,7 +720,7 @@ def store_restored_session(
 
     result_id = str(uuid.uuid4())
     with _store_lock:
-        _cleanup_expired()
+        _cleanup_store_unlocked()
         _store[result_id] = _StoredResult(
             user_id=user_id,
             cv_text=cv_text or "",

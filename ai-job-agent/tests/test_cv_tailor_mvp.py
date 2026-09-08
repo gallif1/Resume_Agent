@@ -12,6 +12,20 @@ from cv_tailor.parser import CvParseError, parse_cv_bytes, sanitize_filename, va
 from cv_tailor.renderer import pdf_filename_for_cv, render_tailored_cv_pdf, structured_cv_to_html
 from cv_tailor.service import CvTailorError, generate_tailored_cv, get_download_pdf
 from fastapi.testclient import TestClient
+import time
+
+
+def _poll_cv_tailor_job(client: TestClient, headers: dict, job_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        res = client.get(f"/api/cv-tailor/jobs/{job_id}", headers=headers)
+        assert res.status_code == 200, res.text
+        last = res.json()
+        if last.get("status") in {"done", "error"}:
+            return last
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} did not finish; last={last}")
 
 
 def test_sanitize_filename_strips_unsafe_chars():
@@ -132,19 +146,24 @@ def test_api_cv_tailor_generate_and_download(db_path, monkeypatch):
                     data={"job_description": "We need a Python backend engineer with FastAPI experience."},
                 )
 
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["result_id"]
-    assert "Python" in body["preview_text"]
-    assert body["tailored_cv"]["name"] == "Jane Doe"
+                assert res.status_code == 200, res.text
+                start = res.json()
+                assert start["status"] == "pending"
+                assert start["job_id"]
 
-    download = client.get(
-        f"/api/cv-tailor/download/{body['result_id']}",
-        headers=auth_header_for(user),
-    )
-    assert download.status_code == 200
-    assert download.headers["content-type"].startswith("application/pdf")
-    assert download.content.startswith(b"%PDF")
+                body = _poll_cv_tailor_job(client, auth_header_for(user), start["job_id"])
+                assert body["status"] == "done", body
+                assert body["result_id"]
+                assert "Python" in body["preview_text"]
+                assert body["tailored_cv"]["name"] == "Jane Doe"
+
+                download = client.get(
+                    f"/api/cv-tailor/download/{body['result_id']}",
+                    headers=auth_header_for(user),
+                )
+                assert download.status_code == 200
+                assert download.headers["content-type"].startswith("application/pdf")
+                assert download.content.startswith(b"%PDF")
 
 
 def test_api_cv_tailor_requires_auth(db_path, monkeypatch):
@@ -173,9 +192,7 @@ def test_generate_tailored_cv_rejects_short_job_description():
 
 
 def test_generate_succeeds_when_pdf_renderer_hangs():
-    """A hung Chromium PDF must not block the tailor JSON response forever."""
-    import time
-
+    """Generate must not invoke Chromium — hung PDF must not affect the JSON job."""
     mock_llm = {
         "tailored_cv": {
             "name": "Jane Doe",
@@ -197,28 +214,23 @@ def test_generate_succeeds_when_pdf_renderer_hangs():
     }
 
     def _hang(_cv):
-        time.sleep(60)
-        return b"%PDF-1.4 too-late"
+        raise AssertionError("generate must not call render_tailored_cv_pdf")
 
-    with patch("cv_tailor.service.PDF_RENDER_TIMEOUT_SEC", 0.2):
-        with patch("cv_tailor.service.call_openai_json", return_value=mock_llm):
-            with patch(
-                "cv_tailor.parser.extract_text_from_resume",
-                return_value=("Long enough CV text " * 5, "docx"),
-            ):
-                with patch("cv_tailor.service.render_tailored_cv_pdf", side_effect=_hang):
-                    started = time.monotonic()
-                    result = generate_tailored_cv(
-                        file_bytes=b"docx-bytes",
-                        filename="cv.docx",
-                        job_description="Looking for a Python engineer with API experience.",
-                        user_id="owner-user",
-                    )
-                    elapsed = time.monotonic() - started
+    with patch("cv_tailor.service.call_openai_json", return_value=mock_llm):
+        with patch(
+            "cv_tailor.parser.extract_text_from_resume",
+            return_value=("Long enough CV text " * 5, "docx"),
+        ):
+            with patch("cv_tailor.service.render_tailored_cv_pdf", side_effect=_hang):
+                result = generate_tailored_cv(
+                    file_bytes=b"docx-bytes",
+                    filename="cv.docx",
+                    job_description="Looking for a Python engineer with API experience.",
+                    user_id="owner-user",
+                )
 
     assert result.result_id
     assert "Python" in result.preview_text
-    assert elapsed < 5, f"hung PDF should time out quickly, took {elapsed:.1f}s"
 
 
 def test_generate_succeeds_when_pdf_renderer_fails():
@@ -281,27 +293,22 @@ def test_api_generate_surfaces_unexpected_errors_as_json(db_path, monkeypatch):
     client = TestClient(api_server.app)
 
     with patch(
-        "cv_tailor.routes.generate_tailored_cv",
+        "cv_tailor.service.generate_tailored_cv",
         side_effect=RuntimeError("simulated crash"),
     ):
-        res = client.post(
-            "/api/cv-tailor/generate",
-            headers=auth_header_for(user),
-            files={
-                "file": (
-                    "resume.docx",
-                    b"fake-docx-bytes",
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            },
-            data={"job_description": "We need a Python backend engineer with FastAPI experience."},
-        )
+        from cv_tailor.service import start_generate_job
 
-    assert res.status_code == 500
-    body = res.json()
-    assert "detail" in body
-    assert "simulated crash" in body["detail"]
-    assert "יצירת קורות חיים מותאמים נכשלה" in body["detail"]
+        job_id = start_generate_job(
+            file_bytes=b"fake-docx-bytes",
+            filename="resume.docx",
+            job_description="We need a Python backend engineer with FastAPI experience.",
+            user_id=str(user["id"]),
+        )
+        body = _poll_cv_tailor_job(client, auth_header_for(user), job_id)
+
+    assert body["status"] == "error"
+    assert "simulated crash" in body["error"]
+    assert "יצירת קורות חיים מותאמים נכשלה" in body["error"]
 
 
 def test_get_download_pdf_wrong_user():
