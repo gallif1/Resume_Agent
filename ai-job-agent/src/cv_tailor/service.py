@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import Lock
@@ -37,6 +39,10 @@ from pdf_generator_service import PdfGeneratorError
 logger = logging.getLogger("cv_tailor.service")
 
 SESSION_TTL = timedelta(hours=1)
+# Chromium on small EC2 hosts can hang indefinitely after a successful LLM call.
+# Cap PDF work so /api/cv-tailor/generate always returns JSON preview in time.
+PDF_RENDER_TIMEOUT_SEC = 20
+PDF_DOWNLOAD_TIMEOUT_SEC = 45
 
 
 @dataclass
@@ -84,16 +90,42 @@ def _build_result(
     )
 
 
-def _render_pdf_best_effort(tailored_cv: TailoredCvData) -> tuple[bytes, str]:
-    """Render PDF for download; never fail the tailor request if Playwright is unhealthy.
+def _render_pdf_with_timeout(
+    tailored_cv: TailoredCvData,
+    *,
+    timeout_sec: float,
+) -> bytes:
+    """Run Playwright PDF render in a worker thread with a hard timeout.
 
-    On small EC2 hosts Chromium can OOM or hang after a successful LLM call. Returning
-    the tailored preview without a PDF is far better than an opaque client-side failure.
-    Download can retry rendering later via ``get_download_pdf``.
+    On timeout the worker may keep running briefly; we must not join it or the
+    request thread would hang for the full Chromium stall.
+    """
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cv-tailor-pdf")
+    future = pool.submit(render_tailored_cv_pdf, tailored_cv)
+    try:
+        return future.result(timeout=timeout_sec)
+    except FuturesTimeoutError:
+        future.cancel()
+        raise TimeoutError(f"PDF render exceeded {timeout_sec:.0f}s") from None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _render_pdf_best_effort(tailored_cv: TailoredCvData) -> tuple[bytes, str]:
+    """Optionally render PDF after tailor; never fail or hang the JSON response.
+
+    Chromium on small EC2 hosts can OOM/hang after a successful LLM call. We try a
+    short timed render so job-history can store a PDF when Playwright is healthy,
+    but always return the tailored preview even when PDF work is skipped.
+    Download retries via ``get_download_pdf``.
     """
     filename = pdf_filename_for_cv(tailored_cv)
     try:
-        return render_tailored_cv_pdf(tailored_cv), filename
+        return _render_pdf_with_timeout(
+            tailored_cv, timeout_sec=PDF_RENDER_TIMEOUT_SEC
+        ), filename
+    except TimeoutError as exc:
+        logger.error("PDF generation timed out (continuing without PDF): %s", exc)
     except PdfGeneratorError as exc:
         logger.error("PDF generation failed (continuing without PDF): %s", exc)
     except Exception:
@@ -429,8 +461,15 @@ def get_download_pdf(*, result_id: str, user_id: str) -> tuple[bytes, str]:
         return stored.pdf_bytes, stored.pdf_filename or pdf_filename_for_cv(stored.tailored_cv)
 
     try:
-        pdf_bytes = render_tailored_cv_pdf(stored.tailored_cv)
+        pdf_bytes = _render_pdf_with_timeout(
+            stored.tailored_cv, timeout_sec=PDF_DOWNLOAD_TIMEOUT_SEC
+        )
         pdf_filename = pdf_filename_for_cv(stored.tailored_cv)
+    except TimeoutError as exc:
+        logger.error("PDF re-render for download timed out: %s", exc)
+        raise CvTailorError(
+            "יצירת ה-PDF לקחה יותר מדי זמן — נסה שוב בעוד רגע."
+        ) from exc
     except PdfGeneratorError as exc:
         logger.error("PDF re-render for download failed: %s", exc)
         raise CvTailorError(str(exc)) from exc
@@ -464,7 +503,9 @@ def store_restored_session(
     filename = (pdf_filename or "").strip() or pdf_filename_for_cv(tailored_cv)
     if not bytes_payload:
         try:
-            bytes_payload = render_tailored_cv_pdf(tailored_cv)
+            bytes_payload = _render_pdf_with_timeout(
+                tailored_cv, timeout_sec=PDF_RENDER_TIMEOUT_SEC
+            )
             filename = pdf_filename_for_cv(tailored_cv)
         except Exception as exc:
             logger.warning("Could not re-render PDF while restoring session: %s", exc)
