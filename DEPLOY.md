@@ -153,3 +153,24 @@ volumes:
 > אם הקונטיינר נוצר מחדש (`docker compose up --force-recreate`, reboot עם
 > recreate) הקוד המוזרק נעלם וחוזר הקוד מה-image. לאחר מכן צריך להריץ את הדיפלוי
 > שוב, או להריץ אותו עם `rebuild_image=true` כדי לאפות את הקוד ל-image עצמו.
+
+## EC2 — דיסק מלא (`No space left on device`)
+
+אם `Deploy via SSH` נכשל ב־`git pull` עם:
+
+```text
+error: unable to create temporary file: No space left on device
+fatal: unpack-objects failed
+```
+
+המכונה (root volume) התמלאה — בדרך כלל מ־Docker images ישנים / build cache / לוגים.
+ה־workflow מנקה אוטומטית לפני ה־pull (images לא בשימוש, builder cache, journal, apt).
+Volumes **לא** נמחקים (שם נשמרים קו״ח / DB).
+
+אחרי merge של התיקון: **Re-run** את ה־workflow (או push ל־`master`) — הסקריפט החדש עולה ב־SCP לפני ה־pull.
+
+אם עדיין אין מקום אחרי הניקוי:
+
+1. SSH למכונה ובדוק: `df -h /` ו־`sudo du -xh --max-depth=1 /var/lib/docker | sort -h`
+2. הרחב את ה־EBS volume ב־AWS Console (ואז `sudo growpart` / `sudo resize2fs` לפי הצורך)
+3. אל תמחק volumes של Docker ידנית בלי גיבוי — שם יושבים נתוני המשתמשים
