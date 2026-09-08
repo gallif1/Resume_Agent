@@ -12,15 +12,16 @@ describe("nonJsonResponseMessage", () => {
     expect(msg).not.toContain(":8001");
   });
 
-  it("treats HTML 200 as a mobile mid-request disconnect", () => {
+  it("does not claim a one-minute wait for immediate HTML 200", () => {
     const msg = nonJsonResponseMessage(
       { ok: true, status: 200 },
       "<!DOCTYPE html><html><body>SPA shell</body></html>",
       "fallback",
       { protocol: "http:", hostname: "18.195.208.12", port: "8001" }
     );
-    expect(msg).toContain("מובייל");
-    expect(msg).not.toContain(":8001");
+    expect(msg).toContain("HTML");
+    expect(msg).not.toContain("כ־דקה");
+    expect(msg).not.toContain("http://18.195.208.12:8001/cv-tailor");
   });
 
   it("does not blame :8001 when the page is already on that port", () => {
@@ -31,8 +32,8 @@ describe("nonJsonResponseMessage", () => {
       { protocol: "http:", hostname: "18.195.208.12", port: "8001" }
     );
     expect(msg).toContain("שגיאה 500");
-    expect(msg).toContain("נסה שוב");
-    expect(msg).not.toContain(":8001");
+    expect(msg).toContain("HTML");
+    expect(msg).not.toContain("http://18.195.208.12:8001/cv-tailor");
   });
 
   it("suggests :8001 only when browsing default http port", () => {

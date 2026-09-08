@@ -110,6 +110,7 @@ from config import (
     API_PORT,
     CV_PROFILE_PATH,
     DATA_DIR,
+    OPENAI_CV_TAILOR_MODEL,
     PROJECT_ROOT,
     RESUMES_DIR,
     _find_cv_file,
@@ -3543,6 +3544,7 @@ async def health():
     return {
         "ok": True,
         **build_info(),
+        "cv_tailor_model": OPENAI_CV_TAILOR_MODEL,
         "pipeline_running": _pipeline_state["running"],
         "scan_running": _scan_state["running"],
         "playwright_ready": browser_ok,
@@ -3593,7 +3595,12 @@ if FRONTEND_DIST.is_dir():
         if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading")):
             # /trading is owned by the isolated AI Trading System (API + SPA).
             return response
-        accept = request.headers.get("accept", "")
+        accept = request.headers.get("accept", "").lower()
+        # Safari/WebKit often sends "application/json, */*". The old check treated
+        # "*/*" as "wants HTML", so a mistaken non-/api URL returned index.html as
+        # HTTP 200 — the CV Tailor UI then showed a fake "connection interrupted".
+        if "application/json" in accept:
+            return response
         if "text/html" not in accept and "*/*" not in accept:
             return response
         index = FRONTEND_DIST / "index.html"

@@ -127,11 +127,27 @@ export type CvTailorJobStatusResponse = CvTailorGenerateResponse & {
 
 const JOB_POLL_MS = 2000;
 const JOB_TIMEOUT_MS = 3 * 60 * 1000;
+const JOB_POLL_TRANSIENT_RETRIES = 4;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function isTransientPollError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message || "";
+  return (
+    msg.includes("דף שגיאה") ||
+    msg.includes("החיבור נקטע") ||
+    msg.includes("timeout") ||
+    msg.includes("לא זמין") ||
+    msg.includes("נקטעה") ||
+    msg.includes("Failed to fetch") ||
+    msg.includes("NetworkError") ||
+    msg.includes("Load failed")
+  );
 }
 
 async function pollCvTailorJob(
@@ -140,14 +156,28 @@ async function pollCvTailorJob(
 ): Promise<CvTailorGenerateResponse> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   let delayMs = 500;
+  let transientFailures = 0;
   while (Date.now() < deadline) {
     await sleep(delayMs);
     delayMs = JOB_POLL_MS;
-    const status = await authJsonRequest<CvTailorJobStatusResponse>(
-      `/api/cv-tailor/jobs/${encodeURIComponent(jobId)}`,
-      {},
-      errorFallback
-    );
+    let status: CvTailorJobStatusResponse;
+    try {
+      status = await authJsonRequest<CvTailorJobStatusResponse>(
+        `/api/cv-tailor/jobs/${encodeURIComponent(jobId)}`,
+        {},
+        errorFallback
+      );
+      transientFailures = 0;
+    } catch (err) {
+      // Mobile Safari occasionally returns the SPA HTML (HTTP 200) or drops a
+      // short poll; keep waiting — the server job is still running.
+      if (isTransientPollError(err) && transientFailures < JOB_POLL_TRANSIENT_RETRIES) {
+        transientFailures += 1;
+        delayMs = Math.min(JOB_POLL_MS * (transientFailures + 1), 8000);
+        continue;
+      }
+      throw err;
+    }
     if (status.status === "done") {
       const { job_id: _jobId, status: _status, error: _error, ...result } = status;
       if (!result.result_id || !result.tailored_cv) {
@@ -179,11 +209,29 @@ export async function generateTailoredCv(
     form.append("job_id", String(jobContext.jobId));
   }
 
-  const started = await authJsonRequest<CvTailorJobStartResponse>(
-    "/api/cv-tailor/generate",
-    { method: "POST", body: form },
-    "יצירת קורות חיים מותאמים נכשלה"
-  );
+  let started: CvTailorJobStartResponse;
+  try {
+    started = await authJsonRequest<CvTailorJobStartResponse>(
+      "/api/cv-tailor/generate",
+      { method: "POST", body: form },
+      "יצירת קורות חיים מותאמים נכשלה"
+    );
+  } catch (err) {
+    // One retry — mobile Safari sometimes returns the SPA HTML shell on the
+    // first multipart POST even though the API is healthy.
+    if (!isTransientPollError(err)) throw err;
+    await sleep(400);
+    const retryForm = new FormData();
+    retryForm.append("file", file);
+    retryForm.append("job_description", jobDescription);
+    if (jobContext?.cvId) retryForm.append("cv_id", jobContext.cvId);
+    if (jobContext?.jobId != null) retryForm.append("job_id", String(jobContext.jobId));
+    started = await authJsonRequest<CvTailorJobStartResponse>(
+      "/api/cv-tailor/generate",
+      { method: "POST", body: retryForm },
+      "יצירת קורות חיים מותאמים נכשלה"
+    );
+  }
   if (!started.job_id) {
     throw new Error("יצירת קורות חיים מותאמים נכשלה");
   }
