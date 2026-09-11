@@ -247,27 +247,27 @@ export function toSeriesMarkers(groups: GroupedMarker[]): SeriesMarkerOut[] {
       color = "#22c55e";
       shape = "arrowUp";
       position = "belowBar";
-      size = 1;
+      size = 1.4;
     } else if (g.primary === "fill_sell") {
       color = "#ef4444";
       shape = "arrowDown";
       position = "aboveBar";
-      size = 1;
+      size = 1.4;
     } else if (g.primary === "blocked" || g.primary === "rejected") {
       color = "#f97316";
       shape = "square";
       position = "aboveBar";
-      size = 0.65;
+      size = 0.9;
     } else if (g.primary === "hold" || g.primary === "vote_hold") {
       color = "#9aa4b2";
       shape = "square";
       position = "inBar";
-      size = 0.45;
+      size = 0.5;
     } else if (g.primary === "signal" || g.primary === "vote_buy" || g.primary === "vote_sell") {
       color = "#4da3ff";
       shape = "circle";
       position = g.primary === "vote_sell" ? "aboveBar" : "belowBar";
-      size = 0.55;
+      size = 0.8;
     }
 
     const fillCount = g.fillCount || g.items.filter((i) => i.kind.startsWith("fill_")).length;
