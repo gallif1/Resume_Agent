@@ -607,8 +607,9 @@ export default function LiveChart({
       },
       1
     );
-    chart.priceScale("vol").applyOptions({
-      scaleMargins: { top: 0.75, bottom: 0 },
+    // Volume lives on pane 1 — priceScale(id) defaults to pane 0 and throws without paneIndex.
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.15, bottom: 0 },
     });
     chart.priceScale("right").applyOptions({
       scaleMargins: { top: 0.05, bottom: 0.25 },
@@ -842,7 +843,7 @@ export default function LiveChart({
       );
       s.setData((indicators.rsi_14 || []).map((d) => ({ time: toChartTime(d.time), value: d.value })));
       overlayRefs.current.rsi = s;
-      chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+      s.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0.1 } });
     }
     if (activeInd.macd) {
       const s = chart.addSeries(
