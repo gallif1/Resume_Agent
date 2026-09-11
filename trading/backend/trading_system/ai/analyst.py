@@ -52,7 +52,7 @@ class AIResult:
         }.get(self.source, self.source)
         return AgentVote(
             agent_id="ai_analyst",
-            agent_name="AI Market Analyst",
+            agent_name="אנליסט שוק AI",
             symbol=symbol,
             side=side,
             confidence=float(self.confidence),
@@ -102,7 +102,7 @@ class AITriggerLayer:
         if AI_PROVIDER != "openai" or not OPENAI_API_KEY:
             return False, "missing_api_key"
         self._roll_hour()
-        if self._calls_this_hour >= AI_MAX_CALLS_PER_HOUR:
+        if AI_MAX_CALLS_PER_HOUR > 0 and self._calls_this_hour >= AI_MAX_CALLS_PER_HOUR:
             return False, "hourly_limit"
         now = time.time()
         if now - self._last_call_ts < AI_MIN_INTERVAL_SECONDS:
@@ -139,7 +139,7 @@ class AITriggerLayer:
 
 class AIMarketAnalyst:
     agent_id = "ai_analyst"
-    agent_name = "AI Market Analyst"
+    agent_name = "אנליסט שוק AI"
 
     def __init__(self) -> None:
         self.trigger = AITriggerLayer()
@@ -213,7 +213,7 @@ class AIMarketAnalyst:
             self._last_by_symbol[tick.symbol] = {
                 "action": "HOLD",
                 "confidence": 0.0,
-                "reason": f"Skipped: {why}",
+                "reason": f"דולג: {why}",
                 "source": "SKIPPED",
                 "skip_reason": why,
                 "ts": time.time(),
@@ -234,7 +234,7 @@ class AIMarketAnalyst:
             self._last_by_symbol[tick.symbol] = {
                 "action": "HOLD",
                 "confidence": 0.0,
-                "reason": f"AI error: {exc}"[:200],
+                "reason": f"שגיאת AI: {exc}"[:200],
                 "source": "SKIPPED",
                 "skip_reason": "api_error",
                 "ts": time.time(),
@@ -275,7 +275,7 @@ class AIMarketAnalyst:
             result = AIResult(
                 action=str(last.get("action") or "HOLD"),
                 confidence=float(last.get("confidence") or 0),
-                reason=str(last.get("reason") or "Reused fresh AI analysis"),
+                reason=str(last.get("reason") or "ניתוח AI עדכני ששומש מחדש"),
                 source="PRETRADE_CACHE",
             )
             meta = {
@@ -296,7 +296,7 @@ class AIMarketAnalyst:
             self._mark_pretrade_skip(tick, cache_key, meta)
             return None, meta
         self.trigger._roll_hour()  # noqa: SLF001
-        if self.trigger.calls_this_hour >= AI_MAX_CALLS_PER_HOUR:
+        if AI_MAX_CALLS_PER_HOUR > 0 and self.trigger.calls_this_hour >= AI_MAX_CALLS_PER_HOUR:
             meta = {"source": "PRETRADE_SKIPPED", "skip_reason": "hourly_limit"}
             self._mark_pretrade_skip(tick, cache_key, meta)
             return None, meta
@@ -320,7 +320,7 @@ class AIMarketAnalyst:
             meta = {
                 "source": "PRETRADE_UNAVAILABLE",
                 "skip_reason": "api_error",
-                "reason": f"AI error: {exc}"[:200],
+                "reason": f"שגיאת AI: {exc}"[:200],
             }
             self._mark_pretrade_skip(tick, cache_key, meta)
             return None, meta
@@ -372,13 +372,13 @@ class AIMarketAnalyst:
 
         client = OpenAI(api_key=OPENAI_API_KEY)
         system = (
-            "You are a paper-trading market analyst. "
-            "Return ONLY valid JSON with keys action, confidence, reason. "
-            "action must be BUY, SELL, or HOLD. "
-            "confidence is a number 0..1. "
-            "reason is one short sentence. No markdown."
+            "אתה אנליסט שוק למסחר נייר (paper trading). "
+            "החזר אך ורק JSON תקין עם המפתחות action, confidence, reason. "
+            "action חייב להיות BUY, SELL או HOLD. "
+            "confidence הוא מספר בין 0 ל-1. "
+            "reason חייב להיות משפט קצר בעברית שמסביר את ההחלטה. בלי markdown."
         )
-        user = json.dumps(snapshot, separators=(",", ":"))
+        user = json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)
         resp = client.chat.completions.create(
             model=AI_MODEL,
             temperature=0.2,
@@ -396,7 +396,7 @@ class AIMarketAnalyst:
             action = "HOLD"
         conf = float(data.get("confidence", 0.0))
         conf = max(0.0, min(0.99, conf))
-        reason = str(data.get("reason") or "No reason provided")[:240]
+        reason = str(data.get("reason") or "לא סופקה סיבה")[:240]
         return AIResult(action=action, confidence=conf, reason=reason, source="API")
 
     def log_evaluation_row(self, row: dict[str, Any]) -> None:

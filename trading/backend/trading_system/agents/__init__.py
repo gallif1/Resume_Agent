@@ -1,6 +1,6 @@
 """Trading agents that vote BUY / SELL / HOLD from market context.
 
-Reasons are generated from the same numbers used by each rule (no invented prose).
+Reasons are generated in Hebrew from the same numbers used by each rule.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class BaseAgent(ABC):
 
 class MomentumAgent(BaseAgent):
     agent_id = "momentum"
-    agent_name = "Momentum Agent"
+    agent_name = "סוכן מומנטום"
 
     def vote(self, tick: Tick, history: list[float], events: list[MarketEvent]) -> AgentVote:
         if len(history) < MOMENTUM_WINDOW:
@@ -47,7 +47,7 @@ class MomentumAgent(BaseAgent):
                 tick.symbol,
                 Side.HOLD,
                 0.3,
-                f"HOLD because history has {len(history)} samples; need ≥{MOMENTUM_WINDOW}.",
+                f"HOLD כי יש רק {len(history)} דגימות בהיסטוריה; נדרשות ≥{MOMENTUM_WINDOW}.",
                 inputs={"history_len": len(history), "window": MOMENTUM_WINDOW},
             )
         recent = history[-MOMENTUM_WINDOW:]
@@ -69,8 +69,8 @@ class MomentumAgent(BaseAgent):
                 Side.BUY,
                 conf,
                 (
-                    f"BUY because price change over the last {MOMENTUM_WINDOW} samples was "
-                    f"{slope:+.2f}%, above the BUY threshold of +{MOMENTUM_BUY_PCT:.2f}%."
+                    f"BUY כי שינוי המחיר ב-{MOMENTUM_WINDOW} הדגימות האחרונות היה "
+                    f"{slope:+.2f}%, מעל סף הקנייה +{MOMENTUM_BUY_PCT:.2f}%."
                 ),
                 inputs=inputs,
             )
@@ -83,8 +83,8 @@ class MomentumAgent(BaseAgent):
                 Side.SELL,
                 conf,
                 (
-                    f"SELL because price change over the last {MOMENTUM_WINDOW} samples was "
-                    f"{slope:+.2f}%, below the SELL threshold of {MOMENTUM_SELL_PCT:.2f}%."
+                    f"SELL כי שינוי המחיר ב-{MOMENTUM_WINDOW} הדגימות האחרונות היה "
+                    f"{slope:+.2f}%, מתחת לסף המכירה {MOMENTUM_SELL_PCT:.2f}%."
                 ),
                 inputs=inputs,
             )
@@ -95,8 +95,8 @@ class MomentumAgent(BaseAgent):
             Side.HOLD,
             0.4,
             (
-                f"HOLD because price change over the last {MOMENTUM_WINDOW} samples was "
-                f"{slope:+.2f}%, inside the neutral band "
+                f"HOLD כי שינוי המחיר ב-{MOMENTUM_WINDOW} הדגימות האחרונות היה "
+                f"{slope:+.2f}%, בתוך הטווח הניטרלי "
                 f"[{MOMENTUM_SELL_PCT:.2f}%, +{MOMENTUM_BUY_PCT:.2f}%]."
             ),
             inputs=inputs,
@@ -105,7 +105,7 @@ class MomentumAgent(BaseAgent):
 
 class MeanReversionAgent(BaseAgent):
     agent_id = "mean_reversion"
-    agent_name = "Mean Reversion Agent"
+    agent_name = "סוכן חזרה לממוצע"
 
     def vote(self, tick: Tick, history: list[float], events: list[MarketEvent]) -> AgentVote:
         if len(history) < MEAN_REV_MIN_HISTORY:
@@ -115,7 +115,7 @@ class MeanReversionAgent(BaseAgent):
                 tick.symbol,
                 Side.HOLD,
                 0.3,
-                f"HOLD because history has {len(history)} samples; need ≥{MEAN_REV_MIN_HISTORY}.",
+                f"HOLD כי יש רק {len(history)} דגימות בהיסטוריה; נדרשות ≥{MEAN_REV_MIN_HISTORY}.",
                 inputs={"history_len": len(history), "min_history": MEAN_REV_MIN_HISTORY},
             )
         avg = mean(history)
@@ -137,8 +137,8 @@ class MeanReversionAgent(BaseAgent):
                 Side.BUY,
                 conf,
                 (
-                    f"BUY because price is {deviation:+.2f}% below the mean "
-                    f"({avg:.4f}), at/below the BUY threshold of {MEAN_REV_BUY_PCT:.2f}%."
+                    f"BUY כי המחיר נמוך ב-{abs(deviation):.2f}% מהממוצע "
+                    f"({avg:.4f}), מתחת/בסף הקנייה {MEAN_REV_BUY_PCT:.2f}%."
                 ),
                 inputs=inputs,
             )
@@ -151,8 +151,8 @@ class MeanReversionAgent(BaseAgent):
                 Side.SELL,
                 conf,
                 (
-                    f"SELL because price is {deviation:+.2f}% above the mean "
-                    f"({avg:.4f}), at/above the SELL threshold of +{MEAN_REV_SELL_PCT:.2f}%."
+                    f"SELL כי המחיר גבוה ב-{deviation:.2f}% מהממוצע "
+                    f"({avg:.4f}), מעל/בסף המכירה +{MEAN_REV_SELL_PCT:.2f}%."
                 ),
                 inputs=inputs,
             )
@@ -163,8 +163,8 @@ class MeanReversionAgent(BaseAgent):
             Side.HOLD,
             0.35,
             (
-                f"HOLD because price is only {deviation:+.2f}% from the mean "
-                f"({avg:.4f}), inside the neutral band "
+                f"HOLD כי המחיר רחוק רק {deviation:+.2f}% מהממוצע "
+                f"({avg:.4f}), בתוך הטווח הניטרלי "
                 f"[{MEAN_REV_BUY_PCT:.2f}%, +{MEAN_REV_SELL_PCT:.2f}%]."
             ),
             inputs=inputs,
@@ -173,7 +173,7 @@ class MeanReversionAgent(BaseAgent):
 
 class VolatilityAgent(BaseAgent):
     agent_id = "volatility"
-    agent_name = "Volatility Agent"
+    agent_name = "סוכן תנודתיות"
 
     def vote(self, tick: Tick, history: list[float], events: list[MarketEvent]) -> AgentVote:
         spike_events = [
@@ -188,7 +188,7 @@ class VolatilityAgent(BaseAgent):
                 tick.symbol,
                 Side.HOLD,
                 0.25,
-                f"HOLD because history has {len(history)} samples; need ≥{VOL_MIN_HISTORY}.",
+                f"HOLD כי יש רק {len(history)} דגימות בהיסטוריה; נדרשות ≥{VOL_MIN_HISTORY}.",
                 inputs={"history_len": len(history), "min_history": VOL_MIN_HISTORY},
             )
         returns = [
@@ -212,8 +212,8 @@ class VolatilityAgent(BaseAgent):
                 Side.SELL,
                 0.55,
                 (
-                    f"SELL because an upward spike ({spike_kind}) was detected with "
-                    f"tick change {tick.change_pct:+.2f}% while realized vol={vol:.3f}%."
+                    f"SELL כי זוהתה קפיצה כלפי מעלה ({spike_kind}) עם שינוי טיק "
+                    f"{tick.change_pct:+.2f}% ותנודתיות ממומשת {vol:.3f}%."
                 ),
                 inputs=inputs,
             )
@@ -225,9 +225,9 @@ class VolatilityAgent(BaseAgent):
                 Side.BUY,
                 0.55,
                 (
-                    f"BUY because a downward spike ({spike_kind}) was detected with "
-                    f"tick change {tick.change_pct:+.2f}% while realized vol={vol:.3f}% "
-                    f"(dip-buy bias)."
+                    f"BUY כי זוהתה קפיצה כלפי מטה ({spike_kind}) עם שינוי טיק "
+                    f"{tick.change_pct:+.2f}% ותנודתיות ממומשת {vol:.3f}% "
+                    f"(הטיה לקניית מפולת)."
                 ),
                 inputs=inputs,
             )
@@ -239,8 +239,8 @@ class VolatilityAgent(BaseAgent):
                 Side.HOLD,
                 0.6,
                 (
-                    f"HOLD because realized volatility {vol:.3f}% exceeds the elevated "
-                    f"threshold {VOL_ELEVATED:.2f}% — stand aside."
+                    f"HOLD כי התנודתיות הממומשת {vol:.3f}% גבוהה מסף "
+                    f"{VOL_ELEVATED:.2f}% — עדיף להישאר בצד."
                 ),
                 inputs=inputs,
             )
@@ -251,8 +251,8 @@ class VolatilityAgent(BaseAgent):
             Side.HOLD,
             0.35,
             (
-                f"HOLD because realized volatility {vol:.3f}% is below the elevated "
-                f"threshold {VOL_ELEVATED:.2f}% and no spike event is active."
+                f"HOLD כי התנודתיות הממומשת {vol:.3f}% מתחת לסף "
+                f"{VOL_ELEVATED:.2f}% ואין אירוע קפיצה פעיל."
             ),
             inputs=inputs,
         )

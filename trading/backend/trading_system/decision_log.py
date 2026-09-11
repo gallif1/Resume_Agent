@@ -103,10 +103,10 @@ def build_agent_entries(
         agents.append(
             {
                 "agent_id": "ai_analyst",
-                "agent_name": "AI Market Analyst",
+                "agent_name": "אנליסט שוק AI",
                 "action": ai_meta.get("action") or "HOLD",
                 "confidence": ai_meta.get("confidence") or 0.0,
-                "reason": ai_meta.get("reason") or "No AI analysis yet.",
+                "reason": ai_meta.get("reason") or "עדיין אין ניתוח AI.",
                 "inputs": {"skip_reason": ai_meta.get("skip_reason")},
                 "source": source,
                 "ts": ai_meta.get("ts"),
@@ -125,16 +125,16 @@ def build_execution(
     if decision.executed and decision.side != Side.HOLD:
         return {
             "status": "FILLED",
-            "reason": "Paper fill applied",
+            "reason": "ביצוע נייר הוחל",
             "fill_price": decision.fill_price,
             "quantity": decision.quantity,
             "cooldown_remaining_sec": None,
             "last_fill_ts": last_fill_ts,
         }
     reason = block_reason or (
-        "HOLD — no trade"
+        "HOLD — אין עסקה"
         if decision.side == Side.HOLD
-        else "Not filled"
+        else "לא בוצע"
     )
     return {
         "status": "NOT_FILLED",
