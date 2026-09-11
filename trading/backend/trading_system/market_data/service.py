@@ -40,6 +40,43 @@ def normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
 
 
+def align_candles_to_timeframe(candles: list[Candle], timeframe: str) -> list[Candle]:
+    """Bucket + merge candles onto timeframe opens (UTC). Drops invalid bars."""
+    secs = TIMEFRAME_SECONDS.get(timeframe, 300)
+    merged: dict[int, Candle] = {}
+    for c in candles:
+        try:
+            ts = int(float(c.ts) // secs * secs)
+            o, h, lo, cl = float(c.open), float(c.high), float(c.low), float(c.close)
+            vol = float(c.volume or 0)
+        except (TypeError, ValueError):
+            continue
+        if not all(map(lambda x: x == x and abs(x) != float("inf"), (o, h, lo, cl))):
+            continue
+        hi = max(h, o, cl, lo)
+        low = min(lo, o, cl, h)
+        prev = merged.get(ts)
+        if prev is None:
+            merged[ts] = Candle(
+                ts=float(ts),
+                open=o,
+                high=hi,
+                low=low,
+                close=cl,
+                volume=vol,
+                asset_type=getattr(c, "asset_type", "") or "",
+                provider=getattr(c, "provider", "") or "",
+                complete=bool(getattr(c, "complete", True)),
+            )
+        else:
+            prev.high = max(prev.high, hi)
+            prev.low = min(prev.low, low)
+            prev.close = cl
+            prev.volume = float(prev.volume or 0) + vol
+            prev.complete = bool(getattr(c, "complete", True))
+    return [merged[k] for k in sorted(merged)]
+
+
 def _candle_diagnostics(
     candles: list[Candle],
     *,
@@ -191,6 +228,7 @@ class MarketDataService:
             try:
                 candles = provider.get_candles(symbol, tf, limit=limits.get(tf, 200))
                 if candles:
+                    candles = align_candles_to_timeframe(candles, tf)
                     self.db.upsert_candles(symbol, tf, candles)
                 with self._lock:
                     # Prefer merged DB history when available.
@@ -318,6 +356,7 @@ class MarketDataService:
                 )
                 if fetched:
                     # Ensure returned rows belong only to this symbol's request.
+                    fetched = align_candles_to_timeframe(fetched, timeframe)
                     self.db.upsert_candles(symbol, timeframe, fetched)
                     cached = self.db.get_candles(
                         symbol, timeframe, limit=limit, before=before
@@ -346,6 +385,9 @@ class MarketDataService:
         with self._lock:
             if before is None and cached:
                 self._candles[(symbol, timeframe)] = cached[-CHART_CANDLE_LIMIT:]
+
+        # Always return timeframe-aligned bars to the chart (fixes Yahoo/live mix).
+        cached = align_candles_to_timeframe(cached, timeframe)[-limit:]
 
         candles_out = [c.to_dict() for c in cached]
         # Normalize schema: strip fields frontend may ignore but keep diagnostics rich.

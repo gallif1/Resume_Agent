@@ -359,6 +359,7 @@ export default function LiveChart({
   const [unifiedRows, setUnifiedRows] = useState<UnifiedDecision[]>([]);
   const [persistedFallback, setPersistedFallback] = useState<DecisionMarkerItem[]>([]);
   const [unmappedFills, setUnmappedFills] = useState(0);
+  const [candleEpoch, setCandleEpoch] = useState(0);
   const [sizeMode, setSizeMode] = useState<SizeMode>(() => loadSizeMode());
   const [chartHeight, setChartHeight] = useState(() => loadHeight());
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -524,27 +525,40 @@ export default function LiveChart({
   );
 
   const applyCandleData = useCallback((rows: OhlcCandle[]) => {
-    candlesRef.current = rows;
+    // Dedupe + sort by floored UTC second so LWC never sees equal/descending times.
+    const byTs = new Map<number, OhlcCandle>();
+    for (const c of rows) {
+      const t = Math.floor(Number(c.ts));
+      if (!Number.isFinite(t) || t <= 0) continue;
+      byTs.set(t, { ...c, ts: t });
+    }
+    const cleaned = [...byTs.values()].sort((a, b) => a.ts - b.ts);
+    candlesRef.current = cleaned;
+    setCandleEpoch((n) => n + 1);
     const series = candleSeriesRef.current;
     const vol = volumeSeriesRef.current;
     if (!series) return;
-    series.setData(
-      rows.map((c) => ({
-        time: toChartTime(c.ts),
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      }))
-    );
-    if (vol) {
-      vol.setData(
-        rows.map((c) => ({
+    try {
+      series.setData(
+        cleaned.map((c) => ({
           time: toChartTime(c.ts),
-          value: c.volume,
-          color: c.close >= c.open ? "rgba(61,214,198,0.45)" : "rgba(232,93,93,0.45)",
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
         }))
       );
+      if (vol) {
+        vol.setData(
+          cleaned.map((c) => ({
+            time: toChartTime(c.ts),
+            value: c.volume,
+            color: c.close >= c.open ? "rgba(61,214,198,0.45)" : "rgba(232,93,93,0.45)",
+          }))
+        );
+      }
+    } catch (err) {
+      if (import.meta.env.DEV) console.warn("[chart] setData failed", err);
     }
   }, []);
 
@@ -957,17 +971,63 @@ export default function LiveChart({
   useEffect(() => {
     const plugin = markersPluginRef.current;
     if (!plugin) return;
-    const seriesMarkers = toSeriesMarkers(grouped).map((m) => ({
-      time: toChartTime(m.time),
-      position: m.position,
-      color: m.color,
-      shape: m.shape,
-      text: m.text,
-      size: m.size,
-      id: m.id,
-    }));
-    plugin.setMarkers(seriesMarkers);
-  }, [grouped]);
+    const candleTimes = new Set(
+      candlesRef.current.map((c) => Math.floor(Number(c.ts)))
+    );
+    // Snap marker times to an existing candle — LWC rejects unknown times.
+    const snap = (t: number): number | null => {
+      const sec = Math.floor(Number(t));
+      if (candleTimes.has(sec)) return sec;
+      if (!candleTimes.size) return null;
+      let best: number | null = null;
+      let bestDist = Infinity;
+      for (const ct of candleTimes) {
+        const d = Math.abs(ct - sec);
+        if (d < bestDist) {
+          bestDist = d;
+          best = ct;
+        }
+      }
+      // Only snap within one timeframe bar.
+      const tfSec =
+        timeframe === "1m"
+          ? 60
+          : timeframe === "5m"
+            ? 300
+            : timeframe === "15m"
+              ? 900
+              : timeframe === "1h"
+                ? 3600
+                : timeframe === "4h"
+                  ? 14400
+                  : 86400;
+      return best != null && bestDist <= tfSec ? best : null;
+    };
+    const seriesMarkers = toSeriesMarkers(grouped)
+      .map((m) => {
+        const snapped = snap(m.time);
+        if (snapped == null) return null;
+        return {
+          time: toChartTime(snapped),
+          position: m.position,
+          color: m.color,
+          shape: m.shape,
+          text: m.text,
+          size: m.size,
+          id: m.id,
+        };
+      })
+      .filter((m): m is NonNullable<typeof m> => m != null);
+    try {
+      plugin.setMarkers(seriesMarkers);
+    } catch {
+      try {
+        plugin.setMarkers([]);
+      } catch {
+        /* */
+      }
+    }
+  }, [grouped, timeframe, candleEpoch]);
 
   useEffect(() => {
     followLiveRef.current = true;
@@ -977,6 +1037,15 @@ export default function LiveChart({
     setDrawerOpen(false);
     setUnifiedRows([]);
     setPersistedFallback([]);
+    // Clear series immediately so stale BTC bars cannot receive AAPL updates.
+    candlesRef.current = [];
+    try {
+      candleSeriesRef.current?.setData([]);
+      volumeSeriesRef.current?.setData([]);
+      markersPluginRef.current?.setMarkers([]);
+    } catch {
+      /* */
+    }
     void loadCandles(active, timeframe);
     void loadAnnotations(active);
   }, [active, timeframe, loadCandles, loadAnnotations]);
@@ -986,27 +1055,40 @@ export default function LiveChart({
     const vol = volumeSeriesRef.current;
     if (!series) return;
     for (const u of candleUpdates) {
-      if (u.symbol !== active || u.timeframe !== timeframe) continue;
+      if (normalizeSymbol(u.symbol) !== normalizeSymbol(active) || u.timeframe !== timeframe) {
+        continue;
+      }
       const c = u.candle;
+      const t = toChartTime(c.ts);
+      const rows = candlesRef.current;
+      const last = rows.length ? rows[rows.length - 1] : null;
+      // lightweight-charts throws if update time is earlier than the last bar.
+      if (last && Number(t) < Math.floor(Number(last.ts))) {
+        continue;
+      }
       const data = {
-        time: toChartTime(c.ts),
+        time: t,
         open: c.open,
         high: c.high,
         low: c.low,
         close: c.close,
       };
-      series.update(data);
-      if (vol && enabled.volume !== false) {
-        vol.update({
-          time: toChartTime(c.ts),
-          value: c.volume,
-          color: c.close >= c.open ? "rgba(61,214,198,0.45)" : "rgba(232,93,93,0.45)",
-        });
+      try {
+        series.update(data);
+        if (vol && enabled.volume !== false) {
+          vol.update({
+            time: t,
+            value: c.volume,
+            color: c.close >= c.open ? "rgba(61,214,198,0.45)" : "rgba(232,93,93,0.45)",
+          });
+        }
+      } catch {
+        // Ignore out-of-order / cross-symbol race during symbol switches.
+        continue;
       }
-      const rows = candlesRef.current;
-      if (rows.length && rows[rows.length - 1].ts === c.ts) {
+      if (rows.length && Math.floor(Number(rows[rows.length - 1].ts)) === Math.floor(Number(c.ts))) {
         rows[rows.length - 1] = c;
-      } else if (!rows.length || c.ts > rows[rows.length - 1].ts) {
+      } else if (!rows.length || Number(c.ts) > Number(rows[rows.length - 1].ts)) {
         rows.push(c);
       }
       if (followLiveRef.current && chartRef.current) {
@@ -1057,8 +1139,27 @@ export default function LiveChart({
         },
         pane ?? 0
       );
-      s.setData(data.map((d) => ({ time: toChartTime(d.time), value: d.value })));
-      overlayRefs.current[key] = s;
+      const byT = new Map<number, number>();
+      for (const d of data) {
+        const t = Math.floor(Number(d.time));
+        const v = Number(d.value);
+        if (!Number.isFinite(t) || !Number.isFinite(v)) continue;
+        byT.set(t, v);
+      }
+      const points = [...byT.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([time, value]) => ({ time: toChartTime(time), value }));
+      if (!points.length) return;
+      try {
+        s.setData(points);
+        overlayRefs.current[key] = s;
+      } catch {
+        try {
+          chart.removeSeries(s);
+        } catch {
+          /* */
+        }
+      }
     };
 
     const lw = (k: IndKey) => styles[k]?.lineWidth || DEFAULT_STYLES[k].lineWidth;

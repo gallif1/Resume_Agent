@@ -79,11 +79,12 @@ def test_empty_provider_response_handling(tmp_path):
 def test_closed_market_returns_historical_from_db(tmp_path):
     svc = MarketDataService(symbols=("AAPL",))
     svc.db = MarketDB(path=tmp_path / "m.db")
-    # Previous session bars (stale but valid history).
+    # Previous session bars (stale but valid history) — aligned 5m opens.
     now = time.time()
+    base = int((now - 86400) // 300 * 300)
     bars = [
         Candle(
-            ts=now - 86400 + i * 300,
+            ts=float(base + i * 300),
             open=180 + i * 0.1,
             high=181 + i * 0.1,
             low=179 + i * 0.1,
@@ -117,9 +118,9 @@ def test_closed_market_returns_historical_from_db(tmp_path):
     assert out["freshness"] == DataFreshness.STALE.value
     assert out["session"] == MarketSession.CLOSED.value
     assert out["diagnostics"]["candle_count"] >= 50
-    # No fabricated gap fills — last ts matches DB
+    # No fabricated gap fills — last ts matches aligned DB history
     assert abs(out["candles"][-1]["ts"] - bars[-1].ts) < 1e-6
-
+    assert int(out["candles"][-1]["ts"]) % 300 == 0
 
 def test_force_refresh_calls_yahoo_even_with_cache(tmp_path):
     svc = MarketDataService(symbols=("AAPL",))
