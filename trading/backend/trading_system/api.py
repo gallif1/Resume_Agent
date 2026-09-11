@@ -337,6 +337,16 @@ async def chart_markers(
     return rt.chart_markers(symbol, timeframe=tf, from_ts=from_ts, to_ts=to_ts)
 
 
+@router.get("/api/unified-decisions/by-id/{decision_id}")
+async def get_unified_decision(decision_id: str) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    row = get_market_db().get_unified_decision(decision_id)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True, "unified": row}
+
+
 @router.get("/api/unified-decisions/{symbol}")
 async def list_unified_decisions(
     symbol: str,
@@ -362,16 +372,6 @@ async def list_unified_decisions(
         "unified": rows,
         "count": len(rows),
     }
-
-
-@router.get("/api/unified-decisions/by-id/{decision_id}")
-async def get_unified_decision(decision_id: str) -> dict[str, Any]:
-    from .market_data.candle_store import get_market_db
-
-    row = get_market_db().get_unified_decision(decision_id)
-    if not row:
-        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    return {"ok": True, "unified": row}
 
 
 @router.get("/api/asset-config")

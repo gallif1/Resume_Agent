@@ -125,14 +125,16 @@ def test_force_refresh_calls_yahoo_even_with_cache(tmp_path):
     svc = MarketDataService(symbols=("AAPL",))
     svc.db = MarketDB(path=tmp_path / "m.db")
     now = time.time()
+    # Align to 5m buckets so refresh overwrites the same keys.
+    base = int(now // 300 * 300) - 60 * 300
     old = [
-        Candle(ts=now - 3600 + i * 300, open=1, high=2, low=0.5, close=1.5, volume=10)
+        Candle(ts=float(base + i * 300), open=1, high=2, low=0.5, close=1.5, volume=10)
         for i in range(60)
     ]
     svc.db.upsert_candles("AAPL", "5m", old)
     fresh = [
         Candle(
-            ts=now - (59 - i) * 300,
+            ts=float(base + i * 300),
             open=10,
             high=11,
             low=9,
