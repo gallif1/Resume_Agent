@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearDecisionLogs,
   fetchConfig,
@@ -175,7 +175,17 @@ export default function App() {
   const [homeUrl, setHomeUrl] = useState("/");
   const [flash, setFlash] = useState(false);
   const [config, setConfig] = useState<TradingConfig | null>(null);
+  const [chartLayout, setChartLayout] = useState<"normal" | "wide" | "expanded">("normal");
   const wsRef = useRef<WebSocket | null>(null);
+
+  const onChartLayout = useCallback((mode: "normal" | "wide" | "expanded") => {
+    setChartLayout(mode);
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.toggle("chart-expanded-body", chartLayout === "expanded");
+    return () => document.body.classList.remove("chart-expanded-body");
+  }, [chartLayout]);
 
   const applySnapshot = (s: Snapshot) => {
     setSnap(s);
@@ -575,7 +585,7 @@ export default function App() {
           : "WS dead";
 
   return (
-    <div className="app">
+    <div className={`app chart-layout-${chartLayout}`}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-kicker">Live paper trading</span>
@@ -662,7 +672,9 @@ export default function App() {
         realData={realData}
         candleUpdates={candleUpdates}
         wsState={wsState}
+        onLayoutModeChange={onChartLayout}
       />
+      {chartLayout === "expanded" ? null : (
       <div className="grid">
         <section className="panel">
           <h2>Market Feed</h2>
@@ -1064,6 +1076,7 @@ Fill: ${log.execution?.quantity ?? "—"} @ ${log.execution?.fill_price ?? "—"
           </div>
         </section>
       </div>
+      )}
     </div>
   );
 }

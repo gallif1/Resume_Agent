@@ -1,6 +1,6 @@
 /**
  * Professional candlestick chart (TradingView Lightweight Charts).
- * Incremental candle updates — does not recreate chart on every WS tick.
+ * Persisted decision/fill markers via createSeriesMarkers; expand / fullscreen.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -10,9 +10,11 @@ import {
   HistogramSeries,
   LineSeries,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type MouseEventParams,
   type Time,
 } from "lightweight-charts";
@@ -23,13 +25,30 @@ import {
   deleteAnnotation,
   fetchAnnotations,
   fetchCandles,
+  fetchChartMarkers,
   updateAnnotation,
   type ChartAnnotation,
   type OhlcCandle,
 } from "./api";
-import { groupMarkersOnCandle, type DecisionMarkerItem, type GroupedMarker } from "./chartMarkers";
+import {
+  candleBucketTs,
+  eventsToMarkerItems,
+  groupMarkersOnCandle,
+  mergeMarkerItems,
+  normalizeSymbol,
+  toSeriesMarkers,
+  toUnixSeconds,
+  type DecisionMarkerItem,
+  type GroupedMarker,
+} from "./chartMarkers";
 
 const DEFAULT_TFS = ["1m", "5m", "15m", "1h", "4h", "1d"];
+const SIZE_KEY = "trading.chart.sizeMode";
+const HEIGHT_KEY = "trading.chart.heightPx";
+const MIN_CHART_H = 280;
+const MAX_CHART_H = 1200;
+
+type SizeMode = "normal" | "wide" | "expanded";
 
 type Props = {
   symbols: string[];
@@ -43,6 +62,7 @@ type Props = {
     rationale?: string;
     executed: boolean;
     fill_price?: number | null;
+    quantity?: number | null;
     ts: number;
     votes?: AgentVote[];
   }>;
@@ -59,6 +79,7 @@ type Props = {
     provider?: string;
   }>;
   wsState?: string;
+  onLayoutModeChange?: (mode: SizeMode) => void;
 };
 
 type IndKey = "sma_20" | "sma_50" | "ema_20" | "ema_50" | "bb" | "vwap" | "rsi" | "macd";
@@ -71,6 +92,137 @@ function fmtPrice(n: number) {
 
 function toChartTime(ts: number): Time {
   return Math.floor(ts) as Time;
+}
+
+function loadSizeMode(): SizeMode {
+  try {
+    const v = localStorage.getItem(SIZE_KEY);
+    if (v === "wide" || v === "expanded" || v === "normal") return v;
+  } catch {
+    /* */
+  }
+  return "normal";
+}
+
+function loadHeight(): number {
+  try {
+    const n = Number(localStorage.getItem(HEIGHT_KEY));
+    if (Number.isFinite(n) && n >= MIN_CHART_H && n <= MAX_CHART_H) return n;
+  } catch {
+    /* */
+  }
+  return 420;
+}
+
+function liveTradeToItems(
+  trades: TradeMarker[],
+  votes: AgentVote[],
+  decisions: Props["decisions"],
+  symbol: string,
+  timeframe: string
+): DecisionMarkerItem[] {
+  const sym = normalizeSymbol(symbol);
+  const events: Array<Record<string, unknown>> = [];
+  for (const t of trades) {
+    if (normalizeSymbol(t.symbol) !== sym) continue;
+    events.push({
+      event_type: "fill",
+      event_id: t.id,
+      id: `fill:${t.id}`,
+      key: `fill:${t.id}`,
+      symbol: sym,
+      side: t.side,
+      ts: t.ts,
+      price: t.price,
+      quantity: t.quantity,
+      confidence: t.confidence,
+      status: "FILLED",
+      payload: {
+        fill_id: t.id,
+        order_id: t.id,
+        fill_price: t.price,
+        agents: (t.agents || []).map((a) => ({
+          agent_name: a.name || a.id,
+          agent_id: a.id,
+        })),
+        final_decision: t.side,
+      },
+    });
+  }
+  for (const v of votes) {
+    if (normalizeSymbol(v.symbol) !== sym) continue;
+    if (v.side !== "BUY" && v.side !== "SELL" && v.side !== "HOLD") continue;
+    events.push({
+      event_type: "agent_vote",
+      event_id: `${v.agent_id}-${v.ts}`,
+      id: `agent_vote:${v.agent_id}-${v.ts}`,
+      key: `agent_vote:${v.agent_id}-${v.ts}`,
+      symbol: sym,
+      side: v.side,
+      ts: v.ts,
+      confidence: v.confidence,
+      status: "VOTE",
+      payload: {
+        agent_name: v.agent_name,
+        agent_id: v.agent_id,
+        reason: v.rationale,
+        final_decision: v.side,
+      },
+    });
+  }
+  for (const d of decisions || []) {
+    if (normalizeSymbol(d.symbol) !== sym) continue;
+    if (d.executed) {
+      events.push({
+        event_type: "fill",
+        event_id: d.id,
+        id: `fill:${d.id}`,
+        key: `fill:${d.id}`,
+        symbol: sym,
+        side: d.side,
+        ts: d.ts,
+        price: d.fill_price,
+        quantity: d.quantity,
+        confidence: d.confidence,
+        status: "FILLED",
+        payload: {
+          fill_id: d.id,
+          order_id: d.id,
+          fill_price: d.fill_price,
+          agents: (d.votes || []).map((a) => ({
+            agent_name: a.agent_name,
+            agent_id: a.agent_id,
+            side: a.side,
+            confidence: a.confidence,
+          })),
+          final_decision: d.side,
+          rationale: d.rationale,
+        },
+      });
+    } else if (d.side !== "HOLD") {
+      events.push({
+        event_type: "decision",
+        event_id: d.id,
+        id: `decision:${d.id}`,
+        key: `decision:${d.id}`,
+        symbol: sym,
+        side: d.side,
+        ts: d.ts,
+        confidence: d.confidence,
+        status: "SIGNAL",
+        payload: {
+          rationale: d.rationale,
+          skip_reason: d.rationale,
+          final_decision: d.side,
+          agents: (d.votes || []).map((a) => ({
+            agent_name: a.agent_name,
+            agent_id: a.agent_id,
+          })),
+        },
+      });
+    }
+  }
+  return eventsToMarkerItems(events, timeframe);
 }
 
 export default function LiveChart({
@@ -86,21 +238,26 @@ export default function LiveChart({
   realData,
   candleUpdates = [],
   wsState = "connecting",
+  onLayoutModeChange,
 }: Props) {
   const [symbol, setSymbol] = useState(symbols[0] || "BTC-USD");
   const active = symbols.includes(symbol) ? symbol : symbols[0] || symbol;
   const tfs = timeframes.length ? timeframes : DEFAULT_TFS;
   const meta = marketMeta?.symbols?.[active];
 
+  const panelRef = useRef<HTMLElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const overlayRefs = useRef<Record<string, ISeriesApi<"Line">>>({});
   const priceLinesRef = useRef<Map<string, IPriceLine>>(new Map());
   const followLiveRef = useRef(true);
   const loadingOlderRef = useRef(false);
   const candlesRef = useRef<OhlcCandle[]>([]);
+  const groupedRef = useRef<GroupedMarker[]>([]);
+  const sizeBeforeFsRef = useRef<SizeMode>("normal");
 
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -119,6 +276,9 @@ export default function LiveChart({
   const [indicators, setIndicators] = useState<Record<string, Array<{ time: number; value: number }>>>({});
   const [showVotes, setShowVotes] = useState(true);
   const [showFills, setShowFills] = useState(true);
+  const [showBuy, setShowBuy] = useState(true);
+  const [showSell, setShowSell] = useState(true);
+  const [showHold, setShowHold] = useState(false);
   const [showDrawings, setShowDrawings] = useState(true);
   const [showIndicators, setShowIndicators] = useState(true);
   const [activeInd, setActiveInd] = useState<Partial<Record<IndKey, boolean>>>({
@@ -126,72 +286,106 @@ export default function LiveChart({
     sma_50: false,
     ema_20: false,
   });
-  const [drawMode, setDrawMode] = useState<"none" | "SUPPORT" | "RESISTANCE" | "TREND_LINE" | "TEXT_NOTE">("none");
+  const [drawMode, setDrawMode] = useState<"none" | "SUPPORT" | "RESISTANCE" | "TREND_LINE" | "TEXT_NOTE">(
+    "none"
+  );
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [selectedAnn, setSelectedAnn] = useState<string | null>(null);
   const [groupedOpen, setGroupedOpen] = useState<GroupedMarker | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [persistedMarkers, setPersistedMarkers] = useState<DecisionMarkerItem[]>([]);
+  const [unmappedFills, setUnmappedFills] = useState(0);
+  const [sizeMode, setSizeMode] = useState<SizeMode>(() => loadSizeMode());
+  const [chartHeight, setChartHeight] = useState(() => loadHeight());
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const trendDraftRef = useRef<{ time: number; price: number } | null>(null);
 
   const lastCandle = candlesRef.current[candlesRef.current.length - 1];
 
-  const markerItems: DecisionMarkerItem[] = useMemo(() => {
-    const items: DecisionMarkerItem[] = [];
-    if (showVotes) {
-      for (const v of votes) {
-        if (v.symbol !== active) continue;
-        if (v.side !== "BUY" && v.side !== "SELL") continue;
-        items.push({
-          id: `vote-${v.agent_id}-${v.ts}`,
-          kind: v.side === "BUY" ? "vote_buy" : "vote_sell",
-          agentName: v.agent_name,
-          action: v.side,
-          confidence: v.confidence,
-          reason: v.rationale,
-          timestamp: v.ts,
-          filled: false,
-          price: undefined,
-        });
-      }
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 720px)");
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIZE_KEY, sizeMode);
+    } catch {
+      /* */
     }
-    if (showFills) {
-      for (const t of trades) {
-        if (t.symbol !== active) continue;
-        items.push({
-          id: `fill-${t.id}`,
-          kind: t.side === "BUY" ? "fill_buy" : "fill_sell",
-          action: t.side,
-          confidence: t.confidence,
-          timestamp: t.ts,
-          filled: true,
-          finalDecision: t.side,
-          price: t.price,
-          agentName: (t.agents || []).map((a) => a.name || a.id).filter(Boolean).join(", "),
-        });
-      }
-      for (const d of decisions) {
-        if (d.symbol !== active) continue;
-        if (d.executed) continue;
-        if (d.side === "HOLD") continue;
-        items.push({
-          id: `rej-${d.id}`,
-          kind: "rejected",
-          action: d.side,
-          confidence: d.confidence,
-          reason: d.rationale,
-          timestamp: d.ts,
-          filled: false,
-          finalDecision: d.side,
-          skipReason: d.rationale,
-        });
-      }
+    onLayoutModeChange?.(sizeMode);
+  }, [sizeMode, onLayoutModeChange]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HEIGHT_KEY, String(chartHeight));
+    } catch {
+      /* */
     }
-    return items;
-  }, [votes, trades, decisions, active, showVotes, showFills]);
+  }, [chartHeight]);
+
+  useEffect(() => {
+    const onFs = () => {
+      const fs = !!document.fullscreenElement;
+      setIsFullscreen(fs);
+      if (!fs) {
+        // restore prior layout after exit
+        setSizeMode(sizeBeforeFsRef.current);
+      }
+      requestAnimationFrame(() => {
+        chartRef.current?.timeScale().applyOptions({});
+        if (wrapRef.current) {
+          const rect = wrapRef.current.getBoundingClientRect();
+          chartRef.current?.applyOptions({ width: rect.width, height: rect.height });
+        }
+      });
+    };
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  const liveItems = useMemo(
+    () => liveTradeToItems(trades, votes, decisions, active, timeframe),
+    [trades, votes, decisions, active, timeframe]
+  );
+
+  const allItems = useMemo(
+    () => mergeMarkerItems(persistedMarkers, liveItems),
+    [persistedMarkers, liveItems]
+  );
+
+  const filteredItems = useMemo(() => {
+    return allItems.filter((it) => {
+      if (it.kind.startsWith("fill_") && !showFills) return false;
+      if ((it.kind.startsWith("vote_") || it.kind === "rejected") && !showVotes) return false;
+      if (it.kind === "vote_hold" && !showHold) return false;
+      if (it.action === "BUY" && !showBuy) return false;
+      if (it.action === "SELL" && !showSell) return false;
+      if (it.action === "HOLD" && !showHold) return false;
+      return true;
+    });
+  }, [allItems, showVotes, showFills, showBuy, showSell, showHold]);
 
   const grouped = useMemo(
-    () => groupMarkersOnCandle(markerItems, timeframe),
-    [markerItems, timeframe]
+    () => groupMarkersOnCandle(filteredItems, timeframe),
+    [filteredItems, timeframe]
+  );
+  groupedRef.current = grouped;
+
+  const decisionCount = useMemo(
+    () =>
+      allItems.filter(
+        (i) => i.eventType === "agent_vote" || i.eventType === "decision" || i.kind.startsWith("vote_")
+      ).length,
+    [allItems]
+  );
+  const fillCount = useMemo(
+    () => allItems.filter((i) => i.kind.startsWith("fill_") || i.filled).length,
+    [allItems]
   );
 
   const applyCandleData = useCallback((rows: OhlcCandle[]) => {
@@ -219,6 +413,50 @@ export default function LiveChart({
     }
   }, []);
 
+  const loadMarkers = useCallback(
+    async (sym: string, tf: string, rows: OhlcCandle[]) => {
+      const candleTs = new Set(rows.map((c) => c.ts));
+      try {
+        const fromTs = rows.length ? rows[0].ts - 1 : undefined;
+        const toTs = rows.length ? rows[rows.length - 1].ts + 86400 : undefined;
+        const [inRange, allSym] = await Promise.all([
+          fetchChartMarkers(sym, tf, fromTs, toTs),
+          fetchChartMarkers(sym, tf),
+        ]);
+        const items = eventsToMarkerItems(
+          (inRange.markers || []) as Array<Record<string, unknown>>,
+          tf
+        );
+        setPersistedMarkers(items);
+
+        const fills = (allSym.markers || []).filter((m) => m.event_type === "fill");
+        let unmapped = 0;
+        for (const f of fills) {
+          const bucket = candleBucketTs(Number(f.ts), tf);
+          if (candleTs.size && !candleTs.has(bucket)) {
+            unmapped += 1;
+            if (import.meta.env.DEV) {
+              console.warn("[chart-markers] unmapped fill", {
+                id: f.id,
+                symbol: f.symbol,
+                ts: f.ts,
+                bucket,
+                timeframe: tf,
+                reason: "no candle at bucket open",
+              });
+            }
+          }
+        }
+        setUnmappedFills(unmapped);
+      } catch (err) {
+        if (import.meta.env.DEV) console.warn("[chart-markers] load failed", err);
+        setPersistedMarkers([]);
+        setUnmappedFills(0);
+      }
+    },
+    []
+  );
+
   const loadCandles = useCallback(
     async (sym: string, tf: string, before?: number) => {
       if (before) {
@@ -227,6 +465,8 @@ export default function LiveChart({
         setLoadingOlder(true);
       } else {
         setLoading(true);
+        setPersistedMarkers([]);
+        setUnmappedFills(0);
       }
       try {
         const res = await fetchCandles(sym, tf, 500, before);
@@ -235,11 +475,12 @@ export default function LiveChart({
         setHasMore(!!res.has_more);
         setIndicators(res.indicators || {});
         const rows = (res.candles || []) as OhlcCandle[];
+        let sorted = rows;
         if (before) {
           const merged = [...rows, ...candlesRef.current];
           const byTs = new Map<number, OhlcCandle>();
           for (const c of merged) byTs.set(c.ts, c);
-          const sorted = [...byTs.values()].sort((a, b) => a.ts - b.ts);
+          sorted = [...byTs.values()].sort((a, b) => a.ts - b.ts);
           applyCandleData(sorted);
         } else {
           applyCandleData(rows);
@@ -247,10 +488,12 @@ export default function LiveChart({
             chartRef.current.timeScale().scrollToRealTime();
           }
         }
+        await loadMarkers(sym, tf, sorted);
       } catch {
         if (!before) {
           setUnavailable(true);
           applyCandleData([]);
+          setPersistedMarkers([]);
         }
       } finally {
         setLoading(false);
@@ -258,7 +501,7 @@ export default function LiveChart({
         loadingOlderRef.current = false;
       }
     },
-    [applyCandleData]
+    [applyCandleData, loadMarkers]
   );
 
   const loadAnnotations = useCallback(async (sym: string) => {
@@ -322,6 +565,7 @@ export default function LiveChart({
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
+    markersPluginRef.current = createSeriesMarkers(candleSeries, []);
 
     chart.subscribeCrosshairMove((param: MouseEventParams) => {
       if (!param.time || !param.seriesData) {
@@ -350,7 +594,6 @@ export default function LiveChart({
 
     chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
       if (!range) return;
-      // User left the live edge?
       const bars = candlesRef.current.length;
       if (bars > 0 && range.to < bars - 2) {
         followLiveRef.current = false;
@@ -422,9 +665,11 @@ export default function LiveChart({
           setDrawMode("none");
         });
       } else {
-        // Click grouped marker near this time
-        const hit = grouped.find((g) => Math.abs(g.time - time) < 1);
-        if (hit) setGroupedOpen(hit);
+        const hit = groupedRef.current.find((g) => Math.abs(g.time - time) < 1);
+        if (hit) {
+          setGroupedOpen(hit);
+          setPanelOpen(true);
+        }
       }
     };
     chart.subscribeClick(onClick);
@@ -434,20 +679,39 @@ export default function LiveChart({
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
+      markersPluginRef.current = null;
       overlayRefs.current = {};
       priceLinesRef.current.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Reload on symbol/timeframe
+  // Attach series markers whenever groups change (survives live candle updates)
+  useEffect(() => {
+    const plugin = markersPluginRef.current;
+    if (!plugin) return;
+    const seriesMarkers = toSeriesMarkers(grouped).map((m) => ({
+      time: toChartTime(m.time),
+      position: m.position,
+      color: m.color,
+      shape: m.shape,
+      text: m.text,
+      size: m.size,
+      id: m.id,
+    }));
+    plugin.setMarkers(seriesMarkers);
+  }, [grouped]);
+
+  // Reload on symbol/timeframe — clear prior symbol markers first
   useEffect(() => {
     followLiveRef.current = true;
+    setGroupedOpen(null);
+    setPersistedMarkers([]);
     void loadCandles(active, timeframe);
     void loadAnnotations(active);
   }, [active, timeframe, loadCandles, loadAnnotations]);
 
-  // Incremental candle updates
+  // Incremental candle updates — markers stay via separate effect
   useEffect(() => {
     const series = candleSeriesRef.current;
     const vol = volumeSeriesRef.current;
@@ -486,7 +750,6 @@ export default function LiveChart({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    // Clear old overlays
     for (const s of Object.values(overlayRefs.current)) {
       try {
         chart.removeSeries(s);
@@ -579,6 +842,54 @@ export default function LiveChart({
     chartRef.current?.timeScale().scrollToRealTime();
   };
 
+  const setMode = (mode: SizeMode) => {
+    setSizeMode(mode);
+  };
+
+  const toggleExpand = () => {
+    setMode(sizeMode === "expanded" ? "normal" : "expanded");
+  };
+
+  const enterFullscreen = async () => {
+    sizeBeforeFsRef.current = sizeMode;
+    setMode("expanded");
+    const el = panelRef.current;
+    if (el && el.requestFullscreen) {
+      try {
+        await el.requestFullscreen();
+      } catch {
+        /* */
+      }
+    }
+  };
+
+  const exitFullscreen = async () => {
+    if (document.fullscreenElement) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        /* */
+      }
+    }
+  };
+
+  const onResizeDrag = (e: { preventDefault: () => void; clientY: number }) => {
+    if (isMobile) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = chartHeight;
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.min(MAX_CHART_H, Math.max(MIN_CHART_H, startH + (ev.clientY - startY)));
+      setChartHeight(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const onClearDrawings = async () => {
     if (!window.confirm("Delete all drawings for this symbol?")) return;
     await clearAnnotations(active);
@@ -615,8 +926,19 @@ export default function LiveChart({
     }
   };
 
+  const canvasH =
+    isFullscreen || sizeMode === "expanded"
+      ? "calc(100vh - 11rem)"
+      : isMobile
+        ? "min(55vh, 420px)"
+        : `${chartHeight}px`;
+
   return (
-    <section className="panel live-chart-panel pro-chart">
+    <section
+      ref={panelRef}
+      className={`panel live-chart-panel pro-chart size-${sizeMode}${isFullscreen ? " is-fullscreen" : ""}`}
+      data-testid="live-chart-panel"
+    >
       <div className="chart-toolbar">
         <div className="symbol-tabs" role="tablist">
           {symbols.map((sym) => (
@@ -644,6 +966,48 @@ export default function LiveChart({
           ))}
         </div>
         <div className="chart-actions">
+          <div className="size-tabs" role="group" aria-label="Chart size">
+            <button
+              type="button"
+              className={`ghost ${sizeMode === "normal" ? "active" : ""}`}
+              onClick={() => setMode("normal")}
+            >
+              Normal
+            </button>
+            <button
+              type="button"
+              className={`ghost ${sizeMode === "wide" ? "active" : ""}`}
+              onClick={() => setMode("wide")}
+            >
+              Wide
+            </button>
+            <button
+              type="button"
+              className={`ghost ${sizeMode === "expanded" ? "active" : ""}`}
+              onClick={() => setMode("expanded")}
+              title="Expand chart"
+            >
+              Expand
+            </button>
+          </div>
+          <button
+            type="button"
+            className="btn-icon ghost"
+            title="Expand chart"
+            aria-label="Expand chart"
+            onClick={toggleExpand}
+          >
+            {sizeMode === "expanded" ? "Collapse" : "⛶"}
+          </button>
+          {isFullscreen ? (
+            <button type="button" className="btn-copy ghost" onClick={exitFullscreen}>
+              Exit full screen
+            </button>
+          ) : (
+            <button type="button" className="btn-copy ghost" onClick={enterFullscreen}>
+              Full screen
+            </button>
+          )}
           <details className="chart-menu">
             <summary>Indicators</summary>
             <div className="chart-menu-body">
@@ -728,11 +1092,23 @@ export default function LiveChart({
       <div className="chart-toggles">
         <label className="chk">
           <input type="checkbox" checked={showVotes} onChange={(e) => setShowVotes(e.target.checked)} />
-          Agent votes
+          Agent decisions
         </label>
         <label className="chk">
           <input type="checkbox" checked={showFills} onChange={(e) => setShowFills(e.target.checked)} />
-          Paper fills
+          Executed trades
+        </label>
+        <label className="chk">
+          <input type="checkbox" checked={showBuy} onChange={(e) => setShowBuy(e.target.checked)} />
+          BUY markers
+        </label>
+        <label className="chk">
+          <input type="checkbox" checked={showSell} onChange={(e) => setShowSell(e.target.checked)} />
+          SELL markers
+        </label>
+        <label className="chk">
+          <input type="checkbox" checked={showHold} onChange={(e) => setShowHold(e.target.checked)} />
+          HOLD decisions
         </label>
         <label className="chk">
           <input
@@ -740,7 +1116,7 @@ export default function LiveChart({
             checked={showDrawings}
             onChange={(e) => setShowDrawings(e.target.checked)}
           />
-          Drawings
+          Manual drawings
         </label>
         <label className="chk">
           <input
@@ -752,12 +1128,47 @@ export default function LiveChart({
         </label>
       </div>
 
+      <div className="marker-meta-row">
+        <div className="compact-legend" aria-label="Marker legend">
+          <span>
+            <i className="lg-tri buy" /> Blue △ agent BUY
+          </span>
+          <span>
+            <i className="lg-tri sell" /> Purple ▽ agent SELL
+          </span>
+          <span>
+            <i className="lg-arrow buy" /> Green ↑ paper BUY
+          </span>
+          <span>
+            <i className="lg-arrow sell" /> Red ↓ paper SELL
+          </span>
+          <span>
+            <i className="lg-dot" /> Yellow · indicator
+          </span>
+        </div>
+        <div className="marker-counters mono">
+          Decisions: {decisionCount} · Executed trades: {fillCount}
+        </div>
+      </div>
+      {unmappedFills > 0 ? (
+        <div className="marker-warn" role="status">
+          {unmappedFills} trade{unmappedFills === 1 ? "" : "s"} could not be mapped to loaded candles
+        </div>
+      ) : null}
+
       <div className={`chart-body ${panelOpen ? "with-panel" : ""}`}>
         <div className="chart-main">
           {unavailable && !candlesRef.current.length ? (
             <div className="chart-unavailable">Data unavailable</div>
           ) : null}
-          <div className="chart-canvas" ref={wrapRef} />
+          <div className="chart-canvas" ref={wrapRef} style={{ height: canvasH }} />
+          {!isMobile ? (
+            <div
+              className="chart-resize-handle"
+              title="Drag to resize chart height"
+              onMouseDown={onResizeDrag}
+            />
+          ) : null}
           {hover ? (
             <div className="chart-tooltip mono">
               <div>{new Date(hover.time * 1000).toLocaleString()}</div>
@@ -769,20 +1180,6 @@ export default function LiveChart({
                 Vol {hover.volume.toLocaleString()} · {hover.changePct >= 0 ? "+" : ""}
                 {hover.changePct.toFixed(2)}%
               </div>
-            </div>
-          ) : null}
-          {grouped.length > 0 ? (
-            <div className="marker-legend muted">
-              {grouped.slice(-8).map((g) => (
-                <button
-                  key={g.time}
-                  type="button"
-                  className="marker-chip"
-                  onClick={() => setGroupedOpen(g)}
-                >
-                  {g.count > 1 ? `${g.count}×` : ""} {g.primary.replace("_", " ")}
-                </button>
-              ))}
             </div>
           ) : null}
         </div>
@@ -816,20 +1213,102 @@ Vol ${lastCandle.volume.toLocaleString()}`}
               ))}
               {!annotations.length && <li className="muted">None</li>}
             </ul>
-            <h3>Decisions</h3>
+            <h3>Marker details</h3>
             {groupedOpen ? (
               <div className="grouped-detail">
+                <p className="mono muted">
+                  Candle {new Date(groupedOpen.time * 1000).toLocaleString()} · {groupedOpen.count}{" "}
+                  event{groupedOpen.count === 1 ? "" : "s"}
+                </p>
                 {groupedOpen.items.map((it) => (
-                  <div key={it.id} className="agent-detail">
+                  <div key={it.id} className="agent-detail marker-detail-card">
                     <div className="row">
-                      <strong>{it.agentName || it.kind}</strong>
+                      <strong>{it.kind.replace(/_/g, " ")}</strong>
                       <span className={`tag ${it.action}`}>{it.action}</span>
                     </div>
-                    <div className="mono muted">
-                      {it.confidence != null ? `${(it.confidence * 100).toFixed(0)}%` : ""} ·{" "}
-                      {it.filled ? "FILLED" : it.skipReason ? "SKIPPED" : "vote"}
-                    </div>
-                    <p>{it.reason || it.skipReason || "—"}</p>
+                    <dl className="marker-dl mono">
+                      <div>
+                        <dt>Symbol</dt>
+                        <dd>{it.symbol}</dd>
+                      </div>
+                      <div>
+                        <dt>Execution time</dt>
+                        <dd>{new Date(toUnixSeconds(it.timestamp) * 1000).toLocaleString()}</dd>
+                      </div>
+                      <div>
+                        <dt>Candle time</dt>
+                        <dd>{new Date(it.candleTs * 1000).toLocaleString()}</dd>
+                      </div>
+                      <div>
+                        <dt>Action</dt>
+                        <dd>{it.action}</dd>
+                      </div>
+                      <div>
+                        <dt>Quantity</dt>
+                        <dd>{it.quantity != null ? Number(it.quantity).toFixed(4) : "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Requested price</dt>
+                        <dd>
+                          {it.payload?.requested_price != null
+                            ? fmtPrice(Number(it.payload.requested_price))
+                            : it.price != null
+                              ? fmtPrice(it.price)
+                              : "—"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Fill price</dt>
+                        <dd>{it.price != null ? fmtPrice(it.price) : "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Total value</dt>
+                        <dd>{it.totalValue != null ? fmtPrice(it.totalValue) : "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Confidence</dt>
+                        <dd>
+                          {it.confidence != null ? `${(it.confidence * 100).toFixed(0)}%` : "—"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Agents</dt>
+                        <dd>
+                          {(it.agents || [])
+                            .map((a) => String(a.agent_name || a.agent_id || ""))
+                            .filter(Boolean)
+                            .join(", ") ||
+                            it.agentName ||
+                            "—"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Orchestrator</dt>
+                        <dd>{it.finalDecision || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Reasons</dt>
+                        <dd>{it.reason || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Paper order ID</dt>
+                        <dd>{it.orderId || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Fill ID</dt>
+                        <dd>{it.fillId || "—"}</dd>
+                      </div>
+                      <div>
+                        <dt>Status</dt>
+                        <dd>{it.status || (it.filled ? "FILLED" : "—")}</dd>
+                      </div>
+                      {it.skipReason ? (
+                        <div>
+                          <dt>Skip reason</dt>
+                          <dd>{it.skipReason}</dd>
+                        </div>
+                      ) : null}
+                    </dl>
                   </div>
                 ))}
                 <button type="button" className="btn-copy ghost" onClick={() => setGroupedOpen(null)}>
@@ -837,7 +1316,7 @@ Vol ${lastCandle.volume.toLocaleString()}`}
                 </button>
               </div>
             ) : (
-              <p className="muted">Click a marker chip for details</p>
+              <p className="muted">Click a chart marker for details</p>
             )}
             <h3>Freshness</h3>
             <p className="mono muted">

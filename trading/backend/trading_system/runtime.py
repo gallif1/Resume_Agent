@@ -305,6 +305,10 @@ class TradingRuntime:
             logs_cleared = self.decision_logs.clear()
             decisions_cleared = self.decision_engine.clear()
             outcomes_cleared = self.outcomes.clear()
+            try:
+                get_market_db().clear_paper_events()
+            except Exception:  # noqa: BLE001
+                pass
             self.events.clear_session()
             self.ai.clear_session()
             self._save_state()
@@ -473,6 +477,229 @@ class TradingRuntime:
                 inputs["confidence_reduced_for_stale"] = True
         vote.inputs = inputs
         return vote
+
+    def _persist_chart_events(
+        self,
+        decision,
+        votes: list[AgentVote],
+        extra: dict[str, Any] | None,
+        *,
+        filled: bool,
+    ) -> None:
+        """Persist fills and agent votes so the chart can load them by range."""
+        db = get_market_db()
+        extra = extra or {}
+        try:
+            agents = [
+                {
+                    "agent_id": v.agent_id,
+                    "agent_name": v.agent_name,
+                    "side": v.side.value,
+                    "confidence": v.confidence,
+                    "reason": v.rationale,
+                }
+                for v in votes
+            ]
+            if filled:
+                qty = decision.quantity
+                px = decision.fill_price
+                total = (float(qty) * float(px)) if qty is not None and px is not None else None
+                db.upsert_paper_event(
+                    {
+                        "event_type": "fill",
+                        "event_id": decision.id,
+                        "symbol": decision.symbol,
+                        "side": decision.side.value,
+                        "ts": decision.ts,
+                        "price": px,
+                        "quantity": qty,
+                        "confidence": decision.confidence,
+                        "status": "FILLED",
+                        "payload": {
+                            "fill_id": decision.id,
+                            "order_id": decision.id,
+                            "requested_price": px,
+                            "fill_price": px,
+                            "total_value": total,
+                            "agents": agents,
+                            "final_decision": decision.side.value,
+                            "rationale": decision.rationale,
+                            "engine": decision.engine,
+                            **extra,
+                        },
+                    }
+                )
+            else:
+                status = "REJECTED" if extra.get("block_reason") else "SIGNAL"
+                db.upsert_paper_event(
+                    {
+                        "event_type": "decision",
+                        "event_id": decision.id,
+                        "symbol": decision.symbol,
+                        "side": decision.side.value,
+                        "ts": decision.ts,
+                        "price": decision.fill_price or extra.get("price"),
+                        "quantity": decision.quantity,
+                        "confidence": decision.confidence,
+                        "status": status,
+                        "payload": {
+                            "order_id": decision.id,
+                            "agents": agents,
+                            "final_decision": decision.side.value,
+                            "rationale": decision.rationale,
+                            "skip_reason": extra.get("block_reason"),
+                            "execution_status": extra.get("execution_status"),
+                            "engine": decision.engine,
+                        },
+                    }
+                )
+            # Persist each actionable agent vote once per decision+agent.
+            for v in votes:
+                if v.side.value not in {"BUY", "SELL", "HOLD"}:
+                    continue
+                db.upsert_paper_event(
+                    {
+                        "event_type": "agent_vote",
+                        "event_id": f"{decision.id}:{v.agent_id}",
+                        "symbol": decision.symbol,
+                        "side": v.side.value,
+                        "ts": getattr(v, "ts", None) or decision.ts,
+                        "price": None,
+                        "quantity": None,
+                        "confidence": v.confidence,
+                        "status": "VOTE",
+                        "payload": {
+                            "agent_id": v.agent_id,
+                            "agent_name": v.agent_name,
+                            "reason": v.rationale,
+                            "decision_id": decision.id,
+                            "final_decision": decision.side.value,
+                            "filled": filled,
+                        },
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 — never break trading loop
+            logger = __import__("logging").getLogger("trading.runtime")
+            logger.warning("persist chart events failed: %s", exc)
+
+    def chart_markers(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "5m",
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+    ) -> dict[str, Any]:
+        from .time_utils import candle_bucket_ts, normalize_symbol
+
+        symbol = normalize_symbol(symbol)
+        db = get_market_db()
+        # Backfill from in-memory recent decisions (covers fills before persistence existed).
+        self._backfill_markers_from_memory(symbol)
+        events = db.list_paper_events(symbol, from_ts=from_ts, to_ts=to_ts)
+        markers = []
+        for ev in events:
+            bucket = candle_bucket_ts(ev["ts"], timeframe)
+            markers.append(
+                {
+                    **ev,
+                    "candle_ts": bucket,
+                    "key": ev["id"],
+                }
+            )
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "from_ts": from_ts,
+            "to_ts": to_ts,
+            "markers": markers,
+            "count": len(markers),
+        }
+
+    def _backfill_markers_from_memory(self, symbol: str) -> None:
+        from .time_utils import normalize_symbol
+
+        symbol = normalize_symbol(symbol)
+        db = get_market_db()
+        for d in self.decision_engine.recent:
+            if normalize_symbol(str(d.get("symbol") or "")) != symbol:
+                continue
+            side = str(d.get("side") or "")
+            if side not in {"BUY", "SELL"}:
+                continue
+            try:
+                votes_raw = d.get("votes") or []
+                fake_votes = []
+                for v in votes_raw:
+                    from .models import AgentVote, Side as S
+
+                    fake_votes.append(
+                        AgentVote(
+                            agent_id=str(v.get("agent_id") or "unknown"),
+                            agent_name=str(v.get("agent_name") or v.get("agent_id") or "Agent"),
+                            symbol=symbol,
+                            side=S(str(v.get("side") or "HOLD")),
+                            confidence=float(v.get("confidence") or 0),
+                            rationale=str(v.get("rationale") or ""),
+                            ts=float(v.get("ts") or d.get("ts") or time.time()),
+                        )
+                    )
+                # Minimal decision-like object
+                class _D:
+                    pass
+
+                obj = _D()
+                obj.id = d["id"]
+                obj.symbol = symbol
+                obj.side = type("S", (), {"value": side})()
+                obj.ts = float(d.get("ts") or time.time())
+                obj.fill_price = d.get("fill_price")
+                obj.quantity = d.get("quantity")
+                obj.confidence = float(d.get("confidence") or 0)
+                obj.rationale = str(d.get("rationale") or "")
+                obj.engine = d.get("engine") or {}
+                filled = bool(d.get("executed"))
+                extra = {
+                    "fill_price": d.get("fill_price"),
+                    "quantity": d.get("quantity"),
+                }
+                self._persist_chart_events(obj, fake_votes, extra, filled=filled)
+            except Exception:  # noqa: BLE001
+                continue
+        # Also scan decision logs for FILLED rows.
+        for log in self.decision_logs.recent:
+            if normalize_symbol(str(log.get("symbol") or "")) != symbol:
+                continue
+            if (log.get("execution") or {}).get("status") != "FILLED":
+                continue
+            ex = log.get("execution") or {}
+            dec = log.get("decision") or {}
+            agents = (log.get("signal") or {}).get("agents") or []
+            try:
+                db.upsert_paper_event(
+                    {
+                        "event_type": "fill",
+                        "event_id": str(log.get("id")),
+                        "symbol": symbol,
+                        "side": str(dec.get("action") or "BUY"),
+                        "ts": float(log.get("timestamp") or time.time()),
+                        "price": ex.get("fill_price"),
+                        "quantity": ex.get("quantity"),
+                        "confidence": dec.get("final_confidence"),
+                        "status": "FILLED",
+                        "payload": {
+                            "fill_id": log.get("id"),
+                            "order_id": log.get("id"),
+                            "fill_price": ex.get("fill_price"),
+                            "requested_price": ex.get("fill_price"),
+                            "agents": agents,
+                            "final_decision": dec.get("action"),
+                            "rationale": dec.get("rationale") or dec.get("explanation"),
+                        },
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                continue
 
     def _remember_sim_price(self, symbol: str, ts: float, price: float) -> None:
         hist = self._sim_price_history.setdefault(symbol, [])
@@ -765,6 +992,18 @@ class TradingRuntime:
                     "cash_after": self.portfolio.cash,
                     "realized_pnl": self.portfolio.realized_pnl,
                 }
+                self._persist_chart_events(decision, all_votes, trade_payload, filled=True)
+            elif decision.side in {Side.BUY, Side.SELL}:
+                # Persist actionable signal / rejected fill for chart markers.
+                self._persist_chart_events(
+                    decision,
+                    all_votes,
+                    {
+                        "block_reason": block_reason,
+                        "execution_status": execution.get("status"),
+                    },
+                    filled=False,
+                )
 
             outcome_summary = None
             if decision.side in {Side.BUY, Side.SELL}:
