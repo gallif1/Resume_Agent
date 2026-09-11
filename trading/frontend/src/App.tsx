@@ -607,50 +607,52 @@ export default function App() {
   const marketPanel = (
     <section className="panel">
       <h2>{he.marketFeed}</h2>
-      <table className="market-table">
-        <thead>
-          <tr>
-            <th>{he.symbol}</th>
-            <th>{he.price}</th>
-            <th>{he.change}</th>
-            <th>{he.volume}</th>
-            <th>{he.session}</th>
-            <th>{he.provider}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {market.map((t) => {
-            const badge = sessionBadge(t);
-            return (
-              <tr key={t.symbol}>
-                <td className="mono">{t.symbol}</td>
-                <td className="mono">{t.price.toLocaleString()}</td>
-                <td className={`mono ${t.change_pct >= 0 ? "up" : "down"}`}>
-                  {t.change_pct >= 0 ? "+" : ""}
-                  {t.change_pct.toFixed(3)}%
-                </td>
-                <td className="mono muted">{Math.round(t.volume).toLocaleString()}</td>
-                <td>
-                  <span className={`session-badge ${badge.cls}`}>{badge.label}</span>
-                  {t.freshness ? (
-                    <div className="muted mono" style={{ fontSize: "0.7rem", marginTop: 2 }}>
-                      {t.freshness.toUpperCase()}
-                    </div>
-                  ) : null}
-                </td>
-                <td className="mono muted">{t.provider || "—"}</td>
-              </tr>
-            );
-          })}
-          {!market.length && (
+      <div className="market-table-scroll">
+        <table className="market-table">
+          <thead>
             <tr>
-              <td colSpan={6} className="muted">
-                {he.waitingMarket}
-              </td>
+              <th>{he.symbol}</th>
+              <th>{he.price}</th>
+              <th>{he.change}</th>
+              <th>{he.volume}</th>
+              <th>{he.session}</th>
+              <th>{he.provider}</th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {market.map((t) => {
+              const badge = sessionBadge(t);
+              return (
+                <tr key={t.symbol}>
+                  <td className="mono">{t.symbol}</td>
+                  <td className="mono">{t.price.toLocaleString()}</td>
+                  <td className={`mono ${t.change_pct >= 0 ? "up" : "down"}`}>
+                    {t.change_pct >= 0 ? "+" : ""}
+                    {t.change_pct.toFixed(3)}%
+                  </td>
+                  <td className="mono muted">{Math.round(t.volume).toLocaleString()}</td>
+                  <td>
+                    <span className={`session-badge ${badge.cls}`}>{badge.label}</span>
+                    {t.freshness ? (
+                      <div className="muted mono" style={{ fontSize: "0.7rem", marginTop: 2 }}>
+                        {t.freshness.toUpperCase()}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="mono muted">{t.provider || "—"}</td>
+                </tr>
+              );
+            })}
+            {!market.length && (
+              <tr>
+                <td colSpan={6} className="muted">
+                  {he.waitingMarket}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 

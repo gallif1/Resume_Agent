@@ -1478,16 +1478,15 @@ body.chart-expanded-body {
   margin-top: 0.75rem;
 }
 
-.app-mobile .market-table {
-  display: block;
+.app-mobile .market-table-scroll {
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
 
-.app-mobile .market-table table,
-.app-mobile .panel > .market-table {
-  min-width: 520px;
+.app-mobile .market-table-scroll .market-table {
+  min-width: 560px;
 }
 
 .app-mobile .decision-log-list {
@@ -1532,11 +1531,28 @@ body.chart-expanded-body {
 }
 
 /* compact chart toolbar */
-.live-chart-compact .chart-toolbar {
+.live-chart-compact .chart-toolbar,
+.live-chart-compact.pro-chart .chart-toolbar-compact {
   flex-wrap: nowrap;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   gap: 0.35rem;
+  align-items: center;
+}
+
+.live-chart-compact .symbol-tabs,
+.live-chart-compact .tf-tabs,
+.live-chart-compact .chart-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 0.3rem;
+  margin-bottom: 0;
+}
+
+.live-chart-compact .chart-status {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .live-chart-compact .chart-canvas {
