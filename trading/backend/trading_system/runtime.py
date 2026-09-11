@@ -38,6 +38,8 @@ from .models import AgentVote, Portfolio, Side, SystemState, Tick
 from .outcomes import OutcomeStore
 from .market_data.candle_store import get_market_db
 from .market_snapshot import build_market_snapshot
+from .unified_decision import build_unified_decision
+from . import asset_config as asset_config_mod
 
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
@@ -77,6 +79,11 @@ class TradingRuntime:
         except Exception as exc:  # noqa: BLE001 — never block route registration
             self.last_error = f"data_dir: {exc}"[:200]
         self._load_state()
+        try:
+            asset_config_mod.ensure_defaults_for_runtime(DEFAULT_SYMBOLS, self.portfolio)
+            asset_config_mod.load_portfolio_controls()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = f"asset_config: {exc}"[:200]
         if not self.use_simulated:
             try:
                 self.market.start()
@@ -500,6 +507,7 @@ class TradingRuntime:
                 }
                 for v in votes
             ]
+            decision_id = str(decision.id)
             if filled:
                 qty = decision.quantity
                 px = decision.fill_price
@@ -508,6 +516,7 @@ class TradingRuntime:
                     {
                         "event_type": "fill",
                         "event_id": decision.id,
+                        "decision_id": decision_id,
                         "symbol": decision.symbol,
                         "side": decision.side.value,
                         "ts": decision.ts,
@@ -516,6 +525,7 @@ class TradingRuntime:
                         "confidence": decision.confidence,
                         "status": "FILLED",
                         "payload": {
+                            "decision_id": decision_id,
                             "fill_id": decision.id,
                             "order_id": decision.id,
                             "requested_price": px,
@@ -531,10 +541,13 @@ class TradingRuntime:
                 )
             else:
                 status = "REJECTED" if extra.get("block_reason") else "SIGNAL"
+                if extra.get("unified_status") == "BLOCKED":
+                    status = "BLOCKED"
                 db.upsert_paper_event(
                     {
                         "event_type": "decision",
                         "event_id": decision.id,
+                        "decision_id": decision_id,
                         "symbol": decision.symbol,
                         "side": decision.side.value,
                         "ts": decision.ts,
@@ -543,6 +556,7 @@ class TradingRuntime:
                         "confidence": decision.confidence,
                         "status": status,
                         "payload": {
+                            "decision_id": decision_id,
                             "order_id": decision.id,
                             "agents": agents,
                             "final_decision": decision.side.value,
@@ -561,6 +575,7 @@ class TradingRuntime:
                     {
                         "event_type": "agent_vote",
                         "event_id": f"{decision.id}:{v.agent_id}",
+                        "decision_id": decision_id,
                         "symbol": decision.symbol,
                         "side": v.side.value,
                         "ts": getattr(v, "ts", None) or decision.ts,
@@ -572,7 +587,7 @@ class TradingRuntime:
                             "agent_id": v.agent_id,
                             "agent_name": v.agent_name,
                             "reason": v.rationale,
-                            "decision_id": decision.id,
+                            "decision_id": decision_id,
                             "final_decision": decision.side.value,
                             "filled": filled,
                         },
@@ -581,6 +596,42 @@ class TradingRuntime:
         except Exception as exc:  # noqa: BLE001 — never break trading loop
             logger = __import__("logging").getLogger("trading.runtime")
             logger.warning("persist chart events failed: %s", exc)
+
+    def _persist_unified_decision(
+        self,
+        decision,
+        votes: list[AgentVote],
+        *,
+        execution: dict[str, Any] | None,
+        market_snap: dict[str, Any] | None,
+        indicator: dict[str, Any] | None,
+        filled: bool,
+        block_reason: str | None,
+        agent_snap: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            from .time_utils import candle_bucket_ts
+
+            tf = self.chart_timeframe
+            unified = build_unified_decision(
+                decision=decision,
+                votes=votes,
+                execution=execution,
+                market_snapshot=market_snap,
+                indicator_evidence=indicator,
+                portfolio_context=self.portfolio.to_dict(),
+                timeframe=tf,
+                candle_time=candle_bucket_ts(getattr(decision, "ts", time.time()), tf),
+                filled=filled,
+                block_reason=block_reason,
+                data_quality=(agent_snap or {}).get("data_quality")
+                or (market_snap or {}).get("data_quality"),
+            )
+            return get_market_db().upsert_unified_decision(unified)
+        except Exception as exc:  # noqa: BLE001
+            logger = __import__("logging").getLogger("trading.runtime")
+            logger.warning("persist unified decision failed: %s", exc)
+            return None
 
     def chart_markers(
         self,
@@ -607,12 +658,16 @@ class TradingRuntime:
                     "key": ev["id"],
                 }
             )
+        unified = db.list_unified_decisions(
+            symbol, from_ts=from_ts, to_ts=to_ts, timeframe=timeframe
+        )
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "from_ts": from_ts,
             "to_ts": to_ts,
             "markers": markers,
+            "unified": unified,
             "count": len(markers),
         }
 
@@ -680,6 +735,7 @@ class TradingRuntime:
                     {
                         "event_type": "fill",
                         "event_id": str(log.get("id")),
+                        "decision_id": str(log.get("id")),
                         "symbol": symbol,
                         "side": str(dec.get("action") or "BUY"),
                         "ts": float(log.get("timestamp") or time.time()),
@@ -688,6 +744,7 @@ class TradingRuntime:
                         "confidence": dec.get("final_confidence"),
                         "status": "FILLED",
                         "payload": {
+                            "decision_id": str(log.get("id")),
                             "fill_id": log.get("id"),
                             "order_id": log.get("id"),
                             "fill_price": ex.get("fill_price"),
@@ -809,6 +866,10 @@ class TradingRuntime:
             if self.use_simulated:
                 self._remember_sim_price(tick.symbol, tick.ts or time.time(), tick.price)
 
+            # DISABLED assets: skip analysis and orders entirely.
+            if not asset_config_mod.can_analyze(tick.symbol):
+                continue
+
             # Prefer real candle closes for heuristics; fall back to short event history.
             candles = []
             if not self.use_simulated:
@@ -926,16 +987,56 @@ class TradingRuntime:
                     )
                     decision.rationale = f"{decision.rationale} · {block_reason}"
                 else:
-                    self.portfolio = self.decision_engine.apply_fill(self.portfolio, decision)
-                    if decision.executed:
-                        self._last_fill_ts[tick.symbol] = time.time()
-                    else:
-                        block_reason = (
-                            "אין מספיק מזומן למינימום קנייה"
-                            if decision.side.value == "BUY"
-                            else "אין פוזיציה פתוחה למכירה"
+                    # Asset-config / portfolio-controls gate before paper fill.
+                    est_qty = None
+                    if decision.side.value == "BUY":
+                        est_qty = asset_config_mod.estimate_paper_quantity(
+                            self.portfolio,
+                            "BUY",
+                            tick.price,
+                            decision.confidence,
                         )
+                    else:
+                        pos = self.portfolio.positions.get(tick.symbol)
+                        if pos and pos.quantity > 0:
+                            frac = 0.75 if decision.confidence >= 0.7 else 0.5
+                            est_qty = pos.quantity * frac
+                    ok_trade, deny_he = asset_config_mod.can_open_order(
+                        tick.symbol,
+                        decision.side.value,
+                        est_qty,
+                        tick.price,
+                        decision.confidence,
+                        self.portfolio,
+                        timeframe=self.chart_timeframe,
+                    )
+                    if not ok_trade:
+                        decision.executed = False
+                        decision.fill_price = None
+                        decision.quantity = None
+                        block_reason = deny_he
                         decision.rationale = f"{decision.rationale} · {block_reason}"
+                    else:
+                        self.portfolio = self.decision_engine.apply_fill(
+                            self.portfolio, decision
+                        )
+                        if decision.executed:
+                            self._last_fill_ts[tick.symbol] = time.time()
+                            try:
+                                controls = asset_config_mod.load_portfolio_controls()
+                                controls.daily_trade_count = int(
+                                    controls.daily_trade_count
+                                ) + 1
+                                asset_config_mod.save_portfolio_controls(controls)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        else:
+                            block_reason = (
+                                "אין מספיק מזומן למינימום קנייה"
+                                if decision.side.value == "BUY"
+                                else "אין פוזיציה פתוחה למכירה"
+                            )
+                            decision.rationale = f"{decision.rationale} · {block_reason}"
 
             quote = None if self.use_simulated else self.market.get_quote(tick.symbol)
             quote_meta = (
@@ -958,6 +1059,7 @@ class TradingRuntime:
                 indicator=indicator.to_dict(),
                 events=event_dicts,
                 quote_meta=quote_meta,
+                candles=candles,
             )
             agent_entries = build_agent_entries(
                 [v.to_dict() for v in all_votes],
@@ -969,6 +1071,8 @@ class TradingRuntime:
                 cooldown_remaining_sec=cooldown_remaining,
                 last_fill_ts=self._last_fill_ts.get(tick.symbol),
             )
+            if block_reason and execution.get("status") == "NOT_FILLED":
+                execution = {**execution, "status": "BLOCKED"}
             prev_log = self.decision_logs._last_by_symbol.get(tick.symbol)  # noqa: SLF001
             kind = classify_kind(
                 decision=decision,
@@ -1001,9 +1105,24 @@ class TradingRuntime:
                     {
                         "block_reason": block_reason,
                         "execution_status": execution.get("status"),
+                        "unified_status": "BLOCKED" if block_reason else "SIGNAL",
                     },
                     filled=False,
                 )
+            else:
+                # HOLD still gets a UnifiedDecision; chart events optional.
+                pass
+
+            self._persist_unified_decision(
+                decision,
+                all_votes,
+                execution=execution,
+                market_snap=market_snap,
+                indicator=indicator.to_dict(),
+                filled=bool(decision.executed and decision.side != Side.HOLD),
+                block_reason=block_reason,
+                agent_snap=agent_snap,
+            )
 
             outcome_summary = None
             if decision.side in {Side.BUY, Side.SELL}:

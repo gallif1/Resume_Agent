@@ -14,7 +14,7 @@ from typing import Any
 import requests
 
 from ..indicators.calc import aggregate_candles
-from .base import MarketDataProvider
+from .base import SUPPORTED_TIMEFRAMES, MarketDataProvider
 from .models import AssetClass, Candle, DataFreshness, MarketSession, Quote
 
 logger = logging.getLogger("trading.market.coinbase")
@@ -51,6 +51,33 @@ class CoinbaseCryptoProvider(MarketDataProvider):
             "live_subscribe": False,
         }
         return bool(caps.get(capability, False))
+
+    def supports_timeframe(self, timeframe: str) -> bool:
+        tf = timeframe.strip().lower()
+        return tf in SUPPORTED_TIMEFRAMES and (
+            tf in _TIMEFRAME_TO_GRANULARITY or tf == "4h"
+        )
+
+    def get_market_status(self, symbol: str) -> MarketSession:
+        _ = symbol
+        return MarketSession.OPEN
+
+    def get_data_freshness(self, symbol: str) -> DataFreshness:
+        _ = symbol
+        return DataFreshness.LIVE
+
+    def get_latest_quote(self, symbol: str) -> Quote:
+        return self.get_current_price(symbol)
+
+    def get_historical_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 500,
+        *,
+        before: float | None = None,
+    ) -> list[Candle]:
+        return self.get_candles(symbol, timeframe, limit, before=before)
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         url = f"{self.base_url}{path}"
@@ -180,6 +207,9 @@ class CoinbaseCryptoProvider(MarketDataProvider):
                         open=float(row[3]),
                         close=float(row[4]),
                         volume=float(row[5]),
+                        asset_type=AssetClass.CRYPTO.value,
+                        provider=self.name,
+                        complete=True,
                     )
                 )
             if not batch_candles:

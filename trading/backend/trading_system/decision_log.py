@@ -39,10 +39,15 @@ def build_market_snapshot(
     indicator: dict[str, Any],
     events: list[dict[str, Any]],
     quote_meta: dict[str, Any] | None,
+    candles: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """Only fields that exist — no fabricated indicators."""
+    """Only fields that exist — no fabricated indicators.
+
+    Optionally expands with indicators_used / interpreted_signals via
+    indicators.evidence (safe for UnifiedDecision consumers).
+    """
     meta = quote_meta or {}
-    return {
+    snap: dict[str, Any] = {
         "symbol": symbol,
         "price": price,
         "timestamp": ts,
@@ -65,6 +70,21 @@ def build_market_snapshot(
         "stale_reason": meta.get("stale_reason"),
         "asset_class": meta.get("asset_class"),
     }
+    try:
+        from .indicators.evidence import build_decision_evidence
+
+        evidence = build_decision_evidence(
+            candles=candles,
+            indicator=indicator,
+            price=price,
+            symbol=symbol,
+        )
+        snap["indicators_used"] = evidence.get("indicators_used")
+        snap["interpreted_signals"] = evidence.get("interpreted_signals")
+    except Exception:  # noqa: BLE001 — never break decision logging
+        snap["indicators_used"] = None
+        snap["interpreted_signals"] = None
+    return snap
 
 
 def build_agent_entries(

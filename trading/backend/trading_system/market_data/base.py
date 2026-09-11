@@ -5,7 +5,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Iterable
 
-from .models import Candle, Quote
+from .models import Candle, DataFreshness, MarketSession, Quote
+
+SUPPORTED_TIMEFRAMES = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
 
 
 class MarketDataProvider(ABC):
@@ -40,6 +42,10 @@ class MarketDataProvider(ABC):
     ) -> list[Candle]:
         return self.get_candles(symbol, timeframe, limit, before=before)
 
+    def get_latest_quote(self, symbol: str) -> Quote:
+        """Alias for get_current_price — preferred name for callers."""
+        return self.get_current_price(symbol)
+
     def get_ticker(self, symbol: str) -> Quote:
         return self.get_current_price(symbol)
 
@@ -49,6 +55,20 @@ class MarketDataProvider(ABC):
 
     def get_recent_trades(self, symbol: str, limit: int = 50) -> list[dict] | None:
         return None
+
+    def supports_timeframe(self, timeframe: str) -> bool:
+        return timeframe.strip().lower() in SUPPORTED_TIMEFRAMES
+
+    def get_market_status(self, symbol: str) -> MarketSession:
+        """Session status for the symbol's venue. Default: always open."""
+        return MarketSession.OPEN
+
+    def get_data_freshness(self, symbol: str) -> DataFreshness:
+        """Best-effort freshness hint without a full quote fetch."""
+        status = self.get_market_status(symbol)
+        if status == MarketSession.OPEN:
+            return DataFreshness.LIVE
+        return DataFreshness.STALE
 
     def supports_capability(self, capability: str) -> bool:
         caps = {

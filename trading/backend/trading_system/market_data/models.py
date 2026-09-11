@@ -16,6 +16,8 @@ class AssetClass(str, Enum):
 class MarketSession(str, Enum):
     OPEN = "open"
     CLOSED = "closed"
+    PRE_MARKET = "pre_market"
+    AFTER_HOURS = "after_hours"
     UNKNOWN = "unknown"
 
 
@@ -27,12 +29,15 @@ class DataFreshness(str, Enum):
 
 @dataclass
 class Candle:
-    ts: float  # candle open/close epoch seconds
+    ts: float  # candle open epoch seconds
     open: float
     high: float
     low: float
     close: float
     volume: float = 0.0
+    asset_type: str = ""
+    provider: str = ""
+    complete: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
