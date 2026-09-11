@@ -48,7 +48,7 @@ const HEIGHT_KEY = "trading.chart.heightPx";
 const MIN_CHART_H = 280;
 const MAX_CHART_H = 1200;
 
-type SizeMode = "normal" | "wide" | "expanded";
+type SizeMode = "normal" | "expanded";
 
 type Props = {
   symbols: string[];
@@ -97,7 +97,7 @@ function toChartTime(ts: number): Time {
 function loadSizeMode(): SizeMode {
   try {
     const v = localStorage.getItem(SIZE_KEY);
-    if (v === "wide" || v === "expanded" || v === "normal") return v;
+    if (v === "expanded") return "expanded";
   } catch {
     /* */
   }
@@ -292,23 +292,44 @@ export default function LiveChart({
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [selectedAnn, setSelectedAnn] = useState<string | null>(null);
   const [groupedOpen, setGroupedOpen] = useState<GroupedMarker | null>(null);
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [persistedMarkers, setPersistedMarkers] = useState<DecisionMarkerItem[]>([]);
   const [unmappedFills, setUnmappedFills] = useState(0);
   const [sizeMode, setSizeMode] = useState<SizeMode>(() => loadSizeMode());
   const [chartHeight, setChartHeight] = useState(() => loadHeight());
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [isNarrow, setIsNarrow] = useState(false);
   const trendDraftRef = useRef<{ time: number; price: number } | null>(null);
+  const logicalRangeRef = useRef<{ from: number; to: number } | null>(null);
 
   const lastCandle = candlesRef.current[candlesRef.current.length - 1];
+  const expanded = sizeMode === "expanded";
+
+  const resizeChartToContainer = useCallback(() => {
+    const chart = chartRef.current;
+    const el = wrapRef.current;
+    if (!chart || !el) return;
+    const rect = el.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(rect.width));
+    const h = Math.max(1, Math.floor(rect.height));
+    chart.resize(w, h);
+  }, []);
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 720px)");
-    const apply = () => setIsMobile(mq.matches);
+    const narrow = window.matchMedia("(max-width: 900px)");
+    const apply = () => {
+      setIsMobile(mq.matches);
+      setIsNarrow(narrow.matches);
+    };
     apply();
     mq.addEventListener("change", apply);
-    return () => mq.removeEventListener("change", apply);
+    narrow.addEventListener("change", apply);
+    return () => {
+      mq.removeEventListener("change", apply);
+      narrow.removeEventListener("change", apply);
+    };
   }, []);
 
   useEffect(() => {
@@ -329,24 +350,52 @@ export default function LiveChart({
   }, [chartHeight]);
 
   useEffect(() => {
+    document.body.classList.toggle("chart-expanded-body", expanded);
+    return () => document.body.classList.remove("chart-expanded-body");
+  }, [expanded]);
+
+  // Preserve zoom/scroll across expand/collapse, then resize to the live container.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const range = chart.timeScale().getVisibleLogicalRange();
+    if (range) logicalRangeRef.current = { from: range.from, to: range.to };
+    const id = requestAnimationFrame(() => {
+      resizeChartToContainer();
+      const saved = logicalRangeRef.current;
+      if (saved) {
+        try {
+          chart.timeScale().setVisibleLogicalRange(saved);
+        } catch {
+          /* */
+        }
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [expanded, drawerOpen, isFullscreen, resizeChartToContainer]);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      resizeChartToContainer();
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [resizeChartToContainer, expanded]);
+
+  useEffect(() => {
     const onFs = () => {
       const fs = !!document.fullscreenElement;
       setIsFullscreen(fs);
-      if (!fs) {
-        // restore prior layout after exit
-        setSizeMode(sizeBeforeFsRef.current);
+      if (!fs && sizeBeforeFsRef.current) {
+        // keep expanded workspace after leaving browser fullscreen unless user collapsed
       }
-      requestAnimationFrame(() => {
-        chartRef.current?.timeScale().applyOptions({});
-        if (wrapRef.current) {
-          const rect = wrapRef.current.getBoundingClientRect();
-          chartRef.current?.applyOptions({ width: rect.width, height: rect.height });
-        }
-      });
+      requestAnimationFrame(() => resizeChartToContainer());
     };
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
-  }, []);
+  }, [resizeChartToContainer]);
 
   const liveItems = useMemo(
     () => liveTradeToItems(trades, votes, decisions, active, timeframe),
@@ -668,7 +717,7 @@ export default function LiveChart({
         const hit = groupedRef.current.find((g) => Math.abs(g.time - time) < 1);
         if (hit) {
           setGroupedOpen(hit);
-          setPanelOpen(true);
+          setDrawerOpen(true);
         }
       }
     };
@@ -843,16 +892,22 @@ export default function LiveChart({
   };
 
   const setMode = (mode: SizeMode) => {
+    const chart = chartRef.current;
+    if (chart) {
+      const range = chart.timeScale().getVisibleLogicalRange();
+      if (range) logicalRangeRef.current = { from: range.from, to: range.to };
+    }
     setSizeMode(mode);
   };
 
-  const toggleExpand = () => {
-    setMode(sizeMode === "expanded" ? "normal" : "expanded");
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    setGroupedOpen(null);
   };
 
   const enterFullscreen = async () => {
     sizeBeforeFsRef.current = sizeMode;
-    setMode("expanded");
+    if (!expanded) setMode("expanded");
     const el = panelRef.current;
     if (el && el.requestFullscreen) {
       try {
@@ -874,7 +929,7 @@ export default function LiveChart({
   };
 
   const onResizeDrag = (e: { preventDefault: () => void; clientY: number }) => {
-    if (isMobile) return;
+    if (isMobile || expanded) return;
     e.preventDefault();
     const startY = e.clientY;
     const startH = chartHeight;
@@ -885,6 +940,7 @@ export default function LiveChart({
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      requestAnimationFrame(() => resizeChartToContainer());
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -926,20 +982,22 @@ export default function LiveChart({
     }
   };
 
-  const canvasH =
-    isFullscreen || sizeMode === "expanded"
-      ? "calc(100vh - 11rem)"
-      : isMobile
-        ? "min(55vh, 420px)"
-        : `${chartHeight}px`;
+  const canvasStyle =
+    expanded || isFullscreen
+      ? undefined
+      : { height: isMobile ? "min(55vh, 420px)" : `${chartHeight}px` };
+
+  const showDrawer = drawerOpen && !!groupedOpen;
 
   return (
     <section
       ref={panelRef}
-      className={`panel live-chart-panel pro-chart size-${sizeMode}${isFullscreen ? " is-fullscreen" : ""}`}
+      className={`panel live-chart-panel pro-chart size-${sizeMode}${isFullscreen ? " is-fullscreen" : ""}${
+        showDrawer ? " has-drawer" : ""
+      }${isNarrow ? " is-narrow" : ""}`}
       data-testid="live-chart-panel"
     >
-      <div className="chart-toolbar">
+      <div className="chart-toolbar chart-toolbar-compact">
         <div className="symbol-tabs" role="tablist">
           {symbols.map((sym) => (
             <button
@@ -966,48 +1024,6 @@ export default function LiveChart({
           ))}
         </div>
         <div className="chart-actions">
-          <div className="size-tabs" role="group" aria-label="Chart size">
-            <button
-              type="button"
-              className={`ghost ${sizeMode === "normal" ? "active" : ""}`}
-              onClick={() => setMode("normal")}
-            >
-              Normal
-            </button>
-            <button
-              type="button"
-              className={`ghost ${sizeMode === "wide" ? "active" : ""}`}
-              onClick={() => setMode("wide")}
-            >
-              Wide
-            </button>
-            <button
-              type="button"
-              className={`ghost ${sizeMode === "expanded" ? "active" : ""}`}
-              onClick={() => setMode("expanded")}
-              title="Expand chart"
-            >
-              Expand
-            </button>
-          </div>
-          <button
-            type="button"
-            className="btn-icon ghost"
-            title="Expand chart"
-            aria-label="Expand chart"
-            onClick={toggleExpand}
-          >
-            {sizeMode === "expanded" ? "Collapse" : "⛶"}
-          </button>
-          {isFullscreen ? (
-            <button type="button" className="btn-copy ghost" onClick={exitFullscreen}>
-              Exit full screen
-            </button>
-          ) : (
-            <button type="button" className="btn-copy ghost" onClick={enterFullscreen}>
-              Full screen
-            </button>
-          )}
           <details className="chart-menu">
             <summary>Indicators</summary>
             <div className="chart-menu-body">
@@ -1065,15 +1081,114 @@ export default function LiveChart({
               ) : null}
             </div>
           </details>
-          <button type="button" className="btn-copy ghost" onClick={resetView}>
-            Reset view
-          </button>
-          <button type="button" className="btn-copy ghost" onClick={goLive}>
+          <details className="chart-menu">
+            <summary>Markers</summary>
+            <div className="chart-menu-body">
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={showVotes}
+                  onChange={(e) => setShowVotes(e.target.checked)}
+                />
+                Agent decisions
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={showFills}
+                  onChange={(e) => setShowFills(e.target.checked)}
+                />
+                Executed trades
+              </label>
+              <label className="chk">
+                <input type="checkbox" checked={showBuy} onChange={(e) => setShowBuy(e.target.checked)} />
+                BUY markers
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={showSell}
+                  onChange={(e) => setShowSell(e.target.checked)}
+                />
+                SELL markers
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={showHold}
+                  onChange={(e) => setShowHold(e.target.checked)}
+                />
+                HOLD decisions
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={showDrawings}
+                  onChange={(e) => setShowDrawings(e.target.checked)}
+                />
+                Manual drawings
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={showIndicators}
+                  onChange={(e) => setShowIndicators(e.target.checked)}
+                />
+                Indicators
+              </label>
+              <div className="compact-legend menu-legend" aria-label="Marker legend">
+                <span>
+                  <i className="lg-tri buy" /> Blue △ agent BUY
+                </span>
+                <span>
+                  <i className="lg-tri sell" /> Purple ▽ agent SELL
+                </span>
+                <span>
+                  <i className="lg-arrow buy" /> Green ↑ paper BUY
+                </span>
+                <span>
+                  <i className="lg-arrow sell" /> Red ↓ paper SELL
+                </span>
+                <span>
+                  <i className="lg-dot" /> Yellow · indicator
+                </span>
+              </div>
+            </div>
+          </details>
+          <button type="button" className="chart-ctrl-btn" onClick={goLive}>
             Go to live
           </button>
-          <button type="button" className="btn-copy ghost" onClick={() => setPanelOpen((v) => !v)}>
-            {panelOpen ? "Hide panel" : "Panel"}
+          <button type="button" className="chart-ctrl-btn" onClick={resetView}>
+            Reset view
           </button>
+          {expanded ? (
+            <button
+              type="button"
+              className="chart-ctrl-btn chart-ctrl-primary"
+              title="Collapse chart"
+              onClick={() => setMode("normal")}
+            >
+              Collapse
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="chart-ctrl-btn chart-ctrl-primary"
+              title="Expand chart"
+              onClick={() => setMode("expanded")}
+            >
+              Expand
+            </button>
+          )}
+          {isFullscreen ? (
+            <button type="button" className="chart-ctrl-btn" onClick={exitFullscreen}>
+              Exit fullscreen
+            </button>
+          ) : (
+            <button type="button" className="chart-ctrl-btn" onClick={enterFullscreen}>
+              Fullscreen
+            </button>
+          )}
         </div>
         <div className="chart-status mono muted">
           <span className={`ws-badge ${wsState === "live" ? "live" : wsState === "polling" ? "polling" : "dead"}`}>
@@ -1083,86 +1198,32 @@ export default function LiveChart({
             {realData ? "REAL" : "SIM"}
           </span>
           <span>
-            {provider || meta?.provider || "—"} · {(meta?.freshness || "—").toUpperCase()}
+            {provider || meta?.provider || "—"}
+          </span>
+          <span className="marker-counters">
+            Decisions: {decisionCount} · Executed: {fillCount}
           </span>
           {loading || loadingOlder ? <span className="loading-pill">Loading…</span> : null}
         </div>
       </div>
 
-      <div className="chart-toggles">
-        <label className="chk">
-          <input type="checkbox" checked={showVotes} onChange={(e) => setShowVotes(e.target.checked)} />
-          Agent decisions
-        </label>
-        <label className="chk">
-          <input type="checkbox" checked={showFills} onChange={(e) => setShowFills(e.target.checked)} />
-          Executed trades
-        </label>
-        <label className="chk">
-          <input type="checkbox" checked={showBuy} onChange={(e) => setShowBuy(e.target.checked)} />
-          BUY markers
-        </label>
-        <label className="chk">
-          <input type="checkbox" checked={showSell} onChange={(e) => setShowSell(e.target.checked)} />
-          SELL markers
-        </label>
-        <label className="chk">
-          <input type="checkbox" checked={showHold} onChange={(e) => setShowHold(e.target.checked)} />
-          HOLD decisions
-        </label>
-        <label className="chk">
-          <input
-            type="checkbox"
-            checked={showDrawings}
-            onChange={(e) => setShowDrawings(e.target.checked)}
-          />
-          Manual drawings
-        </label>
-        <label className="chk">
-          <input
-            type="checkbox"
-            checked={showIndicators}
-            onChange={(e) => setShowIndicators(e.target.checked)}
-          />
-          Indicators
-        </label>
-      </div>
-
-      <div className="marker-meta-row">
-        <div className="compact-legend" aria-label="Marker legend">
-          <span>
-            <i className="lg-tri buy" /> Blue △ agent BUY
-          </span>
-          <span>
-            <i className="lg-tri sell" /> Purple ▽ agent SELL
-          </span>
-          <span>
-            <i className="lg-arrow buy" /> Green ↑ paper BUY
-          </span>
-          <span>
-            <i className="lg-arrow sell" /> Red ↓ paper SELL
-          </span>
-          <span>
-            <i className="lg-dot" /> Yellow · indicator
-          </span>
-        </div>
-        <div className="marker-counters mono">
-          Decisions: {decisionCount} · Executed trades: {fillCount}
-        </div>
-      </div>
       {unmappedFills > 0 ? (
         <div className="marker-warn" role="status">
           {unmappedFills} trade{unmappedFills === 1 ? "" : "s"} could not be mapped to loaded candles
         </div>
       ) : null}
 
-      <div className={`chart-body ${panelOpen ? "with-panel" : ""}`}>
+      <div
+        className={`chart-body${showDrawer ? " with-drawer" : ""}${
+          showDrawer && isNarrow ? " drawer-overlay" : ""
+        }`}
+      >
         <div className="chart-main">
           {unavailable && !candlesRef.current.length ? (
             <div className="chart-unavailable">Data unavailable</div>
           ) : null}
-          <div className="chart-canvas" ref={wrapRef} style={{ height: canvasH }} />
-          {!isMobile ? (
+          <div className="chart-canvas" ref={wrapRef} style={canvasStyle} />
+          {!isMobile && !expanded ? (
             <div
               className="chart-resize-handle"
               title="Drag to resize chart height"
@@ -1184,145 +1245,141 @@ export default function LiveChart({
           ) : null}
         </div>
 
-        {panelOpen ? (
-          <aside className="chart-side-panel">
-            <h3>OHLC</h3>
-            {lastCandle ? (
-              <pre className="detail-pre">
-                {`O ${fmtPrice(lastCandle.open)}
-H ${fmtPrice(lastCandle.high)}
-L ${fmtPrice(lastCandle.low)}
-C ${fmtPrice(lastCandle.close)}
-Vol ${lastCandle.volume.toLocaleString()}`}
-              </pre>
-            ) : (
-              <p className="muted">No candle</p>
-            )}
-            <h3>Drawings</h3>
-            <ul className="ann-list">
-              {annotations.map((a) => (
-                <li key={a.id}>
-                  <button
-                    type="button"
-                    className={selectedAnn === a.id ? "active" : ""}
-                    onClick={() => setSelectedAnn(a.id)}
-                  >
-                    {a.annotation_type} {a.price != null ? fmtPrice(a.price) : ""} {a.label || ""}
-                  </button>
-                </li>
-              ))}
-              {!annotations.length && <li className="muted">None</li>}
-            </ul>
-            <h3>Marker details</h3>
-            {groupedOpen ? (
-              <div className="grouped-detail">
-                <p className="mono muted">
-                  Candle {new Date(groupedOpen.time * 1000).toLocaleString()} · {groupedOpen.count}{" "}
-                  event{groupedOpen.count === 1 ? "" : "s"}
-                </p>
-                {groupedOpen.items.map((it) => (
-                  <div key={it.id} className="agent-detail marker-detail-card">
-                    <div className="row">
-                      <strong>{it.kind.replace(/_/g, " ")}</strong>
-                      <span className={`tag ${it.action}`}>{it.action}</span>
-                    </div>
-                    <dl className="marker-dl mono">
-                      <div>
-                        <dt>Symbol</dt>
-                        <dd>{it.symbol}</dd>
-                      </div>
-                      <div>
-                        <dt>Execution time</dt>
-                        <dd>{new Date(toUnixSeconds(it.timestamp) * 1000).toLocaleString()}</dd>
-                      </div>
-                      <div>
-                        <dt>Candle time</dt>
-                        <dd>{new Date(it.candleTs * 1000).toLocaleString()}</dd>
-                      </div>
-                      <div>
-                        <dt>Action</dt>
-                        <dd>{it.action}</dd>
-                      </div>
-                      <div>
-                        <dt>Quantity</dt>
-                        <dd>{it.quantity != null ? Number(it.quantity).toFixed(4) : "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Requested price</dt>
-                        <dd>
-                          {it.payload?.requested_price != null
-                            ? fmtPrice(Number(it.payload.requested_price))
-                            : it.price != null
-                              ? fmtPrice(it.price)
-                              : "—"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Fill price</dt>
-                        <dd>{it.price != null ? fmtPrice(it.price) : "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Total value</dt>
-                        <dd>{it.totalValue != null ? fmtPrice(it.totalValue) : "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Confidence</dt>
-                        <dd>
-                          {it.confidence != null ? `${(it.confidence * 100).toFixed(0)}%` : "—"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Agents</dt>
-                        <dd>
-                          {(it.agents || [])
-                            .map((a) => String(a.agent_name || a.agent_id || ""))
-                            .filter(Boolean)
-                            .join(", ") ||
-                            it.agentName ||
-                            "—"}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>Orchestrator</dt>
-                        <dd>{it.finalDecision || "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Reasons</dt>
-                        <dd>{it.reason || "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Paper order ID</dt>
-                        <dd>{it.orderId || "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Fill ID</dt>
-                        <dd>{it.fillId || "—"}</dd>
-                      </div>
-                      <div>
-                        <dt>Status</dt>
-                        <dd>{it.status || (it.filled ? "FILLED" : "—")}</dd>
-                      </div>
-                      {it.skipReason ? (
-                        <div>
-                          <dt>Skip reason</dt>
-                          <dd>{it.skipReason}</dd>
-                        </div>
-                      ) : null}
-                    </dl>
+        {showDrawer && groupedOpen ? (
+          <aside className="chart-drawer" aria-label="Marker details">
+            <div className="chart-drawer-head">
+              <h3>Marker details</h3>
+              <button
+                type="button"
+                className="chart-drawer-close"
+                aria-label="Close details"
+                onClick={closeDrawer}
+              >
+                ×
+              </button>
+            </div>
+            <div className="chart-drawer-body">
+              {lastCandle ? (
+                <pre className="detail-pre drawer-ohlc">
+                  {`O ${fmtPrice(lastCandle.open)}  H ${fmtPrice(lastCandle.high)}
+L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
+                </pre>
+              ) : null}
+              <p className="mono muted">
+                Candle {new Date(groupedOpen.time * 1000).toLocaleString()} · {groupedOpen.count}{" "}
+                event{groupedOpen.count === 1 ? "" : "s"}
+              </p>
+              {groupedOpen.items.map((it) => (
+                <div key={it.id} className="agent-detail marker-detail-card">
+                  <div className="row">
+                    <strong>{it.kind.replace(/_/g, " ")}</strong>
+                    <span className={`tag ${it.action}`}>{it.action}</span>
                   </div>
-                ))}
-                <button type="button" className="btn-copy ghost" onClick={() => setGroupedOpen(null)}>
-                  Close
-                </button>
-              </div>
-            ) : (
-              <p className="muted">Click a chart marker for details</p>
-            )}
-            <h3>Freshness</h3>
-            <p className="mono muted">
-              {(meta?.freshness || "—").toUpperCase()}
-              {meta?.stale_reason ? ` · ${meta.stale_reason}` : ""}
-            </p>
+                  <dl className="marker-dl mono">
+                    <div>
+                      <dt>Symbol</dt>
+                      <dd>{it.symbol}</dd>
+                    </div>
+                    <div>
+                      <dt>Execution time</dt>
+                      <dd>{new Date(toUnixSeconds(it.timestamp) * 1000).toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>Candle time</dt>
+                      <dd>{new Date(it.candleTs * 1000).toLocaleString()}</dd>
+                    </div>
+                    <div>
+                      <dt>Action</dt>
+                      <dd>{it.action}</dd>
+                    </div>
+                    <div>
+                      <dt>Quantity</dt>
+                      <dd>{it.quantity != null ? Number(it.quantity).toFixed(4) : "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Requested price</dt>
+                      <dd>
+                        {it.payload?.requested_price != null
+                          ? fmtPrice(Number(it.payload.requested_price))
+                          : it.price != null
+                            ? fmtPrice(it.price)
+                            : "—"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Fill price</dt>
+                      <dd>{it.price != null ? fmtPrice(it.price) : "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Total value</dt>
+                      <dd>{it.totalValue != null ? fmtPrice(it.totalValue) : "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Confidence</dt>
+                      <dd>
+                        {it.confidence != null ? `${(it.confidence * 100).toFixed(0)}%` : "—"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Agents</dt>
+                      <dd>
+                        {(it.agents || [])
+                          .map((a) => String(a.agent_name || a.agent_id || ""))
+                          .filter(Boolean)
+                          .join(", ") ||
+                          it.agentName ||
+                          "—"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Orchestrator</dt>
+                      <dd>{it.finalDecision || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Reasons</dt>
+                      <dd>{it.reason || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Paper order ID</dt>
+                      <dd>{it.orderId || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Fill ID</dt>
+                      <dd>{it.fillId || "—"}</dd>
+                    </div>
+                    <div>
+                      <dt>Status</dt>
+                      <dd>{it.status || (it.filled ? "FILLED" : "—")}</dd>
+                    </div>
+                    {it.skipReason ? (
+                      <div>
+                        <dt>Skip reason</dt>
+                        <dd>{it.skipReason}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </div>
+              ))}
+              {annotations.length ? (
+                <>
+                  <h3>Drawings</h3>
+                  <ul className="ann-list">
+                    {annotations.map((a) => (
+                      <li key={a.id}>
+                        <button
+                          type="button"
+                          className={selectedAnn === a.id ? "active" : ""}
+                          onClick={() => setSelectedAnn(a.id)}
+                        >
+                          {a.annotation_type} {a.price != null ? fmtPrice(a.price) : ""}{" "}
+                          {a.label || ""}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </div>
           </aside>
         ) : null}
       </div>
