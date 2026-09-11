@@ -1320,10 +1320,19 @@ export default function LiveChart({
           if (typeof item === "string") return item;
           if (typeof item === "object") {
             const o = item as Record<string, unknown>;
+            if (typeof o.explanation === "string") return o.explanation;
+            if (typeof o.detail === "string") {
+              const src = o.source != null ? `${String(o.source)}: ` : "";
+              return `${src}${o.detail}`;
+            }
             if (typeof o.text === "string") return o.text;
             if (typeof o.message === "string") return o.message;
-            if (typeof o.label === "string" && o.value != null) return `${o.label}: ${String(o.value)}`;
-            if (typeof o.name === "string" && o.value != null) return `${o.name}: ${String(o.value)}`;
+            if (typeof o.signal === "string") {
+              const parts = [String(o.signal)];
+              if (o.direction != null) parts.push(String(o.direction));
+              if (o.strength != null) parts.push(String(o.strength));
+              return parts.join(" · ");
+            }
             try {
               return JSON.stringify(o);
             } catch {
