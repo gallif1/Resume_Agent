@@ -94,8 +94,8 @@ def calibrated_confidence(
         "confidence_before_cap": round(raw, 6),
         "cap": 0.95,
         "note": (
-            "HOLD and opposing BUY/SELL dilute confidence; "
-            "0.95 reserved for near-unanimous strong agreement."
+            "HOLD והצבעות BUY/SELL מנוגדות מורידות ביטחון; "
+            "0.95 שמור להסכמה חזקה כמעט פה-אחד."
         ),
     }
     return confidence, debug
@@ -158,31 +158,31 @@ class DecisionEngine:
 
         if side == Side.HOLD:
             why = (
-                f"No actionable side cleared the threshold "
-                f"(min_confidence={self.min_confidence}, hold_gate=hold_score*0.85={hold_score * 0.85:.3f})."
+                f"אף צד לא עבר את הסף "
+                f"(min_confidence={self.min_confidence}, שערי HOLD=hold_score*0.85={hold_score * 0.85:.3f})."
             )
         elif score >= hold_score * 0.85 and score >= self.min_confidence:
             why = (
-                f"{side.value} score {score:.3f} exceeded min_confidence {self.min_confidence} "
-                f"and beat HOLD gate {hold_score * 0.85:.3f} "
-                f"(margin vs threshold {score - self.min_confidence:+.3f})."
+                f"ציון {side.value} {score:.3f} עבר את min_confidence {self.min_confidence} "
+                f"וניצח את שערי HOLD {hold_score * 0.85:.3f} "
+                f"(מרווח מול הסף {score - self.min_confidence:+.3f})."
             )
         else:
-            why = f"{side.value} selected with score {score:.3f}."
+            why = f"{side.value} נבחר עם ציון {score:.3f}."
 
         explanation = (
-            f"{buy_n} BUY / {sell_n} SELL / {hold_n} HOLD votes. "
-            f"Weighted BUY={weights[Side.BUY]:.3f}, SELL={weights[Side.SELL]:.3f}, "
+            f"{buy_n} קנייה / {sell_n} מכירה / {hold_n} המתנה. "
+            f"משקלים: BUY={weights[Side.BUY]:.3f}, SELL={weights[Side.SELL]:.3f}, "
             f"HOLD={weights[Side.HOLD]:.3f}. {why} "
-            f"Calibrated confidence {confidence:.0%} "
-            f"(support={conf_debug['action_support']:.2f}, "
-            f"agree={conf_debug['agreement_factor']:.2f}, "
-            f"hold_pen={conf_debug['hold_ratio']:.2f}, "
-            f"opp_pen={conf_debug['opposition_ratio']:.2f})."
+            f"ביטחון מכויל {confidence:.0%} "
+            f"(תמיכה={conf_debug['action_support']:.2f}, "
+            f"הסכמה={conf_debug['agreement_factor']:.2f}, "
+            f"קנס_HOLD={conf_debug['hold_ratio']:.2f}, "
+            f"קנס_נגד={conf_debug['opposition_ratio']:.2f})."
         )
         rationale = (
-            f"Votes {dict(counts)} → {side.value} "
-            f"(action score {score:.2f}, confidence {confidence:.0%})"
+            f"הצבעות {dict(counts)} → {side.value} "
+            f"(ציון פעולה {score:.2f}, ביטחון {confidence:.0%})"
         )
 
         engine = {

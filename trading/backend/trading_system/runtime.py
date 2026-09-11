@@ -227,7 +227,7 @@ class TradingRuntime:
             "agents": [
                 {"id": a.agent_id, "name": a.agent_name} for a in self.agents
             ]
-            + [{"id": "ai_analyst", "name": "AI Market Analyst"}],
+            + [{"id": "ai_analyst", "name": "אנליסט שוק AI"}],
             "ai": self.ai.status(),
             "portfolio": self.portfolio.to_dict(),
             "performance": self.outcomes.performance_stats(),
@@ -468,9 +468,9 @@ class TradingRuntime:
             if vote.side != Side.HOLD and (stale or "candles" in missing):
                 vote.side = Side.HOLD
                 vote.rationale = (
-                    f"HOLD because market data is stale/missing "
-                    f"(age={quality.get('age_seconds')}s, missing={missing}). "
-                    f"Original signal suppressed."
+                    f"HOLD כי נתוני השוק מיושנים/חסרים "
+                    f"(גיל={quality.get('age_seconds')}ש׳, חסר={missing}). "
+                    f"האות המקורי דוכא."
                 )
                 inputs["stale_override"] = True
             else:
@@ -921,8 +921,8 @@ class TradingRuntime:
                     decision.fill_price = None
                     decision.quantity = None
                     block_reason = (
-                        f"Cooldown active ({FILL_COOLDOWN_SEC:.0f}s); "
-                        f"{cooldown_remaining:.0f}s remaining"
+                        f"המתנה פעילה ({FILL_COOLDOWN_SEC:.0f}ש׳); "
+                        f"נותרו {cooldown_remaining:.0f}ש׳"
                     )
                     decision.rationale = f"{decision.rationale} · {block_reason}"
                 else:
@@ -931,9 +931,9 @@ class TradingRuntime:
                         self._last_fill_ts[tick.symbol] = time.time()
                     else:
                         block_reason = (
-                            "Insufficient cash for minimum buy notional"
+                            "אין מספיק מזומן למינימום קנייה"
                             if decision.side.value == "BUY"
-                            else "No open position to sell"
+                            else "אין פוזיציה פתוחה למכירה"
                         )
                         decision.rationale = f"{decision.rationale} · {block_reason}"
 

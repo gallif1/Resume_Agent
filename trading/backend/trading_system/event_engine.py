@@ -55,7 +55,7 @@ class EventEngine:
                 evt = MarketEvent.create(
                     kind=kind,
                     symbol=tick.symbol,
-                    message=f"{tick.symbol} moved {tick.change_pct:+.2f}% to {tick.price}",
+                    message=f"{tick.symbol} זז ב-{tick.change_pct:+.2f}% ל-{tick.price}",
                     severity=severity,
                     change_pct=tick.change_pct,
                     price=tick.price,
@@ -70,7 +70,7 @@ class EventEngine:
                     evt = MarketEvent.create(
                         kind="mean_deviation",
                         symbol=tick.symbol,
-                        message=f"{tick.symbol} is {deviation:+.2f}% from short-term mean",
+                        message=f"{tick.symbol} במרחק {deviation:+.2f}% מהממוצע הקצר",
                         severity="info",
                         deviation_pct=round(deviation, 3),
                         mean=round(mean, 4),
@@ -83,7 +83,7 @@ class EventEngine:
                 evt = MarketEvent.create(
                     kind="volume_surge",
                     symbol=tick.symbol,
-                    message=f"Volume surge on {tick.symbol} ({tick.volume:.0f})",
+                    message=f"זינוק נפח ב-{tick.symbol} ({tick.volume:.0f})",
                     severity="info",
                     volume=tick.volume,
                     change_pct=tick.change_pct,
