@@ -366,6 +366,10 @@ export default function LiveChart({
   const [isNarrow, setIsNarrow] = useState(false);
   const trendDraftRef = useRef<{ time: number; price: number } | null>(null);
   const logicalRangeRef = useRef<{ from: number; to: number } | null>(null);
+  const drawModeRef = useRef(drawMode);
+  const activeRef = useRef(active);
+  const timeframeRef = useRef(timeframe);
+  const openDecisionCardRef = useRef<(item: DecisionMarkerItem) => Promise<void>>(async () => undefined);
 
   const expanded = sizeMode === "expanded";
   const enabled = indConfig.enabled;
@@ -678,6 +682,11 @@ export default function LiveChart({
     }
   }, []);
 
+  drawModeRef.current = drawMode;
+  activeRef.current = active;
+  timeframeRef.current = timeframe;
+  openDecisionCardRef.current = openDecisionCard;
+
   // Create chart once
   useEffect(() => {
     const el = wrapRef.current;
@@ -801,32 +810,64 @@ export default function LiveChart({
 
     const onClick = (param: MouseEventParams) => {
       if (!param.point || param.time == null) return;
+      const time = Number(param.time);
+      const mode = drawModeRef.current;
+      const sym = activeRef.current;
+      const tf = timeframeRef.current;
+      if (mode === "none") {
+        const hit = groupedRef.current.find((g) => Math.abs(g.time - time) < 1);
+        if (import.meta.env.DEV) {
+          console.debug("[chart-click]", {
+            time,
+            groups: groupedRef.current.length,
+            groupTimes: groupedRef.current.slice(0, 5).map((g) => g.time),
+            hit: !!hit,
+          });
+        }
+        if (hit) {
+          setGroupedOpen(hit);
+          const fills = hit.items.filter((i) => i.kind === "fill_buy" || i.kind === "fill_sell");
+          if (fills.length > 1) {
+            setPickList(fills);
+            setDrawerDecision(null);
+            setDrawerOpen(true);
+          } else if (hit.items.length === 1) {
+            void openDecisionCardRef.current(hit.items[0]);
+          } else if (fills.length === 1) {
+            void openDecisionCardRef.current(fills[0]);
+          } else {
+            setPickList(hit.items);
+            setDrawerDecision(null);
+            setDrawerOpen(true);
+          }
+        }
+        return;
+      }
       const price = candleSeries.coordinateToPrice(param.point.y);
       if (price == null) return;
-      const time = Number(param.time);
-      if (drawMode === "SUPPORT" || drawMode === "RESISTANCE") {
+      if (mode === "SUPPORT" || mode === "RESISTANCE") {
         void createAnnotation({
-          symbol: active,
-          annotation_type: drawMode,
+          symbol: sym,
+          annotation_type: mode,
           timeframe_scope: "all",
           price: Number(price),
           coordinates: { price: Number(price) },
-          label: drawMode === "SUPPORT" ? he.support : he.resistance,
+          label: mode === "SUPPORT" ? he.support : he.resistance,
           importance: "medium",
-          color: drawMode === "SUPPORT" ? "#3dd6c6" : "#e85d5d",
+          color: mode === "SUPPORT" ? "#3dd6c6" : "#e85d5d",
         }).then((r) => {
           if (r.annotation) setAnnotations((prev) => [...prev, r.annotation!]);
           setDrawMode("none");
         });
-      } else if (drawMode === "TREND_LINE") {
+      } else if (mode === "TREND_LINE") {
         if (!trendDraftRef.current) {
           trendDraftRef.current = { time, price: Number(price) };
         } else {
           const a = trendDraftRef.current;
           void createAnnotation({
-            symbol: active,
+            symbol: sym,
             annotation_type: "TREND_LINE",
-            timeframe_scope: timeframe,
+            timeframe_scope: tf,
             coordinates: {
               t1: a.time,
               p1: a.price,
@@ -841,13 +882,13 @@ export default function LiveChart({
             setDrawMode("none");
           });
         }
-      } else if (drawMode === "TEXT_NOTE") {
+      } else if (mode === "TEXT_NOTE") {
         const note = window.prompt(he.notePrompt);
         if (!note) return;
         void createAnnotation({
-          symbol: active,
+          symbol: sym,
           annotation_type: "TEXT_NOTE",
-          timeframe_scope: timeframe,
+          timeframe_scope: tf,
           price: Number(price),
           coordinates: { time, price: Number(price) },
           note,
@@ -857,30 +898,51 @@ export default function LiveChart({
           if (r.annotation) setAnnotations((prev) => [...prev, r.annotation!]);
           setDrawMode("none");
         });
-      } else {
-        const hit = groupedRef.current.find((g) => Math.abs(g.time - time) < 1);
-        if (hit) {
-          setGroupedOpen(hit);
-          const fills = hit.items.filter((i) => i.kind === "fill_buy" || i.kind === "fill_sell");
-          if (fills.length > 1) {
-            setPickList(fills);
-            setDrawerDecision(null);
-            setDrawerOpen(true);
-          } else if (hit.items.length === 1) {
-            void openDecisionCard(hit.items[0]);
-          } else if (fills.length === 1) {
-            void openDecisionCard(fills[0]);
-          } else {
-            setPickList(hit.items);
-            setDrawerDecision(null);
-            setDrawerOpen(true);
-          }
-        }
       }
     };
     chart.subscribeClick(onClick);
 
+    // Fallback: some environments don't deliver LWC click params reliably.
+    const onDomClick = (ev: MouseEvent) => {
+      if (drawModeRef.current !== "none") return;
+      const rect = el.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      try {
+        const t = chart.timeScale().coordinateToTime(x);
+        if (t == null) return;
+        const time = Number(t);
+        const hit = groupedRef.current.find((g) => Math.abs(g.time - time) < 1);
+        if (import.meta.env.DEV) {
+          console.debug("[chart-dom-click]", {
+            time,
+            groups: groupedRef.current.length,
+            hit: !!hit,
+          });
+        }
+        if (!hit) return;
+        setGroupedOpen(hit);
+        const fills = hit.items.filter((i) => i.kind === "fill_buy" || i.kind === "fill_sell");
+        if (fills.length > 1) {
+          setPickList(fills);
+          setDrawerDecision(null);
+          setDrawerOpen(true);
+        } else if (hit.items.length === 1) {
+          void openDecisionCardRef.current(hit.items[0]);
+        } else if (fills.length === 1) {
+          void openDecisionCardRef.current(fills[0]);
+        } else {
+          setPickList(hit.items);
+          setDrawerDecision(null);
+          setDrawerOpen(true);
+        }
+      } catch {
+        /* */
+      }
+    };
+    el.addEventListener("click", onDomClick);
+
     return () => {
+      el.removeEventListener("click", onDomClick);
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
@@ -1251,8 +1313,37 @@ export default function LiveChart({
   const interpretedList = (u: UnifiedDecision): string[] => {
     const raw = u.interpreted_signals;
     if (!raw) return [];
-    if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
-    return Object.entries(raw).map(([k, v]) => `${k}: ${String(v)}`);
+    if (Array.isArray(raw)) {
+      return raw
+        .map((item) => {
+          if (item == null) return "";
+          if (typeof item === "string") return item;
+          if (typeof item === "object") {
+            const o = item as Record<string, unknown>;
+            if (typeof o.text === "string") return o.text;
+            if (typeof o.message === "string") return o.message;
+            if (typeof o.label === "string" && o.value != null) return `${o.label}: ${String(o.value)}`;
+            if (typeof o.name === "string" && o.value != null) return `${o.name}: ${String(o.value)}`;
+            try {
+              return JSON.stringify(o);
+            } catch {
+              return "";
+            }
+          }
+          return String(item);
+        })
+        .filter(Boolean);
+    }
+    return Object.entries(raw).map(([k, v]) => {
+      if (v != null && typeof v === "object") {
+        try {
+          return `${k}: ${JSON.stringify(v)}`;
+        } catch {
+          return `${k}: ${String(v)}`;
+        }
+      }
+      return `${k}: ${String(v)}`;
+    });
   };
 
   const indicatorsUsedList = (u: UnifiedDecision): string[] => {
