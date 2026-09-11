@@ -1,4 +1,4 @@
-"""Local technical indicators from candle closes (extensible)."""
+"""Local technical indicators from candles (shared calc — no look-ahead)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
 from ..market_data.models import Candle
+from . import calc as ic
 
 
 @dataclass
@@ -42,47 +43,25 @@ class IndicatorSnapshot:
             "rsi_14": self.rsi_14,
             "sma_fast": self.sma_fast,
             "sma_slow": self.sma_slow,
+            "sma_20": self.extras.get("sma_20"),
+            "sma_50": self.extras.get("sma_50"),
+            "ema_20": self.extras.get("ema_20"),
+            "ema_50": self.extras.get("ema_50"),
+            "macd": self.extras.get("macd"),
+            "macd_signal": self.extras.get("macd_signal"),
+            "atr_14": self.extras.get("atr_14"),
+            "vwap": self.extras.get("vwap"),
+            "bollinger_position": self.extras.get("bollinger_position"),
         }
 
 
-def _closes(candles: Sequence[Candle]) -> list[float]:
-    return [c.close for c in candles]
-
-
-def sma(values: Sequence[float], window: int) -> float | None:
-    if len(values) < window or window <= 0:
-        return None
-    chunk = values[-window:]
-    return sum(chunk) / window
-
-
-def ema(values: Sequence[float], window: int) -> float | None:
-    if len(values) < window or window <= 0:
-        return None
-    k = 2 / (window + 1)
-    e = values[0]
-    for v in values[1:]:
-        e = v * k + e * (1 - k)
-    return e
+# Re-export primitives used by older tests
+sma = lambda values, window: ic.last(ic.sma_series(values, window))  # noqa: E731
+ema = lambda values, window: ic.last(ic.ema_series(values, window))  # noqa: E731
 
 
 def rsi(values: Sequence[float], window: int = 14) -> float | None:
-    if len(values) < window + 1:
-        return None
-    gains = 0.0
-    losses = 0.0
-    for i in range(-window, 0):
-        delta = values[i] - values[i - 1]
-        if delta >= 0:
-            gains += delta
-        else:
-            losses += -delta
-    avg_gain = gains / window
-    avg_loss = losses / window
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    return ic.last(ic.rsi_series(list(values), window))
 
 
 def pct_change(values: Sequence[float], lookback: int) -> float | None:
@@ -135,11 +114,23 @@ def volume_state(candles: Sequence[Candle]) -> str:
 
 
 class IndicatorEngine:
-    """Compute indicator snapshots; ready for MACD/Bollinger later via extras."""
+    """Compute indicator snapshots from shared series (no look-ahead)."""
 
     def compute(self, symbol: str, candles: Sequence[Candle], price: float | None = None) -> IndicatorSnapshot:
-        closes = _closes(candles)
+        closes = ic.closes(candles)
         px = float(price if price is not None else (closes[-1] if closes else 0.0))
+        sma20 = ic.last(ic.sma_series(closes, 20))
+        sma50 = ic.last(ic.sma_series(closes, 50))
+        ema20 = ic.last(ic.ema_series(closes, 20))
+        ema50 = ic.last(ic.ema_series(closes, 50))
+        macd, macd_sig, _ = ic.macd_series(closes)
+        bb_u, bb_m, bb_l = ic.bollinger_series(closes)
+        atr = ic.last(ic.atr_series(candles, 14))
+        vwap = ic.last(ic.vwap_series(candles))
+        bb_pos = None
+        if bb_u and bb_u[-1] is not None and bb_l and bb_l[-1] is not None and bb_u[-1] != bb_l[-1]:
+            bb_pos = (px - bb_l[-1]) / (bb_u[-1] - bb_l[-1])
+
         return IndicatorSnapshot(
             symbol=symbol,
             price=px,
@@ -147,14 +138,27 @@ class IndicatorEngine:
             change_5m_pct=_round(pct_change(closes, 5)),
             change_15m_pct=_round(pct_change(closes, 15)),
             change_1h_pct=_round(pct_change(closes, 60)),
-            sma_fast=_round(sma(closes, 10)),
-            sma_slow=_round(sma(closes, 30)),
-            ema_fast=_round(ema(closes, 12)),
+            sma_fast=_round(ic.last(ic.sma_series(closes, 10))),
+            sma_slow=_round(ic.last(ic.sma_series(closes, 30))),
+            ema_fast=_round(ic.last(ic.ema_series(closes, 12))),
             rsi_14=_round(rsi(closes, 14)),
             volatility=_round(volatility(closes, 20)),
             volume_state=volume_state(candles),
             short_trend=short_trend(closes),
-            extras={},
+            extras={
+                "sma_20": _round(sma20),
+                "sma_50": _round(sma50),
+                "ema_20": _round(ema20),
+                "ema_50": _round(ema50),
+                "macd": _round(ic.last(macd)),
+                "macd_signal": _round(ic.last(macd_sig)),
+                "atr_14": _round(atr),
+                "vwap": _round(vwap),
+                "bollinger_position": _round(bb_pos),
+                "bollinger_upper": _round(bb_u[-1] if bb_u else None),
+                "bollinger_mid": _round(bb_m[-1] if bb_m else None),
+                "bollinger_lower": _round(bb_l[-1] if bb_l else None),
+            },
         )
 
 

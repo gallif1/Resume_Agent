@@ -26,7 +26,7 @@ from .decision_log import (
     build_agent_entries,
     build_decision_log,
     build_execution,
-    build_market_snapshot,
+    build_market_snapshot as build_log_market_snapshot,
     classify_kind,
 )
 from .event_engine import EventEngine
@@ -36,6 +36,8 @@ from .market_data.models import DataFreshness
 from .market_feed import MarketFeed
 from .models import AgentVote, Portfolio, Side, SystemState, Tick
 from .outcomes import OutcomeStore
+from .market_data.candle_store import get_market_db
+from .market_snapshot import build_market_snapshot
 
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
@@ -319,8 +321,8 @@ class TradingRuntime:
 
     def set_chart_timeframe(self, timeframe: str) -> dict[str, Any]:
         tf = timeframe.strip().lower()
-        if tf not in {"1m", "5m", "15m", "1h"}:
-            raise ValueError("timeframe must be one of 1m,5m,15m,1h")
+        if tf not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
+            raise ValueError("timeframe must be one of 1m,5m,15m,1h,4h,1d")
         self.chart_timeframe = tf
         if not self.use_simulated:
             # Warm in the background — blocking poll of all symbols made the UI
@@ -355,6 +357,122 @@ class TradingRuntime:
             self.last_error = str(exc)
             self.state = SystemState.STOPPED
             await self._broadcast({"type": "error", "payload": {"message": str(exc)}})
+
+    def build_symbol_snapshot(self, symbol: str) -> dict[str, Any]:
+        symbol = symbol.upper()
+        quote = None if self.use_simulated else self.market.get_quote(symbol)
+        candles_by_tf: dict[str, list] = {}
+        if self.use_simulated:
+            hist = self.events.history_prices(symbol)
+            from .market_data.models import Candle
+
+            # Synthetic 1-bar candles from closes for sim mode.
+            sim = [
+                Candle(ts=time.time() - (len(hist) - i), open=p, high=p, low=p, close=p, volume=0)
+                for i, p in enumerate(hist)
+            ]
+            candles_by_tf["5m"] = sim
+        else:
+            for tf in ("1m", "5m", "15m", "1h", "4h", "1d"):
+                candles_by_tf[tf] = self.market.get_candles(symbol, tf)
+        anns = get_market_db().list_annotations(symbol)
+        pos = self.portfolio.positions.get(symbol)
+        last_fill = self._last_fill_ts.get(symbol, 0.0)
+        cooldown = None
+        if last_fill:
+            rem = FILL_COOLDOWN_SEC - (time.time() - last_fill)
+            if rem > 0:
+                cooldown = rem
+        prices = {}
+        if not self.use_simulated:
+            for q in self.market.get_quotes():
+                prices[q.symbol] = q.price
+        else:
+            for t in self.feed.snapshot():
+                prices[t["symbol"]] = t["price"]
+        equity = self.portfolio.equity(prices) if hasattr(self.portfolio, "equity") else (
+            self.portfolio.cash
+            + sum(
+                p.quantity * prices.get(sym, p.avg_price)
+                for sym, p in self.portfolio.positions.items()
+            )
+        )
+        unrealized = 0.0
+        if pos and symbol in prices:
+            unrealized = (prices[symbol] - pos.avg_price) * pos.quantity
+        portfolio_risk = {
+            "available_cash": self.portfolio.cash,
+            "current_position": None
+            if pos is None
+            else {"quantity": pos.quantity, "avg_entry": pos.avg_price},
+            "average_entry": None if pos is None else pos.avg_price,
+            "unrealized_pnl": unrealized,
+            "realized_pnl": self.portfolio.realized_pnl,
+            "current_exposure": abs(pos.quantity * prices.get(symbol, pos.avg_price)) if pos else 0.0,
+            "position_size": None if pos is None else pos.quantity,
+            "stop_loss_level": None,
+            "take_profit_level": None,
+            "maximum_allowed_risk": None,
+            "cooldown_status": "active" if cooldown else "clear",
+            "daily_drawdown": None,
+            "remaining_daily_loss_limit": None,
+            "equity": equity,
+        }
+        provider = (
+            "simulated"
+            if self.use_simulated
+            else self.market.provider_for_symbol(symbol)
+        )
+        return build_market_snapshot(
+            symbol=symbol,
+            quote=quote,
+            candles_by_tf=candles_by_tf,
+            human_annotations=anns,
+            portfolio=portfolio_risk,
+            cooldown_remaining_sec=cooldown,
+            provider_name=provider,
+        )
+
+    def _apply_snapshot_to_vote(self, vote: AgentVote, snap: dict[str, Any]) -> AgentVote:
+        """Attach snapshot inputs; reduce confidence / force HOLD when stale."""
+        quality = snap.get("data_quality") or {}
+        stale = bool(quality.get("stale"))
+        missing = quality.get("missing_fields") or []
+        human = (snap.get("market_structure") or {}).get("human_levels") or []
+        inputs = dict(vote.inputs or {})
+        inputs["market_snapshot_keys"] = [
+            "multi_timeframe",
+            "indicators",
+            "market_structure",
+            "portfolio_risk",
+            "data_quality",
+        ]
+        inputs["timeframe_signals"] = snap.get("multi_timeframe")
+        inputs["indicators_used"] = {
+            k: (snap.get("indicators") or {}).get(k)
+            for k in ("rsi_14", "sma_20", "sma_50", "macd", "atr_14", "short_trend")
+        }
+        inputs["human_levels"] = human
+        inputs["data_quality"] = quality
+        inputs["portfolio_risk"] = {
+            "available_cash": (snap.get("portfolio_risk") or {}).get("available_cash"),
+            "position_size": (snap.get("portfolio_risk") or {}).get("position_size"),
+            "cooldown_status": (snap.get("portfolio_risk") or {}).get("cooldown_status"),
+        }
+        if stale or "candles" in missing or "live_quote" in missing:
+            vote.confidence = min(float(vote.confidence), 0.35)
+            if vote.side != Side.HOLD and (stale or "candles" in missing):
+                vote.side = Side.HOLD
+                vote.rationale = (
+                    f"HOLD because market data is stale/missing "
+                    f"(age={quality.get('age_seconds')}s, missing={missing}). "
+                    f"Original signal suppressed."
+                )
+                inputs["stale_override"] = True
+            else:
+                inputs["confidence_reduced_for_stale"] = True
+        vote.inputs = inputs
+        return vote
 
     def _remember_sim_price(self, symbol: str, ts: float, price: float) -> None:
         hist = self._sim_price_history.setdefault(symbol, [])
@@ -470,20 +588,77 @@ class TradingRuntime:
                 candles = self.market.get_candles(tick.symbol, "5m") or self.market.get_candles(
                     tick.symbol, "1m"
                 )
+                # Update forming candle in store from live tick (no fabricated history).
+                try:
+                    from .market_data.models import Candle as MCandle
+
+                    tf = self.chart_timeframe if self.chart_timeframe in {"1m", "5m", "15m", "1h"} else "5m"
+                    secs = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600}[tf]
+                    bucket = int(tick.ts // secs * secs)
+                    existing = self.market.get_candles(tick.symbol, tf)
+                    last = existing[-1] if existing else None
+                    if last and int(last.ts) == bucket:
+                        updated = MCandle(
+                            ts=float(bucket),
+                            open=last.open,
+                            high=max(last.high, tick.price),
+                            low=min(last.low, tick.price),
+                            close=tick.price,
+                            volume=last.volume,
+                        )
+                    else:
+                        updated = MCandle(
+                            ts=float(bucket),
+                            open=tick.price,
+                            high=tick.price,
+                            low=tick.price,
+                            close=tick.price,
+                            volume=tick.volume,
+                        )
+                    self.market.db.upsert_candles(tick.symbol, tf, [updated])
+                    with self.market._lock:  # noqa: SLF001
+                        cur = list(self.market._candles.get((tick.symbol, tf), []))
+                        if cur and int(cur[-1].ts) == bucket:
+                            cur[-1] = updated
+                        else:
+                            cur.append(updated)
+                        self.market._candles[(tick.symbol, tf)] = cur[-500:]
+                except Exception:  # noqa: BLE001
+                    pass
             history = [c.close for c in candles] if candles else self.events.history_prices(tick.symbol)
             indicator = self.indicators.compute(tick.symbol, candles, price=tick.price)
 
-            heuristic_votes = [agent.vote(tick, history, new_events) for agent in self.agents]
+            # Rich MarketSnapshot for agents (deterministic; no raw tick flood).
+            try:
+                agent_snap = self.build_symbol_snapshot(tick.symbol)
+            except Exception:  # noqa: BLE001
+                agent_snap = {"data_quality": {"stale": True, "missing_fields": ["snapshot_error"]}}
+
+            heuristic_votes = []
+            for agent in self.agents:
+                v = agent.vote(tick, history, new_events)
+                heuristic_votes.append(self._apply_snapshot_to_vote(v, agent_snap))
             votes_out.extend(v.to_dict() for v in heuristic_votes)
 
             ai_snapshot = {
                 **indicator.compact_for_ai(),
                 "events": [e.kind for e in new_events if e.symbol == tick.symbol][:5],
                 "heuristic_votes": {v.agent_id: v.side.value for v in heuristic_votes},
+                "multi_timeframe": agent_snap.get("multi_timeframe"),
+                "human_levels": (agent_snap.get("market_structure") or {}).get("human_levels"),
+                "data_quality": agent_snap.get("data_quality"),
+                "market_structure": {
+                    "swing_highs": ((agent_snap.get("market_structure") or {}).get("swing_highs") or [])[-3:],
+                    "swing_lows": ((agent_snap.get("market_structure") or {}).get("swing_lows") or [])[-3:],
+                    "breakout_or_rejection": (agent_snap.get("market_structure") or {}).get(
+                        "breakout_or_rejection"
+                    ),
+                },
             }
             ai_vote = self.ai.maybe_vote(tick, ai_snapshot, new_events, heuristic_votes)
             all_votes = list(heuristic_votes)
             if ai_vote is not None:
+                ai_vote = self._apply_snapshot_to_vote(ai_vote, agent_snap)
                 all_votes.append(ai_vote)
                 ai_votes_out.append(ai_vote.to_dict())
                 votes_out.append(ai_vote.to_dict())
@@ -548,7 +723,7 @@ class TradingRuntime:
                 else {"provider": "simulated", "session": "open", "freshness": "live"}
             )
             event_dicts = [e.to_dict() for e in new_events]
-            market_snap = build_market_snapshot(
+            market_snap = build_log_market_snapshot(
                 symbol=tick.symbol,
                 price=tick.price,
                 ts=tick.ts,
@@ -677,6 +852,21 @@ class TradingRuntime:
             for t in ticks
         ]
 
+        candle_updates: list[dict[str, Any]] = []
+        if not self.use_simulated:
+            tf = self.chart_timeframe
+            for t in ticks:
+                cs = self.market.get_candles(t.symbol, tf)
+                if cs:
+                    candle_updates.append(
+                        {
+                            "symbol": t.symbol,
+                            "timeframe": tf,
+                            "candle": cs[-1].to_dict(),
+                            "provider": self.market.provider_for_symbol(t.symbol),
+                        }
+                    )
+
         await self._broadcast(
             {
                 "type": "tick",
@@ -707,6 +897,7 @@ class TradingRuntime:
                         for t in ticks
                     ],
                     "price_points": price_points,
+                    "candle_updates": candle_updates,
                     "price_history": self._price_history(),
                     "chart_timeframe": self.chart_timeframe,
                     "events": [e.to_dict() for e in new_events],
@@ -741,10 +932,10 @@ class TradingRuntime:
                     "ai": self.ai.status(),
                     "performance": self.outcomes.performance_stats(),
                     "market_meta": self.snapshot()["market_meta"],
+                    "paper_trading_only": True,
                 },
             }
         )
-
 
 _runtime: TradingRuntime | None = None
 _runtime_lock = threading.Lock()

@@ -31,7 +31,7 @@ type LatestVotes = Record<string, AgentVote>;
 const HISTORY_CAP = 360;
 const VOTE_CAP = 120;
 const TRADE_CAP = 80;
-const DEFAULT_TIMEFRAMES = ["1m", "5m", "15m", "1h"];
+const DEFAULT_TIMEFRAMES = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
 function formatMoney(n: number) {
   return n.toLocaleString(undefined, {
@@ -155,13 +155,16 @@ export default function App() {
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
   const [votes, setVotes] = useState<LatestVotes>({});
   const [chartVotes, setChartVotes] = useState<AgentVote[]>([]);
-  const [history, setHistory] = useState<Record<string, PricePoint[]>>({});
+  const [, setHistory] = useState<Record<string, PricePoint[]>>({});
   const [trades, setTrades] = useState<TradeMarker[]>([]);
   const [chartTimeframe, setChartTimeframeState] = useState("5m");
   const [timeframes, setTimeframes] = useState<string[]>(DEFAULT_TIMEFRAMES);
   const [marketMeta, setMarketMeta] = useState<MarketMeta | null>(null);
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
   const [performance, setPerformance] = useState<PerformanceStats | null>(null);
+  const [candleUpdates, setCandleUpdates] = useState<
+    Array<{ symbol: string; timeframe: string; candle: import("./api").OhlcCandle; provider?: string }>
+  >([]);
   const [dataMode, setDataMode] = useState<string>("simulated");
   const [wsState, setWsState] = useState<"connecting" | "live" | "dead" | "polling">(
     "connecting"
@@ -265,6 +268,12 @@ export default function App() {
               ai?: AIStatus;
               performance?: PerformanceStats;
               data_mode?: string;
+              candle_updates?: Array<{
+                symbol: string;
+                timeframe: string;
+                candle: import("./api").OhlcCandle;
+                provider?: string;
+              }>;
             };
             setSnap((prev) =>
               prev
@@ -304,6 +313,9 @@ export default function App() {
             if (p.ai) setAiStatus(p.ai);
             if (p.performance) setPerformance(p.performance);
             if (p.data_mode) setDataMode(p.data_mode);
+            if (p.candle_updates?.length) {
+              setCandleUpdates(p.candle_updates);
+            }
             if (p.events?.length) setEvents((prev) => [...p.events, ...prev].slice(0, 40));
             if (p.decisions?.length) {
               setDecisions((prev) => [...p.decisions, ...prev].slice(0, 40));
@@ -639,17 +651,18 @@ export default function App() {
 
       <LiveChart
         symbols={symbols.length ? symbols : ["BTC-USD"]}
-        history={history}
         trades={trades}
         votes={chartVotes}
+        decisions={decisions}
         timeframe={chartTimeframe}
         timeframes={timeframes}
         onTimeframe={onTimeframe}
         timeframeBusy={chartBusy}
         marketMeta={marketMeta}
         realData={realData}
+        candleUpdates={candleUpdates}
+        wsState={wsState}
       />
-
       <div className="grid">
         <section className="panel">
           <h2>Market Feed</h2>

@@ -103,21 +103,125 @@ async def trading_set_timeframe(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/api/candles/{symbol}")
-async def trading_candles(symbol: str, timeframe: str = "5m", limit: int = 120) -> dict[str, Any]:
+async def trading_candles(
+    symbol: str,
+    timeframe: str = "5m",
+    limit: int = 500,
+    before: float | None = None,
+) -> dict[str, Any]:
     rt = get_runtime()
     tf = timeframe.strip().lower()
-    if tf not in {"1m", "5m", "15m", "1h"}:
+    if tf not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
         return JSONResponse({"ok": False, "error": "invalid timeframe"}, status_code=400)
     if rt.use_simulated:
         hist = rt.events.chart_history(symbol.upper()).get(symbol.upper(), [])
-        return {"symbol": symbol.upper(), "timeframe": tf, "candles": hist, "source": "simulated"}
-    candles = rt.market.get_candles(symbol.upper(), tf)[-limit:]
-    return {
-        "symbol": symbol.upper(),
-        "timeframe": tf,
-        "candles": [c.to_dict() for c in candles],
-        "source": "real",
-    }
+        # Convert price points to pseudo-candles for chart.
+        candles = []
+        for p in hist[-limit:]:
+            px = float(p.get("price") or 0)
+            candles.append(
+                {
+                    "ts": float(p.get("ts") or 0),
+                    "open": px,
+                    "high": px,
+                    "low": px,
+                    "close": px,
+                    "volume": float(p.get("volume") or 0),
+                }
+            )
+        if before is not None:
+            candles = [c for c in candles if c["ts"] < before][-limit:]
+        return {
+            "symbol": symbol.upper(),
+            "timeframe": tf,
+            "candles": candles,
+            "has_more": False,
+            "source": "simulated",
+            "provider": "simulated",
+            "unavailable": len(candles) == 0,
+            "indicators": {},
+        }
+    try:
+        payload = rt.market.fetch_candles(
+            symbol.upper(), tf, limit=limit, before=before
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    # Attach indicator series for chart overlays (shared calc).
+    from .market_data.models import Candle
+    from .market_snapshot import indicator_series_for_chart
+
+    raw = payload.get("candles") or []
+    candle_objs = [
+        Candle(
+            ts=float(c["ts"]),
+            open=float(c["open"]),
+            high=float(c["high"]),
+            low=float(c["low"]),
+            close=float(c["close"]),
+            volume=float(c.get("volume") or 0),
+        )
+        for c in raw
+    ]
+    payload["indicators"] = indicator_series_for_chart(candle_objs) if candle_objs else {}
+    payload["source"] = "real"
+    return payload
+
+
+@router.get("/api/annotations/{symbol}")
+async def list_annotations(symbol: str) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    rows = get_market_db().list_annotations(symbol.upper())
+    return {"symbol": symbol.upper(), "annotations": rows}
+
+
+@router.post("/api/annotations")
+async def create_annotation(payload: dict[str, Any]) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    try:
+        row = get_market_db().create_annotation(payload or {})
+        return {"ok": True, "annotation": row}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@router.patch("/api/annotations/{ann_id}")
+async def update_annotation(ann_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    try:
+        row = get_market_db().update_annotation(ann_id, payload or {})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True, "annotation": row}
+
+
+@router.delete("/api/annotations/{ann_id}")
+async def delete_annotation(ann_id: str) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    ok = get_market_db().delete_annotation(ann_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True}
+
+
+@router.delete("/api/annotations/symbol/{symbol}")
+async def clear_annotations(symbol: str) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    n = get_market_db().clear_annotations(symbol.upper())
+    return {"ok": True, "cleared": n}
+
+
+@router.get("/api/market-snapshot/{symbol}")
+async def market_snapshot(symbol: str) -> dict[str, Any]:
+    rt = get_runtime()
+    return rt.build_symbol_snapshot(symbol.upper())
 
 
 @router.get("/api/config")
@@ -134,10 +238,11 @@ async def trading_config() -> dict[str, Any]:
         "ws_paths": ws_paths,
         "api_base": f"{PUBLIC_BASE_PATH}/api" if PUBLIC_BASE_PATH else "/api",
         "data_mode": "simulated" if rt.use_simulated else "real",
-        "chart_timeframes": ["1m", "5m", "15m", "1h"],
+        "chart_timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
         "default_chart_timeframe": rt.chart_timeframe,
         "market_meta": rt.snapshot().get("market_meta"),
         "ai": rt.ai.status(),
+        "paper_trading_only": True,
     }
 
 
