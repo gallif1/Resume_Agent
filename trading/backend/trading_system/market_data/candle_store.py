@@ -81,6 +81,23 @@ class MarketDB:
                     );
                     CREATE INDEX IF NOT EXISTS idx_ann_symbol_active
                         ON chart_annotations(symbol, active);
+
+                    CREATE TABLE IF NOT EXISTS paper_events (
+                        id TEXT PRIMARY KEY,
+                        event_type TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        side TEXT NOT NULL,
+                        ts REAL NOT NULL,
+                        price REAL,
+                        quantity REAL,
+                        confidence REAL,
+                        status TEXT,
+                        payload TEXT NOT NULL DEFAULT '{}',
+                        UNIQUE(event_type, event_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_paper_events_sym_ts
+                        ON paper_events(symbol, ts);
                     """
                 )
                 conn.commit()
@@ -323,6 +340,142 @@ class MarketDB:
                 return int(cur.rowcount)
             finally:
                 conn.close()
+
+    # --- paper events (fills / decisions for chart markers) ---------------
+
+    def upsert_paper_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        from ..time_utils import marker_key, normalize_symbol, to_unix_seconds
+
+        event_type = str(event.get("event_type") or "").strip().lower()
+        event_id = str(event.get("event_id") or "").strip()
+        if not event_type or not event_id:
+            raise ValueError("event_type and event_id required")
+        symbol = normalize_symbol(str(event.get("symbol") or ""))
+        if not symbol:
+            raise ValueError("symbol required")
+        side = str(event.get("side") or "HOLD").upper()
+        ts = to_unix_seconds(event.get("ts") or time.time())
+        payload = event.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+        row_id = marker_key(event_type, event_id)
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO paper_events(
+                        id, event_type, event_id, symbol, side, ts,
+                        price, quantity, confidence, status, payload
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(event_type, event_id) DO UPDATE SET
+                        symbol=excluded.symbol,
+                        side=excluded.side,
+                        ts=excluded.ts,
+                        price=excluded.price,
+                        quantity=excluded.quantity,
+                        confidence=excluded.confidence,
+                        status=excluded.status,
+                        payload=excluded.payload
+                    """,
+                    (
+                        row_id,
+                        event_type,
+                        event_id,
+                        symbol,
+                        side,
+                        float(ts),
+                        event.get("price"),
+                        event.get("quantity"),
+                        event.get("confidence"),
+                        event.get("status"),
+                        json.dumps(payload, default=str),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_paper_event(row_id) or {}
+
+    def get_paper_event(self, row_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM paper_events WHERE id = ?", (row_id,)
+                ).fetchone()
+            finally:
+                conn.close()
+        return self._event_row(row) if row else None
+
+    def list_paper_events(
+        self,
+        symbol: str,
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        from ..time_utils import normalize_symbol
+
+        symbol = normalize_symbol(symbol)
+        clauses = ["symbol = ?"]
+        params: list[Any] = [symbol]
+        if from_ts is not None:
+            clauses.append("ts >= ?")
+            params.append(float(from_ts))
+        if to_ts is not None:
+            clauses.append("ts <= ?")
+            params.append(float(to_ts))
+        where = " AND ".join(clauses)
+        sql = f"SELECT * FROM paper_events WHERE {where} ORDER BY ts ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 5000)))
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            finally:
+                conn.close()
+        return [self._event_row(r) for r in rows]
+
+    def clear_paper_events(self, symbol: str | None = None) -> int:
+        with self._lock:
+            conn = self._connect()
+            try:
+                if symbol:
+                    from ..time_utils import normalize_symbol
+
+                    cur = conn.execute(
+                        "DELETE FROM paper_events WHERE symbol = ?",
+                        (normalize_symbol(symbol),),
+                    )
+                else:
+                    cur = conn.execute("DELETE FROM paper_events")
+                conn.commit()
+                return int(cur.rowcount)
+            finally:
+                conn.close()
+
+    def _event_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        return {
+            "id": row["id"],
+            "event_type": row["event_type"],
+            "event_id": row["event_id"],
+            "symbol": row["symbol"],
+            "side": row["side"],
+            "ts": row["ts"],
+            "price": row["price"],
+            "quantity": row["quantity"],
+            "confidence": row["confidence"],
+            "status": row["status"],
+            "payload": payload if isinstance(payload, dict) else {},
+        }
 
     def _ann_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
         if row is None:

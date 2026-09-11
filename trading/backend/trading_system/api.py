@@ -224,6 +224,21 @@ async def market_snapshot(symbol: str) -> dict[str, Any]:
     return rt.build_symbol_snapshot(symbol.upper())
 
 
+@router.get("/api/chart-markers/{symbol}")
+async def chart_markers(
+    symbol: str,
+    timeframe: str = "5m",
+    from_ts: float | None = None,
+    to_ts: float | None = None,
+) -> dict[str, Any]:
+    """Persisted paper fills + agent votes for chart overlay."""
+    rt = get_runtime()
+    tf = timeframe.strip().lower()
+    if tf not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
+        return JSONResponse({"ok": False, "error": "invalid timeframe"}, status_code=400)
+    return rt.chart_markers(symbol, timeframe=tf, from_ts=from_ts, to_ts=to_ts)
+
+
 @router.get("/api/config")
 async def trading_config() -> dict[str, Any]:
     ws_paths = [
