@@ -68,7 +68,8 @@ assert(groups[0].primary === "fill_buy", "fill primary");
 const series = toSeriesMarkers(groups);
 assert(series[0].color === "#22c55e", "green fill marker");
 assert(series[0].shape === "arrowUp", "arrow up");
-assert(series[0].size >= 2, "fill more prominent");
+assert(series[0].size <= 1.25, "fill marker compact");
+assert(series[0].text === "×2" || series[0].text === "", "short on-chart label");
 
 const merged = mergeMarkerItems(items, items);
 assert(merged.length === 2, "dedupe merge");

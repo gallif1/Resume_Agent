@@ -175,17 +175,17 @@ export default function App() {
   const [homeUrl, setHomeUrl] = useState("/");
   const [flash, setFlash] = useState(false);
   const [config, setConfig] = useState<TradingConfig | null>(null);
-  const [chartLayout, setChartLayout] = useState<"normal" | "wide" | "expanded">("normal");
+  const [chartExpanded, setChartExpanded] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
-  const onChartLayout = useCallback((mode: "normal" | "wide" | "expanded") => {
-    setChartLayout(mode);
+  const onChartLayout = useCallback((mode: "normal" | "expanded") => {
+    setChartExpanded(mode === "expanded");
   }, []);
 
+  // Body scroll lock is owned by LiveChart when expanded (fixed overlay).
   useEffect(() => {
-    document.body.classList.toggle("chart-expanded-body", chartLayout === "expanded");
     return () => document.body.classList.remove("chart-expanded-body");
-  }, [chartLayout]);
+  }, []);
 
   const applySnapshot = (s: Snapshot) => {
     setSnap(s);
@@ -585,7 +585,7 @@ export default function App() {
           : "WS dead";
 
   return (
-    <div className={`app chart-layout-${chartLayout}`}>
+    <div className={`app${chartExpanded ? " chart-layout-expanded" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-kicker">Live paper trading</span>
@@ -674,7 +674,6 @@ export default function App() {
         wsState={wsState}
         onLayoutModeChange={onChartLayout}
       />
-      {chartLayout === "expanded" ? null : (
       <div className="grid">
         <section className="panel">
           <h2>Market Feed</h2>
@@ -1076,7 +1075,6 @@ Fill: ${log.execution?.quantity ?? "—"} @ ${log.execution?.fill_price ?? "—"
           </div>
         </section>
       </div>
-      )}
     </div>
   );
 }
