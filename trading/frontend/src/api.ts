@@ -408,6 +408,39 @@ export function fetchCandles(
   return jsonFetch<CandlesResponse>(`/candles/${encodeURIComponent(symbol)}?${q}`);
 }
 
+export type ChartMarkerEvent = {
+  id: string;
+  event_type: string;
+  event_id: string;
+  symbol: string;
+  side: string;
+  ts: number;
+  price?: number | null;
+  quantity?: number | null;
+  confidence?: number | null;
+  status?: string | null;
+  payload?: Record<string, unknown>;
+  candle_ts?: number;
+  key?: string;
+};
+
+export function fetchChartMarkers(
+  symbol: string,
+  timeframe: string,
+  fromTs?: number,
+  toTs?: number
+) {
+  const q = new URLSearchParams({ timeframe });
+  if (fromTs != null) q.set("from_ts", String(fromTs));
+  if (toTs != null) q.set("to_ts", String(toTs));
+  return jsonFetch<{
+    symbol: string;
+    timeframe: string;
+    markers: ChartMarkerEvent[];
+    count: number;
+  }>(`/chart-markers/${encodeURIComponent(symbol)}?${q}`);
+}
+
 export function fetchAnnotations(symbol: string) {
   return jsonFetch<{ symbol: string; annotations: ChartAnnotation[] }>(
     `/annotations/${encodeURIComponent(symbol)}`

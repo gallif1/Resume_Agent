@@ -1051,3 +1051,160 @@ a {
   cursor: pointer;
 }
 
+body.chart-expanded-body {
+  overflow: hidden;
+}
+
+.app.chart-layout-wide .live-chart-panel,
+.app.chart-layout-expanded .live-chart-panel {
+  width: 100%;
+  max-width: none;
+}
+
+.pro-chart.size-expanded {
+  margin-bottom: 0;
+}
+
+.pro-chart.is-fullscreen {
+  background: #0b121f;
+  padding: 0.75rem;
+  overflow: auto;
+}
+
+.pro-chart .size-tabs {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.pro-chart .size-tabs .ghost.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pro-chart .btn-icon {
+  min-width: 2rem;
+}
+
+.pro-chart .marker-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 0.35rem 0 0.5rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.pro-chart .compact-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+}
+
+.pro-chart .compact-legend .lg-tri.buy {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 0.28rem solid transparent;
+  border-right: 0.28rem solid transparent;
+  border-bottom: 0.42rem solid #4da3ff;
+  margin-right: 0.2rem;
+}
+
+.pro-chart .compact-legend .lg-tri.sell {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 0.28rem solid transparent;
+  border-right: 0.28rem solid transparent;
+  border-top: 0.42rem solid #c084fc;
+  margin-right: 0.2rem;
+}
+
+.pro-chart .compact-legend .lg-arrow.buy {
+  color: #22c55e;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.pro-chart .compact-legend .lg-arrow.sell {
+  color: #ef4444;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.pro-chart .compact-legend .lg-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: #f0b429;
+  margin-right: 0.25rem;
+  vertical-align: middle;
+}
+
+.pro-chart .marker-warn {
+  margin: 0 0 0.55rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid rgba(240, 180, 41, 0.45);
+  background: rgba(240, 180, 41, 0.1);
+  color: #f0b429;
+  border-radius: 0.45rem;
+  font-size: 0.8rem;
+}
+
+.pro-chart .chart-resize-handle {
+  height: 10px;
+  cursor: ns-resize;
+  margin-top: 2px;
+  border-radius: 0 0 0.5rem 0.5rem;
+  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.08));
+  position: relative;
+}
+
+.pro-chart .chart-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 36px;
+  height: 3px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.pro-chart .marker-dl {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.35rem 0 0.75rem;
+  font-size: 0.72rem;
+}
+
+.pro-chart .marker-dl > div {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: 0.35rem;
+}
+
+.pro-chart .marker-dl dt {
+  color: var(--muted);
+}
+
+.pro-chart .marker-dl dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.pro-chart .marker-detail-card {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 720px) {
+  .pro-chart .chart-resize-handle {
+    display: none;
+  }
+}
+
