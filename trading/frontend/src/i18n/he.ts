@@ -169,6 +169,8 @@ export const he = {
   holdVote: "HOLD",
   pickFill: "בחרו ביצוע מהנר",
   openDecisionCard: "פתח כרטיס החלטה",
+  recentDecisions: "החלטות אחרונות",
+  noRecentDecisions: "אין החלטות להצגה בטווח הנוכחי",
   noSummary: "אין סיכום זמין להחלטה זו.",
   decisionId: "מזהה החלטה",
 

@@ -1506,6 +1506,38 @@ export default function LiveChart({
         <div className="chart-actions">
           <button
             type="button"
+            className="chart-ctrl-btn chart-ctrl-primary"
+            onClick={() => {
+              const actionable = filteredItems
+                .filter(
+                  (it) =>
+                    it.kind === "fill_buy" ||
+                    it.kind === "fill_sell" ||
+                    it.kind === "blocked" ||
+                    it.kind === "signal"
+                )
+                .sort((a, b) => b.timestamp - a.timestamp)
+                .slice(0, 12);
+              if (!actionable.length) {
+                setPickList(null);
+                setDrawerDecision(null);
+                setDrawerOpen(true);
+                return;
+              }
+              if (actionable.length === 1) {
+                void openDecisionCard(actionable[0]);
+                return;
+              }
+              setDrawerDecision(null);
+              setPickList(actionable);
+              setDrawerOpen(true);
+            }}
+            title={he.recentDecisions}
+          >
+            {he.recentDecisions}
+          </button>
+          <button
+            type="button"
             className="chart-ctrl-btn"
             onClick={() => onOpenAssetSettings?.(active)}
             title={he.assetSettings}
@@ -1896,6 +1928,10 @@ export default function LiveChart({
                     </li>
                   ))}
                 </ul>
+              ) : null}
+
+              {!pickList && !drawerDecision && !drawerLoading ? (
+                <p className="muted">{he.noRecentDecisions}</p>
               ) : null}
 
               {drawerDecision ? (
