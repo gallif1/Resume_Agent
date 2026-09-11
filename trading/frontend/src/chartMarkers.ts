@@ -156,46 +156,50 @@ export function toSeriesMarkers(groups: GroupedMarker[]): SeriesMarkerOut[] {
     let color = "#4da3ff";
     let shape: SeriesMarkerOut["shape"] = "arrowUp";
     let position: SeriesMarkerOut["position"] = "belowBar";
-    let size = 1;
+    // Keep markers compact so they never cover candles (LWC size is a multiplier).
+    let size = 0.7;
 
     if (g.primary === "fill_buy") {
       color = "#22c55e";
       shape = "arrowUp";
       position = "belowBar";
-      size = 2.5;
+      size = 1;
     } else if (g.primary === "fill_sell") {
       color = "#ef4444";
       shape = "arrowDown";
       position = "aboveBar";
-      size = 2.5;
+      size = 1;
     } else if (g.primary === "vote_buy") {
       color = "#4da3ff";
       shape = "arrowUp";
       position = "belowBar";
-      size = 1;
+      size = 0.6;
     } else if (g.primary === "vote_sell") {
       color = "#c084fc";
       shape = "arrowDown";
       position = "aboveBar";
-      size = 1;
+      size = 0.6;
     } else if (g.primary === "vote_hold") {
       color = "#9aa4b2";
       shape = "square";
       position = "inBar";
-      size = 0.8;
+      size = 0.5;
     } else if (g.primary === "rejected") {
       color = "#f0b429";
       shape = "square";
       position = "aboveBar";
-      size = 1;
+      size = 0.6;
     } else if (isFill && isBuy) {
       color = "#22c55e";
       shape = "arrowUp";
       position = "belowBar";
-      size = 2.5;
+      size = 1;
     }
 
-    const text = g.count > 1 ? `${g.count}· ${g.label}` : g.label;
+    // Short on-chart label only — full detail lives in the click drawer.
+    const fillCount = g.items.filter((i) => i.kind.startsWith("fill_")).length;
+    const text =
+      fillCount > 1 ? `×${fillCount}` : g.count > 1 && !isFill ? `×${g.count}` : "";
     return {
       time: g.time,
       position,
