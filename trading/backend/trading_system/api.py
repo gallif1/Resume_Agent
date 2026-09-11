@@ -131,6 +131,48 @@ async def trading_candles(
             )
         if before is not None:
             candles = [c for c in candles if c["ts"] < before][-limit:]
+        # Fall back to persisted SQLite candles (same store used by markers).
+        if not candles:
+            from .market_data.candle_store import get_market_db
+            from .market_snapshot import indicator_series_for_chart
+
+            rows = get_market_db().get_candles(
+                symbol.upper(), tf, limit=limit, before=before
+            )
+            candles = [
+                {
+                    "ts": float(c.ts),
+                    "open": float(c.open),
+                    "high": float(c.high),
+                    "low": float(c.low),
+                    "close": float(c.close),
+                    "volume": float(c.volume),
+                }
+                for c in rows
+            ]
+            from .market_data.models import Candle
+
+            objs = [
+                Candle(
+                    ts=c["ts"],
+                    open=c["open"],
+                    high=c["high"],
+                    low=c["low"],
+                    close=c["close"],
+                    volume=c["volume"],
+                )
+                for c in candles
+            ]
+            return {
+                "symbol": symbol.upper(),
+                "timeframe": tf,
+                "candles": candles,
+                "has_more": len(candles) >= limit,
+                "source": "simulated",
+                "provider": "simulated+db",
+                "unavailable": len(candles) == 0,
+                "indicators": indicator_series_for_chart(objs) if objs else {},
+            }
         return {
             "symbol": symbol.upper(),
             "timeframe": tf,
