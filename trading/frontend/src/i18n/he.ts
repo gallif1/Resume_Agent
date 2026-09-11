@@ -13,6 +13,7 @@ export const he = {
   realData: "נתוני שוק אמיתיים",
   simData: "נתונים מדומים",
   ticks: "טיקים",
+  paperOnly: "מסחר נייר בלבד — אין הזמנות אמיתיות",
 
   stateRunning: "פועל",
   statePaused: "מושהה",
@@ -78,6 +79,7 @@ export const he = {
   copiedN: (n: number) => `הועתקו ${n} יומנים`,
   clipboardBlocked: "לוח גזירים חסום ב-HTTP — סמן הכל למטה והעתק",
   copyFailed: "ההעתקה נכשלה — השתמש בתיבת הטקסט למטה",
+  copied: "הועתק",
 
   alreadyRunning: "כבר פועל — שינויי מזומן מגיעים מביצועי נייר במנוע ההחלטות.",
   notRunning: "המערכת לא פועלת.",
@@ -101,17 +103,18 @@ export const he = {
   markers: "סמנים",
   goLive: "עבור לחי",
   resetView: "אפס תצוגה",
-  agentDecisions: "החלטות סוכנים",
+  agentDecisions: "אותות / ניתוח",
   executedTrades: "עסקאות שבוצעו",
   buyMarkers: "סמני BUY",
   sellMarkers: "סמני SELL",
   holdDecisions: "החלטות HOLD",
+  blockedDecisions: "חסום על ידי סיכון",
   manualDrawings: "שרטוטים ידניים",
   decisionsCount: "החלטות",
   executedCount: "בוצעו",
   loading: "טוען…",
   dataUnavailable: "נתונים לא זמינים",
-  markerDetails: "פרטי סמן",
+  markerDetails: "כרטיס החלטה",
   closeDetails: "סגור פרטים",
   executionTime: "זמן ביצוע",
   candleTime: "זמן נר",
@@ -129,11 +132,12 @@ export const he = {
   status: "סטטוס",
   skipReason: "סיבת דילוג",
   drawings: "שרטוטים",
-  legendBuy: "משולש כחול: החלטת BUY של סוכן",
-  legendSell: "משולש סגול: החלטת SELL של סוכן",
+  legendBuy: "עיגול כחול: ניתוח / ללא עסקה",
+  legendSell: "עיגול כחול: אות ללא מילוי",
   legendFillBuy: "חץ ירוק: קניית נייר שבוצעה",
   legendFillSell: "חץ אדום: מכירת נייר שבוצעה",
-  legendYellow: "נקודה צהובה: אות אינדיקטור",
+  legendYellow: "ריבוע כתום: חסום על ידי סיכון",
+  legendHold: "אפור: HOLD (מוסתר כברירת מחדל)",
   unmappedTrades: (n: number) =>
     `${n} עסקאות לא ניתן למפות לנרות שנטענו`,
   support: "תמיכה",
@@ -148,6 +152,69 @@ export const he = {
   labelPrompt: "תווית",
   importancePrompt: "חשיבות (low|medium|high)",
   clearDrawingsConfirm: "למחוק את כל השרטוטים לסימול זה?",
+
+  // Decision card
+  whySystemActed: "למה המערכת פעלה",
+  whyMayBeWrong: "למה ההחלטה עלולה להיות שגויה",
+  decisionStrength: "חוזק ההחלטה",
+  marketEvidence: "ראיות שוק",
+  agentOpinions: "דעות סוכנים",
+  technicalDetails: "פרטים טכניים",
+  copyTechnical: "העתק פרטים",
+  agreement: "הסכמה",
+  riskLevel: "רמת סיכון",
+  freshness: "רעננות",
+  supporting: "תומך",
+  opposing: "מתנגד",
+  holdVote: "HOLD",
+  pickFill: "בחרו ביצוע מהנר",
+  openDecisionCard: "פתח כרטיס החלטה",
+  noSummary: "אין סיכום זמין להחלטה זו.",
+  decisionId: "מזהה החלטה",
+
+  // Indicators menu
+  indicatorPresets: "ערכות מוכנות",
+  presetBasic: "בסיסי",
+  presetMomentum: "מומנטום",
+  presetVolatility: "תנודתיות",
+  presetTrend: "מגמה",
+  resetIndicators: "אפס אינדיקטורים",
+  hideAllIndicators: "הסתר הכל",
+  lineWidth: "עובי קו",
+  period: "תקופה",
+  color: "צבע",
+  sma200Unavailable: "SMA 200 אינו זמין מהשרת",
+  showVolume: "נפח",
+
+  // Asset control
+  assetControl: "שליטה בנכסים",
+  noAssetsSelectedForTrade: "לא נבחרו נכסים למסחר",
+  modeDisabled: "מושבת",
+  modeMonitor: "ניטור",
+  modeTrade: "מסחר",
+  modeCloseOnly: "סגירה בלבד",
+  assetSettings: "הגדרות מסחר לנכס",
+  confirmEnableTrade: (symbol: string) =>
+    `האם לאפשר לסוכנים לבצע עסקאות Paper Trading ב־${symbol}?`,
+  saferModeNote: "מעבר למצב בטוח יותר — פוזיציה פתוחה תישאר; לא ייפתחו כניסות חדשות לפי המצב שנבחר.",
+  limits: "מגבלות",
+  position: "פוזיציה",
+  portfolioControls: "בקרות תיק",
+  pauseNewEntries: "השהה כניסות חדשות",
+  closeOnlyGlobal: "סגירה בלבד (גלובלי)",
+  maxPositions: "מקסימום פוזיציות",
+  maxExposure: "חשיפה מקסימלית",
+  maxDailyLoss: "הפסד יומי מקסימלי",
+  tooltipStart: "START — המערכת רצה; נכסים במצב מסחר יכולים לפתוח עסקאות נייר לפי מגבלות.",
+  tooltipPause: "PAUSE — השהיית כניסות חדשות ברמת התיק; ניתן לסגור/להקטין פוזיציות לפי מצב הנכס.",
+  tooltipStop: "STOP — עצירת המערכת; אין מחזורי החלטה חדשים עד התחלה מחדש.",
+  saveAsset: "שמור נכס",
+  saveControls: "שמור בקרות תיק",
+  assetMode: "מצב נכס",
+  minConfidence: "ביטחון מינימלי",
+  maxPositionSize: "גודל פוזיציה מקסימלי",
+  maxAllocation: "הקצאה מקסימלית",
+  noneTradingBanner: "לא נבחרו נכסים למסחר — ברירת מחדל היא ניטור בלבד.",
 } as const;
 
 export function stateLabel(state: string): string {
@@ -163,4 +230,13 @@ export function sessionLabel(cls: string, fallback: string): string {
   if (cls.includes("closed")) return he.marketClosed;
   if (cls.includes("open")) return he.marketOpen;
   return fallback;
+}
+
+export function assetModeLabel(mode: string): string {
+  const m = (mode || "").toUpperCase();
+  if (m === "DISABLED") return he.modeDisabled;
+  if (m === "MONITOR_ONLY") return he.modeMonitor;
+  if (m === "TRADE") return he.modeTrade;
+  if (m === "CLOSE_ONLY") return he.modeCloseOnly;
+  return mode || he.modeMonitor;
 }

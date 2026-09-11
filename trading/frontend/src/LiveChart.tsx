@@ -1,8 +1,8 @@
 /**
  * Professional candlestick chart (TradingView Lightweight Charts).
- * Persisted decision/fill markers via createSeriesMarkers; expand / fullscreen.
+ * UnifiedDecision markers via createSeriesMarkers; expand / fullscreen.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CandlestickSeries,
   ColorType,
@@ -18,7 +18,13 @@ import {
   type MouseEventParams,
   type Time,
 } from "lightweight-charts";
-import type { AgentVote, MarketMeta, TradeMarker } from "./api";
+import type {
+  AgentVote,
+  MarketMeta,
+  TradeMarker,
+  TradingAssetMode,
+  UnifiedDecision,
+} from "./api";
 import {
   clearAnnotations,
   createAnnotation,
@@ -26,6 +32,8 @@ import {
   fetchAnnotations,
   fetchCandles,
   fetchChartMarkers,
+  fetchUnifiedDecisionById,
+  fetchUnifiedDecisions,
   updateAnnotation,
   type ChartAnnotation,
   type OhlcCandle,
@@ -35,21 +43,83 @@ import {
   eventsToMarkerItems,
   groupMarkersOnCandle,
   mergeMarkerItems,
+  mergeUnifiedDecisions,
   normalizeSymbol,
   toSeriesMarkers,
   toUnixSeconds,
+  unifiedToMarkerItems,
   type DecisionMarkerItem,
   type GroupedMarker,
 } from "./chartMarkers";
-import { he } from "./i18n/he";
+import { copyTextToClipboard } from "./clipboard";
+import { assetModeLabel, he } from "./i18n/he";
 
 const DEFAULT_TFS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 const SIZE_KEY = "trading.chart.sizeMode";
 const HEIGHT_KEY = "trading.chart.heightPx";
+const IND_KEY = "trading.indicatorConfig";
 const MIN_CHART_H = 280;
 const MAX_CHART_H = 1200;
 
 type SizeMode = "normal" | "expanded";
+
+type IndKey =
+  | "sma_20"
+  | "sma_50"
+  | "sma_200"
+  | "ema_20"
+  | "ema_50"
+  | "bb"
+  | "vwap"
+  | "rsi"
+  | "macd"
+  | "atr"
+  | "volume";
+
+type IndStyle = { color: string; lineWidth: 1 | 2 | 3 | 4; period?: number };
+
+type IndicatorConfig = {
+  enabled: Partial<Record<IndKey, boolean>>;
+  styles: Partial<Record<IndKey, IndStyle>>;
+};
+
+const DEFAULT_STYLES: Record<IndKey, IndStyle> = {
+  sma_20: { color: "#f0b429", lineWidth: 2 },
+  sma_50: { color: "#c084fc", lineWidth: 2 },
+  sma_200: { color: "#fb7185", lineWidth: 2 },
+  ema_20: { color: "#7aa2ff", lineWidth: 2 },
+  ema_50: { color: "#3dd6c6", lineWidth: 2 },
+  bb: { color: "rgba(122,162,255,0.55)", lineWidth: 1 },
+  vwap: { color: "#ffffff", lineWidth: 2 },
+  rsi: { color: "#e0a21f", lineWidth: 2 },
+  macd: { color: "#7aa2ff", lineWidth: 2 },
+  atr: { color: "#f97316", lineWidth: 2 },
+  volume: { color: "#3dd6c6", lineWidth: 1 },
+};
+
+const DEFAULT_IND: IndicatorConfig = {
+  enabled: {
+    ema_20: true,
+    ema_50: true,
+    volume: true,
+    sma_20: false,
+    sma_50: false,
+    sma_200: false,
+    bb: false,
+    vwap: false,
+    rsi: false,
+    macd: false,
+    atr: false,
+  },
+  styles: { ...DEFAULT_STYLES },
+};
+
+const PRESETS: Record<string, Partial<Record<IndKey, boolean>>> = {
+  basic: { ema_20: true, ema_50: true, volume: true },
+  momentum: { ema_20: true, rsi: true, macd: true, volume: false },
+  volatility: { bb: true, atr: true, volume: true },
+  trend: { sma_50: true, sma_200: true, ema_20: true, vwap: true },
+};
 
 type Props = {
   symbols: string[];
@@ -81,9 +151,9 @@ type Props = {
   }>;
   wsState?: string;
   onLayoutModeChange?: (mode: SizeMode) => void;
+  assetModes?: Record<string, TradingAssetMode | string>;
+  onOpenAssetSettings?: (symbol: string) => void;
 };
-
-type IndKey = "sma_20" | "sma_50" | "ema_20" | "ema_50" | "bb" | "vwap" | "rsi" | "macd";
 
 function fmtPrice(n: number) {
   if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -115,121 +185,104 @@ function loadHeight(): number {
   return 420;
 }
 
-function liveTradeToItems(
-  trades: TradeMarker[],
-  votes: AgentVote[],
-  decisions: Props["decisions"],
-  symbol: string,
-  timeframe: string
-): DecisionMarkerItem[] {
-  const sym = normalizeSymbol(symbol);
-  const events: Array<Record<string, unknown>> = [];
-  for (const t of trades) {
-    if (normalizeSymbol(t.symbol) !== sym) continue;
-    events.push({
-      event_type: "fill",
-      event_id: t.id,
-      id: `fill:${t.id}`,
-      key: `fill:${t.id}`,
-      symbol: sym,
-      side: t.side,
-      ts: t.ts,
-      price: t.price,
-      quantity: t.quantity,
-      confidence: t.confidence,
-      status: "FILLED",
-      payload: {
-        fill_id: t.id,
-        order_id: t.id,
-        fill_price: t.price,
-        agents: (t.agents || []).map((a) => ({
-          agent_name: a.name || a.id,
-          agent_id: a.id,
-        })),
-        final_decision: t.side,
-      },
-    });
+function loadIndicatorConfig(): IndicatorConfig {
+  try {
+    const raw = localStorage.getItem(IND_KEY);
+    if (!raw) return DEFAULT_IND;
+    const parsed = JSON.parse(raw) as Partial<IndicatorConfig>;
+    return {
+      enabled: { ...DEFAULT_IND.enabled, ...(parsed.enabled || {}) },
+      styles: { ...DEFAULT_STYLES, ...(parsed.styles || {}) },
+    };
+  } catch {
+    return DEFAULT_IND;
   }
-  for (const v of votes) {
-    if (normalizeSymbol(v.symbol) !== sym) continue;
-    if (v.side !== "BUY" && v.side !== "SELL" && v.side !== "HOLD") continue;
-    events.push({
-      event_type: "agent_vote",
-      event_id: `${v.agent_id}-${v.ts}`,
-      id: `agent_vote:${v.agent_id}-${v.ts}`,
-      key: `agent_vote:${v.agent_id}-${v.ts}`,
-      symbol: sym,
+}
+
+function decisionToUnifiedStub(
+  d: NonNullable<Props["decisions"]>[number]
+): UnifiedDecision {
+  const status = d.executed ? "FILLED" : d.side === "HOLD" ? "HOLD" : "SIGNAL";
+  const qty = d.quantity ?? null;
+  const px = d.fill_price ?? null;
+  return {
+    decision_id: d.id,
+    symbol: d.symbol,
+    decision_time: d.ts,
+    final_action: d.side,
+    confidence: d.confidence,
+    status,
+    quantity: qty,
+    fill_price: px,
+    total_value: qty != null && px != null ? Number(qty) * Number(px) : null,
+    summary: d.rationale || undefined,
+    primary_reasons: d.rationale ? [d.rationale] : undefined,
+    agent_votes: (d.votes || []).map((v) => ({
+      agent_id: v.agent_id,
+      agent_name: v.agent_name,
       side: v.side,
-      ts: v.ts,
       confidence: v.confidence,
-      status: "VOTE",
-      payload: {
-        agent_name: v.agent_name,
-        agent_id: v.agent_id,
-        reason: v.rationale,
-        final_decision: v.side,
-      },
-    });
+      rationale: v.rationale,
+    })),
+  };
+}
+
+function tradeToUnifiedStub(t: TradeMarker): UnifiedDecision {
+  return {
+    decision_id: t.id,
+    symbol: t.symbol,
+    decision_time: t.ts,
+    final_action: t.side,
+    confidence: t.confidence ?? 0,
+    status: "FILLED",
+    quantity: t.quantity ?? null,
+    fill_price: t.price ?? null,
+    total_value:
+      t.quantity != null && t.price != null ? Number(t.quantity) * Number(t.price) : null,
+    agent_votes: (t.agents || []).map((a) => ({
+      agent_id: a.id,
+      agent_name: a.name,
+      side: a.side,
+      confidence: a.confidence,
+    })),
+  };
+}
+
+function valueAtTime(
+  series: Array<{ time: number; value: number }> | undefined,
+  time: number
+): number | null {
+  if (!series?.length) return null;
+  let best: number | null = null;
+  for (const p of series) {
+    if (p.time === time) return p.value;
+    if (p.time <= time) best = p.value;
   }
-  for (const d of decisions || []) {
-    if (normalizeSymbol(d.symbol) !== sym) continue;
-    if (d.executed) {
-      events.push({
-        event_type: "fill",
-        event_id: d.id,
-        id: `fill:${d.id}`,
-        key: `fill:${d.id}`,
-        symbol: sym,
-        side: d.side,
-        ts: d.ts,
-        price: d.fill_price,
-        quantity: d.quantity,
-        confidence: d.confidence,
-        status: "FILLED",
-        payload: {
-          fill_id: d.id,
-          order_id: d.id,
-          fill_price: d.fill_price,
-          agents: (d.votes || []).map((a) => ({
-            agent_name: a.agent_name,
-            agent_id: a.agent_id,
-            side: a.side,
-            confidence: a.confidence,
-          })),
-          final_decision: d.side,
-          rationale: d.rationale,
-        },
-      });
-    } else if (d.side !== "HOLD") {
-      events.push({
-        event_type: "decision",
-        event_id: d.id,
-        id: `decision:${d.id}`,
-        key: `decision:${d.id}`,
-        symbol: sym,
-        side: d.side,
-        ts: d.ts,
-        confidence: d.confidence,
-        status: "SIGNAL",
-        payload: {
-          rationale: d.rationale,
-          skip_reason: d.rationale,
-          final_decision: d.side,
-          agents: (d.votes || []).map((a) => ({
-            agent_name: a.agent_name,
-            agent_id: a.agent_id,
-          })),
-        },
-      });
-    }
-  }
-  return eventsToMarkerItems(events, timeframe);
+  return best;
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  if (children == null || children === "" || children === "—") return null;
+  return (
+    <div className="ud-field">
+      <dt>{label}</dt>
+      <dd dir="ltr" className="mono">
+        {children}
+      </dd>
+    </div>
+  );
 }
 
 export default function LiveChart({
   symbols,
   trades,
-  votes,
+  votes: _votes,
   decisions = [],
   timeframe,
   timeframes,
@@ -240,11 +293,15 @@ export default function LiveChart({
   candleUpdates = [],
   wsState = "connecting",
   onLayoutModeChange,
+  assetModes = {},
+  onOpenAssetSettings,
 }: Props) {
+  void _votes; // votes are not primary markers (UnifiedDecision only)
   const [symbol, setSymbol] = useState(symbols[0] || "BTC-USD");
   const active = symbols.includes(symbol) ? symbol : symbols[0] || symbol;
   const tfs = timeframes.length ? timeframes : DEFAULT_TFS;
   const meta = marketMeta?.symbols?.[active];
+  const activeMode = String(assetModes[active] || assetModes[normalizeSymbol(active)] || "MONITOR_ONLY");
 
   const panelRef = useRef<HTMLElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -259,6 +316,7 @@ export default function LiveChart({
   const candlesRef = useRef<OhlcCandle[]>([]);
   const groupedRef = useRef<GroupedMarker[]>([]);
   const sizeBeforeFsRef = useRef<SizeMode>("normal");
+  const indicatorsRef = useRef<Record<string, Array<{ time: number; value: number }>>>({});
 
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -272,29 +330,34 @@ export default function LiveChart({
     close: number;
     volume: number;
     changePct: number;
+    ind: Array<{ key: string; value: number }>;
   } | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [indicators, setIndicators] = useState<Record<string, Array<{ time: number; value: number }>>>({});
+  const [indConfig, setIndConfig] = useState<IndicatorConfig>(() => loadIndicatorConfig());
   const [showVotes, setShowVotes] = useState(true);
   const [showFills, setShowFills] = useState(true);
   const [showBuy, setShowBuy] = useState(true);
   const [showSell, setShowSell] = useState(true);
   const [showHold, setShowHold] = useState(false);
+  const [showBlocked, setShowBlocked] = useState(true);
   const [showDrawings, setShowDrawings] = useState(true);
   const [showIndicators, setShowIndicators] = useState(true);
-  const [activeInd, setActiveInd] = useState<Partial<Record<IndKey, boolean>>>({
-    sma_20: true,
-    sma_50: false,
-    ema_20: false,
-  });
   const [drawMode, setDrawMode] = useState<"none" | "SUPPORT" | "RESISTANCE" | "TREND_LINE" | "TEXT_NOTE">(
     "none"
   );
   const [annotations, setAnnotations] = useState<ChartAnnotation[]>([]);
   const [selectedAnn, setSelectedAnn] = useState<string | null>(null);
   const [groupedOpen, setGroupedOpen] = useState<GroupedMarker | null>(null);
+  const [pickList, setPickList] = useState<DecisionMarkerItem[] | null>(null);
+  const [drawerDecision, setDrawerDecision] = useState<UnifiedDecision | null>(null);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [agentsOpen, setAgentsOpen] = useState(false);
+  const [techOpen, setTechOpen] = useState(false);
+  const [copyMsg, setCopyMsg] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [persistedMarkers, setPersistedMarkers] = useState<DecisionMarkerItem[]>([]);
+  const [unifiedRows, setUnifiedRows] = useState<UnifiedDecision[]>([]);
+  const [persistedFallback, setPersistedFallback] = useState<DecisionMarkerItem[]>([]);
   const [unmappedFills, setUnmappedFills] = useState(0);
   const [sizeMode, setSizeMode] = useState<SizeMode>(() => loadSizeMode());
   const [chartHeight, setChartHeight] = useState(() => loadHeight());
@@ -304,8 +367,11 @@ export default function LiveChart({
   const trendDraftRef = useRef<{ time: number; price: number } | null>(null);
   const logicalRangeRef = useRef<{ from: number; to: number } | null>(null);
 
-  const lastCandle = candlesRef.current[candlesRef.current.length - 1];
   const expanded = sizeMode === "expanded";
+  const enabled = indConfig.enabled;
+  const styles = indConfig.styles;
+
+  indicatorsRef.current = indicators;
 
   const resizeChartToContainer = useCallback(() => {
     const chart = chartRef.current;
@@ -351,11 +417,18 @@ export default function LiveChart({
   }, [chartHeight]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(IND_KEY, JSON.stringify(indConfig));
+    } catch {
+      /* */
+    }
+  }, [indConfig]);
+
+  useEffect(() => {
     document.body.classList.toggle("chart-expanded-body", expanded);
     return () => document.body.classList.remove("chart-expanded-body");
   }, [expanded]);
 
-  // Preserve zoom/scroll across expand/collapse, then resize to the live container.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -389,36 +462,50 @@ export default function LiveChart({
     const onFs = () => {
       const fs = !!document.fullscreenElement;
       setIsFullscreen(fs);
-      if (!fs && sizeBeforeFsRef.current) {
-        // keep expanded workspace after leaving browser fullscreen unless user collapsed
-      }
       requestAnimationFrame(() => resizeChartToContainer());
     };
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, [resizeChartToContainer]);
 
-  const liveItems = useMemo(
-    () => liveTradeToItems(trades, votes, decisions, active, timeframe),
-    [trades, votes, decisions, active, timeframe]
+  // Merge live decisions/trades into unified rows without duplicates by decision_id.
+  useEffect(() => {
+    const sym = normalizeSymbol(active);
+    const live: UnifiedDecision[] = [];
+    for (const d of decisions) {
+      if (normalizeSymbol(d.symbol) !== sym) continue;
+      live.push(decisionToUnifiedStub(d));
+    }
+    for (const t of trades) {
+      if (normalizeSymbol(t.symbol) !== sym) continue;
+      live.push(tradeToUnifiedStub(t));
+    }
+    if (!live.length) return;
+    setUnifiedRows((prev) => mergeUnifiedDecisions(prev, live));
+  }, [decisions, trades, active]);
+
+  const unifiedItems = useMemo(
+    () => unifiedToMarkerItems(unifiedRows, timeframe),
+    [unifiedRows, timeframe]
   );
 
   const allItems = useMemo(
-    () => mergeMarkerItems(persistedMarkers, liveItems),
-    [persistedMarkers, liveItems]
+    () => mergeMarkerItems(unifiedItems, persistedFallback),
+    [unifiedItems, persistedFallback]
   );
 
   const filteredItems = useMemo(() => {
     return allItems.filter((it) => {
-      if (it.kind.startsWith("fill_") && !showFills) return false;
-      if ((it.kind.startsWith("vote_") || it.kind === "rejected") && !showVotes) return false;
-      if (it.kind === "vote_hold" && !showHold) return false;
+      if ((it.kind === "fill_buy" || it.kind === "fill_sell") && !showFills) return false;
+      if ((it.kind === "signal" || it.kind.startsWith("vote_")) && !showVotes) return false;
+      if ((it.kind === "blocked" || it.kind === "rejected") && !showBlocked) return false;
+      if ((it.kind === "hold" || it.kind === "vote_hold") && !showHold) return false;
       if (it.action === "BUY" && !showBuy) return false;
       if (it.action === "SELL" && !showSell) return false;
       if (it.action === "HOLD" && !showHold) return false;
       return true;
     });
-  }, [allItems, showVotes, showFills, showBuy, showSell, showHold]);
+  }, [allItems, showVotes, showFills, showBuy, showSell, showHold, showBlocked]);
 
   const grouped = useMemo(
     () => groupMarkersOnCandle(filteredItems, timeframe),
@@ -426,15 +513,9 @@ export default function LiveChart({
   );
   groupedRef.current = grouped;
 
-  const decisionCount = useMemo(
-    () =>
-      allItems.filter(
-        (i) => i.eventType === "agent_vote" || i.eventType === "decision" || i.kind.startsWith("vote_")
-      ).length,
-    [allItems]
-  );
+  const decisionCount = useMemo(() => allItems.length, [allItems]);
   const fillCount = useMemo(
-    () => allItems.filter((i) => i.kind.startsWith("fill_") || i.filled).length,
+    () => allItems.filter((i) => i.kind === "fill_buy" || i.kind === "fill_sell").length,
     [allItems]
   );
 
@@ -463,49 +544,44 @@ export default function LiveChart({
     }
   }, []);
 
-  const loadMarkers = useCallback(
-    async (sym: string, tf: string, rows: OhlcCandle[]) => {
-      const candleTs = new Set(rows.map((c) => c.ts));
-      try {
-        const fromTs = rows.length ? rows[0].ts - 1 : undefined;
-        const toTs = rows.length ? rows[rows.length - 1].ts + 86400 : undefined;
-        const [inRange, allSym] = await Promise.all([
-          fetchChartMarkers(sym, tf, fromTs, toTs),
-          fetchChartMarkers(sym, tf),
-        ]);
-        const items = eventsToMarkerItems(
-          (inRange.markers || []) as Array<Record<string, unknown>>,
-          tf
-        );
-        setPersistedMarkers(items);
+  const loadMarkers = useCallback(async (sym: string, tf: string, rows: OhlcCandle[]) => {
+    const candleTs = new Set(rows.map((c) => c.ts));
+    try {
+      const fromTs = rows.length ? rows[0].ts - 1 : undefined;
+      const toTs = rows.length ? rows[rows.length - 1].ts + 86400 : undefined;
+      const [unifiedRes, markersRes] = await Promise.all([
+        fetchUnifiedDecisions(sym, { fromTs, toTs, timeframe: tf }).catch(() => null),
+        fetchChartMarkers(sym, tf, fromTs, toTs).catch(() => null),
+      ]);
+      const fromApi = mergeUnifiedDecisions(
+        unifiedRes?.unified || [],
+        markersRes?.unified || []
+      );
+      setUnifiedRows((prev) => mergeUnifiedDecisions(prev, fromApi));
 
-        const fills = (allSym.markers || []).filter((m) => m.event_type === "fill");
-        let unmapped = 0;
-        for (const f of fills) {
-          const bucket = candleBucketTs(Number(f.ts), tf);
-          if (candleTs.size && !candleTs.has(bucket)) {
-            unmapped += 1;
-            if (import.meta.env.DEV) {
-              console.warn("[chart-markers] unmapped fill", {
-                id: f.id,
-                symbol: f.symbol,
-                ts: f.ts,
-                bucket,
-                timeframe: tf,
-                reason: "no candle at bucket open",
-              });
-            }
-          }
-        }
-        setUnmappedFills(unmapped);
-      } catch (err) {
-        if (import.meta.env.DEV) console.warn("[chart-markers] load failed", err);
-        setPersistedMarkers([]);
-        setUnmappedFills(0);
+      // Fallback only when no unified rows: fills/decisions from paper events (not votes).
+      if (!fromApi.length && markersRes?.markers?.length) {
+        setPersistedFallback(
+          eventsToMarkerItems(markersRes.markers as Array<Record<string, unknown>>, tf)
+        );
+      } else {
+        setPersistedFallback([]);
       }
-    },
-    []
-  );
+
+      const fills = (markersRes?.markers || []).filter((m) => m.event_type === "fill");
+      let unmapped = 0;
+      for (const f of fills) {
+        const bucket = candleBucketTs(Number(f.ts), tf);
+        if (candleTs.size && !candleTs.has(bucket)) {
+          unmapped += 1;
+        }
+      }
+      setUnmappedFills(unmapped);
+    } catch (err) {
+      if (import.meta.env.DEV) console.warn("[chart-markers] load failed", err);
+      setUnmappedFills(0);
+    }
+  }, []);
 
   const loadCandles = useCallback(
     async (sym: string, tf: string, before?: number) => {
@@ -515,7 +591,7 @@ export default function LiveChart({
         setLoadingOlder(true);
       } else {
         setLoading(true);
-        setPersistedMarkers([]);
+        setPersistedFallback([]);
         setUnmappedFills(0);
       }
       try {
@@ -543,7 +619,7 @@ export default function LiveChart({
         if (!before) {
           setUnavailable(true);
           applyCandleData([]);
-          setPersistedMarkers([]);
+          setPersistedFallback([]);
         }
       } finally {
         setLoading(false);
@@ -560,6 +636,45 @@ export default function LiveChart({
       setAnnotations(res.annotations || []);
     } catch {
       setAnnotations([]);
+    }
+  }, []);
+
+  const openDecisionCard = useCallback(async (item: DecisionMarkerItem) => {
+    setPickList(null);
+    setDrawerLoading(true);
+    setDrawerOpen(true);
+    setAgentsOpen(false);
+    setTechOpen(false);
+    try {
+      if (item.unified && (item.unified.primary_reasons || item.unified.summary)) {
+        setDrawerDecision(item.unified);
+        return;
+      }
+      const id = item.decisionId || item.eventId;
+      if (id) {
+        const res = await fetchUnifiedDecisionById(id);
+        if (res.ok && res.unified) {
+          setDrawerDecision(res.unified);
+          setUnifiedRows((prev) => mergeUnifiedDecisions(prev, [res.unified!]));
+          return;
+        }
+      }
+      setDrawerDecision(
+        item.unified || {
+          decision_id: id || item.id,
+          symbol: item.symbol,
+          decision_time: item.timestamp,
+          final_action: item.action,
+          confidence: item.confidence || 0,
+          status: item.status || (item.filled ? "FILLED" : "SIGNAL"),
+          quantity: item.quantity,
+          fill_price: item.price,
+          total_value: item.totalValue,
+          summary: item.reason || undefined,
+        }
+      );
+    } finally {
+      setDrawerLoading(false);
     }
   }, []);
 
@@ -631,14 +746,34 @@ export default function LiveChart({
       }
       const volRaw = param.seriesData.get(volumeSeries) as { value: number } | undefined;
       const changePct = raw.open ? ((raw.close - raw.open) / raw.open) * 100 : 0;
+      const t = Number(raw.time);
+      const indMap = indicatorsRef.current;
+      const indVals: Array<{ key: string; value: number }> = [];
+      const pushInd = (key: string, seriesKey: string) => {
+        const v = valueAtTime(indMap[seriesKey], t);
+        if (v != null) indVals.push({ key, value: v });
+      };
+      pushInd("EMA20", "ema_20");
+      pushInd("EMA50", "ema_50");
+      pushInd("SMA20", "sma_20");
+      pushInd("SMA50", "sma_50");
+      pushInd("SMA200", "sma_200");
+      pushInd("VWAP", "vwap");
+      pushInd("RSI", "rsi_14");
+      pushInd("MACD", "macd");
+      pushInd("ATR", "atr_14");
+      pushInd("BB-U", "bb_upper");
+      pushInd("BB-M", "bb_mid");
+      pushInd("BB-L", "bb_lower");
       setHover({
-        time: Number(raw.time),
+        time: t,
         open: raw.open,
         high: raw.high,
         low: raw.low,
         close: raw.close,
         volume: volRaw?.value ?? 0,
         changePct,
+        ind: indVals,
       });
     });
 
@@ -718,7 +853,20 @@ export default function LiveChart({
         const hit = groupedRef.current.find((g) => Math.abs(g.time - time) < 1);
         if (hit) {
           setGroupedOpen(hit);
-          setDrawerOpen(true);
+          const fills = hit.items.filter((i) => i.kind === "fill_buy" || i.kind === "fill_sell");
+          if (fills.length > 1) {
+            setPickList(fills);
+            setDrawerDecision(null);
+            setDrawerOpen(true);
+          } else if (hit.items.length === 1) {
+            void openDecisionCard(hit.items[0]);
+          } else if (fills.length === 1) {
+            void openDecisionCard(fills[0]);
+          } else {
+            setPickList(hit.items);
+            setDrawerDecision(null);
+            setDrawerOpen(true);
+          }
         }
       }
     };
@@ -736,7 +884,6 @@ export default function LiveChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Attach series markers whenever groups change (survives live candle updates)
   useEffect(() => {
     const plugin = markersPluginRef.current;
     if (!plugin) return;
@@ -752,16 +899,18 @@ export default function LiveChart({
     plugin.setMarkers(seriesMarkers);
   }, [grouped]);
 
-  // Reload on symbol/timeframe — clear prior symbol markers first
   useEffect(() => {
     followLiveRef.current = true;
     setGroupedOpen(null);
-    setPersistedMarkers([]);
+    setPickList(null);
+    setDrawerDecision(null);
+    setDrawerOpen(false);
+    setUnifiedRows([]);
+    setPersistedFallback([]);
     void loadCandles(active, timeframe);
     void loadAnnotations(active);
   }, [active, timeframe, loadCandles, loadAnnotations]);
 
-  // Incremental candle updates — markers stay via separate effect
   useEffect(() => {
     const series = candleSeriesRef.current;
     const vol = volumeSeriesRef.current;
@@ -777,7 +926,7 @@ export default function LiveChart({
         close: c.close,
       };
       series.update(data);
-      if (vol) {
+      if (vol && enabled.volume !== false) {
         vol.update({
           time: toChartTime(c.ts),
           value: c.volume,
@@ -794,7 +943,14 @@ export default function LiveChart({
         chartRef.current.timeScale().scrollToRealTime();
       }
     }
-  }, [candleUpdates, active, timeframe]);
+  }, [candleUpdates, active, timeframe, enabled.volume]);
+
+  // Volume visibility
+  useEffect(() => {
+    const vol = volumeSeriesRef.current;
+    if (!vol) return;
+    vol.applyOptions({ visible: showIndicators && enabled.volume !== false });
+  }, [showIndicators, enabled.volume]);
 
   // Indicator overlays
   useEffect(() => {
@@ -810,50 +966,64 @@ export default function LiveChart({
     overlayRefs.current = {};
     if (!showIndicators) return;
 
-    const addLine = (key: string, color: string, dataKey: string) => {
+    const addLine = (
+      key: string,
+      color: string,
+      dataKey: string,
+      lineWidth: 1 | 2 | 3 | 4 = 2,
+      priceScaleId?: string,
+      pane?: number
+    ) => {
       const data = indicators[dataKey] || [];
       if (!data.length) return;
-      const s = chart.addSeries(LineSeries, {
-        color,
-        lineWidth: 2,
-        priceLineVisible: false,
-        lastValueVisible: false,
-      });
+      const s = chart.addSeries(
+        LineSeries,
+        {
+          color,
+          lineWidth,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          priceScaleId: priceScaleId || "right",
+        },
+        pane ?? 0
+      );
       s.setData(data.map((d) => ({ time: toChartTime(d.time), value: d.value })));
       overlayRefs.current[key] = s;
     };
-    if (activeInd.sma_20) addLine("sma_20", "#f0b429", "sma_20");
-    if (activeInd.sma_50) addLine("sma_50", "#c084fc", "sma_50");
-    if (activeInd.ema_20) addLine("ema_20", "#7aa2ff", "ema_20");
-    if (activeInd.ema_50) addLine("ema_50", "#3dd6c6", "ema_50");
-    if (activeInd.vwap) addLine("vwap", "#ffffff", "vwap");
-    if (activeInd.bb) {
-      addLine("bb_u", "rgba(122,162,255,0.5)", "bb_upper");
-      addLine("bb_m", "rgba(122,162,255,0.35)", "bb_mid");
-      addLine("bb_l", "rgba(122,162,255,0.5)", "bb_lower");
-    }
-    if (activeInd.rsi) {
-      const s = chart.addSeries(
-        LineSeries,
-        { color: "#e0a21f", lineWidth: 2, priceScaleId: "rsi" },
-        2
-      );
-      s.setData((indicators.rsi_14 || []).map((d) => ({ time: toChartTime(d.time), value: d.value })));
-      overlayRefs.current.rsi = s;
-      chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-    }
-    if (activeInd.macd) {
-      const s = chart.addSeries(
-        LineSeries,
-        { color: "#7aa2ff", lineWidth: 2, priceScaleId: "macd" },
-        2
-      );
-      s.setData((indicators.macd || []).map((d) => ({ time: toChartTime(d.time), value: d.value })));
-      overlayRefs.current.macd = s;
-    }
-  }, [indicators, activeInd, showIndicators]);
 
-  // Drawings as price lines
+    const lw = (k: IndKey) => styles[k]?.lineWidth || DEFAULT_STYLES[k].lineWidth;
+    const col = (k: IndKey) => styles[k]?.color || DEFAULT_STYLES[k].color;
+
+    if (enabled.sma_20) addLine("sma_20", col("sma_20"), "sma_20", lw("sma_20"));
+    if (enabled.sma_50) addLine("sma_50", col("sma_50"), "sma_50", lw("sma_50"));
+    if (enabled.sma_200) {
+      if ((indicators.sma_200 || []).length) {
+        addLine("sma_200", col("sma_200"), "sma_200", lw("sma_200"));
+      }
+      // else skip gracefully — backend may only expose sma_50
+    }
+    if (enabled.ema_20) addLine("ema_20", col("ema_20"), "ema_20", lw("ema_20"));
+    if (enabled.ema_50) addLine("ema_50", col("ema_50"), "ema_50", lw("ema_50"));
+    if (enabled.vwap) addLine("vwap", col("vwap"), "vwap", lw("vwap"));
+    if (enabled.bb) {
+      addLine("bb_u", col("bb"), "bb_upper", lw("bb"));
+      addLine("bb_m", "rgba(122,162,255,0.35)", "bb_mid", 1);
+      addLine("bb_l", col("bb"), "bb_lower", lw("bb"));
+    }
+    if (enabled.rsi) {
+      addLine("rsi", col("rsi"), "rsi_14", lw("rsi"), "rsi", 2);
+      chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    }
+    if (enabled.macd) {
+      addLine("macd", col("macd"), "macd", lw("macd"), "macd", 2);
+      chart.priceScale("macd").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    }
+    if (enabled.atr) {
+      addLine("atr", col("atr"), "atr_14", lw("atr"), "atr", 2);
+      chart.priceScale("atr").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    }
+  }, [indicators, enabled, styles, showIndicators]);
+
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series) return;
@@ -904,7 +1074,40 @@ export default function LiveChart({
   const closeDrawer = () => {
     setDrawerOpen(false);
     setGroupedOpen(null);
+    setPickList(null);
+    setDrawerDecision(null);
   };
+
+  const applyPreset = (name: keyof typeof PRESETS) => {
+    const preset = PRESETS[name];
+    const nextEnabled: Partial<Record<IndKey, boolean>> = {};
+    for (const k of Object.keys(DEFAULT_IND.enabled) as IndKey[]) {
+      nextEnabled[k] = false;
+    }
+    for (const [k, v] of Object.entries(preset)) {
+      nextEnabled[k as IndKey] = !!v;
+    }
+    if (name === "trend" && !(indicators.sma_200 || []).length) {
+      nextEnabled.sma_200 = false;
+    }
+    setIndConfig((p) => ({ ...p, enabled: nextEnabled }));
+    setShowIndicators(true);
+  };
+
+  const toggleInd = (k: IndKey) => {
+    setIndConfig((p) => ({
+      ...p,
+      enabled: { ...p.enabled, [k]: !p.enabled[k] },
+    }));
+  };
+
+  const hideAllInd = () => {
+    const next: Partial<Record<IndKey, boolean>> = {};
+    for (const k of Object.keys(DEFAULT_IND.enabled) as IndKey[]) next[k] = false;
+    setIndConfig((p) => ({ ...p, enabled: next }));
+  };
+
+  const resetInd = () => setIndConfig(DEFAULT_IND);
 
   const enterFullscreen = async () => {
     sizeBeforeFsRef.current = sizeMode;
@@ -983,12 +1186,55 @@ export default function LiveChart({
     }
   };
 
+  const copyTechnical = async () => {
+    if (!drawerDecision) return;
+    const payload = {
+      decision_id: drawerDecision.decision_id,
+      execution: drawerDecision.execution || {},
+      raw_events: drawerDecision.raw_events || [],
+      engine: drawerDecision.engine || {},
+      portfolio_context: drawerDecision.portfolio_context || {},
+    };
+    const result = await copyTextToClipboard(JSON.stringify(payload, null, 2));
+    setCopyMsg(result === "ok" ? he.copied : he.clipboardBlocked);
+    window.setTimeout(() => setCopyMsg(null), 2000);
+  };
+
   const canvasStyle =
     expanded || isFullscreen
       ? undefined
       : { height: isMobile ? "min(55vh, 420px)" : `${chartHeight}px` };
 
-  const showDrawer = drawerOpen && !!groupedOpen;
+  const showDrawer = drawerOpen && (!!drawerDecision || !!pickList);
+  const sma200Missing = enabled.sma_200 && !(indicators.sma_200 || []).length;
+
+  const agreementText = (u: UnifiedDecision) => {
+    const a = u.agreement;
+    if (!a || (a.total == null && a.supporting == null)) return null;
+    return `${he.supporting} ${a.supporting ?? 0} · ${he.opposing} ${a.opposing ?? 0} · ${a.total ?? 0}`;
+  };
+
+  const freshnessText = (u: UnifiedDecision) => {
+    const dq = u.data_quality || {};
+    const f = dq.freshness ?? dq.stale;
+    if (f == null || f === "") return null;
+    if (typeof f === "boolean") return f ? he.staleData : "live";
+    return String(f);
+  };
+
+  const interpretedList = (u: UnifiedDecision): string[] => {
+    const raw = u.interpreted_signals;
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+    return Object.entries(raw).map(([k, v]) => `${k}: ${String(v)}`);
+  };
+
+  const indicatorsUsedList = (u: UnifiedDecision): string[] => {
+    const ind = u.indicators_used || {};
+    return Object.entries(ind)
+      .filter(([, v]) => v != null && v !== "")
+      .map(([k, v]) => `${k}=${typeof v === "number" ? Number(v).toFixed(4) : String(v)}`);
+  };
 
   return (
     <section
@@ -1000,16 +1246,22 @@ export default function LiveChart({
     >
       <div className="chart-toolbar chart-toolbar-compact">
         <div className="symbol-tabs" role="tablist">
-          {symbols.map((sym) => (
-            <button
-              key={sym}
-              type="button"
-              className={`symbol-tab ${sym === active ? "active" : ""}`}
-              onClick={() => setSymbol(sym)}
-            >
-              {sym}
-            </button>
-          ))}
+          {symbols.map((sym) => {
+            const mode = String(assetModes[sym] || "MONITOR_ONLY");
+            return (
+              <button
+                key={sym}
+                type="button"
+                className={`symbol-tab ${sym === active ? "active" : ""}`}
+                onClick={() => setSymbol(sym)}
+              >
+                <span dir="ltr">{sym}</span>
+                <span className={`asset-mode-chip mode-${mode.toLowerCase()}`}>
+                  {assetModeLabel(mode)}
+                </span>
+              </button>
+            );
+          })}
         </div>
         <div className="tf-tabs">
           {tfs.map((tf) => (
@@ -1025,30 +1277,128 @@ export default function LiveChart({
           ))}
         </div>
         <div className="chart-actions">
-          <details className="chart-menu">
+          <button
+            type="button"
+            className="chart-ctrl-btn"
+            onClick={() => onOpenAssetSettings?.(active)}
+            title={he.assetSettings}
+          >
+            {he.assetSettings}
+          </button>
+          <details className="chart-menu chart-menu-wide">
             <summary>{he.indicators}</summary>
-            <div className="chart-menu-body">
+            <div className="chart-menu-body ind-menu">
+              <div className="ind-presets">
+                <span className="muted">{he.indicatorPresets}</span>
+                <button type="button" onClick={() => applyPreset("basic")}>
+                  {he.presetBasic}
+                </button>
+                <button type="button" onClick={() => applyPreset("momentum")}>
+                  {he.presetMomentum}
+                </button>
+                <button type="button" onClick={() => applyPreset("volatility")}>
+                  {he.presetVolatility}
+                </button>
+                <button type="button" onClick={() => applyPreset("trend")}>
+                  {he.presetTrend}
+                </button>
+              </div>
               {(
                 [
-                  ["sma_20", "SMA 20"],
-                  ["sma_50", "SMA 50"],
                   ["ema_20", "EMA 20"],
                   ["ema_50", "EMA 50"],
+                  ["sma_20", "SMA 20"],
+                  ["sma_50", "SMA 50"],
+                  ["sma_200", "SMA 200"],
                   ["bb", "Bollinger"],
                   ["vwap", "VWAP"],
                   ["rsi", "RSI 14"],
                   ["macd", "MACD"],
+                  ["atr", "ATR 14"],
+                  ["volume", he.showVolume],
                 ] as const
               ).map(([k, label]) => (
-                <label key={k} className="chk">
-                  <input
-                    type="checkbox"
-                    checked={!!activeInd[k]}
-                    onChange={(e) => setActiveInd((p) => ({ ...p, [k]: e.target.checked }))}
-                  />
-                  {label}
-                </label>
+                <div key={k} className="ind-row">
+                  <label className="chk">
+                    <input
+                      type="checkbox"
+                      checked={!!enabled[k]}
+                      onChange={() => toggleInd(k)}
+                    />
+                    <button
+                      type="button"
+                      className="ind-legend-btn"
+                      style={{ color: styles[k]?.color || DEFAULT_STYLES[k].color }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        toggleInd(k);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  </label>
+                  {k !== "volume" && k !== "bb" ? (
+                    <label className="ind-width muted">
+                      {he.lineWidth}
+                      <select
+                        value={styles[k]?.lineWidth || 2}
+                        onChange={(e) =>
+                          setIndConfig((p) => ({
+                            ...p,
+                            styles: {
+                              ...p.styles,
+                              [k]: {
+                                ...(p.styles[k] || DEFAULT_STYLES[k]),
+                                lineWidth: Number(e.target.value) as 1 | 2 | 3 | 4,
+                              },
+                            },
+                          }))
+                        }
+                      >
+                        {[1, 2, 3, 4].map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  {k !== "volume" ? (
+                    <input
+                      type="color"
+                      aria-label={he.color}
+                      value={
+                        (styles[k]?.color || DEFAULT_STYLES[k].color).startsWith("#")
+                          ? styles[k]?.color || DEFAULT_STYLES[k].color
+                          : "#7aa2ff"
+                      }
+                      onChange={(e) =>
+                        setIndConfig((p) => ({
+                          ...p,
+                          styles: {
+                            ...p.styles,
+                            [k]: {
+                              ...(p.styles[k] || DEFAULT_STYLES[k]),
+                              color: e.target.value,
+                            },
+                          },
+                        }))
+                      }
+                    />
+                  ) : null}
+                </div>
               ))}
+              {sma200Missing ? (
+                <p className="muted sma200-note">{he.sma200Unavailable}</p>
+              ) : null}
+              <div className="ind-actions">
+                <button type="button" onClick={resetInd}>
+                  {he.resetIndicators}
+                </button>
+                <button type="button" onClick={hideAllInd}>
+                  {he.hideAllIndicators}
+                </button>
+              </div>
             </div>
           </details>
           <details className="chart-menu">
@@ -1126,6 +1476,14 @@ export default function LiveChart({
               <label className="chk">
                 <input
                   type="checkbox"
+                  checked={showBlocked}
+                  onChange={(e) => setShowBlocked(e.target.checked)}
+                />
+                {he.blockedDecisions}
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
                   checked={showDrawings}
                   onChange={(e) => setShowDrawings(e.target.checked)}
                 />
@@ -1144,9 +1502,6 @@ export default function LiveChart({
                   <i className="lg-tri buy" /> {he.legendBuy}
                 </span>
                 <span>
-                  <i className="lg-tri sell" /> {he.legendSell}
-                </span>
-                <span>
                   <i className="lg-arrow buy" /> {he.legendFillBuy}
                 </span>
                 <span>
@@ -1154,6 +1509,9 @@ export default function LiveChart({
                 </span>
                 <span>
                   <i className="lg-dot" /> {he.legendYellow}
+                </span>
+                <span>
+                  <i className="lg-hold" /> {he.legendHold}
                 </span>
               </div>
             </div>
@@ -1194,15 +1552,16 @@ export default function LiveChart({
           )}
         </div>
         <div className="chart-status mono muted">
+          <span className={`asset-mode-chip mode-${activeMode.toLowerCase()}`}>
+            {assetModeLabel(activeMode)}
+          </span>
           <span className={`ws-badge ${wsState === "live" ? "live" : wsState === "polling" ? "polling" : "dead"}`}>
             {wsState}
           </span>
           <span className={`data-badge ${realData ? "real" : "sim"}`}>
             {realData ? he.realData : he.simData}
           </span>
-          <span>
-            {provider || meta?.provider || "—"}
-          </span>
+          <span dir="ltr">{provider || meta?.provider || "—"}</span>
           <span className="marker-counters">
             {he.decisionsCount}: {decisionCount} · {he.executedCount}: {fillCount}
           </span>
@@ -1234,7 +1593,7 @@ export default function LiveChart({
             />
           ) : null}
           {hover ? (
-            <div className="chart-tooltip mono">
+            <div className="chart-tooltip mono" dir="ltr">
               <div>{new Date(hover.time * 1000).toLocaleString()}</div>
               <div>
                 O {fmtPrice(hover.open)} H {fmtPrice(hover.high)} L {fmtPrice(hover.low)} C{" "}
@@ -1244,14 +1603,42 @@ export default function LiveChart({
                 Vol {hover.volume.toLocaleString()} · {hover.changePct >= 0 ? "+" : ""}
                 {hover.changePct.toFixed(2)}%
               </div>
+              {hover.ind.length ? (
+                <div className="tooltip-inds">
+                  {hover.ind
+                    .filter((x) => {
+                      const map: Record<string, IndKey> = {
+                        EMA20: "ema_20",
+                        EMA50: "ema_50",
+                        SMA20: "sma_20",
+                        SMA50: "sma_50",
+                        SMA200: "sma_200",
+                        VWAP: "vwap",
+                        RSI: "rsi",
+                        MACD: "macd",
+                        ATR: "atr",
+                        "BB-U": "bb",
+                        "BB-M": "bb",
+                        "BB-L": "bb",
+                      };
+                      const k = map[x.key];
+                      return k ? !!enabled[k] && showIndicators : false;
+                    })
+                    .map((x) => (
+                      <span key={x.key}>
+                        {x.key} {fmtPrice(x.value)}
+                      </span>
+                    ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
 
-        {showDrawer && groupedOpen ? (
-          <aside className="chart-drawer" aria-label={he.markerDetails}>
-            <div className="chart-drawer-head">
-              <h3>{he.markerDetails}</h3>
+        {showDrawer ? (
+          <aside className="chart-drawer unified-drawer" dir="rtl" aria-label={he.markerDetails}>
+            <div className="chart-drawer-head sticky-drawer-head">
+              <h3>{pickList && !drawerDecision ? he.pickFill : he.markerDetails}</h3>
               <button
                 type="button"
                 className="chart-drawer-close"
@@ -1262,110 +1649,217 @@ export default function LiveChart({
               </button>
             </div>
             <div className="chart-drawer-body">
-              {lastCandle ? (
-                <pre className="detail-pre drawer-ohlc">
-                  {`O ${fmtPrice(lastCandle.open)}  H ${fmtPrice(lastCandle.high)}
-L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
-                </pre>
+              {drawerLoading ? <p className="muted">{he.loading}</p> : null}
+
+              {pickList && !drawerDecision ? (
+                <ul className="fill-pick-list">
+                  {pickList.map((it) => (
+                    <li key={it.id}>
+                      <button type="button" onClick={() => void openDecisionCard(it)}>
+                        <span className={`tag ${it.action}`}>{it.action}</span>
+                        <span dir="ltr" className="mono">
+                          {it.quantity != null ? Number(it.quantity).toFixed(4) : ""}{" "}
+                          {it.price != null ? `@ ${fmtPrice(it.price)}` : ""}
+                        </span>
+                        <span className="muted">
+                          {new Date(toUnixSeconds(it.timestamp) * 1000).toLocaleString()}
+                        </span>
+                        <span>{he.openDecisionCard}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
               ) : null}
-              <p className="mono muted">
-                {he.candleTime} {new Date(groupedOpen.time * 1000).toLocaleString()} ·{" "}
-                {groupedOpen.count}
-              </p>
-              {groupedOpen.items.map((it) => (
-                <div key={it.id} className="agent-detail marker-detail-card">
-                  <div className="row">
-                    <strong>{it.kind.replace(/_/g, " ")}</strong>
-                    <span className={`tag ${it.action}`}>{it.action}</span>
-                  </div>
-                  <dl className="marker-dl mono">
-                    <div>
-                      <dt>{he.symbol}</dt>
-                      <dd>{it.symbol}</dd>
+
+              {drawerDecision ? (
+                <div className="unified-card">
+                  <section className="ud-outcome">
+                    <div className="row ud-outcome-row">
+                      <span className={`tag ${drawerDecision.final_action}`}>
+                        {drawerDecision.final_action}
+                      </span>
+                      <span className="ud-status">{drawerDecision.status}</span>
                     </div>
-                    <div>
-                      <dt>{he.executionTime}</dt>
-                      <dd>{new Date(toUnixSeconds(it.timestamp) * 1000).toLocaleString()}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.candleTime}</dt>
-                      <dd>{new Date(it.candleTs * 1000).toLocaleString()}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.action}</dt>
-                      <dd>{it.action}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.quantity}</dt>
-                      <dd>{it.quantity != null ? Number(it.quantity).toFixed(4) : "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.requestedPrice}</dt>
-                      <dd>
-                        {it.payload?.requested_price != null
-                          ? fmtPrice(Number(it.payload.requested_price))
-                          : it.price != null
-                            ? fmtPrice(it.price)
-                            : "—"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>{he.fillPrice}</dt>
-                      <dd>{it.price != null ? fmtPrice(it.price) : "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.totalValue}</dt>
-                      <dd>{it.totalValue != null ? fmtPrice(it.totalValue) : "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.confidence}</dt>
-                      <dd>
-                        {it.confidence != null ? `${(it.confidence * 100).toFixed(0)}%` : "—"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>{he.agentsVoted}</dt>
-                      <dd>
-                        {(it.agents || [])
-                          .map((a) => String(a.agent_name || a.agent_id || ""))
-                          .filter(Boolean)
-                          .join(", ") ||
-                          it.agentName ||
-                          "—"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>{he.orchestrator}</dt>
-                      <dd>{it.finalDecision || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.reasons}</dt>
-                      <dd>{it.reason || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.paperOrderId}</dt>
-                      <dd>{it.orderId || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.fillId}</dt>
-                      <dd>{it.fillId || "—"}</dd>
-                    </div>
-                    <div>
-                      <dt>{he.status}</dt>
-                      <dd>{it.status || (it.filled ? "FILLED" : "—")}</dd>
-                    </div>
-                    {it.skipReason ? (
-                      <div>
-                        <dt>{he.skipReason}</dt>
-                        <dd>{it.skipReason}</dd>
-                      </div>
+                    {drawerDecision.summary ? (
+                      <p className="ud-summary">{drawerDecision.summary}</p>
+                    ) : (
+                      <p className="muted">{he.noSummary}</p>
+                    )}
+                    <dl className="ud-dl">
+                      <Field label={he.fillPrice}>
+                        {drawerDecision.fill_price != null
+                          ? fmtPrice(Number(drawerDecision.fill_price))
+                          : null}
+                      </Field>
+                      <Field label={he.quantity}>
+                        {drawerDecision.quantity != null
+                          ? Number(drawerDecision.quantity).toFixed(4)
+                          : null}
+                      </Field>
+                      <Field label={he.totalValue}>
+                        {drawerDecision.total_value != null
+                          ? fmtPrice(Number(drawerDecision.total_value))
+                          : null}
+                      </Field>
+                      <Field label={he.executionTime}>
+                        {new Date(
+                          toUnixSeconds(Number(drawerDecision.decision_time)) * 1000
+                        ).toLocaleString()}
+                      </Field>
+                      <Field label={he.symbol}>
+                        <span dir="ltr">{drawerDecision.symbol}</span>
+                      </Field>
+                    </dl>
+                  </section>
+
+                  {drawerDecision.primary_reasons?.length ? (
+                    <section>
+                      <h4>{he.whySystemActed}</h4>
+                      <ul className="ud-list">
+                        {drawerDecision.primary_reasons.map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+
+                  {drawerDecision.risk_factors?.length ? (
+                    <section>
+                      <h4>{he.whyMayBeWrong}</h4>
+                      <ul className="ud-list risk">
+                        {drawerDecision.risk_factors.map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+
+                  <section>
+                    <h4>{he.decisionStrength}</h4>
+                    <dl className="ud-dl">
+                      <Field label={he.confidence}>
+                        {drawerDecision.confidence != null
+                          ? `${(Number(drawerDecision.confidence) <= 1
+                              ? Number(drawerDecision.confidence) * 100
+                              : Number(drawerDecision.confidence)
+                            ).toFixed(0)}%`
+                          : null}
+                      </Field>
+                      <Field label={he.agreement}>{agreementText(drawerDecision)}</Field>
+                      <Field label={he.riskLevel}>{drawerDecision.risk_level || null}</Field>
+                      <Field label={he.freshness}>{freshnessText(drawerDecision)}</Field>
+                      <Field label={he.status}>{drawerDecision.status || null}</Field>
+                    </dl>
+                  </section>
+
+                  {interpretedList(drawerDecision).length ||
+                  indicatorsUsedList(drawerDecision).length ? (
+                    <section>
+                      <h4>{he.marketEvidence}</h4>
+                      <ul className="ud-list">
+                        {interpretedList(drawerDecision).map((r, i) => (
+                          <li key={`i-${i}`}>{r}</li>
+                        ))}
+                        {indicatorsUsedList(drawerDecision).map((r, i) => (
+                          <li key={`ind-${i}`} dir="ltr" className="mono">
+                            {r}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+
+                  {(drawerDecision.agent_votes || []).length ? (
+                    <details
+                      className="ud-collapse"
+                      open={agentsOpen}
+                      onToggle={(e) => setAgentsOpen((e.target as HTMLDetailsElement).open)}
+                    >
+                      <summary>{he.agentOpinions}</summary>
+                      <ul className="agent-vote-rows">
+                        {(drawerDecision.agent_votes || []).map((v, i) => {
+                          const side = String(v.side || "HOLD").toUpperCase();
+                          const final = String(drawerDecision.final_action || "").toUpperCase();
+                          let cls = "hold";
+                          if (side === "HOLD") cls = "hold";
+                          else if (side === final) cls = "support";
+                          else cls = "oppose";
+                          return (
+                            <li key={`${v.agent_id || i}-${i}`} className={`agent-vote-row ${cls}`}>
+                              <strong>{v.agent_name || v.agent_id || "—"}</strong>
+                              <span className={`tag ${side}`}>{side}</span>
+                              <span dir="ltr" className="mono muted">
+                                {v.confidence != null
+                                  ? `${(Number(v.confidence) <= 1
+                                      ? Number(v.confidence) * 100
+                                      : Number(v.confidence)
+                                    ).toFixed(0)}%`
+                                  : ""}
+                              </span>
+                              {v.rationale ? <p className="muted">{v.rationale}</p> : null}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </details>
+                  ) : null}
+
+                  <details
+                    className="ud-collapse"
+                    open={techOpen}
+                    onToggle={(e) => setTechOpen((e.target as HTMLDetailsElement).open)}
+                  >
+                    <summary>
+                      {he.technicalDetails}
+                      <button
+                        type="button"
+                        className="btn-copy tiny"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void copyTechnical();
+                        }}
+                      >
+                        {he.copyTechnical}
+                      </button>
+                      {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
+                    </summary>
+                    <dl className="ud-dl">
+                      <Field label={he.decisionId}>
+                        <span dir="ltr">{drawerDecision.decision_id}</span>
+                      </Field>
+                      <Field label={he.paperOrderId}>
+                        {drawerDecision.execution?.order_id != null
+                          ? String(drawerDecision.execution.order_id)
+                          : null}
+                      </Field>
+                      <Field label={he.fillId}>
+                        {drawerDecision.execution?.fill_id != null
+                          ? String(drawerDecision.execution.fill_id)
+                          : null}
+                      </Field>
+                    </dl>
+                    {(drawerDecision.raw_events || []).length ? (
+                      <pre className="detail-pre" dir="ltr">
+                        {JSON.stringify(drawerDecision.raw_events, null, 2)}
+                      </pre>
                     ) : null}
-                  </dl>
+                  </details>
+
+                  {groupedOpen ? (
+                    <p className="mono muted">
+                      {he.candleTime}{" "}
+                      <span dir="ltr">
+                        {new Date(groupedOpen.time * 1000).toLocaleString()}
+                      </span>
+                    </p>
+                  ) : null}
                 </div>
-              ))}
+              ) : null}
+
               {annotations.length ? (
                 <>
-                  <h3>{he.drawings}</h3>
+                  <h4>{he.drawings}</h4>
                   <ul className="ann-list">
                     {annotations.map((a) => (
                       <li key={a.id}>

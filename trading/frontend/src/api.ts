@@ -227,6 +227,7 @@ export type CandlesResponse = {
   source?: string;
   unavailable?: boolean;
   reason?: string;
+  diagnostics?: Record<string, unknown>;
   indicators?: Record<string, Array<{ time: number; value: number; color?: string }>>;
 };
 
@@ -422,6 +423,84 @@ export type ChartMarkerEvent = {
   payload?: Record<string, unknown>;
   candle_ts?: number;
   key?: string;
+  decision_id?: string | null;
+};
+
+export type UnifiedAgreement = {
+  supporting?: number;
+  opposing?: number;
+  total?: number;
+};
+
+export type UnifiedAgentVote = {
+  agent_id?: string;
+  agent_name?: string;
+  side?: string;
+  confidence?: number | null;
+  rationale?: string | null;
+};
+
+export type UnifiedDecision = {
+  decision_id: string;
+  symbol: string;
+  timeframe?: string | null;
+  decision_time: number;
+  candle_time?: number | null;
+  final_action: string;
+  confidence: number;
+  status: string;
+  quantity?: number | null;
+  fill_price?: number | null;
+  total_value?: number | null;
+  summary?: string | null;
+  primary_reasons?: string[];
+  risk_factors?: string[];
+  agent_votes?: UnifiedAgentVote[];
+  indicators_used?: Record<string, unknown>;
+  interpreted_signals?: string[] | Record<string, unknown> | null;
+  portfolio_context?: Record<string, unknown>;
+  data_quality?: Record<string, unknown>;
+  agreement?: UnifiedAgreement;
+  risk_level?: string | null;
+  execution?: Record<string, unknown>;
+  block_reason?: string | null;
+  raw_events?: Array<Record<string, unknown>>;
+  engine?: Record<string, unknown>;
+};
+
+export type TradingAssetMode = "DISABLED" | "MONITOR_ONLY" | "TRADE" | "CLOSE_ONLY";
+
+export type TradingAssetConfig = {
+  id?: string;
+  symbol: string;
+  asset_type?: string | null;
+  provider?: string | null;
+  mode: TradingAssetMode | string;
+  max_allocation_amount?: number | null;
+  max_portfolio_percentage?: number | null;
+  max_position_size?: number | null;
+  max_trades_per_day?: number | null;
+  minimum_confidence?: number | null;
+  cooldown_seconds?: number | null;
+  allowed_directions?: string[] | null;
+  allowed_timeframes?: string[] | null;
+  stop_loss_policy?: string | null;
+  take_profit_policy?: string | null;
+  enabled_at?: number | null;
+  updated_at?: number | null;
+};
+
+export type PortfolioControls = {
+  pause_new_entries?: boolean;
+  close_only_global?: boolean;
+  max_positions?: number | null;
+  max_exposure?: number | null;
+  max_daily_loss?: number | null;
+  max_trades_per_day?: number | null;
+  daily_realized_pnl?: number;
+  daily_trade_count?: number;
+  day_key?: string | null;
+  updated_at?: number;
 };
 
 export function fetchChartMarkers(
@@ -437,8 +516,63 @@ export function fetchChartMarkers(
     symbol: string;
     timeframe: string;
     markers: ChartMarkerEvent[];
+    unified?: UnifiedDecision[];
     count: number;
   }>(`/chart-markers/${encodeURIComponent(symbol)}?${q}`);
+}
+
+export function fetchUnifiedDecisions(
+  symbol: string,
+  opts?: { fromTs?: number; toTs?: number; timeframe?: string }
+) {
+  const q = new URLSearchParams();
+  if (opts?.fromTs != null) q.set("from_ts", String(opts.fromTs));
+  if (opts?.toTs != null) q.set("to_ts", String(opts.toTs));
+  if (opts?.timeframe) q.set("timeframe", opts.timeframe);
+  const qs = q.toString();
+  return jsonFetch<{
+    symbol: string;
+    unified: UnifiedDecision[];
+    count: number;
+  }>(`/unified-decisions/${encodeURIComponent(symbol)}${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchUnifiedDecisionById(decisionId: string) {
+  return jsonFetch<{ ok: boolean; unified?: UnifiedDecision; error?: string }>(
+    `/unified-decisions/by-id/${encodeURIComponent(decisionId)}`
+  );
+}
+
+export function fetchAssetConfig() {
+  return jsonFetch<{
+    ok: boolean;
+    assets: TradingAssetConfig[];
+    portfolio_controls: PortfolioControls;
+    modes: TradingAssetMode[];
+    paper_trading_only?: boolean;
+  }>("/asset-config");
+}
+
+export function putAssetConfig(symbol: string, payload: Partial<TradingAssetConfig> & { mode?: string }) {
+  return jsonFetch<{ ok: boolean; asset?: TradingAssetConfig; error?: string }>(
+    `/asset-config/${encodeURIComponent(symbol)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function putPortfolioControls(payload: Partial<PortfolioControls>) {
+  return jsonFetch<{ ok: boolean; portfolio_controls?: PortfolioControls; error?: string }>(
+    "/portfolio-controls",
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
 }
 
 export function fetchAnnotations(symbol: string) {

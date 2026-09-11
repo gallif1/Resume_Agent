@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearDecisionLogs,
+  fetchAssetConfig,
   fetchConfig,
   fetchSnapshot,
   pauseSystem,
+  putAssetConfig,
+  putPortfolioControls,
   resetPaperSystem,
   setChartTimeframe,
   startSystem,
@@ -15,16 +18,19 @@ import {
   type DecisionLog,
   type MarketEvent,
   type MarketMeta,
+  type PortfolioControls,
   type PricePoint,
   type Snapshot,
   type Tick,
   type TradeMarker,
+  type TradingAssetConfig,
+  type TradingAssetMode,
   type TradingConfig,
   type PerformanceStats,
 } from "./api";
 import { formatDecisionLogsText } from "./decisionLogFormat";
 import { copyTextToClipboard } from "./clipboard";
-import { he, stateLabel, sessionLabel } from "./i18n/he";
+import { he, stateLabel, sessionLabel, assetModeLabel } from "./i18n/he";
 import LiveChart from "./LiveChart";
 
 type LatestVotes = Record<string, AgentVote>;
@@ -177,10 +183,36 @@ export default function App() {
   const [flash, setFlash] = useState(false);
   const [config, setConfig] = useState<TradingConfig | null>(null);
   const [chartExpanded, setChartExpanded] = useState(false);
+  const [assetConfigs, setAssetConfigs] = useState<TradingAssetConfig[]>([]);
+  const [portfolioControls, setPortfolioControls] = useState<PortfolioControls>({
+    pause_new_entries: false,
+    close_only_global: false,
+  });
+  const [assetFocus, setAssetFocus] = useState<string | null>(null);
+  const [assetBusy, setAssetBusy] = useState(false);
+  const [assetMsg, setAssetMsg] = useState<string | null>(null);
+  const assetPanelRef = useRef<HTMLElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   const onChartLayout = useCallback((mode: "normal" | "expanded") => {
     setChartExpanded(mode === "expanded");
+  }, []);
+
+  const loadAssetConfig = useCallback(async () => {
+    try {
+      const res = await fetchAssetConfig();
+      setAssetConfigs(res.assets || []);
+      if (res.portfolio_controls) setPortfolioControls(res.portfolio_controls);
+    } catch {
+      /* keep prior */
+    }
+  }, []);
+
+  const openAssetSettings = useCallback((symbol: string) => {
+    setAssetFocus(symbol);
+    requestAnimationFrame(() => {
+      assetPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }, []);
 
   // Body scroll lock is owned by LiveChart when expanded (fixed overlay).
@@ -221,7 +253,8 @@ export default function App() {
     fetchSnapshot()
       .then(applySnapshot)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+    void loadAssetConfig();
+  }, [loadAssetConfig]);
 
   useEffect(() => {
     let closed = false;
@@ -527,6 +560,89 @@ export default function App() {
     }
   };
 
+  const assetModeMap = (() => {
+    const m: Record<string, string> = {};
+    for (const a of assetConfigs) {
+      if (a.symbol) m[a.symbol] = String(a.mode || "MONITOR_ONLY");
+    }
+    return m;
+  })();
+
+  const tradingSymbols = assetConfigs.filter((a) => String(a.mode).toUpperCase() === "TRADE");
+
+  const changeAssetMode = async (cfg: TradingAssetConfig, nextMode: TradingAssetMode) => {
+    const prev = String(cfg.mode || "MONITOR_ONLY").toUpperCase();
+    if (prev === nextMode) return;
+
+    if (nextMode === "TRADE") {
+      const limits = [
+        cfg.max_allocation_amount != null ? `max$=${cfg.max_allocation_amount}` : null,
+        cfg.max_portfolio_percentage != null ? `max%=${cfg.max_portfolio_percentage}` : null,
+        cfg.max_position_size != null ? `pos=${cfg.max_position_size}` : null,
+        cfg.minimum_confidence != null ? `minConf=${cfg.minimum_confidence}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const ok = window.confirm(
+        `${he.confirmEnableTrade(cfg.symbol)}\n\n${he.limits}: ${limits || "—"}`
+      );
+      if (!ok) return;
+    } else if (
+      (prev === "TRADE" || prev === "MONITOR_ONLY") &&
+      (nextMode === "MONITOR_ONLY" || nextMode === "CLOSE_ONLY" || nextMode === "DISABLED")
+    ) {
+      // Safer mode: no confirm, but explain open position stays.
+      setAssetMsg(he.saferModeNote);
+      window.setTimeout(() => setAssetMsg(null), 5000);
+    }
+
+    setAssetBusy(true);
+    try {
+      const res = await putAssetConfig(cfg.symbol, { ...cfg, mode: nextMode });
+      if (res.asset) {
+        setAssetConfigs((prevRows) => {
+          const exists = prevRows.some((r) => r.symbol === res.asset!.symbol);
+          if (!exists) return [...prevRows, res.asset!];
+          return prevRows.map((r) => (r.symbol === res.asset!.symbol ? res.asset! : r));
+        });
+      } else {
+        await loadAssetConfig();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+
+  const saveAssetLimits = async (cfg: TradingAssetConfig, patch: Partial<TradingAssetConfig>) => {
+    setAssetBusy(true);
+    try {
+      const res = await putAssetConfig(cfg.symbol, { ...cfg, ...patch });
+      if (res.asset) {
+        setAssetConfigs((prevRows) =>
+          prevRows.map((r) => (r.symbol === res.asset!.symbol ? res.asset! : r))
+        );
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+
+  const savePortfolioControls = async (patch: Partial<PortfolioControls>) => {
+    setAssetBusy(true);
+    try {
+      const res = await putPortfolioControls({ ...portfolioControls, ...patch });
+      if (res.portfolio_controls) setPortfolioControls(res.portfolio_controls);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAssetBusy(false);
+    }
+  };
+
   const state = snap?.state ?? "stopped";
   const market = snap?.market ?? [];
   const agents = (snap?.agents ?? []).filter((a) => a.id !== "ai_analyst");
@@ -603,6 +719,7 @@ export default function App() {
           className="btn btn-start"
           disabled={controlBusy || state === "running"}
           onClick={() => run("start")}
+          title={he.tooltipStart}
         >
           {he.start}
         </button>
@@ -611,6 +728,7 @@ export default function App() {
           className="btn btn-pause"
           disabled={controlBusy || state !== "running"}
           onClick={() => run("pause")}
+          title={he.tooltipPause}
         >
           {he.pause}
         </button>
@@ -619,6 +737,7 @@ export default function App() {
           className="btn btn-stop"
           disabled={controlBusy || state === "stopped"}
           onClick={() => run("stop")}
+          title={he.tooltipStop}
         >
           {he.stop}
         </button>
@@ -670,8 +789,214 @@ export default function App() {
         candleUpdates={candleUpdates}
         wsState={wsState}
         onLayoutModeChange={onChartLayout}
+        assetModes={assetModeMap}
+        onOpenAssetSettings={openAssetSettings}
       />
       <div className="grid">
+        <section className="panel asset-control-panel" ref={assetPanelRef} style={{ gridColumn: "1 / -1" }}>
+          <div className="panel-head-row">
+            <h2>{he.assetControl}</h2>
+            <span className="paper-only-badge">{he.paperOnly}</span>
+          </div>
+          {!tradingSymbols.length ? (
+            <p className="asset-none-banner" role="status">
+              {he.noneTradingBanner}
+            </p>
+          ) : null}
+          {assetMsg ? <p className="muted asset-msg">{assetMsg}</p> : null}
+          <div className="asset-grid">
+            {(assetConfigs.length
+              ? assetConfigs
+              : (symbols.map((sym) => ({
+                  symbol: sym,
+                  mode: "MONITOR_ONLY",
+                  provider: marketMeta?.symbols?.[sym]?.provider,
+                })) as TradingAssetConfig[])
+            ).map((cfg) => {
+              const pos = portfolio?.positions?.[cfg.symbol];
+              const meta = marketMeta?.symbols?.[cfg.symbol];
+              const mode = String(cfg.mode || "MONITOR_ONLY").toUpperCase();
+              const focused = assetFocus === cfg.symbol;
+              return (
+                <div
+                  key={cfg.symbol}
+                  className={`asset-card ${focused ? "focused" : ""}`}
+                  id={`asset-${cfg.symbol}`}
+                >
+                  <div className="row asset-card-head">
+                    <strong className="mono" dir="ltr">
+                      {cfg.symbol}
+                    </strong>
+                    <span className={`asset-mode-chip mode-${mode.toLowerCase()}`}>
+                      {assetModeLabel(mode)}
+                    </span>
+                  </div>
+                  <div className="asset-meta muted mono">
+                    <span>
+                      {he.provider}: <span dir="ltr">{cfg.provider || meta?.provider || "—"}</span>
+                    </span>
+                    <span>
+                      {he.freshness}:{" "}
+                      <span dir="ltr">{meta?.freshness || "—"}</span>
+                    </span>
+                    <span>
+                      {he.position}:{" "}
+                      <span dir="ltr">
+                        {pos ? `${pos.quantity.toFixed(4)} @ ${pos.avg_price}` : "0"}
+                      </span>
+                    </span>
+                  </div>
+                  <label className="asset-mode-select">
+                    {he.assetMode}
+                    <select
+                      value={mode}
+                      disabled={assetBusy}
+                      onChange={(e) =>
+                        void changeAssetMode(cfg, e.target.value as TradingAssetMode)
+                      }
+                    >
+                      <option value="DISABLED">{he.modeDisabled}</option>
+                      <option value="MONITOR_ONLY">{he.modeMonitor}</option>
+                      <option value="TRADE">{he.modeTrade}</option>
+                      <option value="CLOSE_ONLY">{he.modeCloseOnly}</option>
+                    </select>
+                  </label>
+                  <div className="asset-limits">
+                    <label>
+                      {he.maxAllocation}
+                      <input
+                        type="number"
+                        dir="ltr"
+                        defaultValue={cfg.max_allocation_amount ?? ""}
+                        onBlur={(e) => {
+                          const v = e.target.value === "" ? null : Number(e.target.value);
+                          void saveAssetLimits(cfg, {
+                            max_allocation_amount: v,
+                          });
+                        }}
+                      />
+                    </label>
+                    <label>
+                      {he.maxPositionSize}
+                      <input
+                        type="number"
+                        dir="ltr"
+                        defaultValue={cfg.max_position_size ?? ""}
+                        onBlur={(e) => {
+                          const v = e.target.value === "" ? null : Number(e.target.value);
+                          void saveAssetLimits(cfg, {
+                            max_position_size: v,
+                          });
+                        }}
+                      />
+                    </label>
+                    <label>
+                      {he.minConfidence}
+                      <input
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        max={1}
+                        dir="ltr"
+                        defaultValue={cfg.minimum_confidence ?? ""}
+                        onBlur={(e) => {
+                          const v = e.target.value === "" ? null : Number(e.target.value);
+                          void saveAssetLimits(cfg, {
+                            minimum_confidence: v,
+                          });
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="portfolio-controls-block">
+            <h3>{he.portfolioControls}</h3>
+            <p className="muted control-tooltips">
+              <span title={he.tooltipStart}>{he.start}</span>
+              {" · "}
+              <span title={he.tooltipPause}>{he.pause}</span>
+              {" · "}
+              <span title={he.tooltipStop}>{he.stop}</span>
+            </p>
+            <div className="portfolio-controls-grid">
+              <label className="chk" title={he.tooltipPause}>
+                <input
+                  type="checkbox"
+                  checked={!!portfolioControls.pause_new_entries}
+                  disabled={assetBusy}
+                  onChange={(e) =>
+                    void savePortfolioControls({ pause_new_entries: e.target.checked })
+                  }
+                />
+                {he.pauseNewEntries}
+              </label>
+              <label className="chk" title={he.tooltipStop}>
+                <input
+                  type="checkbox"
+                  checked={!!portfolioControls.close_only_global}
+                  disabled={assetBusy}
+                  onChange={(e) =>
+                    void savePortfolioControls({ close_only_global: e.target.checked })
+                  }
+                />
+                {he.closeOnlyGlobal}
+              </label>
+              <label>
+                {he.maxPositions}
+                <input
+                  type="number"
+                  dir="ltr"
+                  value={portfolioControls.max_positions ?? ""}
+                  disabled={assetBusy}
+                  onChange={(e) =>
+                    setPortfolioControls((p) => ({
+                      ...p,
+                      max_positions: e.target.value === "" ? null : Number(e.target.value),
+                    }))
+                  }
+                  onBlur={() => void savePortfolioControls({})}
+                />
+              </label>
+              <label>
+                {he.maxExposure}
+                <input
+                  type="number"
+                  dir="ltr"
+                  value={portfolioControls.max_exposure ?? ""}
+                  disabled={assetBusy}
+                  onChange={(e) =>
+                    setPortfolioControls((p) => ({
+                      ...p,
+                      max_exposure: e.target.value === "" ? null : Number(e.target.value),
+                    }))
+                  }
+                  onBlur={() => void savePortfolioControls({})}
+                />
+              </label>
+              <label>
+                {he.maxDailyLoss}
+                <input
+                  type="number"
+                  dir="ltr"
+                  value={portfolioControls.max_daily_loss ?? ""}
+                  disabled={assetBusy}
+                  onChange={(e) =>
+                    setPortfolioControls((p) => ({
+                      ...p,
+                      max_daily_loss: e.target.value === "" ? null : Number(e.target.value),
+                    }))
+                  }
+                  onBlur={() => void savePortfolioControls({})}
+                />
+              </label>
+            </div>
+          </div>
+        </section>
+
         <section className="panel">
           <h2>{he.marketFeed}</h2>
           <table className="market-table">

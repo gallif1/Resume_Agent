@@ -1206,26 +1206,29 @@ body.chart-expanded-body {
 }
 
 .pro-chart .chart-drawer {
-  width: 360px;
-  max-width: 380px;
-  min-width: 320px;
+  width: min(420px, 42vw);
+  max-width: 450px;
+  min-width: 380px;
   background: #0f1622;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: none;
   display: flex;
   flex-direction: column;
   min-height: 0;
   z-index: 4;
+  direction: rtl;
 }
 
 .pro-chart .chart-body.drawer-overlay .chart-drawer {
   position: absolute;
   top: 0;
-  right: 0;
+  right: auto;
+  left: 0;
   bottom: 0;
-  width: min(360px, 92vw);
+  width: min(420px, 92vw);
   min-width: 0;
   max-width: 92vw;
-  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
 }
 
 .pro-chart .chart-drawer-head {
@@ -1408,4 +1411,316 @@ body.chart-expanded-body {
     display: none;
   }
 }
+
+/* Unified decision drawer */
+.pro-chart .sticky-drawer-head {
+  position: sticky;
+  top: 0;
+  background: #0f1622;
+  z-index: 2;
+}
+
+.pro-chart .unified-drawer .ud-summary {
+  margin: 0.35rem 0 0.55rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+.pro-chart .ud-dl {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0.35rem 0 0.75rem;
+}
+
+.pro-chart .ud-field {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+}
+
+.pro-chart .ud-field dt {
+  color: var(--muted);
+}
+
+.pro-chart .ud-field dd {
+  margin: 0;
+  word-break: break-word;
+  unicode-bidi: isolate;
+}
+
+.pro-chart .ud-list {
+  margin: 0.25rem 0 0.75rem;
+  padding-inline-start: 1.1rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.pro-chart .ud-list.risk li {
+  color: #f0b429;
+}
+
+.pro-chart .ud-collapse {
+  margin: 0.5rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 0.35rem;
+}
+
+.pro-chart .ud-collapse summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.pro-chart .agent-vote-rows {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.pro-chart .agent-vote-row {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.pro-chart .agent-vote-row.support {
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.pro-chart .agent-vote-row.oppose {
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.pro-chart .agent-vote-row.hold {
+  border-color: rgba(154, 164, 178, 0.35);
+}
+
+.pro-chart .fill-pick-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.pro-chart .fill-pick-list button {
+  width: 100%;
+  text-align: start;
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.35rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pro-chart .ind-menu {
+  min-width: 240px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.pro-chart .ind-presets,
+.pro-chart .ind-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.45rem;
+}
+
+.pro-chart .ind-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+
+.pro-chart .ind-legend-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.pro-chart .ind-width {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+}
+
+.pro-chart .tooltip-inds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  margin-top: 0.25rem;
+  font-size: 0.68rem;
+  opacity: 0.9;
+}
+
+.pro-chart .sma200-note {
+  font-size: 0.72rem;
+  margin: 0.25rem 0;
+}
+
+.pro-chart .lg-hold {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  background: #9aa4b2;
+  vertical-align: middle;
+  margin-inline-end: 0.25rem;
+}
+
+.asset-mode-chip {
+  display: inline-block;
+  font-size: 0.65rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  margin-inline-start: 0.35rem;
+  border: 1px solid transparent;
+  unicode-bidi: isolate;
+}
+
+.asset-mode-chip.mode-disabled {
+  background: rgba(154, 164, 178, 0.15);
+  color: #9aa4b2;
+}
+
+.asset-mode-chip.mode-monitor_only {
+  background: rgba(77, 163, 255, 0.15);
+  color: #7aa2ff;
+}
+
+.asset-mode-chip.mode-trade {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+}
+
+.asset-mode-chip.mode-close_only {
+  background: rgba(249, 115, 22, 0.15);
+  color: #f97316;
+}
+
+.asset-control-panel .paper-only-badge {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.asset-none-banner {
+  background: rgba(77, 163, 255, 0.08);
+  border: 1px solid rgba(77, 163, 255, 0.25);
+  border-radius: 0.4rem;
+  padding: 0.55rem 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+
+.asset-card {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.45rem;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.asset-card.focused {
+  border-color: rgba(122, 162, 255, 0.55);
+  box-shadow: 0 0 0 1px rgba(122, 162, 255, 0.2);
+}
+
+.asset-meta {
+  display: grid;
+  gap: 0.15rem;
+  font-size: 0.72rem;
+  margin: 0.35rem 0 0.5rem;
+}
+
+.asset-mode-select,
+.asset-limits label,
+.portfolio-controls-grid label:not(.chk) {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+.asset-limits {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.asset-limits input,
+.asset-mode-select select,
+.portfolio-controls-grid input[type="number"] {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.3rem;
+  color: inherit;
+  padding: 0.3rem 0.4rem;
+  unicode-bidi: isolate;
+}
+
+.portfolio-controls-block {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.portfolio-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.55rem;
+}
+
+.control-tooltips span {
+  cursor: help;
+  text-decoration: underline dotted;
+}
+
+.btn-copy.tiny {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  margin-inline-start: auto;
+}
+
+.pro-chart .symbol-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.pro-chart .ud-outcome-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.pro-chart .ud-status {
+  font-size: 0.75rem;
+  color: var(--muted);
+  unicode-bidi: isolate;
+}
+
+.pro-chart h4 {
+  margin: 0.65rem 0 0.25rem;
+  font-size: 0.85rem;
+}
+
 
