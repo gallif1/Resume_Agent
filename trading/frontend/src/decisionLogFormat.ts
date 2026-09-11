@@ -13,16 +13,16 @@ function pct(v?: number | null): string {
 }
 
 function yesNo(v?: boolean | null): string {
-  if (v === true) return "YES";
-  if (v === false) return "NO";
-  return "PENDING";
+  if (v === true) return "כן";
+  if (v === false) return "לא";
+  return "ממתין";
 }
 
 function formatOutcome(log: DecisionLog): string[] {
-  const lines = ["OUTCOME"];
+  const lines = ["תוצאה"];
   const outcome = log.outcome;
   if (!outcome) {
-    lines.push("PENDING (no actionable outcome tracked)");
+    lines.push("ממתין (no actionable outcome tracked)");
     return lines;
   }
   lines.push(`Entry price: ${outcome.entry_price ?? "—"}`);
@@ -37,7 +37,7 @@ function formatOutcome(log: DecisionLog): string[] {
     } else if (status === "unavailable" || status === "no_history") {
       lines.push(`${key}: ${status.toUpperCase()} (price not recoverable)`);
     } else {
-      lines.push(`${key}: PENDING`);
+      lines.push(`${key}: ממתין`);
     }
   }
   return lines;
@@ -57,12 +57,12 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
     const pretrade = log.pretrade || null;
 
     const lines: string[] = [
-      `=== DECISION ${idx + 1} ===`,
+      `=== החלטה ${idx + 1} ===`,
       `Kind: ${log.kind}`,
       `Timestamp: ${fmtTs(log.timestamp)}`,
       `Symbol: ${log.symbol}`,
       "",
-      "MARKET",
+      "שוק",
       `Price: ${market.price ?? "—"}`,
       `1m: ${pct(market.change_1m_pct)}`,
       `5m: ${pct(market.change_5m_pct)}`,
@@ -78,7 +78,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
       `Provider: ${market.provider ?? "—"}`,
       `Session/freshness: ${market.session ?? "—"}/${market.freshness ?? "—"}`,
       "",
-      "AGENTS",
+      "סוכנים",
     ];
 
     for (const a of agents) {
@@ -102,7 +102,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
 
     if (pretrade) {
       lines.push(
-        "AI PRETRADE",
+        "AI לפני עסקה",
         `Source: ${pretrade.source ?? "—"}`,
         `Skip reason: ${pretrade.skip_reason ?? "—"}`,
         `Action: ${pretrade.action ?? "—"}`,
@@ -112,7 +112,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
     }
 
     lines.push(
-      "DECISION ENGINE",
+      "מנוע החלטות",
       `Votes: BUY ${counts.BUY ?? 0} / SELL ${counts.SELL ?? 0} / HOLD ${counts.HOLD ?? 0}`,
       `Weighted scores: BUY=${weights.BUY ?? 0} SELL=${weights.SELL ?? 0} HOLD=${weights.HOLD ?? 0}`,
       `Threshold (min_confidence): ${decision.threshold ?? "—"}`,
@@ -122,7 +122,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
       `Final confidence: ${((decision.final_confidence ?? 0) * 100).toFixed(0)}%`,
       `Explanation: ${decision.explanation || decision.rationale || "—"}`,
       "",
-      "CONFIDENCE DEBUG",
+      "ניפוי ביטחון",
       `winning_action = ${dbg.winning_action ?? "—"}`,
       `winning_score = ${dbg.winning_score ?? dbg.raw_score ?? "—"}`,
       `total_weight = ${dbg.total_weight ?? dbg.total_all_weights ?? "—"}`,
@@ -134,7 +134,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
       `formula = ${dbg.formula ?? "—"}`,
       `note: ${dbg.note ?? "—"}`,
       "",
-      "EXECUTION",
+      "ביצוע",
       `Status: ${execution.status ?? "—"}`,
       `Reason: ${execution.reason ?? "—"}`
     );
@@ -150,7 +150,7 @@ export function formatDecisionLogsText(logs: DecisionLog[], limit?: number): str
   });
 
   const header = [
-    "AI Trading System — decision logs",
+    "מערכת מסחר AI — יומני החלטות",
     `Exported: ${fmtTs(Date.now() / 1000)}`,
     `Entries: ${rows.length}`,
     "",

@@ -24,6 +24,7 @@ import {
 } from "./api";
 import { formatDecisionLogsText } from "./decisionLogFormat";
 import { copyTextToClipboard } from "./clipboard";
+import { he, stateLabel, sessionLabel } from "./i18n/he";
 import LiveChart from "./LiveChart";
 
 type LatestVotes = Record<string, AgentVote>;
@@ -96,12 +97,12 @@ function votesFromDecisions(decisions: Decision[]): AgentVote[] {
 function sessionBadge(t: Tick): { label: string; cls: string } {
   const freshness = (t.freshness || "").toLowerCase();
   const session = (t.session || "").toLowerCase();
-  if (freshness === "unavailable") return { label: "UNAVAILABLE", cls: "unavailable" };
-  if (freshness === "stale") return { label: "STALE DATA", cls: "stale" };
-  if (session === "closed") return { label: "MARKET CLOSED", cls: "closed" };
-  if (session === "open") return { label: "MARKET OPEN", cls: "open" };
-  if (freshness === "live") return { label: "MARKET OPEN", cls: "open" };
-  return { label: "UNAVAILABLE", cls: "unavailable" };
+  let cls = "unavailable";
+  if (freshness === "unavailable") cls = "unavailable";
+  else if (freshness === "stale") cls = "stale";
+  else if (session === "closed") cls = "closed";
+  else if (session === "open" || freshness === "live") cls = "open";
+  return { label: sessionLabel(cls, he.unavailable), cls };
 }
 
 function pickAiSymbol(
@@ -430,15 +431,15 @@ export default function App() {
 
   const run = async (action: "start" | "pause" | "stop") => {
     if (action === "start" && snap?.state === "running") {
-      setError("Already running — cash changes come from paper fills in Decision Engine.");
+      setError(he.alreadyRunning);
       return;
     }
     if (action === "pause" && snap?.state !== "running") {
-      setError("System is not running.");
+      setError(he.notRunning);
       return;
     }
     if (action === "stop" && snap?.state === "stopped") {
-      setError("Already stopped.");
+      setError(he.alreadyStopped);
       return;
     }
     setControlBusy(true);
@@ -460,11 +461,11 @@ export default function App() {
 
   const onClearLogs = async () => {
     if (!decisionLogs.length) {
-      setCopyMsg("No logs to clear");
+      setCopyMsg(he.copyNoLogs);
       window.setTimeout(() => setCopyMsg(null), 2500);
       return;
     }
-    if (!window.confirm("Clear recent decision logs? Paper portfolio stays unchanged.")) {
+    if (!window.confirm(he.clearLogsConfirm)) {
       return;
     }
     setControlBusy(true);
@@ -474,7 +475,7 @@ export default function App() {
       applySnapshot(s);
       setExpandedLogId(null);
       setManualCopyText(null);
-      setCopyMsg(`Cleared ${s.cleared_logs ?? 0} logs`);
+      setCopyMsg(he.copiedN(s.cleared_logs ?? 0));
       window.setTimeout(() => setCopyMsg(null), 3000);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -484,11 +485,7 @@ export default function App() {
   };
 
   const onResetPaper = async () => {
-    if (
-      !window.confirm(
-        "Reset paper trading from scratch?\n\nThis stops the system, clears cash/positions back to starting cash, and deletes logs + outcome stats.\n\nNo real money / no broker."
-      )
-    ) {
+    if (!window.confirm(he.resetConfirm)) {
       return;
     }
     setControlBusy(true);
@@ -505,7 +502,7 @@ export default function App() {
       setExpandedLogId(null);
       setManualCopyText(null);
       setPerformance(s.performance ?? null);
-      setCopyMsg("Paper system reset — press START");
+      setCopyMsg(`${he.resetPaper} — ${he.start}`);
       window.setTimeout(() => setCopyMsg(null), 3500);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -545,7 +542,7 @@ export default function App() {
   const copyLogs = async (limit: number | "all") => {
     const n = limit === "all" ? decisionLogs.length : limit;
     if (!decisionLogs.length) {
-      setCopyMsg("No logs yet — press START first");
+      setCopyMsg(he.copyNoLogs);
       window.setTimeout(() => setCopyMsg(null), 2500);
       return;
     }
@@ -555,51 +552,51 @@ export default function App() {
       const result = await copyTextToClipboard(text);
       if (result === "ok") {
         setManualCopyText(null);
-        setCopyMsg(`Copied ${count} logs`);
+        setCopyMsg(he.copiedN(count));
       } else {
         setManualCopyText(text);
-        setCopyMsg("Clipboard blocked on HTTP — select all below and Ctrl/Cmd+C");
+        setCopyMsg(he.clipboardBlocked);
       }
     } catch {
       setManualCopyText(text);
-      setCopyMsg("Copy failed — use the text box below");
+      setCopyMsg(he.copyFailed);
     }
     window.setTimeout(() => setCopyMsg(null), 4000);
   };
 
   const execBadge = (log: DecisionLog) => {
     const st = log.execution?.status;
-    if (st === "FILLED") return "FILLED";
-    if (log.kind === "SIGNAL_STILL_ACTIVE") return "Signal active";
-    if (String(log.execution?.reason || "").toLowerCase().includes("cooldown")) return "Cooldown";
-    if (st === "NOT_FILLED" && log.decision?.action !== "HOLD") return "Not filled";
+    if (st === "FILLED") return he.filled;
+    if (log.kind === "SIGNAL_STILL_ACTIVE") return he.signalActive;
+    if (String(log.execution?.reason || "").toLowerCase().includes("cooldown")) return he.cooldown;
+    if (st === "NOT_FILLED" && log.decision?.action !== "HOLD") return he.notFilled;
     return log.kind.replace(/_/g, " ");
   };
   const wsLabel =
     wsState === "live"
-      ? "WS connected"
+      ? he.wsLive
       : wsState === "polling"
-        ? "WS dead · polling"
+        ? he.wsPolling
         : wsState === "connecting"
-          ? "WS connecting"
-          : "WS dead";
+          ? he.wsConnecting
+          : he.wsDead;
 
   return (
     <div className={`app${chartExpanded ? " chart-layout-expanded" : ""}`}>
       <header className="topbar">
         <div className="brand">
-          <span className="brand-kicker">Live paper trading</span>
-          <h1>AI Trading System</h1>
+          <span className="brand-kicker">{he.brandKicker}</span>
+          <h1>{he.brandTitle}</h1>
         </div>
         <a className="back-link" href={homeUrl}>
-          ← Resume Agent
+          {he.backLink}
         </a>
       </header>
 
       <section className="hero-controls">
         <span className={`status-pill ${state}`}>
           <span className="status-dot" />
-          {state.toUpperCase()}
+          {stateLabel(state)}
         </span>
         <button
           type="button"
@@ -607,7 +604,7 @@ export default function App() {
           disabled={controlBusy || state === "running"}
           onClick={() => run("start")}
         >
-          START
+          {he.start}
         </button>
         <button
           type="button"
@@ -615,7 +612,7 @@ export default function App() {
           disabled={controlBusy || state !== "running"}
           onClick={() => run("pause")}
         >
-          PAUSE
+          {he.pause}
         </button>
         <button
           type="button"
@@ -623,28 +620,28 @@ export default function App() {
           disabled={controlBusy || state === "stopped"}
           onClick={() => run("stop")}
         >
-          STOP
+          {he.stop}
         </button>
         <button
           type="button"
           className="btn btn-clear-logs"
           disabled={controlBusy || !decisionLogs.length}
           onClick={() => onClearLogs()}
-          title="Delete recent decision logs only"
+          title={he.clearLogs}
         >
-          Clear Logs
+          {he.clearLogs}
         </button>
         <button
           type="button"
           className="btn btn-reset"
           disabled={controlBusy}
           onClick={() => onResetPaper()}
-          title="Reset paper portfolio, logs, and stats from scratch"
+          title={he.resetPaper}
         >
-          Reset Paper
+          {he.resetPaper}
         </button>
         <span className={`data-badge ${realData ? "real" : "sim"}`}>
-          {realData ? "REAL MARKET DATA" : "SIMULATED DATA"}
+          {realData ? he.realData : he.simData}
         </span>
         <span
           className={`ws-badge ${
@@ -654,7 +651,7 @@ export default function App() {
           {wsLabel}
         </span>
         <span className="meta mono">
-          ticks {snap?.tick_count ?? 0}
+          {he.ticks} {snap?.tick_count ?? 0}
           {error ? ` · ${error}` : ""}
         </span>
       </section>
@@ -676,16 +673,16 @@ export default function App() {
       />
       <div className="grid">
         <section className="panel">
-          <h2>Market Feed</h2>
+          <h2>{he.marketFeed}</h2>
           <table className="market-table">
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Price</th>
-                <th>Change</th>
-                <th>Volume</th>
-                <th>Session</th>
-                <th>Provider</th>
+                <th>{he.symbol}</th>
+                <th>{he.price}</th>
+                <th>{he.change}</th>
+                <th>{he.volume}</th>
+                <th>{he.session}</th>
+                <th>{he.provider}</th>
               </tr>
             </thead>
             <tbody>
@@ -715,7 +712,7 @@ export default function App() {
               {!market.length && (
                 <tr>
                   <td colSpan={6} className="muted">
-                    Waiting for market data…
+                    {he.waitingMarket}
                   </td>
                 </tr>
               )}
@@ -724,14 +721,14 @@ export default function App() {
         </section>
 
         <section className="panel">
-          <h2>Portfolio</h2>
+          <h2>{he.portfolio}</h2>
           <div className="portfolio">
             <div className="stat">
-              <div className="label">Cash</div>
+              <div className="label">{he.cash}</div>
               <div className="value">{formatMoney(portfolio?.cash ?? 0)}</div>
             </div>
             <div className="stat">
-              <div className="label">Realized P&amp;L</div>
+              <div className="label">{he.realizedPnl}</div>
               <div
                 className={`value ${(portfolio?.realized_pnl ?? 0) >= 0 ? "up" : "down"}`}
               >
@@ -739,7 +736,7 @@ export default function App() {
               </div>
             </div>
             <div className="stat">
-              <div className="label">Positions</div>
+              <div className="label">{he.positions}</div>
               <div className="value">{Object.keys(portfolio?.positions || {}).length}</div>
             </div>
           </div>
@@ -755,13 +752,13 @@ export default function App() {
               </div>
             ))}
             {!Object.keys(portfolio?.positions || {}).length && (
-              <div className="muted">No open positions yet.</div>
+              <div className="muted">{he.noPositions}</div>
             )}
           </div>
         </section>
 
         <section className="panel" style={{ gridColumn: "1 / -1" }}>
-          <h2>Agents</h2>
+          <h2>{he.agents}</h2>
           <div className="agents">
             {agents.map((a) => {
               const vote = votes[a.id];
@@ -782,7 +779,7 @@ export default function App() {
                     </>
                   ) : (
                     <p className="muted" style={{ margin: 0 }}>
-                      Waiting for first vote…
+                      {he.waitingVote}
                     </p>
                   )}
                 </div>
@@ -790,9 +787,9 @@ export default function App() {
             })}
             <div className="ai-card">
               <div className="ai-card-head">
-                <h3>AI Market Analyst</h3>
+                <h3>{he.aiAnalyst}</h3>
                 <span className="ai-source">
-                  {aiPick?.entry.source || (aiStatus?.enabled ? "IDLE" : "OFF")}
+                  {aiPick?.entry.source || (aiStatus?.enabled ? he.idle : he.off)}
                 </span>
               </div>
               {aiPick ? (
@@ -806,25 +803,27 @@ export default function App() {
                     </span>
                   </div>
                   <p className="muted" style={{ margin: "0.45rem 0 0" }}>
-                    {aiPick.entry.reason || "No rationale yet."}
+                    {aiPick.entry.reason || he.noRationale}
                   </p>
                 </>
               ) : (
                 <p className="muted" style={{ margin: 0 }}>
                   {aiStatus?.api_key_configured === false
-                    ? "AI API key not configured — heuristics only."
-                    : "Waiting for AI analysis…"}
+                    ? he.aiNoKey
+                    : he.waitingAi}
                 </p>
               )}
               <div className="ai-calls mono">
-                AI calls this hour: {aiCalls} / {aiMax || "—"}
+                {aiMax <= 0
+                  ? `${he.aiCallsHour}: ${aiCalls} (${he.aiUnlimited})`
+                  : `${he.aiCallsHour}: ${aiCalls} / ${aiMax}`}
               </div>
             </div>
           </div>
         </section>
 
         <section className="panel">
-          <h2>Event Engine</h2>
+          <h2>{he.eventEngine}</h2>
           <div className="list">
             {events.map((e) => (
               <div className="item" key={e.id + String(e.ts)}>
@@ -835,16 +834,16 @@ export default function App() {
                 <div>{e.message}</div>
               </div>
             ))}
-            {!events.length && <div className="muted">No events yet — press START.</div>}
+            {!events.length && <div className="muted">{he.noEvents}</div>}
           </div>
         </section>
 
         <section className="panel">
           <div className="panel-head-row">
-            <h2>Decision Engine</h2>
+            <h2>{he.decisionEngine}</h2>
             <div className="copy-logs-bar">
               <button type="button" className="btn-copy" onClick={() => copyLogs(25)}>
-                Copy Recent Logs
+                {he.copyRecent}
               </button>
               <button type="button" className="btn-copy ghost" onClick={() => copyLogs(10)}>
                 10
@@ -856,7 +855,7 @@ export default function App() {
                 50
               </button>
               <button type="button" className="btn-copy ghost" onClick={() => copyLogs("all")}>
-                All
+                {he.all}
               </button>
               <button
                 type="button"
@@ -864,21 +863,21 @@ export default function App() {
                 disabled={controlBusy || !decisionLogs.length}
                 onClick={() => onClearLogs()}
               >
-                Clear Logs
+                {he.clearLogs}
               </button>
               {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
             </div>
           </div>
-          <div className="perf-block" aria-label="System performance">
-            <h3 className="perf-title">SYSTEM PERFORMANCE</h3>
+          <div className="perf-block" aria-label={he.systemPerformance}>
+            <h3 className="perf-title">{he.systemPerformance}</h3>
             <div className="perf-grid">
               {(
                 [
-                  ["Decision Engine", performance?.decision_engine],
-                  ["Momentum", performance?.agents?.momentum],
-                  ["Mean Reversion", performance?.agents?.mean_reversion],
-                  ["Volatility", performance?.agents?.volatility],
-                  ["AI Market Analyst", performance?.agents?.ai_analyst],
+                  [he.decisionEngine, performance?.decision_engine],
+                  [he.momentum, performance?.agents?.momentum],
+                  [he.meanReversion, performance?.agents?.mean_reversion],
+                  [he.volatility, performance?.agents?.volatility],
+                  [he.aiAnalyst, performance?.agents?.ai_analyst],
                 ] as const
               ).map(([label, row]) => (
                 <div className="perf-row" key={label}>
@@ -891,21 +890,21 @@ export default function App() {
               ))}
             </div>
             <p className="muted perf-note">
-              Directional accuracy after BUY/SELL signals. Weights are not auto-tuned.
+              {he.directionalAccuracy}
             </p>
           </div>
           {manualCopyText ? (
             <div className="manual-copy-box">
               <div className="row" style={{ marginBottom: "0.35rem" }}>
                 <span className="muted">
-                  Select all (Ctrl/Cmd+A) then copy (Ctrl/Cmd+C)
+                  {he.clipboardBlocked}
                 </span>
                 <button
                   type="button"
                   className="btn-copy ghost"
                   onClick={() => setManualCopyText(null)}
                 >
-                  Close
+                  {he.closeDetails}
                 </button>
               </div>
               <textarea
@@ -962,12 +961,12 @@ export default function App() {
                     aria-expanded={open}
                     onClick={() => setExpandedLogId(open ? null : log.id)}
                   >
-                    {open ? "Hide details" : "Why?"}
+                    {open ? he.hideDetails : he.why}
                   </button>
                   {open && (
                     <div className="decision-log-details">
                       <div className="detail-block">
-                        <h4>SIGNAL</h4>
+                        <h4>{he.signal}</h4>
                         <p className="mono">
                           {log.signal?.action} · agents{" "}
                           {(log.signal?.agents || [])
@@ -979,7 +978,7 @@ export default function App() {
                         </p>
                       </div>
                       <div className="detail-block">
-                        <h4>MARKET SNAPSHOT</h4>
+                        <h4>{he.marketSnapshot}</h4>
                         <pre className="detail-pre">
                           {`Price: ${log.market?.price ?? "—"}
 1m: ${log.market?.change_1m_pct ?? "—"}%
@@ -996,7 +995,7 @@ Provider: ${log.market?.provider ?? "—"} (${log.market?.freshness ?? "—"})`}
                         </pre>
                       </div>
                       <div className="detail-block">
-                        <h4>AGENTS</h4>
+                        <h4>{he.agents}</h4>
                         {(log.signal?.agents || []).map((a) => (
                           <div className="agent-detail" key={`${log.id}-${a.agent_id}-${a.ts}`}>
                             <div className="row">
@@ -1012,7 +1011,7 @@ Provider: ${log.market?.provider ?? "—"} (${log.market?.freshness ?? "—"})`}
                         ))}
                       </div>
                       <div className="detail-block">
-                        <h4>DECISION</h4>
+                        <h4>{he.decision}</h4>
                         <pre className="detail-pre">
                           {`Action: ${log.decision?.action}
 Final confidence: ${((log.decision?.final_confidence ?? 0) * 100).toFixed(0)}%
@@ -1037,7 +1036,7 @@ Confidence debug:
                       </div>
                       {log.pretrade ? (
                         <div className="detail-block">
-                          <h4>AI PRETRADE</h4>
+                          <h4>{he.aiPretrade}</h4>
                           <pre className="detail-pre">
                             {`Source: ${log.pretrade.source ?? "—"}
 Skip: ${log.pretrade.skip_reason ?? "—"}
@@ -1047,7 +1046,7 @@ Confidence: ${log.pretrade.confidence ?? "—"}`}
                         </div>
                       ) : null}
                       <div className="detail-block">
-                        <h4>OUTCOME</h4>
+                        <h4>{he.outcome}</h4>
                         <pre className="detail-pre">
                           {`Entry: ${log.outcome?.entry_price ?? "—"}
 ${outcomeLine("5m", log.outcome?.horizons?.["5m"])}
@@ -1056,7 +1055,7 @@ ${outcomeLine("60m", log.outcome?.horizons?.["60m"])}`}
                         </pre>
                       </div>
                       <div className="detail-block">
-                        <h4>EXECUTION</h4>
+                        <h4>{he.execution}</h4>
                         <pre className="detail-pre">
                           {`Status: ${log.execution?.status}
 Reason: ${log.execution?.reason}
@@ -1070,7 +1069,7 @@ Fill: ${log.execution?.quantity ?? "—"} @ ${log.execution?.fill_price ?? "—"
               );
             })}
             {!decisionLogs.length && (
-              <div className="muted">Structured decision logs appear after START.</div>
+              <div className="muted">{he.logsAppear}</div>
             )}
           </div>
         </section>

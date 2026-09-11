@@ -41,6 +41,7 @@ import {
   type DecisionMarkerItem,
   type GroupedMarker,
 } from "./chartMarkers";
+import { he } from "./i18n/he";
 
 const DEFAULT_TFS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 const SIZE_KEY = "trading.chart.sizeMode";
@@ -667,7 +668,7 @@ export default function LiveChart({
           timeframe_scope: "all",
           price: Number(price),
           coordinates: { price: Number(price) },
-          label: drawMode === "SUPPORT" ? "Support" : "Resistance",
+          label: drawMode === "SUPPORT" ? he.support : he.resistance,
           importance: "medium",
           color: drawMode === "SUPPORT" ? "#3dd6c6" : "#e85d5d",
         }).then((r) => {
@@ -689,7 +690,7 @@ export default function LiveChart({
               t2: time,
               p2: Number(price),
             },
-            label: "Trend",
+            label: he.trendLine,
             color: "#7aa2ff",
           }).then((r) => {
             if (r.annotation) setAnnotations((prev) => [...prev, r.annotation!]);
@@ -698,7 +699,7 @@ export default function LiveChart({
           });
         }
       } else if (drawMode === "TEXT_NOTE") {
-        const note = window.prompt("Note text");
+        const note = window.prompt(he.notePrompt);
         if (!note) return;
         void createAnnotation({
           symbol: active,
@@ -707,7 +708,7 @@ export default function LiveChart({
           price: Number(price),
           coordinates: { time, price: Number(price) },
           note,
-          label: "Note",
+          label: he.textNote,
           color: "#f0b429",
         }).then((r) => {
           if (r.annotation) setAnnotations((prev) => [...prev, r.annotation!]);
@@ -947,7 +948,7 @@ export default function LiveChart({
   };
 
   const onClearDrawings = async () => {
-    if (!window.confirm("Delete all drawings for this symbol?")) return;
+    if (!window.confirm(he.clearDrawingsConfirm)) return;
     await clearAnnotations(active);
     setAnnotations([]);
   };
@@ -962,9 +963,9 @@ export default function LiveChart({
   const editSelected = async () => {
     const a = annotations.find((x) => x.id === selectedAnn);
     if (!a) return;
-    const label = window.prompt("Label", a.label || "") ?? a.label;
-    const note = window.prompt("Note", a.note || "") ?? a.note;
-    const importance = window.prompt("Importance (low|medium|high)", a.importance || "medium");
+    const label = window.prompt(he.labelPrompt, a.label || "") ?? a.label;
+    const note = window.prompt(he.notePrompt, a.note || "") ?? a.note;
+    const importance = window.prompt(he.importancePrompt, a.importance || "medium");
     const res = await updateAnnotation(a.id, {
       label: label || undefined,
       note: note || undefined,
@@ -1025,7 +1026,7 @@ export default function LiveChart({
         </div>
         <div className="chart-actions">
           <details className="chart-menu">
-            <summary>Indicators</summary>
+            <summary>{he.indicators}</summary>
             <div className="chart-menu-body">
               {(
                 [
@@ -1051,38 +1052,40 @@ export default function LiveChart({
             </div>
           </details>
           <details className="chart-menu">
-            <summary>Draw {drawMode !== "none" ? `(${drawMode})` : ""}</summary>
+            <summary>
+              {he.draw} {drawMode !== "none" ? `(${drawMode})` : ""}
+            </summary>
             <div className="chart-menu-body">
               <button type="button" onClick={() => setDrawMode("SUPPORT")}>
-                Support
+                {he.support}
               </button>
               <button type="button" onClick={() => setDrawMode("RESISTANCE")}>
-                Resistance
+                {he.resistance}
               </button>
               <button type="button" onClick={() => setDrawMode("TREND_LINE")}>
-                Trend line
+                {he.trendLine}
               </button>
               <button type="button" onClick={() => setDrawMode("TEXT_NOTE")}>
-                Text note
+                {he.textNote}
               </button>
               <button type="button" onClick={() => setDrawMode("none")}>
-                Cancel draw
+                {he.cancelDraw}
               </button>
               <button type="button" onClick={onDeleteSelected} disabled={!selectedAnn}>
-                Delete selected
+                {he.deleteSelected}
               </button>
               <button type="button" onClick={onClearDrawings}>
-                Clear drawings
+                {he.clearDrawings}
               </button>
               {selectedAnn ? (
                 <button type="button" onClick={editSelected}>
-                  Edit selected
+                  {he.editSelected}
                 </button>
               ) : null}
             </div>
           </details>
           <details className="chart-menu">
-            <summary>Markers</summary>
+            <summary>{he.markers}</summary>
             <div className="chart-menu-body">
               <label className="chk">
                 <input
@@ -1090,7 +1093,7 @@ export default function LiveChart({
                   checked={showVotes}
                   onChange={(e) => setShowVotes(e.target.checked)}
                 />
-                Agent decisions
+                {he.agentDecisions}
               </label>
               <label className="chk">
                 <input
@@ -1098,11 +1101,11 @@ export default function LiveChart({
                   checked={showFills}
                   onChange={(e) => setShowFills(e.target.checked)}
                 />
-                Executed trades
+                {he.executedTrades}
               </label>
               <label className="chk">
                 <input type="checkbox" checked={showBuy} onChange={(e) => setShowBuy(e.target.checked)} />
-                BUY markers
+                {he.buyMarkers}
               </label>
               <label className="chk">
                 <input
@@ -1110,7 +1113,7 @@ export default function LiveChart({
                   checked={showSell}
                   onChange={(e) => setShowSell(e.target.checked)}
                 />
-                SELL markers
+                {he.sellMarkers}
               </label>
               <label className="chk">
                 <input
@@ -1118,7 +1121,7 @@ export default function LiveChart({
                   checked={showHold}
                   onChange={(e) => setShowHold(e.target.checked)}
                 />
-                HOLD decisions
+                {he.holdDecisions}
               </label>
               <label className="chk">
                 <input
@@ -1126,7 +1129,7 @@ export default function LiveChart({
                   checked={showDrawings}
                   onChange={(e) => setShowDrawings(e.target.checked)}
                 />
-                Manual drawings
+                {he.manualDrawings}
               </label>
               <label className="chk">
                 <input
@@ -1134,59 +1137,59 @@ export default function LiveChart({
                   checked={showIndicators}
                   onChange={(e) => setShowIndicators(e.target.checked)}
                 />
-                Indicators
+                {he.indicators}
               </label>
-              <div className="compact-legend menu-legend" aria-label="Marker legend">
+              <div className="compact-legend menu-legend" aria-label={he.markers}>
                 <span>
-                  <i className="lg-tri buy" /> Blue △ agent BUY
+                  <i className="lg-tri buy" /> {he.legendBuy}
                 </span>
                 <span>
-                  <i className="lg-tri sell" /> Purple ▽ agent SELL
+                  <i className="lg-tri sell" /> {he.legendSell}
                 </span>
                 <span>
-                  <i className="lg-arrow buy" /> Green ↑ paper BUY
+                  <i className="lg-arrow buy" /> {he.legendFillBuy}
                 </span>
                 <span>
-                  <i className="lg-arrow sell" /> Red ↓ paper SELL
+                  <i className="lg-arrow sell" /> {he.legendFillSell}
                 </span>
                 <span>
-                  <i className="lg-dot" /> Yellow · indicator
+                  <i className="lg-dot" /> {he.legendYellow}
                 </span>
               </div>
             </div>
           </details>
           <button type="button" className="chart-ctrl-btn" onClick={goLive}>
-            Go to live
+            {he.goLive}
           </button>
           <button type="button" className="chart-ctrl-btn" onClick={resetView}>
-            Reset view
+            {he.resetView}
           </button>
           {expanded ? (
             <button
               type="button"
               className="chart-ctrl-btn chart-ctrl-primary"
-              title="Collapse chart"
+              title={he.collapse}
               onClick={() => setMode("normal")}
             >
-              Collapse
+              {he.collapse}
             </button>
           ) : (
             <button
               type="button"
               className="chart-ctrl-btn chart-ctrl-primary"
-              title="Expand chart"
+              title={he.expand}
               onClick={() => setMode("expanded")}
             >
-              Expand
+              {he.expand}
             </button>
           )}
           {isFullscreen ? (
             <button type="button" className="chart-ctrl-btn" onClick={exitFullscreen}>
-              Exit fullscreen
+              {he.exitFullscreen}
             </button>
           ) : (
             <button type="button" className="chart-ctrl-btn" onClick={enterFullscreen}>
-              Fullscreen
+              {he.fullscreen}
             </button>
           )}
         </div>
@@ -1195,21 +1198,21 @@ export default function LiveChart({
             {wsState}
           </span>
           <span className={`data-badge ${realData ? "real" : "sim"}`}>
-            {realData ? "REAL" : "SIM"}
+            {realData ? he.realData : he.simData}
           </span>
           <span>
             {provider || meta?.provider || "—"}
           </span>
           <span className="marker-counters">
-            Decisions: {decisionCount} · Executed: {fillCount}
+            {he.decisionsCount}: {decisionCount} · {he.executedCount}: {fillCount}
           </span>
-          {loading || loadingOlder ? <span className="loading-pill">Loading…</span> : null}
+          {loading || loadingOlder ? <span className="loading-pill">{he.loading}</span> : null}
         </div>
       </div>
 
       {unmappedFills > 0 ? (
         <div className="marker-warn" role="status">
-          {unmappedFills} trade{unmappedFills === 1 ? "" : "s"} could not be mapped to loaded candles
+          {he.unmappedTrades(unmappedFills)}
         </div>
       ) : null}
 
@@ -1220,7 +1223,7 @@ export default function LiveChart({
       >
         <div className="chart-main">
           {unavailable && !candlesRef.current.length ? (
-            <div className="chart-unavailable">Data unavailable</div>
+            <div className="chart-unavailable">{he.dataUnavailable}</div>
           ) : null}
           <div className="chart-canvas" ref={wrapRef} style={canvasStyle} />
           {!isMobile && !expanded ? (
@@ -1246,13 +1249,13 @@ export default function LiveChart({
         </div>
 
         {showDrawer && groupedOpen ? (
-          <aside className="chart-drawer" aria-label="Marker details">
+          <aside className="chart-drawer" aria-label={he.markerDetails}>
             <div className="chart-drawer-head">
-              <h3>Marker details</h3>
+              <h3>{he.markerDetails}</h3>
               <button
                 type="button"
                 className="chart-drawer-close"
-                aria-label="Close details"
+                aria-label={he.closeDetails}
                 onClick={closeDrawer}
               >
                 ×
@@ -1266,8 +1269,8 @@ L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
                 </pre>
               ) : null}
               <p className="mono muted">
-                Candle {new Date(groupedOpen.time * 1000).toLocaleString()} · {groupedOpen.count}{" "}
-                event{groupedOpen.count === 1 ? "" : "s"}
+                {he.candleTime} {new Date(groupedOpen.time * 1000).toLocaleString()} ·{" "}
+                {groupedOpen.count}
               </p>
               {groupedOpen.items.map((it) => (
                 <div key={it.id} className="agent-detail marker-detail-card">
@@ -1277,27 +1280,27 @@ L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
                   </div>
                   <dl className="marker-dl mono">
                     <div>
-                      <dt>Symbol</dt>
+                      <dt>{he.symbol}</dt>
                       <dd>{it.symbol}</dd>
                     </div>
                     <div>
-                      <dt>Execution time</dt>
+                      <dt>{he.executionTime}</dt>
                       <dd>{new Date(toUnixSeconds(it.timestamp) * 1000).toLocaleString()}</dd>
                     </div>
                     <div>
-                      <dt>Candle time</dt>
+                      <dt>{he.candleTime}</dt>
                       <dd>{new Date(it.candleTs * 1000).toLocaleString()}</dd>
                     </div>
                     <div>
-                      <dt>Action</dt>
+                      <dt>{he.action}</dt>
                       <dd>{it.action}</dd>
                     </div>
                     <div>
-                      <dt>Quantity</dt>
+                      <dt>{he.quantity}</dt>
                       <dd>{it.quantity != null ? Number(it.quantity).toFixed(4) : "—"}</dd>
                     </div>
                     <div>
-                      <dt>Requested price</dt>
+                      <dt>{he.requestedPrice}</dt>
                       <dd>
                         {it.payload?.requested_price != null
                           ? fmtPrice(Number(it.payload.requested_price))
@@ -1307,21 +1310,21 @@ L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
                       </dd>
                     </div>
                     <div>
-                      <dt>Fill price</dt>
+                      <dt>{he.fillPrice}</dt>
                       <dd>{it.price != null ? fmtPrice(it.price) : "—"}</dd>
                     </div>
                     <div>
-                      <dt>Total value</dt>
+                      <dt>{he.totalValue}</dt>
                       <dd>{it.totalValue != null ? fmtPrice(it.totalValue) : "—"}</dd>
                     </div>
                     <div>
-                      <dt>Confidence</dt>
+                      <dt>{he.confidence}</dt>
                       <dd>
                         {it.confidence != null ? `${(it.confidence * 100).toFixed(0)}%` : "—"}
                       </dd>
                     </div>
                     <div>
-                      <dt>Agents</dt>
+                      <dt>{he.agentsVoted}</dt>
                       <dd>
                         {(it.agents || [])
                           .map((a) => String(a.agent_name || a.agent_id || ""))
@@ -1332,28 +1335,28 @@ L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
                       </dd>
                     </div>
                     <div>
-                      <dt>Orchestrator</dt>
+                      <dt>{he.orchestrator}</dt>
                       <dd>{it.finalDecision || "—"}</dd>
                     </div>
                     <div>
-                      <dt>Reasons</dt>
+                      <dt>{he.reasons}</dt>
                       <dd>{it.reason || "—"}</dd>
                     </div>
                     <div>
-                      <dt>Paper order ID</dt>
+                      <dt>{he.paperOrderId}</dt>
                       <dd>{it.orderId || "—"}</dd>
                     </div>
                     <div>
-                      <dt>Fill ID</dt>
+                      <dt>{he.fillId}</dt>
                       <dd>{it.fillId || "—"}</dd>
                     </div>
                     <div>
-                      <dt>Status</dt>
+                      <dt>{he.status}</dt>
                       <dd>{it.status || (it.filled ? "FILLED" : "—")}</dd>
                     </div>
                     {it.skipReason ? (
                       <div>
-                        <dt>Skip reason</dt>
+                        <dt>{he.skipReason}</dt>
                         <dd>{it.skipReason}</dd>
                       </div>
                     ) : null}
@@ -1362,7 +1365,7 @@ L ${fmtPrice(lastCandle.low)}  C ${fmtPrice(lastCandle.close)}`}
               ))}
               {annotations.length ? (
                 <>
-                  <h3>Drawings</h3>
+                  <h3>{he.drawings}</h3>
                   <ul className="ann-list">
                     {annotations.map((a) => (
                       <li key={a.id}>
