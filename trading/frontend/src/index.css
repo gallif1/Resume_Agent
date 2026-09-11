@@ -1409,3 +1409,168 @@ body.chart-expanded-body {
   }
 }
 
+/* —— Mobile shell (<900px via App layout) —— */
+.app-mobile {
+  max-width: none;
+  padding: 0;
+  padding-bottom: calc(56px + env(safe-area-inset-bottom));
+  min-height: 100dvh;
+}
+
+.app-mobile .mobile-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  background: rgba(11, 18, 32, 0.96);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+.app-mobile .mobile-header-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+}
+
+.app-mobile .mobile-header-brand strong {
+  font-size: 0.95rem;
+}
+
+.app-mobile .mobile-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.app-mobile .mobile-header-actions .btn {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.app-mobile .mobile-header-actions .data-badge,
+.app-mobile .mobile-header-actions .ws-badge {
+  font-size: 0.68rem;
+  padding: 0.2rem 0.45rem;
+}
+
+.app-mobile .mobile-header-error {
+  flex: 1 1 100%;
+  font-size: 0.75rem;
+}
+
+.app-mobile .mobile-main {
+  padding: 0.65rem 0.75rem 1rem;
+}
+
+.app-mobile .mobile-pane[hidden] {
+  display: none !important;
+}
+
+.app-mobile .mobile-main > .panel + .panel {
+  margin-top: 0.75rem;
+}
+
+.app-mobile .market-table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.app-mobile .market-table table,
+.app-mobile .panel > .market-table {
+  min-width: 520px;
+}
+
+.app-mobile .decision-log-list {
+  max-height: min(60vh, 480px);
+}
+
+.app-mobile .mobile-tabbar {
+  position: fixed;
+  bottom: 0;
+  inset-inline: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0;
+  padding: 0.25rem 0.2rem calc(0.25rem + env(safe-area-inset-bottom));
+  background: rgba(15, 22, 34, 0.98);
+  border-top: 1px solid var(--line);
+}
+
+.app-mobile .mobile-tabbar button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.45rem 0.2rem;
+  cursor: pointer;
+}
+
+.app-mobile .mobile-tabbar button.active {
+  color: var(--accent);
+}
+
+.app-mobile.chart-layout-expanded {
+  padding-bottom: 0;
+}
+
+.app-mobile.chart-layout-expanded .mobile-header {
+  display: none;
+}
+
+/* compact chart toolbar */
+.live-chart-compact .chart-toolbar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  gap: 0.35rem;
+}
+
+.live-chart-compact .chart-canvas {
+  height: min(62vh, 520px);
+}
+
+.live-chart-compact .chart-menu-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 12rem;
+}
+
+.live-chart-compact .chart-menu-more-body > .chart-menu {
+  position: relative;
+}
+
+.app-desktop .mobile-header,
+.app-desktop .mobile-tabbar {
+  display: none;
+}
+
+.app-mobile .mobile-back {
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.app-mobile .panel-head-row {
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.app-mobile .copy-logs-bar {
+  flex-wrap: wrap;
+}
+
+
