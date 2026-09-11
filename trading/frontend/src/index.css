@@ -862,8 +862,192 @@ a {
   font-size: 0.82rem;
 }
 
-.perf-note {
-  margin: 0.45rem 0 0;
+.pro-chart .chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.75rem;
+  align-items: center;
+  margin-bottom: 0.55rem;
+}
+
+.pro-chart .chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.pro-chart .chart-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-inline-start: auto;
+  font-size: 0.75rem;
+}
+
+.pro-chart .chart-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.pro-chart .chk {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  cursor: pointer;
+}
+
+.pro-chart .chart-body {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+  min-height: 420px;
+}
+
+.pro-chart .chart-body.with-panel {
+  grid-template-columns: minmax(0, 1fr) 240px;
+}
+
+@media (max-width: 900px) {
+  .pro-chart .chart-body.with-panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pro-chart .chart-main {
+  position: relative;
+  min-height: 420px;
+}
+
+.pro-chart .chart-canvas {
+  width: 100%;
+  height: 460px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 0.4rem;
+  overflow: hidden;
+}
+
+.pro-chart .chart-tooltip {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  background: rgba(10, 14, 20, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.55rem;
   font-size: 0.72rem;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.pro-chart .chart-unavailable {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 3;
+  background: rgba(15, 20, 25, 0.72);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.pro-chart .chart-side-panel {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.4rem;
+  padding: 0.65rem;
+  background: rgba(255, 255, 255, 0.02);
+  max-height: 460px;
+  overflow: auto;
+}
+
+.pro-chart .chart-side-panel h3 {
+  margin: 0.55rem 0 0.3rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.pro-chart .ann-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pro-chart .ann-list button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 0.25rem 0;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.pro-chart .ann-list button.active {
+  color: #3dd6c6;
+}
+
+.pro-chart .chart-menu {
+  position: relative;
+}
+
+.pro-chart .chart-menu summary {
+  cursor: pointer;
+  list-style: none;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.pro-chart .chart-menu-body {
+  position: absolute;
+  z-index: 5;
+  top: 120%;
+  left: 0;
+  min-width: 160px;
+  background: #121821;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.4rem;
+  padding: 0.45rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.pro-chart .chart-menu-body button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  padding: 0.25rem 0.35rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.pro-chart .loading-pill {
+  color: #f0b429;
+}
+
+.pro-chart .marker-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+}
+
+.pro-chart .marker-chip {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  cursor: pointer;
 }
 

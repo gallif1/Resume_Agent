@@ -191,6 +191,45 @@ export type PricePoint = {
   low?: number;
 };
 
+export type OhlcCandle = {
+  ts: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+};
+
+export type ChartAnnotation = {
+  id: string;
+  user_id?: string | null;
+  symbol: string;
+  timeframe_scope: string;
+  annotation_type: string;
+  coordinates: Record<string, unknown>;
+  price?: number | null;
+  label?: string | null;
+  note?: string | null;
+  color?: string | null;
+  line_style?: string | null;
+  importance?: string | null;
+  created_at?: number;
+  updated_at?: number;
+  active?: boolean;
+};
+
+export type CandlesResponse = {
+  symbol: string;
+  timeframe: string;
+  candles: OhlcCandle[];
+  has_more?: boolean;
+  provider?: string;
+  source?: string;
+  unavailable?: boolean;
+  reason?: string;
+  indicators?: Record<string, Array<{ time: number; value: number; color?: string }>>;
+};
+
 export type TradeAgent = {
   id?: string;
   name?: string;
@@ -353,6 +392,61 @@ export function setChartTimeframe(timeframe: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ timeframe }),
   });
+}
+
+export function fetchCandles(
+  symbol: string,
+  timeframe: string,
+  limit = 500,
+  before?: number
+) {
+  const q = new URLSearchParams({
+    timeframe,
+    limit: String(limit),
+  });
+  if (before != null) q.set("before", String(before));
+  return jsonFetch<CandlesResponse>(`/candles/${encodeURIComponent(symbol)}?${q}`);
+}
+
+export function fetchAnnotations(symbol: string) {
+  return jsonFetch<{ symbol: string; annotations: ChartAnnotation[] }>(
+    `/annotations/${encodeURIComponent(symbol)}`
+  );
+}
+
+export function createAnnotation(payload: Record<string, unknown>) {
+  return jsonFetch<{ ok: boolean; annotation?: ChartAnnotation; error?: string }>(
+    "/annotations",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function updateAnnotation(id: string, payload: Record<string, unknown>) {
+  return jsonFetch<{ ok: boolean; annotation?: ChartAnnotation; error?: string }>(
+    `/annotations/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function deleteAnnotation(id: string) {
+  return jsonFetch<{ ok: boolean }>(`/annotations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export function clearAnnotations(symbol: string) {
+  return jsonFetch<{ ok: boolean; cleared: number }>(
+    `/annotations/symbol/${encodeURIComponent(symbol)}`,
+    { method: "DELETE" }
+  );
 }
 
 export function tradingWsUrls(config?: TradingConfig | null): string[] {
