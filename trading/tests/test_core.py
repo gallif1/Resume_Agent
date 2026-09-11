@@ -261,7 +261,12 @@ def test_us_equity_session_without_tzdata():
 
     # Weekday noon UTC ~ morning ET — function should return a MarketSession.
     noon = datetime(2024, 6, 5, 16, 0, tzinfo=timezone.utc)
-    assert us_equity_session(noon) in {MarketSession.OPEN, MarketSession.CLOSED}
+    assert us_equity_session(noon) in {
+        MarketSession.OPEN,
+        MarketSession.CLOSED,
+        MarketSession.PRE_MARKET,
+        MarketSession.AFTER_HOURS,
+    }
 
 
 def test_degraded_trading_health_closure_does_not_500():

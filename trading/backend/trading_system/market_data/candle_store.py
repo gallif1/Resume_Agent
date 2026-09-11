@@ -98,11 +98,65 @@ class MarketDB:
                     );
                     CREATE INDEX IF NOT EXISTS idx_paper_events_sym_ts
                         ON paper_events(symbol, ts);
+
+                    CREATE TABLE IF NOT EXISTS unified_decisions (
+                        decision_id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL,
+                        timeframe TEXT,
+                        decision_time REAL NOT NULL,
+                        candle_time REAL,
+                        final_action TEXT,
+                        confidence REAL,
+                        status TEXT,
+                        quantity REAL,
+                        fill_price REAL,
+                        total_value REAL,
+                        payload TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_unified_decisions_sym_time
+                        ON unified_decisions(symbol, decision_time);
+
+                    CREATE TABLE IF NOT EXISTS trading_asset_config (
+                        id TEXT PRIMARY KEY,
+                        symbol TEXT NOT NULL UNIQUE,
+                        asset_type TEXT,
+                        provider TEXT,
+                        mode TEXT NOT NULL DEFAULT 'MONITOR_ONLY',
+                        max_allocation_amount REAL,
+                        max_portfolio_percentage REAL,
+                        max_position_size REAL,
+                        max_trades_per_day INTEGER,
+                        minimum_confidence REAL,
+                        cooldown_seconds REAL,
+                        allowed_directions TEXT,
+                        allowed_timeframes TEXT,
+                        stop_loss_policy TEXT,
+                        take_profit_policy TEXT,
+                        enabled_at REAL,
+                        updated_at REAL,
+                        config_json TEXT DEFAULT '{}'
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_asset_config_symbol
+                        ON trading_asset_config(symbol);
                     """
                 )
+                self._migrate_paper_events_decision_id(conn)
                 conn.commit()
             finally:
                 conn.close()
+
+    def _migrate_paper_events_decision_id(self, conn: sqlite3.Connection) -> None:
+        """Safe additive migration: add decision_id column if missing."""
+        cols = {
+            str(r["name"])
+            for r in conn.execute("PRAGMA table_info(paper_events)").fetchall()
+        }
+        if "decision_id" not in cols:
+            conn.execute("ALTER TABLE paper_events ADD COLUMN decision_id TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_paper_events_decision_id "
+                "ON paper_events(decision_id)"
+            )
 
     # --- candles ---------------------------------------------------------
 
@@ -358,6 +412,14 @@ class MarketDB:
         payload = event.get("payload") or {}
         if not isinstance(payload, dict):
             payload = {}
+        decision_id = event.get("decision_id")
+        if decision_id is None:
+            decision_id = payload.get("decision_id")
+        if decision_id is not None:
+            decision_id = str(decision_id).strip() or None
+        # For fills/decisions the event_id is the decision id when not set explicitly.
+        if decision_id is None and event_type in {"fill", "decision"}:
+            decision_id = event_id
         row_id = marker_key(event_type, event_id)
         with self._lock:
             conn = self._connect()
@@ -365,10 +427,11 @@ class MarketDB:
                 conn.execute(
                     """
                     INSERT INTO paper_events(
-                        id, event_type, event_id, symbol, side, ts,
+                        id, event_type, event_id, decision_id, symbol, side, ts,
                         price, quantity, confidence, status, payload
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(event_type, event_id) DO UPDATE SET
+                        decision_id=excluded.decision_id,
                         symbol=excluded.symbol,
                         side=excluded.side,
                         ts=excluded.ts,
@@ -382,6 +445,7 @@ class MarketDB:
                         row_id,
                         event_type,
                         event_id,
+                        decision_id,
                         symbol,
                         side,
                         float(ts),
@@ -463,10 +527,15 @@ class MarketDB:
             payload = json.loads(row["payload"] or "{}")
         except json.JSONDecodeError:
             payload = {}
+        keys = row.keys()
+        decision_id = row["decision_id"] if "decision_id" in keys else None
+        if decision_id is None and isinstance(payload, dict):
+            decision_id = payload.get("decision_id")
         return {
             "id": row["id"],
             "event_type": row["event_type"],
             "event_id": row["event_id"],
+            "decision_id": decision_id,
             "symbol": row["symbol"],
             "side": row["side"],
             "ts": row["ts"],
@@ -475,6 +544,353 @@ class MarketDB:
             "confidence": row["confidence"],
             "status": row["status"],
             "payload": payload if isinstance(payload, dict) else {},
+        }
+
+    # --- unified decisions -----------------------------------------------
+
+    def upsert_unified_decision(self, decision_dict: dict[str, Any]) -> dict[str, Any]:
+        from ..time_utils import normalize_symbol
+
+        if not isinstance(decision_dict, dict):
+            raise ValueError("decision_dict must be an object")
+        decision_id = str(
+            decision_dict.get("decision_id") or decision_dict.get("id") or ""
+        ).strip()
+        if not decision_id:
+            raise ValueError("decision_id required")
+        symbol = normalize_symbol(str(decision_dict.get("symbol") or ""))
+        if not symbol:
+            raise ValueError("symbol required")
+        decision_time = float(
+            decision_dict.get("decision_time")
+            or decision_dict.get("ts")
+            or time.time()
+        )
+        payload = dict(decision_dict)
+        payload["decision_id"] = decision_id
+        payload["symbol"] = symbol
+        qty = decision_dict.get("quantity")
+        fill_price = decision_dict.get("fill_price")
+        total_value = decision_dict.get("total_value")
+        if total_value is None and qty is not None and fill_price is not None:
+            try:
+                total_value = float(qty) * float(fill_price)
+            except (TypeError, ValueError):
+                total_value = None
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO unified_decisions(
+                        decision_id, symbol, timeframe, decision_time, candle_time,
+                        final_action, confidence, status, quantity, fill_price,
+                        total_value, payload
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(decision_id) DO UPDATE SET
+                        symbol=excluded.symbol,
+                        timeframe=excluded.timeframe,
+                        decision_time=excluded.decision_time,
+                        candle_time=excluded.candle_time,
+                        final_action=excluded.final_action,
+                        confidence=excluded.confidence,
+                        status=excluded.status,
+                        quantity=excluded.quantity,
+                        fill_price=excluded.fill_price,
+                        total_value=excluded.total_value,
+                        payload=excluded.payload
+                    """,
+                    (
+                        decision_id,
+                        symbol,
+                        decision_dict.get("timeframe"),
+                        decision_time,
+                        decision_dict.get("candle_time"),
+                        decision_dict.get("final_action")
+                        or decision_dict.get("side")
+                        or decision_dict.get("action"),
+                        decision_dict.get("confidence"),
+                        decision_dict.get("status"),
+                        qty,
+                        fill_price,
+                        total_value,
+                        json.dumps(payload, default=str),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_unified_decision(decision_id) or {}
+
+    def get_unified_decision(self, decision_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM unified_decisions WHERE decision_id = ?",
+                    (str(decision_id),),
+                ).fetchone()
+            finally:
+                conn.close()
+        return self._unified_row(row) if row else None
+
+    def list_unified_decisions(
+        self,
+        symbol: str,
+        *,
+        from_ts: float | None = None,
+        to_ts: float | None = None,
+        timeframe: str | None = None,
+        limit: int = 2000,
+    ) -> list[dict[str, Any]]:
+        from ..time_utils import normalize_symbol
+
+        symbol = normalize_symbol(symbol)
+        clauses = ["symbol = ?"]
+        params: list[Any] = [symbol]
+        if from_ts is not None:
+            clauses.append("decision_time >= ?")
+            params.append(float(from_ts))
+        if to_ts is not None:
+            clauses.append("decision_time <= ?")
+            params.append(float(to_ts))
+        if timeframe:
+            clauses.append("(timeframe IS NULL OR timeframe = ?)")
+            params.append(str(timeframe))
+        where = " AND ".join(clauses)
+        sql = (
+            f"SELECT * FROM unified_decisions WHERE {where} "
+            f"ORDER BY decision_time ASC LIMIT ?"
+        )
+        params.append(max(1, min(int(limit), 5000)))
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            finally:
+                conn.close()
+        return [self._unified_row(r) for r in rows]
+
+    def _unified_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        # Prefer full JSON payload; overlay indexed columns for consistency.
+        out = dict(payload)
+        out.update(
+            {
+                "decision_id": row["decision_id"],
+                "symbol": row["symbol"],
+                "timeframe": row["timeframe"],
+                "decision_time": row["decision_time"],
+                "candle_time": row["candle_time"],
+                "final_action": row["final_action"],
+                "confidence": row["confidence"],
+                "status": row["status"],
+                "quantity": row["quantity"],
+                "fill_price": row["fill_price"],
+                "total_value": row["total_value"],
+            }
+        )
+        return out
+
+    # --- trading asset config --------------------------------------------
+
+    def get_trading_asset_config(self, symbol: str) -> dict[str, Any] | None:
+        from ..time_utils import normalize_symbol
+
+        symbol = normalize_symbol(symbol)
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM trading_asset_config WHERE symbol = ?", (symbol,)
+                ).fetchone()
+            finally:
+                conn.close()
+        return self._asset_config_row(row) if row else None
+
+    def list_trading_asset_configs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM trading_asset_config ORDER BY symbol ASC"
+                ).fetchall()
+            finally:
+                conn.close()
+        return [self._asset_config_row(r) for r in rows]
+
+    def set_trading_asset_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        from ..time_utils import normalize_symbol
+
+        if not isinstance(config, dict):
+            raise ValueError("config must be an object")
+        symbol = normalize_symbol(str(config.get("symbol") or ""))
+        if not symbol:
+            raise ValueError("symbol required")
+        mode = str(config.get("mode") or "MONITOR_ONLY").upper().strip()
+        if mode not in {"DISABLED", "MONITOR_ONLY", "TRADE", "CLOSE_ONLY"}:
+            raise ValueError("mode must be DISABLED|MONITOR_ONLY|TRADE|CLOSE_ONLY")
+        now = time.time()
+        existing = self.get_trading_asset_config(symbol) or {}
+        row_id = existing.get("id") or uuid.uuid4().hex[:16]
+
+        def _json_field(key: str, default: Any = None) -> str | None:
+            val = config[key] if key in config else existing.get(key, default)
+            if val is None:
+                return None
+            if isinstance(val, str):
+                return val
+            return json.dumps(val, default=str)
+
+        enabled_at = config.get("enabled_at")
+        if enabled_at is None:
+            enabled_at = existing.get("enabled_at")
+        if mode == "TRADE" and enabled_at is None:
+            enabled_at = now
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO trading_asset_config(
+                        id, symbol, asset_type, provider, mode,
+                        max_allocation_amount, max_portfolio_percentage,
+                        max_position_size, max_trades_per_day, minimum_confidence,
+                        cooldown_seconds, allowed_directions, allowed_timeframes,
+                        stop_loss_policy, take_profit_policy, enabled_at,
+                        updated_at, config_json
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(symbol) DO UPDATE SET
+                        asset_type=excluded.asset_type,
+                        provider=excluded.provider,
+                        mode=excluded.mode,
+                        max_allocation_amount=excluded.max_allocation_amount,
+                        max_portfolio_percentage=excluded.max_portfolio_percentage,
+                        max_position_size=excluded.max_position_size,
+                        max_trades_per_day=excluded.max_trades_per_day,
+                        minimum_confidence=excluded.minimum_confidence,
+                        cooldown_seconds=excluded.cooldown_seconds,
+                        allowed_directions=excluded.allowed_directions,
+                        allowed_timeframes=excluded.allowed_timeframes,
+                        stop_loss_policy=excluded.stop_loss_policy,
+                        take_profit_policy=excluded.take_profit_policy,
+                        enabled_at=excluded.enabled_at,
+                        updated_at=excluded.updated_at,
+                        config_json=excluded.config_json
+                    """,
+                    (
+                        row_id,
+                        symbol,
+                        config.get("asset_type") or existing.get("asset_type"),
+                        config.get("provider") or existing.get("provider"),
+                        mode,
+                        config.get("max_allocation_amount", existing.get("max_allocation_amount")),
+                        config.get(
+                            "max_portfolio_percentage",
+                            existing.get("max_portfolio_percentage"),
+                        ),
+                        config.get("max_position_size", existing.get("max_position_size")),
+                        config.get("max_trades_per_day", existing.get("max_trades_per_day")),
+                        config.get("minimum_confidence", existing.get("minimum_confidence")),
+                        config.get("cooldown_seconds", existing.get("cooldown_seconds")),
+                        _json_field("allowed_directions"),
+                        _json_field("allowed_timeframes"),
+                        config.get("stop_loss_policy", existing.get("stop_loss_policy")),
+                        config.get("take_profit_policy", existing.get("take_profit_policy")),
+                        enabled_at,
+                        now,
+                        _json_field("config_json", {}) or "{}",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return self.get_trading_asset_config(symbol) or {}
+
+    def ensure_default_asset_configs(
+        self,
+        symbols: list[str] | tuple[str, ...],
+        positions: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Safe migration defaults: open position → CLOSE_ONLY, else MONITOR_ONLY.
+
+        Never defaults a symbol to TRADE.
+        """
+        from ..time_utils import normalize_symbol
+
+        positions = positions or {}
+        open_syms = {
+            normalize_symbol(sym)
+            for sym, pos in positions.items()
+            if pos is not None
+            and (
+                (isinstance(pos, dict) and float(pos.get("quantity") or 0) > 0)
+                or (hasattr(pos, "quantity") and float(getattr(pos, "quantity") or 0) > 0)
+            )
+        }
+        out: list[dict[str, Any]] = []
+        for raw in symbols:
+            symbol = normalize_symbol(str(raw))
+            if not symbol:
+                continue
+            existing = self.get_trading_asset_config(symbol)
+            if existing:
+                out.append(existing)
+                continue
+            mode = "CLOSE_ONLY" if symbol in open_syms else "MONITOR_ONLY"
+            asset_type = "crypto" if "-" in symbol else "stock"
+            row = self.set_trading_asset_config(
+                {
+                    "symbol": symbol,
+                    "asset_type": asset_type,
+                    "mode": mode,
+                    "allowed_directions": ["BUY", "SELL"],
+                    "allowed_timeframes": ["1m", "5m", "15m", "1h", "4h", "1d"],
+                }
+            )
+            out.append(row)
+        return out
+
+    def _asset_config_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if row is None:
+            return {}
+
+        def _parse_json_field(raw: Any, default: Any) -> Any:
+            if raw is None:
+                return default
+            if isinstance(raw, (list, dict)):
+                return raw
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return default
+
+        return {
+            "id": row["id"],
+            "symbol": row["symbol"],
+            "asset_type": row["asset_type"],
+            "provider": row["provider"],
+            "mode": row["mode"],
+            "max_allocation_amount": row["max_allocation_amount"],
+            "max_portfolio_percentage": row["max_portfolio_percentage"],
+            "max_position_size": row["max_position_size"],
+            "max_trades_per_day": row["max_trades_per_day"],
+            "minimum_confidence": row["minimum_confidence"],
+            "cooldown_seconds": row["cooldown_seconds"],
+            "allowed_directions": _parse_json_field(row["allowed_directions"], None),
+            "allowed_timeframes": _parse_json_field(row["allowed_timeframes"], None),
+            "stop_loss_policy": row["stop_loss_policy"],
+            "take_profit_policy": row["take_profit_policy"],
+            "enabled_at": row["enabled_at"],
+            "updated_at": row["updated_at"],
+            "config_json": _parse_json_field(row["config_json"], {}),
         }
 
     def _ann_row(self, row: sqlite3.Row | None) -> dict[str, Any]:

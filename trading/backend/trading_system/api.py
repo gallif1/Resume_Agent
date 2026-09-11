@@ -108,11 +108,18 @@ async def trading_candles(
     timeframe: str = "5m",
     limit: int = 500,
     before: float | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     rt = get_runtime()
     tf = timeframe.strip().lower()
     if tf not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
-        return JSONResponse({"ok": False, "error": "invalid timeframe"}, status_code=400)
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "מסגרת זמן לא חוקית / invalid timeframe",
+            },
+            status_code=400,
+        )
     if rt.use_simulated:
         hist = rt.events.chart_history(symbol.upper()).get(symbol.upper(), [])
         # Convert price points to pseudo-candles for chart.
@@ -127,6 +134,9 @@ async def trading_candles(
                     "low": px,
                     "close": px,
                     "volume": float(p.get("volume") or 0),
+                    "asset_type": "crypto" if "-" in symbol.upper() else "stock",
+                    "provider": "simulated",
+                    "complete": True,
                 }
             )
         if before is not None:
@@ -147,6 +157,11 @@ async def trading_candles(
                     "low": float(c.low),
                     "close": float(c.close),
                     "volume": float(c.volume),
+                    "asset_type": getattr(c, "asset_type", "") or (
+                        "crypto" if "-" in symbol.upper() else "stock"
+                    ),
+                    "provider": getattr(c, "provider", "") or "simulated+db",
+                    "complete": bool(getattr(c, "complete", True)),
                 }
                 for c in rows
             ]
@@ -171,6 +186,22 @@ async def trading_candles(
                 "source": "simulated",
                 "provider": "simulated+db",
                 "unavailable": len(candles) == 0,
+                "error": (
+                    None
+                    if candles
+                    else "אין נרות / No candles in simulated history or DB"
+                ),
+                "freshness": "live" if candles else "unavailable",
+                "diagnostics": {
+                    "provider": "simulated+db",
+                    "candle_count": len(candles),
+                    "first_ts": candles[0]["ts"] if candles else None,
+                    "last_ts": candles[-1]["ts"] if candles else None,
+                    "freshness": "live" if candles else "unavailable",
+                    "error": None if candles else "empty",
+                    "refreshed": False,
+                    "from_cache": True,
+                },
                 "indicators": indicator_series_for_chart(objs) if objs else {},
             }
         return {
@@ -181,15 +212,34 @@ async def trading_candles(
             "source": "simulated",
             "provider": "simulated",
             "unavailable": len(candles) == 0,
+            "error": None if candles else "אין נרות / No simulated candles",
+            "freshness": "live" if candles else "unavailable",
+            "diagnostics": {
+                "provider": "simulated",
+                "candle_count": len(candles),
+                "first_ts": candles[0]["ts"] if candles else None,
+                "last_ts": candles[-1]["ts"] if candles else None,
+                "freshness": "live" if candles else "unavailable",
+                "error": None,
+                "refreshed": False,
+                "from_cache": False,
+            },
             "indicators": {},
         }
     try:
         payload = rt.market.fetch_candles(
-            symbol.upper(), tf, limit=limit, before=before
+            symbol.upper(),
+            tf,
+            limit=limit,
+            before=before,
+            force_refresh=bool(force_refresh),
         )
     except ValueError as exc:
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-    # Attach indicator series for chart overlays (shared calc).
+        return JSONResponse(
+            {"ok": False, "error": str(exc)},
+            status_code=400,
+        )
+    # Attach indicator series for chart overlays (shared calc). ATR included.
     from .market_data.models import Candle
     from .market_snapshot import indicator_series_for_chart
 
@@ -202,11 +252,17 @@ async def trading_candles(
             low=float(c["low"]),
             close=float(c["close"]),
             volume=float(c.get("volume") or 0),
+            asset_type=str(c.get("asset_type") or ""),
+            provider=str(c.get("provider") or ""),
+            complete=bool(c.get("complete", True)),
         )
         for c in raw
     ]
     payload["indicators"] = indicator_series_for_chart(candle_objs) if candle_objs else {}
     payload["source"] = "real"
+    # Ensure ATR is present in the series payload for frontend overlays.
+    if payload["indicators"] and "atr_14" not in payload["indicators"]:
+        payload["indicators"]["atr_14"] = []
     return payload
 
 
@@ -279,6 +335,89 @@ async def chart_markers(
     if tf not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
         return JSONResponse({"ok": False, "error": "invalid timeframe"}, status_code=400)
     return rt.chart_markers(symbol, timeframe=tf, from_ts=from_ts, to_ts=to_ts)
+
+
+@router.get("/api/unified-decisions/by-id/{decision_id}")
+async def get_unified_decision(decision_id: str) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+
+    row = get_market_db().get_unified_decision(decision_id)
+    if not row:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return {"ok": True, "unified": row}
+
+
+@router.get("/api/unified-decisions/{symbol}")
+async def list_unified_decisions(
+    symbol: str,
+    from_ts: float | None = None,
+    to_ts: float | None = None,
+    timeframe: str | None = None,
+) -> dict[str, Any]:
+    from .market_data.candle_store import get_market_db
+    from .time_utils import normalize_symbol
+
+    sym = normalize_symbol(symbol)
+    tf = timeframe.strip().lower() if timeframe else None
+    if tf and tf not in {"1m", "5m", "15m", "1h", "4h", "1d"}:
+        return JSONResponse({"ok": False, "error": "invalid timeframe"}, status_code=400)
+    rows = get_market_db().list_unified_decisions(
+        sym, from_ts=from_ts, to_ts=to_ts, timeframe=tf
+    )
+    return {
+        "symbol": sym,
+        "from_ts": from_ts,
+        "to_ts": to_ts,
+        "timeframe": tf,
+        "unified": rows,
+        "count": len(rows),
+    }
+
+
+@router.get("/api/asset-config")
+async def get_asset_config() -> dict[str, Any]:
+    from . import asset_config as asset_config_mod
+    from .config import DEFAULT_SYMBOLS
+    from .market_data.candle_store import get_market_db
+
+    rt = get_runtime()
+    get_market_db().ensure_default_asset_configs(DEFAULT_SYMBOLS, rt.portfolio.positions)
+    configs = get_market_db().list_trading_asset_configs()
+    controls = asset_config_mod.load_portfolio_controls()
+    return {
+        "ok": True,
+        "assets": configs,
+        "portfolio_controls": controls.to_dict(),
+        "modes": ["DISABLED", "MONITOR_ONLY", "TRADE", "CLOSE_ONLY"],
+        "paper_trading_only": True,
+    }
+
+
+@router.put("/api/asset-config/{symbol}")
+async def put_asset_config(symbol: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Update per-asset mode/limits. Confirmations are frontend-only."""
+    from .market_data.candle_store import get_market_db
+    from .time_utils import normalize_symbol
+
+    body = dict(payload or {})
+    body["symbol"] = normalize_symbol(symbol)
+    try:
+        row = get_market_db().set_trading_asset_config(body)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, "asset": row}
+
+
+@router.put("/api/portfolio-controls")
+async def put_portfolio_controls(payload: dict[str, Any]) -> dict[str, Any]:
+    """Update portfolio-level controls. Confirmations are frontend-only."""
+    from . import asset_config as asset_config_mod
+
+    try:
+        controls = asset_config_mod.update_portfolio_controls(payload or {})
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return {"ok": True, "portfolio_controls": controls.to_dict()}
 
 
 @router.get("/api/config")

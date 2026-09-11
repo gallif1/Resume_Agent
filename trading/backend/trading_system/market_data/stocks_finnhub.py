@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 
-from .base import MarketDataProvider
+from .base import SUPPORTED_TIMEFRAMES, MarketDataProvider
 from .models import AssetClass, Candle, DataFreshness, MarketSession, Quote
 from .sessions import us_equity_session
 
@@ -32,8 +32,21 @@ _YAHOO_TF = {
 }
 
 
+def _normalize_epoch(ts: float | int) -> float:
+    """Yahoo may return seconds or milliseconds."""
+    t = float(ts)
+    if t > 1e12:  # ms
+        return t / 1000.0
+    if t > 1e10:  # µs (rare)
+        return t / 1_000_000.0
+    return t
+
+
 class StockMarketProvider(MarketDataProvider):
-    """Composite stock provider used by MarketDataService."""
+    """Composite stock provider used by MarketDataService.
+
+    Never routes equity symbols to Coinbase — stocks stay here.
+    """
 
     name = "finnhub+yahoo"
     supported_symbols = _SUPPORTED
@@ -55,6 +68,20 @@ class StockMarketProvider(MarketDataProvider):
     def configured(self) -> bool:
         return bool(self.api_key)
 
+    def supports_timeframe(self, timeframe: str) -> bool:
+        tf = timeframe.strip().lower()
+        return tf in SUPPORTED_TIMEFRAMES and tf in _YAHOO_TF
+
+    def get_market_status(self, symbol: str) -> MarketSession:
+        _ = symbol  # US equities share the same session calendar here
+        return us_equity_session()
+
+    def get_data_freshness(self, symbol: str) -> DataFreshness:
+        status = self.get_market_status(symbol)
+        if status == MarketSession.OPEN:
+            return DataFreshness.LIVE
+        return DataFreshness.STALE
+
     def _finnhub_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         if not self.configured:
             raise RuntimeError("FINNHUB_API_KEY is not configured")
@@ -68,7 +95,7 @@ class StockMarketProvider(MarketDataProvider):
 
     def get_current_price(self, symbol: str) -> Quote:
         symbol = symbol.upper()
-        session = us_equity_session()
+        session = self.get_market_status(symbol)
         price = 0.0
         change_pct = 0.0
         volume = 0.0
@@ -95,6 +122,9 @@ class StockMarketProvider(MarketDataProvider):
             provider = "yahoo" if not self.configured else "yahoo-fallback"
 
         freshness = DataFreshness.LIVE if session == MarketSession.OPEN else DataFreshness.STALE
+        stale_reason = None
+        if session != MarketSession.OPEN:
+            stale_reason = session.value
         return Quote(
             symbol=symbol,
             price=price,
@@ -105,8 +135,11 @@ class StockMarketProvider(MarketDataProvider):
             asset_class=AssetClass.STOCK,
             session=session,
             freshness=freshness,
-            stale_reason=None if session == MarketSession.OPEN else "market_closed",
+            stale_reason=stale_reason,
         )
+
+    def get_latest_quote(self, symbol: str) -> Quote:
+        return self.get_current_price(symbol)
 
     def _yahoo_quote(self, symbol: str) -> tuple[float, float, float, float]:
         raw = self._session.get(
@@ -115,11 +148,18 @@ class StockMarketProvider(MarketDataProvider):
             timeout=self.timeout,
         )
         raw.raise_for_status()
-        result = (raw.json().get("chart") or {}).get("result") or []
+        chart = raw.json().get("chart") or {}
+        if chart.get("error"):
+            raise RuntimeError(
+                f"Yahoo quote error for {symbol}: {chart.get('error')}"
+            )
+        result = chart.get("result") or []
         if not result:
             raise RuntimeError(f"Yahoo quote empty for {symbol}")
         meta = result[0].get("meta") or {}
         price = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+        if price <= 0:
+            raise RuntimeError(f"Yahoo quote missing price for {symbol}")
         prev = float(meta.get("chartPreviousClose") or meta.get("previousClose") or price)
         change = ((price - prev) / prev * 100) if prev else 0.0
         return price, change, 0.0, time.time()
@@ -133,21 +173,42 @@ class StockMarketProvider(MarketDataProvider):
         before: float | None = None,
     ) -> list[Candle]:
         symbol = symbol.upper()
+        timeframe = timeframe.strip().lower()
+        if not self.supports_timeframe(timeframe):
+            raise ValueError(f"Unsupported timeframe: {timeframe}")
         # Prefer Yahoo — Finnhub free keys often cannot access /stock/candle.
         try:
             candles = self._yahoo_candles(symbol, timeframe, limit, before=before)
             if candles:
                 return candles
+            raise RuntimeError(
+                f"Yahoo returned no candles for {symbol} ({timeframe})"
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Yahoo candles failed %s %s: %s", symbol, timeframe, exc)
+            yahoo_err = exc
 
         # Optional Finnhub attempt (paid / elevated keys).
         if self.configured and timeframe not in {"4h", "1d"}:
             try:
-                return self._finnhub_candles(symbol, timeframe, limit, before=before)
+                candles = self._finnhub_candles(symbol, timeframe, limit, before=before)
+                if candles:
+                    return candles
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Finnhub candles failed %s: %s", symbol, exc)
-        return []
+        raise RuntimeError(
+            f"Stock candles unavailable for {symbol} {timeframe}: {yahoo_err}"
+        )
+
+    def get_historical_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 500,
+        *,
+        before: float | None = None,
+    ) -> list[Candle]:
+        return self.get_candles(symbol, timeframe, limit, before=before)
 
     def _yahoo_candles(
         self,
@@ -170,7 +231,9 @@ class StockMarketProvider(MarketDataProvider):
         }
         if before is not None:
             # period2 = before; period1 estimated from limit * seconds
-            secs = {"1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}.get(interval, 3600)
+            secs = {"1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}.get(
+                interval, 3600
+            )
             period2 = int(before)
             period1 = period2 - secs * max(limit * (4 if timeframe == "4h" else 1), 50)
             params = {
@@ -185,19 +248,42 @@ class StockMarketProvider(MarketDataProvider):
             timeout=self.timeout,
         )
         resp.raise_for_status()
-        result = (resp.json().get("chart") or {}).get("result") or []
+        body = resp.json()
+        chart = body.get("chart") or {}
+        err = chart.get("error")
+        if err:
+            raise RuntimeError(f"Yahoo chart error for {symbol}: {err}")
+        result = chart.get("result") or []
         if not result:
-            return []
+            raise RuntimeError(
+                f"Yahoo returned empty chart result for {symbol} ({timeframe})"
+            )
         block = result[0]
         ts_list = block.get("timestamp") or []
+        if not ts_list:
+            raise RuntimeError(
+                f"Yahoo returned no timestamps for {symbol} ({timeframe})"
+            )
         quote = ((block.get("indicators") or {}).get("quote") or [{}])[0]
         opens = quote.get("open") or []
         highs = quote.get("high") or []
         lows = quote.get("low") or []
         closes = quote.get("close") or []
         vols = quote.get("volume") or []
+        meta = block.get("meta") or {}
+        # Current incomplete bar ends at regularMarketTime when session open.
+        market_ts = _normalize_epoch(meta.get("regularMarketTime") or time.time())
+        tf_sec = {
+            "1m": 60,
+            "5m": 300,
+            "15m": 900,
+            "1h": 3600,
+            "4h": 14400,
+            "1d": 86400,
+        }.get(timeframe, 300)
+
         candles: list[Candle] = []
-        for i, ts in enumerate(ts_list):
+        for i, raw_ts in enumerate(ts_list):
             c = closes[i] if i < len(closes) else None
             if c is None:
                 continue
@@ -205,21 +291,41 @@ class StockMarketProvider(MarketDataProvider):
             h = highs[i] if i < len(highs) and highs[i] is not None else c
             low = lows[i] if i < len(lows) and lows[i] is not None else c
             v = vols[i] if i < len(vols) and vols[i] is not None else 0.0
-            if before is not None and float(ts) >= before:
+            ts = _normalize_epoch(raw_ts)
+            if before is not None and ts >= before:
                 continue
+            # Last bar is incomplete until its period fully elapses.
+            complete = (ts + tf_sec) <= market_ts + 1.0
+            if i < len(ts_list) - 1:
+                complete = True
             candles.append(
                 Candle(
-                    ts=float(ts),
+                    ts=ts,
                     open=float(o),
                     high=float(h),
                     low=float(low),
                     close=float(c),
                     volume=float(v),
+                    asset_type=AssetClass.STOCK.value,
+                    provider="yahoo",
+                    complete=complete,
                 )
             )
         candles.sort(key=lambda c: c.ts)
+        if not candles:
+            raise RuntimeError(
+                f"Yahoo OHLCV arrays empty/null for {symbol} ({timeframe})"
+            )
         if timeframe == "4h":
             candles = aggregate_candles(candles, 4 * 3600)
+            # Re-tag after aggregation.
+            for c in candles:
+                c.asset_type = AssetClass.STOCK.value
+                c.provider = "yahoo"
+                c.complete = True
+            if candles:
+                # Last aggregated bucket may still be forming.
+                candles[-1].complete = (candles[-1].ts + 4 * 3600) <= market_ts + 1.0
         return candles[-limit:]
 
     def _finnhub_candles(
@@ -249,10 +355,12 @@ class StockMarketProvider(MarketDataProvider):
             logger.warning("Finnhub candles unavailable for %s: %s", symbol, raw)
             return []
         candles: list[Candle] = []
-        for i in range(len(raw.get("t") or [])):
+        n = len(raw.get("t") or [])
+        for i in range(n):
             ts = float(raw["t"][i])
             if before is not None and ts >= before:
                 continue
+            complete = i < n - 1
             candles.append(
                 Candle(
                     ts=ts,
@@ -261,6 +369,9 @@ class StockMarketProvider(MarketDataProvider):
                     low=float(raw["l"][i]),
                     close=float(raw["c"][i]),
                     volume=float(raw["v"][i]) if raw.get("v") else 0.0,
+                    asset_type=AssetClass.STOCK.value,
+                    provider="finnhub",
+                    complete=complete,
                 )
             )
         candles.sort(key=lambda c: c.ts)

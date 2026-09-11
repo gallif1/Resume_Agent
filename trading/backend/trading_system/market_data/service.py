@@ -16,7 +16,7 @@ from ..config import (
 from .candle_store import get_market_db
 from .crypto_coinbase import CoinbaseCryptoProvider
 from .models import AssetClass, Candle, DataFreshness, MarketSession, Quote
-from .sessions import us_equity_session
+from .sessions import session_allows_live_refresh, us_equity_session
 from .stocks_finnhub import FinnhubStockProvider, StockMarketProvider
 
 logger = logging.getLogger("trading.market.service")
@@ -25,6 +25,81 @@ CRYPTO_SYMBOLS = frozenset({"BTC-USD", "ETH-USD", "SOL-USD"})
 STOCK_SYMBOLS = frozenset({"AAPL", "NVDA"})
 SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h", "1d")
 CHART_CANDLE_LIMIT = 500
+
+TIMEFRAME_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
+
+
+def normalize_symbol(symbol: str) -> str:
+    return symbol.strip().upper()
+
+
+def align_candles_to_timeframe(candles: list[Candle], timeframe: str) -> list[Candle]:
+    """Bucket + merge candles onto timeframe opens (UTC). Drops invalid bars."""
+    secs = TIMEFRAME_SECONDS.get(timeframe, 300)
+    merged: dict[int, Candle] = {}
+    for c in candles:
+        try:
+            ts = int(float(c.ts) // secs * secs)
+            o, h, lo, cl = float(c.open), float(c.high), float(c.low), float(c.close)
+            vol = float(c.volume or 0)
+        except (TypeError, ValueError):
+            continue
+        if not all(map(lambda x: x == x and abs(x) != float("inf"), (o, h, lo, cl))):
+            continue
+        hi = max(h, o, cl, lo)
+        low = min(lo, o, cl, h)
+        prev = merged.get(ts)
+        if prev is None:
+            merged[ts] = Candle(
+                ts=float(ts),
+                open=o,
+                high=hi,
+                low=low,
+                close=cl,
+                volume=vol,
+                asset_type=getattr(c, "asset_type", "") or "",
+                provider=getattr(c, "provider", "") or "",
+                complete=bool(getattr(c, "complete", True)),
+            )
+        else:
+            prev.high = max(prev.high, hi)
+            prev.low = min(prev.low, low)
+            prev.close = cl
+            prev.volume = float(prev.volume or 0) + vol
+            prev.complete = bool(getattr(c, "complete", True))
+    return [merged[k] for k in sorted(merged)]
+
+
+def _candle_diagnostics(
+    candles: list[Candle],
+    *,
+    provider: str,
+    freshness: str,
+    error: str | None = None,
+    refreshed: bool = False,
+    from_cache: bool = False,
+) -> dict[str, Any]:
+    first_ts = float(candles[0].ts) if candles else None
+    last_ts = float(candles[-1].ts) if candles else None
+    age = (time.time() - last_ts) if last_ts is not None else None
+    return {
+        "provider": provider,
+        "candle_count": len(candles),
+        "first_ts": first_ts,
+        "last_ts": last_ts,
+        "last_age_sec": round(age, 1) if age is not None else None,
+        "freshness": freshness,
+        "error": error,
+        "refreshed": refreshed,
+        "from_cache": from_cache,
+    }
 
 
 class MarketDataService:
@@ -120,7 +195,7 @@ class MarketDataService:
                         q = self._quotes[symbol]
                         q.session = MarketSession.CLOSED
                         q.freshness = DataFreshness.STALE
-                        q.stale_reason = "market_closed"
+                        q.stale_reason = "closed"
                     continue
             try:
                 # Quotes: Finnhub when keyed, otherwise Yahoo (paper-trading friendly).
@@ -153,6 +228,7 @@ class MarketDataService:
             try:
                 candles = provider.get_candles(symbol, tf, limit=limits.get(tf, 200))
                 if candles:
+                    candles = align_candles_to_timeframe(candles, tf)
                     self.db.upsert_candles(symbol, tf, candles)
                 with self._lock:
                     # Prefer merged DB history when available.
@@ -161,6 +237,65 @@ class MarketDataService:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Candles failed %s %s: %s", symbol, tf, exc)
 
+    def _provider_for(self, symbol: str):
+        """Route by asset class — never send equities to Coinbase."""
+        symbol = normalize_symbol(symbol)
+        if symbol in CRYPTO_SYMBOLS:
+            return self.crypto
+        if symbol in STOCK_SYMBOLS:
+            return self.stocks
+        # Fallback: hyphenated → crypto product style; else stocks.
+        if "-" in symbol:
+            return self.crypto
+        return self.stocks
+
+    def _is_stock(self, symbol: str) -> bool:
+        return normalize_symbol(symbol) in STOCK_SYMBOLS
+
+    def _is_crypto(self, symbol: str) -> bool:
+        return normalize_symbol(symbol) in CRYPTO_SYMBOLS
+
+    def _market_open_for(self, symbol: str) -> bool:
+        symbol = normalize_symbol(symbol)
+        if self._is_crypto(symbol):
+            return True
+        return session_allows_live_refresh(us_equity_session())
+
+    def _session_for(self, symbol: str) -> MarketSession:
+        symbol = normalize_symbol(symbol)
+        if self._is_crypto(symbol):
+            return MarketSession.OPEN
+        return us_equity_session()
+
+    def _cache_needs_refresh(
+        self,
+        symbol: str,
+        timeframe: str,
+        cached: list[Candle],
+        *,
+        force_refresh: bool,
+        before: float | None,
+    ) -> bool:
+        """Decide whether to hit the live provider instead of serving DB cache."""
+        if force_refresh and before is None:
+            return True
+        if before is not None:
+            # Paging older history: refresh only when DB is thin.
+            return len(cached) < min(50, 2000)
+        if len(cached) < min(50, 500):
+            return True
+        last_ts = float(cached[-1].ts)
+        age = time.time() - last_ts
+        tf_sec = TIMEFRAME_SECONDS.get(timeframe, 300)
+        market_open = self._market_open_for(symbol)
+        # Crypto / open equity: refresh when last bar older than 2× timeframe.
+        if market_open and age > tf_sec * 2:
+            return True
+        # Stocks: always attempt Yahoo when opening chart if open+stale.
+        if self._is_stock(symbol) and market_open and age > tf_sec * 2:
+            return True
+        return False
+
     def fetch_candles(
         self,
         symbol: str,
@@ -168,57 +303,27 @@ class MarketDataService:
         *,
         limit: int = 500,
         before: float | None = None,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
-        """Historical candles with paging. Never fabricates data."""
-        symbol = symbol.upper()
+        """Historical candles with paging. Never fabricates gap candles."""
+        symbol = normalize_symbol(symbol)
         timeframe = timeframe.strip().lower()
         if timeframe not in SUPPORTED_TIMEFRAMES:
             raise ValueError(f"timeframe must be one of {SUPPORTED_TIMEFRAMES}")
         limit = max(1, min(int(limit), 2000))
 
-        # Serve from DB first when enough rows exist.
-        cached = self.db.get_candles(symbol, timeframe, limit=limit, before=before)
-        has_more = len(cached) >= limit
-        if len(cached) >= min(limit, 50) or before is not None:
-            # If paging older history and DB thin, hit provider.
-            if before is not None and len(cached) < limit:
-                provider = self.crypto if symbol in CRYPTO_SYMBOLS else self.stocks
-                if not provider.supports(symbol):
-                    return {
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "candles": [],
-                        "has_more": False,
-                        "provider": "none",
-                        "unavailable": True,
-                        "reason": "symbol_not_supported_by_provider",
-                    }
-                try:
-                    fetched = provider.get_candles(symbol, timeframe, limit, before=before)
-                    if fetched:
-                        self.db.upsert_candles(symbol, timeframe, fetched)
-                        cached = self.db.get_candles(
-                            symbol, timeframe, limit=limit, before=before
-                        )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("fetch_candles provider failed: %s", exc)
-            provider_name = (
-                self.crypto.name if symbol in CRYPTO_SYMBOLS else self.stocks.name
-            )
-            with self._lock:
-                if before is None and cached:
-                    self._candles[(symbol, timeframe)] = cached[-CHART_CANDLE_LIMIT:]
-            return {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "candles": [c.to_dict() for c in cached],
-                "has_more": has_more or (len(cached) >= limit),
-                "provider": provider_name,
-                "unavailable": len(cached) == 0,
-            }
+        provider = self._provider_for(symbol)
+        provider_name = provider.name
+        session = self._session_for(symbol)
+        session_value = session.value
 
-        provider = self.crypto if symbol in CRYPTO_SYMBOLS else self.stocks
         if not provider.supports(symbol):
+            diag = _candle_diagnostics(
+                [],
+                provider="none",
+                freshness=DataFreshness.UNAVAILABLE.value,
+                error="symbol_not_supported_by_provider",
+            )
             return {
                 "symbol": symbol,
                 "timeframe": timeframe,
@@ -227,35 +332,116 @@ class MarketDataService:
                 "provider": "none",
                 "unavailable": True,
                 "reason": "symbol_not_supported_by_provider",
+                "error": "סמל לא נתמך / Symbol not supported by provider",
+                "session": session_value,
+                "freshness": DataFreshness.UNAVAILABLE.value,
+                "diagnostics": diag,
             }
-        try:
-            fetched = provider.get_candles(symbol, timeframe, limit, before=before)
-        except Exception as exc:  # noqa: BLE001
-            return {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "candles": [],
-                "has_more": False,
-                "provider": provider.name,
-                "unavailable": True,
-                "reason": str(exc)[:200],
-            }
-        if fetched:
-            self.db.upsert_candles(symbol, timeframe, fetched)
+
+        cached = self.db.get_candles(symbol, timeframe, limit=limit, before=before)
+        error: str | None = None
+        refreshed = False
+        need_refresh = self._cache_needs_refresh(
+            symbol,
+            timeframe,
+            cached,
+            force_refresh=force_refresh,
+            before=before,
+        )
+
+        if need_refresh:
+            try:
+                fetched = provider.get_historical_candles(
+                    symbol, timeframe, limit, before=before
+                )
+                if fetched:
+                    # Ensure returned rows belong only to this symbol's request.
+                    fetched = align_candles_to_timeframe(fetched, timeframe)
+                    self.db.upsert_candles(symbol, timeframe, fetched)
+                    cached = self.db.get_candles(
+                        symbol, timeframe, limit=limit, before=before
+                    )
+                    refreshed = True
+                else:
+                    error = f"empty provider response for {symbol} {timeframe}"
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)[:240]
+                logger.warning("fetch_candles provider failed %s %s: %s", symbol, timeframe, exc)
+
+        # Closed / extended hours: historical cache is OK (STALE), never invent gaps.
+        market_open = self._market_open_for(symbol)
+        if cached:
+            last_age = time.time() - float(cached[-1].ts)
+            tf_sec = TIMEFRAME_SECONDS.get(timeframe, 300)
+            if market_open and last_age <= tf_sec * 2:
+                freshness = DataFreshness.LIVE.value
+            elif not market_open:
+                freshness = DataFreshness.STALE.value
+            else:
+                freshness = DataFreshness.STALE.value
+        else:
+            freshness = DataFreshness.UNAVAILABLE.value
+
         with self._lock:
-            if before is None:
-                self._candles[(symbol, timeframe)] = fetched[-CHART_CANDLE_LIMIT:]
+            if before is None and cached:
+                self._candles[(symbol, timeframe)] = cached[-CHART_CANDLE_LIMIT:]
+
+        # Always return timeframe-aligned bars to the chart (fixes Yahoo/live mix).
+        cached = align_candles_to_timeframe(cached, timeframe)[-limit:]
+
+        candles_out = [c.to_dict() for c in cached]
+        # Normalize schema: strip fields frontend may ignore but keep diagnostics rich.
+        for row in candles_out:
+            row.setdefault("asset_type", "stock" if self._is_stock(symbol) else "crypto")
+            row.setdefault("provider", provider_name)
+            row.setdefault("complete", True)
+
+        unavailable = len(cached) == 0
+        reason = None
+        user_error = None
+        if unavailable:
+            reason = error or "no_candles_available"
+            if self._is_stock(symbol) and not market_open:
+                user_error = (
+                    "אין נרות זמינים לשוק סגור / No candles available "
+                    "(market closed; Yahoo/cache empty)"
+                )
+            else:
+                user_error = (
+                    f"נכשל בטעינת נרות / Failed to load candles: {reason}"
+                )
+        elif error and not refreshed:
+            reason = f"serving_cache_after_error:{error}"
+            user_error = None  # have data; UI can show STALE via diagnostics
+
+        diag = _candle_diagnostics(
+            cached,
+            provider=provider_name,
+            freshness=freshness,
+            error=error,
+            refreshed=refreshed,
+            from_cache=not refreshed and len(cached) > 0,
+        )
+        diag["session"] = session_value
+        diag["force_refresh"] = bool(force_refresh)
+        diag["market_open"] = market_open
+
         return {
             "symbol": symbol,
             "timeframe": timeframe,
-            "candles": [c.to_dict() for c in fetched],
-            "has_more": len(fetched) >= limit,
-            "provider": provider.name,
-            "unavailable": len(fetched) == 0,
+            "candles": candles_out,
+            "has_more": len(cached) >= limit,
+            "provider": provider_name,
+            "unavailable": unavailable,
+            "reason": reason,
+            "error": user_error,
+            "session": session_value,
+            "freshness": freshness,
+            "diagnostics": diag,
         }
 
     def provider_for_symbol(self, symbol: str) -> str:
-        symbol = symbol.upper()
+        symbol = normalize_symbol(symbol)
         if symbol in CRYPTO_SYMBOLS:
             return self.crypto.name
         if symbol in STOCK_SYMBOLS:
