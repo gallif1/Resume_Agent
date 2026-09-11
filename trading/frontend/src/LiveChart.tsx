@@ -720,12 +720,20 @@ export default function LiveChart({
       },
       1
     );
-    chart.priceScale("vol").applyOptions({
-      scaleMargins: { top: 0.75, bottom: 0 },
-    });
-    chart.priceScale("right").applyOptions({
-      scaleMargins: { top: 0.05, bottom: 0.25 },
-    });
+    try {
+      volumeSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.75, bottom: 0 },
+      });
+    } catch {
+      /* */
+    }
+    try {
+      chart.priceScale("right").applyOptions({
+        scaleMargins: { top: 0.05, bottom: 0.25 },
+      });
+    } catch {
+      /* */
+    }
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
@@ -1012,15 +1020,33 @@ export default function LiveChart({
     }
     if (enabled.rsi) {
       addLine("rsi", col("rsi"), "rsi_14", lw("rsi"), "rsi", 2);
-      chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      try {
+        overlayRefs.current.rsi?.priceScale().applyOptions({
+          scaleMargins: { top: 0.82, bottom: 0 },
+        });
+      } catch {
+        /* */
+      }
     }
     if (enabled.macd) {
       addLine("macd", col("macd"), "macd", lw("macd"), "macd", 2);
-      chart.priceScale("macd").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      try {
+        overlayRefs.current.macd?.priceScale().applyOptions({
+          scaleMargins: { top: 0.82, bottom: 0 },
+        });
+      } catch {
+        /* */
+      }
     }
     if (enabled.atr) {
       addLine("atr", col("atr"), "atr_14", lw("atr"), "atr", 2);
-      chart.priceScale("atr").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      try {
+        overlayRefs.current.atr?.priceScale().applyOptions({
+          scaleMargins: { top: 0.82, bottom: 0 },
+        });
+      } catch {
+        /* */
+      }
     }
   }, [indicators, enabled, styles, showIndicators]);
 
