@@ -26,8 +26,10 @@ import { formatDecisionLogsText } from "./decisionLogFormat";
 import { copyTextToClipboard } from "./clipboard";
 import { he, stateLabel, sessionLabel } from "./i18n/he";
 import LiveChart from "./LiveChart";
+import { useMediaQuery } from "./useMediaQuery";
 
 type LatestVotes = Record<string, AgentVote>;
+type MobileTab = "chart" | "market" | "agents" | "decisions" | "portfolio";
 
 const HISTORY_CAP = 360;
 const VOTE_CAP = 120;
@@ -147,6 +149,8 @@ function outcomeLine(
 }
 
 export default function App() {
+  const isDesktop = useMediaQuery("(min-width: 900px)");
+  const [mobileTab, setMobileTab] = useState<MobileTab>("chart");
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [events, setEvents] = useState<MarketEvent[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
@@ -581,8 +585,551 @@ export default function App() {
           ? he.wsConnecting
           : he.wsDead;
 
+  const chartEl = (
+    <LiveChart
+      symbols={symbols.length ? symbols : ["BTC-USD"]}
+      trades={trades}
+      votes={chartVotes}
+      decisions={decisions}
+      timeframe={chartTimeframe}
+      timeframes={timeframes}
+      onTimeframe={onTimeframe}
+      timeframeBusy={chartBusy}
+      marketMeta={marketMeta}
+      realData={realData}
+      candleUpdates={candleUpdates}
+      wsState={wsState}
+      onLayoutModeChange={onChartLayout}
+      compact={!isDesktop}
+    />
+  );
+
+  const marketPanel = (
+    <section className="panel">
+      <h2>{he.marketFeed}</h2>
+      <div className="market-table-scroll">
+        <table className="market-table">
+          <thead>
+            <tr>
+              <th>{he.symbol}</th>
+              <th>{he.price}</th>
+              <th>{he.change}</th>
+              <th>{he.volume}</th>
+              <th>{he.session}</th>
+              <th>{he.provider}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {market.map((t) => {
+              const badge = sessionBadge(t);
+              return (
+                <tr key={t.symbol}>
+                  <td className="mono">{t.symbol}</td>
+                  <td className="mono">{t.price.toLocaleString()}</td>
+                  <td className={`mono ${t.change_pct >= 0 ? "up" : "down"}`}>
+                    {t.change_pct >= 0 ? "+" : ""}
+                    {t.change_pct.toFixed(3)}%
+                  </td>
+                  <td className="mono muted">{Math.round(t.volume).toLocaleString()}</td>
+                  <td>
+                    <span className={`session-badge ${badge.cls}`}>{badge.label}</span>
+                    {t.freshness ? (
+                      <div className="muted mono" style={{ fontSize: "0.7rem", marginTop: 2 }}>
+                        {t.freshness.toUpperCase()}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td className="mono muted">{t.provider || "—"}</td>
+                </tr>
+              );
+            })}
+            {!market.length && (
+              <tr>
+                <td colSpan={6} className="muted">
+                  {he.waitingMarket}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+
+  const portfolioPanel = (
+    <section className="panel">
+      <div className="panel-head-row">
+        <h2>{he.portfolio}</h2>
+        {!isDesktop ? (
+          <div className="copy-logs-bar">
+            <button
+              type="button"
+              className="btn-copy ghost danger"
+              disabled={controlBusy}
+              onClick={() => onResetPaper()}
+              title={he.resetPaper}
+            >
+              {he.resetPaper}
+            </button>
+            <a className="back-link mobile-back" href={homeUrl}>
+              {he.backLink}
+            </a>
+          </div>
+        ) : null}
+      </div>
+      <div className="portfolio">
+        <div className="stat">
+          <div className="label">{he.cash}</div>
+          <div className="value">{formatMoney(portfolio?.cash ?? 0)}</div>
+        </div>
+        <div className="stat">
+          <div className="label">{he.realizedPnl}</div>
+          <div
+            className={`value ${(portfolio?.realized_pnl ?? 0) >= 0 ? "up" : "down"}`}
+          >
+            {formatMoney(portfolio?.realized_pnl ?? 0)}
+          </div>
+        </div>
+        <div className="stat">
+          <div className="label">{he.positions}</div>
+          <div className="value">{Object.keys(portfolio?.positions || {}).length}</div>
+        </div>
+      </div>
+      <div className="list">
+        {Object.values(portfolio?.positions || {}).map((p) => (
+          <div className="item" key={p.symbol}>
+            <div className="row">
+              <strong className="mono">{p.symbol}</strong>
+              <span className="mono">
+                {p.quantity.toFixed(4)} @ {p.avg_price.toLocaleString()}
+              </span>
+            </div>
+          </div>
+        ))}
+        {!Object.keys(portfolio?.positions || {}).length && (
+          <div className="muted">{he.noPositions}</div>
+        )}
+      </div>
+    </section>
+  );
+
+  const agentsPanel = (
+    <section className="panel" style={isDesktop ? { gridColumn: "1 / -1" } : undefined}>
+      <h2>{he.agents}</h2>
+      <div className="agents">
+        {agents.map((a) => {
+          const vote = votes[a.id];
+          return (
+            <div key={a.id} className={`agent-card ${flash && vote ? "flash" : ""}`}>
+              <h3>{a.name}</h3>
+              {vote ? (
+                <>
+                  <div className="row" style={{ display: "flex", gap: "0.5rem" }}>
+                    <span className={`tag ${vote.side}`}>{vote.side}</span>
+                    <span className="mono muted">
+                      {(vote.confidence * 100).toFixed(0)}% · {vote.symbol}
+                    </span>
+                  </div>
+                  <p className="muted" style={{ margin: "0.4rem 0 0" }}>
+                    {vote.rationale}
+                  </p>
+                </>
+              ) : (
+                <p className="muted" style={{ margin: 0 }}>
+                  {he.waitingVote}
+                </p>
+              )}
+            </div>
+          );
+        })}
+        <div className="ai-card">
+          <div className="ai-card-head">
+            <h3>{he.aiAnalyst}</h3>
+            <span className="ai-source">
+              {aiPick?.entry.source || (aiStatus?.enabled ? he.idle : he.off)}
+            </span>
+          </div>
+          {aiPick ? (
+            <>
+              <div className="row" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <span className={`tag ${aiPick.entry.action || "HOLD"}`}>
+                  {aiPick.entry.action || "HOLD"}
+                </span>
+                <span className="mono muted">
+                  {((aiPick.entry.confidence ?? 0) * 100).toFixed(0)}% · {aiPick.symbol}
+                </span>
+              </div>
+              <p className="muted" style={{ margin: "0.45rem 0 0" }}>
+                {aiPick.entry.reason || he.noRationale}
+              </p>
+            </>
+          ) : (
+            <p className="muted" style={{ margin: 0 }}>
+              {aiStatus?.api_key_configured === false
+                ? he.aiNoKey
+                : he.waitingAi}
+            </p>
+          )}
+          <div className="ai-calls mono">
+            {aiMax <= 0
+              ? `${he.aiCallsHour}: ${aiCalls} (${he.aiUnlimited})`
+              : `${he.aiCallsHour}: ${aiCalls} / ${aiMax}`}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+
+  const eventsPanel = (
+    <section className="panel">
+      <h2>{he.eventEngine}</h2>
+      <div className="list">
+        {events.map((e) => (
+          <div className="item" key={e.id + String(e.ts)}>
+            <div className="row">
+              <strong>{e.symbol}</strong>
+              <span className="muted mono">{e.kind}</span>
+            </div>
+            <div>{e.message}</div>
+          </div>
+        ))}
+        {!events.length && <div className="muted">{he.noEvents}</div>}
+      </div>
+    </section>
+  );
+
+  const decisionsPanel = (
+    <section className="panel">
+      <div className="panel-head-row">
+        <h2>{he.decisionEngine}</h2>
+        <div className="copy-logs-bar">
+          <button type="button" className="btn-copy" onClick={() => copyLogs(25)}>
+            {he.copyRecent}
+          </button>
+          <button type="button" className="btn-copy ghost" onClick={() => copyLogs(10)}>
+            10
+          </button>
+          <button type="button" className="btn-copy ghost" onClick={() => copyLogs(25)}>
+            25
+          </button>
+          <button type="button" className="btn-copy ghost" onClick={() => copyLogs(50)}>
+            50
+          </button>
+          <button type="button" className="btn-copy ghost" onClick={() => copyLogs("all")}>
+            {he.all}
+          </button>
+          <button
+            type="button"
+            className="btn-copy ghost danger"
+            disabled={controlBusy || !decisionLogs.length}
+            onClick={() => onClearLogs()}
+          >
+            {he.clearLogs}
+          </button>
+          {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
+        </div>
+      </div>
+      <div className="perf-block" aria-label={he.systemPerformance}>
+        <h3 className="perf-title">{he.systemPerformance}</h3>
+        <div className="perf-grid">
+          {(
+            [
+              [he.decisionEngine, performance?.decision_engine],
+              [he.momentum, performance?.agents?.momentum],
+              [he.meanReversion, performance?.agents?.mean_reversion],
+              [he.volatility, performance?.agents?.volatility],
+              [he.aiAnalyst, performance?.agents?.ai_analyst],
+            ] as const
+          ).map(([label, row]) => (
+            <div className="perf-row" key={label}>
+              <strong>{label}</strong>
+              <span className="mono muted">
+                5m {accLabel(row?.accuracy_5m_pct)} · 15m {accLabel(row?.accuracy_15m_pct)} ·
+                60m {accLabel(row?.accuracy_60m_pct)}
+              </span>
+            </div>
+          ))}
+        </div>
+        <p className="muted perf-note">
+          {he.directionalAccuracy}
+        </p>
+      </div>
+      {manualCopyText ? (
+        <div className="manual-copy-box">
+          <div className="row" style={{ marginBottom: "0.35rem" }}>
+            <span className="muted">
+              {he.clipboardBlocked}
+            </span>
+            <button
+              type="button"
+              className="btn-copy ghost"
+              onClick={() => setManualCopyText(null)}
+            >
+              {he.closeDetails}
+            </button>
+          </div>
+          <textarea
+            className="manual-copy-textarea"
+            readOnly
+            value={manualCopyText}
+            onFocus={(e) => e.currentTarget.select()}
+            rows={12}
+          />
+        </div>
+      ) : null}
+      {filledDecisions.length > 0 && (
+        <div className="fills-strip" aria-label="Recent paper fills">
+          {filledDecisions.slice(0, 8).map((d) => (
+            <div className="fill-chip" key={`fill-${d.id}`}>
+              <span className={`tag ${d.side}`}>{d.side}</span>
+              <strong className="mono">{d.symbol}</strong>
+              <span className="mono muted">
+                {d.quantity != null ? d.quantity.toFixed(4) : ""} @{" "}
+                {d.fill_price != null ? d.fill_price.toLocaleString() : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="list decision-log-list">
+        {decisionLogs.map((log) => {
+          const open = expandedLogId === log.id;
+          const action = log.decision?.action || log.signal?.action || "HOLD";
+          const conf = log.decision?.final_confidence ?? 0;
+          return (
+            <div
+              className={`item decision-log-item ${log.execution?.status === "FILLED" ? "filled" : ""}`}
+              key={log.id}
+            >
+              <div className="row">
+                <span>
+                  <span className={`tag ${action}`}>{action}</span>{" "}
+                  <strong className="mono">{log.symbol}</strong>
+                  <span className="muted mono" style={{ marginLeft: 8 }}>
+                    {log.kind.replace(/_/g, " ")}
+                  </span>
+                </span>
+                <span className="mono muted">
+                  {(conf * 100).toFixed(0)}% · {execBadge(log)}
+                </span>
+              </div>
+              <div className="decision-log-summary muted">
+                {log.execution?.reason || log.decision?.explanation || log.decision?.rationale}
+              </div>
+              <button
+                type="button"
+                className="why-btn"
+                aria-expanded={open}
+                onClick={() => setExpandedLogId(open ? null : log.id)}
+              >
+                {open ? he.hideDetails : he.why}
+              </button>
+              {open && (
+                <div className="decision-log-details">
+                  <div className="detail-block">
+                    <h4>{he.signal}</h4>
+                    <p className="mono">
+                      {log.signal?.action} · agents{" "}
+                      {(log.signal?.agents || [])
+                        .map(
+                          (a) =>
+                            `${a.agent_name?.replace(" Agent", "") || a.agent_id}:${a.action}`
+                        )
+                        .join(", ")}
+                    </p>
+                  </div>
+                  <div className="detail-block">
+                    <h4>{he.marketSnapshot}</h4>
+                    <pre className="detail-pre">
+                      {`Price: ${log.market?.price ?? "—"}
+1m: ${log.market?.change_1m_pct ?? "—"}%
+5m: ${log.market?.change_5m_pct ?? "—"}%
+15m: ${log.market?.change_15m_pct ?? "—"}%
+RSI: ${log.market?.rsi_14 ?? "—"}
+SMA fast/slow: ${log.market?.sma_fast ?? "—"} / ${log.market?.sma_slow ?? "—"}
+EMA: ${log.market?.ema_fast ?? "—"}
+Trend: ${log.market?.trend ?? "—"}
+Volume: ${log.market?.volume_state ?? "—"}
+Volatility: ${log.market?.volatility ?? "—"}
+Events: ${(log.market?.detected_events || []).join(", ") || "—"}
+Provider: ${log.market?.provider ?? "—"} (${log.market?.freshness ?? "—"})`}
+                    </pre>
+                  </div>
+                  <div className="detail-block">
+                    <h4>{he.agents}</h4>
+                    {(log.signal?.agents || []).map((a) => (
+                      <div className="agent-detail" key={`${log.id}-${a.agent_id}-${a.ts}`}>
+                        <div className="row">
+                          <strong>{a.agent_name}</strong>
+                          <span className={`tag ${a.action || "HOLD"}`}>{a.action}</span>
+                        </div>
+                        <div className="mono muted">
+                          {((a.confidence ?? 0) * 100).toFixed(0)}%
+                          {a.source ? ` · ${a.source}` : ""}
+                        </div>
+                        <p>{a.reason}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="detail-block">
+                    <h4>{he.decision}</h4>
+                    <pre className="detail-pre">
+                      {`Action: ${log.decision?.action}
+Final confidence: ${((log.decision?.final_confidence ?? 0) * 100).toFixed(0)}%
+Votes: BUY ${log.decision?.vote_counts?.BUY ?? 0} / SELL ${log.decision?.vote_counts?.SELL ?? 0} / HOLD ${log.decision?.vote_counts?.HOLD ?? 0}
+Weights: BUY=${log.decision?.weights?.BUY ?? 0} SELL=${log.decision?.weights?.SELL ?? 0} HOLD=${log.decision?.weights?.HOLD ?? 0}
+Action score: ${log.decision?.action_score ?? "—"}
+Threshold: ${log.decision?.threshold ?? "—"}
+Hold gate: ${log.decision?.hold_gate ?? "—"}
+Explanation: ${log.decision?.explanation || "—"}
+
+Confidence debug:
+  winning_action = ${log.decision?.confidence_debug?.winning_action ?? "—"}
+  winning_score = ${log.decision?.confidence_debug?.winning_score ?? log.decision?.confidence_debug?.raw_score ?? "—"}
+  total_weight = ${log.decision?.confidence_debug?.total_weight ?? log.decision?.confidence_debug?.total_all_weights ?? "—"}
+  action_support = ${log.decision?.confidence_debug?.action_support ?? "—"}
+  agreement_factor = ${log.decision?.confidence_debug?.agreement_factor ?? "—"}
+  hold_ratio = ${log.decision?.confidence_debug?.hold_ratio ?? "—"}
+  opposition_ratio = ${log.decision?.confidence_debug?.opposition_ratio ?? "—"}
+  final = ${log.decision?.confidence_debug?.final_confidence ?? "—"}
+  formula = ${log.decision?.confidence_debug?.formula ?? "—"}`}
+                    </pre>
+                  </div>
+                  {log.pretrade ? (
+                    <div className="detail-block">
+                      <h4>{he.aiPretrade}</h4>
+                      <pre className="detail-pre">
+                        {`Source: ${log.pretrade.source ?? "—"}
+Skip: ${log.pretrade.skip_reason ?? "—"}
+Action: ${log.pretrade.action ?? "—"}
+Confidence: ${log.pretrade.confidence ?? "—"}`}
+                      </pre>
+                    </div>
+                  ) : null}
+                  <div className="detail-block">
+                    <h4>{he.outcome}</h4>
+                    <pre className="detail-pre">
+                      {`Entry: ${log.outcome?.entry_price ?? "—"}
+${outcomeLine("5m", log.outcome?.horizons?.["5m"])}
+${outcomeLine("15m", log.outcome?.horizons?.["15m"])}
+${outcomeLine("60m", log.outcome?.horizons?.["60m"])}`}
+                    </pre>
+                  </div>
+                  <div className="detail-block">
+                    <h4>{he.execution}</h4>
+                    <pre className="detail-pre">
+                      {`Status: ${log.execution?.status}
+Reason: ${log.execution?.reason}
+Cooldown remaining: ${log.execution?.cooldown_remaining_sec ?? "—"}s
+Fill: ${log.execution?.quantity ?? "—"} @ ${log.execution?.fill_price ?? "—"}`}
+                    </pre>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {!decisionLogs.length && (
+          <div className="muted">{he.logsAppear}</div>
+        )}
+      </div>
+    </section>
+  );
+
+  const mobileTabs: Array<{ id: MobileTab; label: string }> = [
+    { id: "chart", label: he.tabChart },
+    { id: "market", label: he.tabMarket },
+    { id: "agents", label: he.tabAgents },
+    { id: "decisions", label: he.tabDecisions },
+    { id: "portfolio", label: he.tabPortfolio },
+  ];
+
+  if (!isDesktop) {
+    return (
+      <div className={`app app-mobile${chartExpanded ? " chart-layout-expanded" : ""}`}>
+        <header className="mobile-header">
+          <div className="mobile-header-brand">
+            <strong>{he.brandTitle}</strong>
+            <span className={`status-pill ${state}`}>
+              <span className="status-dot" />
+              {stateLabel(state)}
+            </span>
+          </div>
+          <div className="mobile-header-actions">
+            <button
+              type="button"
+              className="btn btn-start"
+              disabled={controlBusy || state === "running"}
+              onClick={() => run("start")}
+            >
+              {he.start}
+            </button>
+            <button
+              type="button"
+              className="btn btn-pause"
+              disabled={controlBusy || state !== "running"}
+              onClick={() => run("pause")}
+            >
+              {he.pause}
+            </button>
+            <button
+              type="button"
+              className="btn btn-stop"
+              disabled={controlBusy || state === "stopped"}
+              onClick={() => run("stop")}
+            >
+              {he.stop}
+            </button>
+            <span className={`data-badge ${realData ? "real" : "sim"}`}>
+              {realData ? he.realData : he.simData}
+            </span>
+            <span
+              className={`ws-badge ${
+                wsState === "live" ? "live" : wsState === "polling" ? "polling" : "dead"
+              }`}
+            >
+              {wsLabel}
+            </span>
+          </div>
+          {error ? <div className="mobile-header-error mono muted">{error}</div> : null}
+        </header>
+        <main className="mobile-main">
+          <div
+            className={mobileTab === "chart" ? "mobile-pane active" : "mobile-pane"}
+            hidden={mobileTab !== "chart"}
+          >
+            {chartEl}
+          </div>
+          {mobileTab === "market" && (
+            <>
+              {marketPanel}
+              {eventsPanel}
+            </>
+          )}
+          {mobileTab === "agents" && agentsPanel}
+          {mobileTab === "decisions" && decisionsPanel}
+          {mobileTab === "portfolio" && portfolioPanel}
+        </main>
+        {!chartExpanded && (
+          <nav className="mobile-tabbar" aria-label="ניווט">
+            {mobileTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={mobileTab === tab.id ? "active" : ""}
+                onClick={() => setMobileTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className={`app${chartExpanded ? " chart-layout-expanded" : ""}`}>
+    <div className={`app app-desktop${chartExpanded ? " chart-layout-expanded" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <span className="brand-kicker">{he.brandKicker}</span>
@@ -656,423 +1203,13 @@ export default function App() {
         </span>
       </section>
 
-      <LiveChart
-        symbols={symbols.length ? symbols : ["BTC-USD"]}
-        trades={trades}
-        votes={chartVotes}
-        decisions={decisions}
-        timeframe={chartTimeframe}
-        timeframes={timeframes}
-        onTimeframe={onTimeframe}
-        timeframeBusy={chartBusy}
-        marketMeta={marketMeta}
-        realData={realData}
-        candleUpdates={candleUpdates}
-        wsState={wsState}
-        onLayoutModeChange={onChartLayout}
-      />
+      {chartEl}
       <div className="grid">
-        <section className="panel">
-          <h2>{he.marketFeed}</h2>
-          <table className="market-table">
-            <thead>
-              <tr>
-                <th>{he.symbol}</th>
-                <th>{he.price}</th>
-                <th>{he.change}</th>
-                <th>{he.volume}</th>
-                <th>{he.session}</th>
-                <th>{he.provider}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {market.map((t) => {
-                const badge = sessionBadge(t);
-                return (
-                  <tr key={t.symbol}>
-                    <td className="mono">{t.symbol}</td>
-                    <td className="mono">{t.price.toLocaleString()}</td>
-                    <td className={`mono ${t.change_pct >= 0 ? "up" : "down"}`}>
-                      {t.change_pct >= 0 ? "+" : ""}
-                      {t.change_pct.toFixed(3)}%
-                    </td>
-                    <td className="mono muted">{Math.round(t.volume).toLocaleString()}</td>
-                    <td>
-                      <span className={`session-badge ${badge.cls}`}>{badge.label}</span>
-                      {t.freshness ? (
-                        <div className="muted mono" style={{ fontSize: "0.7rem", marginTop: 2 }}>
-                          {t.freshness.toUpperCase()}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="mono muted">{t.provider || "—"}</td>
-                  </tr>
-                );
-              })}
-              {!market.length && (
-                <tr>
-                  <td colSpan={6} className="muted">
-                    {he.waitingMarket}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </section>
-
-        <section className="panel">
-          <h2>{he.portfolio}</h2>
-          <div className="portfolio">
-            <div className="stat">
-              <div className="label">{he.cash}</div>
-              <div className="value">{formatMoney(portfolio?.cash ?? 0)}</div>
-            </div>
-            <div className="stat">
-              <div className="label">{he.realizedPnl}</div>
-              <div
-                className={`value ${(portfolio?.realized_pnl ?? 0) >= 0 ? "up" : "down"}`}
-              >
-                {formatMoney(portfolio?.realized_pnl ?? 0)}
-              </div>
-            </div>
-            <div className="stat">
-              <div className="label">{he.positions}</div>
-              <div className="value">{Object.keys(portfolio?.positions || {}).length}</div>
-            </div>
-          </div>
-          <div className="list">
-            {Object.values(portfolio?.positions || {}).map((p) => (
-              <div className="item" key={p.symbol}>
-                <div className="row">
-                  <strong className="mono">{p.symbol}</strong>
-                  <span className="mono">
-                    {p.quantity.toFixed(4)} @ {p.avg_price.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            ))}
-            {!Object.keys(portfolio?.positions || {}).length && (
-              <div className="muted">{he.noPositions}</div>
-            )}
-          </div>
-        </section>
-
-        <section className="panel" style={{ gridColumn: "1 / -1" }}>
-          <h2>{he.agents}</h2>
-          <div className="agents">
-            {agents.map((a) => {
-              const vote = votes[a.id];
-              return (
-                <div key={a.id} className={`agent-card ${flash && vote ? "flash" : ""}`}>
-                  <h3>{a.name}</h3>
-                  {vote ? (
-                    <>
-                      <div className="row" style={{ display: "flex", gap: "0.5rem" }}>
-                        <span className={`tag ${vote.side}`}>{vote.side}</span>
-                        <span className="mono muted">
-                          {(vote.confidence * 100).toFixed(0)}% · {vote.symbol}
-                        </span>
-                      </div>
-                      <p className="muted" style={{ margin: "0.4rem 0 0" }}>
-                        {vote.rationale}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="muted" style={{ margin: 0 }}>
-                      {he.waitingVote}
-                    </p>
-                  )}
-                </div>
-              );
-            })}
-            <div className="ai-card">
-              <div className="ai-card-head">
-                <h3>{he.aiAnalyst}</h3>
-                <span className="ai-source">
-                  {aiPick?.entry.source || (aiStatus?.enabled ? he.idle : he.off)}
-                </span>
-              </div>
-              {aiPick ? (
-                <>
-                  <div className="row" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                    <span className={`tag ${aiPick.entry.action || "HOLD"}`}>
-                      {aiPick.entry.action || "HOLD"}
-                    </span>
-                    <span className="mono muted">
-                      {((aiPick.entry.confidence ?? 0) * 100).toFixed(0)}% · {aiPick.symbol}
-                    </span>
-                  </div>
-                  <p className="muted" style={{ margin: "0.45rem 0 0" }}>
-                    {aiPick.entry.reason || he.noRationale}
-                  </p>
-                </>
-              ) : (
-                <p className="muted" style={{ margin: 0 }}>
-                  {aiStatus?.api_key_configured === false
-                    ? he.aiNoKey
-                    : he.waitingAi}
-                </p>
-              )}
-              <div className="ai-calls mono">
-                {aiMax <= 0
-                  ? `${he.aiCallsHour}: ${aiCalls} (${he.aiUnlimited})`
-                  : `${he.aiCallsHour}: ${aiCalls} / ${aiMax}`}
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className="panel">
-          <h2>{he.eventEngine}</h2>
-          <div className="list">
-            {events.map((e) => (
-              <div className="item" key={e.id + String(e.ts)}>
-                <div className="row">
-                  <strong>{e.symbol}</strong>
-                  <span className="muted mono">{e.kind}</span>
-                </div>
-                <div>{e.message}</div>
-              </div>
-            ))}
-            {!events.length && <div className="muted">{he.noEvents}</div>}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-head-row">
-            <h2>{he.decisionEngine}</h2>
-            <div className="copy-logs-bar">
-              <button type="button" className="btn-copy" onClick={() => copyLogs(25)}>
-                {he.copyRecent}
-              </button>
-              <button type="button" className="btn-copy ghost" onClick={() => copyLogs(10)}>
-                10
-              </button>
-              <button type="button" className="btn-copy ghost" onClick={() => copyLogs(25)}>
-                25
-              </button>
-              <button type="button" className="btn-copy ghost" onClick={() => copyLogs(50)}>
-                50
-              </button>
-              <button type="button" className="btn-copy ghost" onClick={() => copyLogs("all")}>
-                {he.all}
-              </button>
-              <button
-                type="button"
-                className="btn-copy ghost danger"
-                disabled={controlBusy || !decisionLogs.length}
-                onClick={() => onClearLogs()}
-              >
-                {he.clearLogs}
-              </button>
-              {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
-            </div>
-          </div>
-          <div className="perf-block" aria-label={he.systemPerformance}>
-            <h3 className="perf-title">{he.systemPerformance}</h3>
-            <div className="perf-grid">
-              {(
-                [
-                  [he.decisionEngine, performance?.decision_engine],
-                  [he.momentum, performance?.agents?.momentum],
-                  [he.meanReversion, performance?.agents?.mean_reversion],
-                  [he.volatility, performance?.agents?.volatility],
-                  [he.aiAnalyst, performance?.agents?.ai_analyst],
-                ] as const
-              ).map(([label, row]) => (
-                <div className="perf-row" key={label}>
-                  <strong>{label}</strong>
-                  <span className="mono muted">
-                    5m {accLabel(row?.accuracy_5m_pct)} · 15m {accLabel(row?.accuracy_15m_pct)} ·
-                    60m {accLabel(row?.accuracy_60m_pct)}
-                  </span>
-                </div>
-              ))}
-            </div>
-            <p className="muted perf-note">
-              {he.directionalAccuracy}
-            </p>
-          </div>
-          {manualCopyText ? (
-            <div className="manual-copy-box">
-              <div className="row" style={{ marginBottom: "0.35rem" }}>
-                <span className="muted">
-                  {he.clipboardBlocked}
-                </span>
-                <button
-                  type="button"
-                  className="btn-copy ghost"
-                  onClick={() => setManualCopyText(null)}
-                >
-                  {he.closeDetails}
-                </button>
-              </div>
-              <textarea
-                className="manual-copy-textarea"
-                readOnly
-                value={manualCopyText}
-                onFocus={(e) => e.currentTarget.select()}
-                rows={12}
-              />
-            </div>
-          ) : null}
-          {filledDecisions.length > 0 && (
-            <div className="fills-strip" aria-label="Recent paper fills">
-              {filledDecisions.slice(0, 8).map((d) => (
-                <div className="fill-chip" key={`fill-${d.id}`}>
-                  <span className={`tag ${d.side}`}>{d.side}</span>
-                  <strong className="mono">{d.symbol}</strong>
-                  <span className="mono muted">
-                    {d.quantity != null ? d.quantity.toFixed(4) : ""} @{" "}
-                    {d.fill_price != null ? d.fill_price.toLocaleString() : "—"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="list decision-log-list">
-            {decisionLogs.map((log) => {
-              const open = expandedLogId === log.id;
-              const action = log.decision?.action || log.signal?.action || "HOLD";
-              const conf = log.decision?.final_confidence ?? 0;
-              return (
-                <div
-                  className={`item decision-log-item ${log.execution?.status === "FILLED" ? "filled" : ""}`}
-                  key={log.id}
-                >
-                  <div className="row">
-                    <span>
-                      <span className={`tag ${action}`}>{action}</span>{" "}
-                      <strong className="mono">{log.symbol}</strong>
-                      <span className="muted mono" style={{ marginLeft: 8 }}>
-                        {log.kind.replace(/_/g, " ")}
-                      </span>
-                    </span>
-                    <span className="mono muted">
-                      {(conf * 100).toFixed(0)}% · {execBadge(log)}
-                    </span>
-                  </div>
-                  <div className="decision-log-summary muted">
-                    {log.execution?.reason || log.decision?.explanation || log.decision?.rationale}
-                  </div>
-                  <button
-                    type="button"
-                    className="why-btn"
-                    aria-expanded={open}
-                    onClick={() => setExpandedLogId(open ? null : log.id)}
-                  >
-                    {open ? he.hideDetails : he.why}
-                  </button>
-                  {open && (
-                    <div className="decision-log-details">
-                      <div className="detail-block">
-                        <h4>{he.signal}</h4>
-                        <p className="mono">
-                          {log.signal?.action} · agents{" "}
-                          {(log.signal?.agents || [])
-                            .map(
-                              (a) =>
-                                `${a.agent_name?.replace(" Agent", "") || a.agent_id}:${a.action}`
-                            )
-                            .join(", ")}
-                        </p>
-                      </div>
-                      <div className="detail-block">
-                        <h4>{he.marketSnapshot}</h4>
-                        <pre className="detail-pre">
-                          {`Price: ${log.market?.price ?? "—"}
-1m: ${log.market?.change_1m_pct ?? "—"}%
-5m: ${log.market?.change_5m_pct ?? "—"}%
-15m: ${log.market?.change_15m_pct ?? "—"}%
-RSI: ${log.market?.rsi_14 ?? "—"}
-SMA fast/slow: ${log.market?.sma_fast ?? "—"} / ${log.market?.sma_slow ?? "—"}
-EMA: ${log.market?.ema_fast ?? "—"}
-Trend: ${log.market?.trend ?? "—"}
-Volume: ${log.market?.volume_state ?? "—"}
-Volatility: ${log.market?.volatility ?? "—"}
-Events: ${(log.market?.detected_events || []).join(", ") || "—"}
-Provider: ${log.market?.provider ?? "—"} (${log.market?.freshness ?? "—"})`}
-                        </pre>
-                      </div>
-                      <div className="detail-block">
-                        <h4>{he.agents}</h4>
-                        {(log.signal?.agents || []).map((a) => (
-                          <div className="agent-detail" key={`${log.id}-${a.agent_id}-${a.ts}`}>
-                            <div className="row">
-                              <strong>{a.agent_name}</strong>
-                              <span className={`tag ${a.action || "HOLD"}`}>{a.action}</span>
-                            </div>
-                            <div className="mono muted">
-                              {((a.confidence ?? 0) * 100).toFixed(0)}%
-                              {a.source ? ` · ${a.source}` : ""}
-                            </div>
-                            <p>{a.reason}</p>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="detail-block">
-                        <h4>{he.decision}</h4>
-                        <pre className="detail-pre">
-                          {`Action: ${log.decision?.action}
-Final confidence: ${((log.decision?.final_confidence ?? 0) * 100).toFixed(0)}%
-Votes: BUY ${log.decision?.vote_counts?.BUY ?? 0} / SELL ${log.decision?.vote_counts?.SELL ?? 0} / HOLD ${log.decision?.vote_counts?.HOLD ?? 0}
-Weights: BUY=${log.decision?.weights?.BUY ?? 0} SELL=${log.decision?.weights?.SELL ?? 0} HOLD=${log.decision?.weights?.HOLD ?? 0}
-Action score: ${log.decision?.action_score ?? "—"}
-Threshold: ${log.decision?.threshold ?? "—"}
-Hold gate: ${log.decision?.hold_gate ?? "—"}
-Explanation: ${log.decision?.explanation || "—"}
-
-Confidence debug:
-  winning_action = ${log.decision?.confidence_debug?.winning_action ?? "—"}
-  winning_score = ${log.decision?.confidence_debug?.winning_score ?? log.decision?.confidence_debug?.raw_score ?? "—"}
-  total_weight = ${log.decision?.confidence_debug?.total_weight ?? log.decision?.confidence_debug?.total_all_weights ?? "—"}
-  action_support = ${log.decision?.confidence_debug?.action_support ?? "—"}
-  agreement_factor = ${log.decision?.confidence_debug?.agreement_factor ?? "—"}
-  hold_ratio = ${log.decision?.confidence_debug?.hold_ratio ?? "—"}
-  opposition_ratio = ${log.decision?.confidence_debug?.opposition_ratio ?? "—"}
-  final = ${log.decision?.confidence_debug?.final_confidence ?? "—"}
-  formula = ${log.decision?.confidence_debug?.formula ?? "—"}`}
-                        </pre>
-                      </div>
-                      {log.pretrade ? (
-                        <div className="detail-block">
-                          <h4>{he.aiPretrade}</h4>
-                          <pre className="detail-pre">
-                            {`Source: ${log.pretrade.source ?? "—"}
-Skip: ${log.pretrade.skip_reason ?? "—"}
-Action: ${log.pretrade.action ?? "—"}
-Confidence: ${log.pretrade.confidence ?? "—"}`}
-                          </pre>
-                        </div>
-                      ) : null}
-                      <div className="detail-block">
-                        <h4>{he.outcome}</h4>
-                        <pre className="detail-pre">
-                          {`Entry: ${log.outcome?.entry_price ?? "—"}
-${outcomeLine("5m", log.outcome?.horizons?.["5m"])}
-${outcomeLine("15m", log.outcome?.horizons?.["15m"])}
-${outcomeLine("60m", log.outcome?.horizons?.["60m"])}`}
-                        </pre>
-                      </div>
-                      <div className="detail-block">
-                        <h4>{he.execution}</h4>
-                        <pre className="detail-pre">
-                          {`Status: ${log.execution?.status}
-Reason: ${log.execution?.reason}
-Cooldown remaining: ${log.execution?.cooldown_remaining_sec ?? "—"}s
-Fill: ${log.execution?.quantity ?? "—"} @ ${log.execution?.fill_price ?? "—"}`}
-                        </pre>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {!decisionLogs.length && (
-              <div className="muted">{he.logsAppear}</div>
-            )}
-          </div>
-        </section>
+        {marketPanel}
+        {portfolioPanel}
+        {agentsPanel}
+        {eventsPanel}
+        {decisionsPanel}
       </div>
     </div>
   );

@@ -92,6 +92,13 @@ export const he = {
   outcome: "תוצאה",
   execution: "ביצוע",
 
+  tabChart: "גרף",
+  tabMarket: "שוק",
+  tabAgents: "סוכנים",
+  tabDecisions: "החלטות",
+  tabPortfolio: "תיק",
+  moreActions: "עוד",
+
   expand: "הרחב",
   collapse: "כווץ",
   fullscreen: "מסך מלא",

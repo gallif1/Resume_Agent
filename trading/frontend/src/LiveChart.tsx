@@ -81,6 +81,7 @@ type Props = {
   }>;
   wsState?: string;
   onLayoutModeChange?: (mode: SizeMode) => void;
+  compact?: boolean;
 };
 
 type IndKey = "sma_20" | "sma_50" | "ema_20" | "ema_50" | "bb" | "vwap" | "rsi" | "macd";
@@ -240,6 +241,7 @@ export default function LiveChart({
   candleUpdates = [],
   wsState = "connecting",
   onLayoutModeChange,
+  compact = false,
 }: Props) {
   const [symbol, setSymbol] = useState(symbols[0] || "BTC-USD");
   const active = symbols.includes(symbol) ? symbol : symbols[0] || symbol;
@@ -605,8 +607,9 @@ export default function LiveChart({
       },
       1
     );
-    chart.priceScale("vol").applyOptions({
-      scaleMargins: { top: 0.75, bottom: 0 },
+    // Volume lives on pane 1 — priceScale(id) defaults to pane 0 and throws without paneIndex.
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.15, bottom: 0 },
     });
     chart.priceScale("right").applyOptions({
       scaleMargins: { top: 0.05, bottom: 0.25 },
@@ -840,7 +843,7 @@ export default function LiveChart({
       );
       s.setData((indicators.rsi_14 || []).map((d) => ({ time: toChartTime(d.time), value: d.value })));
       overlayRefs.current.rsi = s;
-      chart.priceScale("rsi").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
+      s.priceScale().applyOptions({ scaleMargins: { top: 0.15, bottom: 0.1 } });
     }
     if (activeInd.macd) {
       const s = chart.addSeries(
@@ -986,16 +989,164 @@ export default function LiveChart({
   const canvasStyle =
     expanded || isFullscreen
       ? undefined
-      : { height: isMobile ? "min(55vh, 420px)" : `${chartHeight}px` };
+      : {
+          height: compact
+            ? "min(62vh, 520px)"
+            : isMobile
+              ? "min(55vh, 420px)"
+              : `${chartHeight}px`,
+        };
 
   const showDrawer = drawerOpen && !!groupedOpen;
+
+  const indicatorMenu = (
+    <details className="chart-menu">
+      <summary>{he.indicators}</summary>
+      <div className="chart-menu-body">
+        {(
+          [
+            ["sma_20", "SMA 20"],
+            ["sma_50", "SMA 50"],
+            ["ema_20", "EMA 20"],
+            ["ema_50", "EMA 50"],
+            ["bb", "Bollinger"],
+            ["vwap", "VWAP"],
+            ["rsi", "RSI 14"],
+            ["macd", "MACD"],
+          ] as const
+        ).map(([k, label]) => (
+          <label key={k} className="chk">
+            <input
+              type="checkbox"
+              checked={!!activeInd[k]}
+              onChange={(e) => setActiveInd((p) => ({ ...p, [k]: e.target.checked }))}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+
+  const drawMenu = (
+    <details className="chart-menu">
+      <summary>
+        {he.draw} {drawMode !== "none" ? `(${drawMode})` : ""}
+      </summary>
+      <div className="chart-menu-body">
+        <button type="button" onClick={() => setDrawMode("SUPPORT")}>
+          {he.support}
+        </button>
+        <button type="button" onClick={() => setDrawMode("RESISTANCE")}>
+          {he.resistance}
+        </button>
+        <button type="button" onClick={() => setDrawMode("TREND_LINE")}>
+          {he.trendLine}
+        </button>
+        <button type="button" onClick={() => setDrawMode("TEXT_NOTE")}>
+          {he.textNote}
+        </button>
+        <button type="button" onClick={() => setDrawMode("none")}>
+          {he.cancelDraw}
+        </button>
+        <button type="button" onClick={onDeleteSelected} disabled={!selectedAnn}>
+          {he.deleteSelected}
+        </button>
+        <button type="button" onClick={onClearDrawings}>
+          {he.clearDrawings}
+        </button>
+        {selectedAnn ? (
+          <button type="button" onClick={editSelected}>
+            {he.editSelected}
+          </button>
+        ) : null}
+      </div>
+    </details>
+  );
+
+  const markersMenu = (
+    <details className="chart-menu">
+      <summary>{he.markers}</summary>
+      <div className="chart-menu-body">
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={showVotes}
+            onChange={(e) => setShowVotes(e.target.checked)}
+          />
+          {he.agentDecisions}
+        </label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={showFills}
+            onChange={(e) => setShowFills(e.target.checked)}
+          />
+          {he.executedTrades}
+        </label>
+        <label className="chk">
+          <input type="checkbox" checked={showBuy} onChange={(e) => setShowBuy(e.target.checked)} />
+          {he.buyMarkers}
+        </label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={showSell}
+            onChange={(e) => setShowSell(e.target.checked)}
+          />
+          {he.sellMarkers}
+        </label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={showHold}
+            onChange={(e) => setShowHold(e.target.checked)}
+          />
+          {he.holdDecisions}
+        </label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={showDrawings}
+            onChange={(e) => setShowDrawings(e.target.checked)}
+          />
+          {he.manualDrawings}
+        </label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={showIndicators}
+            onChange={(e) => setShowIndicators(e.target.checked)}
+          />
+          {he.indicators}
+        </label>
+        <div className="compact-legend menu-legend" aria-label={he.markers}>
+          <span>
+            <i className="lg-tri buy" /> {he.legendBuy}
+          </span>
+          <span>
+            <i className="lg-tri sell" /> {he.legendSell}
+          </span>
+          <span>
+            <i className="lg-arrow buy" /> {he.legendFillBuy}
+          </span>
+          <span>
+            <i className="lg-arrow sell" /> {he.legendFillSell}
+          </span>
+          <span>
+            <i className="lg-dot" /> {he.legendYellow}
+          </span>
+        </div>
+      </div>
+    </details>
+  );
 
   return (
     <section
       ref={panelRef}
       className={`panel live-chart-panel pro-chart size-${sizeMode}${isFullscreen ? " is-fullscreen" : ""}${
         showDrawer ? " has-drawer" : ""
-      }${isNarrow ? " is-narrow" : ""}`}
+      }${isNarrow ? " is-narrow" : ""}${compact ? " live-chart-compact" : ""}`}
       data-testid="live-chart-panel"
     >
       <div className="chart-toolbar chart-toolbar-compact">
@@ -1025,139 +1176,22 @@ export default function LiveChart({
           ))}
         </div>
         <div className="chart-actions">
-          <details className="chart-menu">
-            <summary>{he.indicators}</summary>
-            <div className="chart-menu-body">
-              {(
-                [
-                  ["sma_20", "SMA 20"],
-                  ["sma_50", "SMA 50"],
-                  ["ema_20", "EMA 20"],
-                  ["ema_50", "EMA 50"],
-                  ["bb", "Bollinger"],
-                  ["vwap", "VWAP"],
-                  ["rsi", "RSI 14"],
-                  ["macd", "MACD"],
-                ] as const
-              ).map(([k, label]) => (
-                <label key={k} className="chk">
-                  <input
-                    type="checkbox"
-                    checked={!!activeInd[k]}
-                    onChange={(e) => setActiveInd((p) => ({ ...p, [k]: e.target.checked }))}
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </details>
-          <details className="chart-menu">
-            <summary>
-              {he.draw} {drawMode !== "none" ? `(${drawMode})` : ""}
-            </summary>
-            <div className="chart-menu-body">
-              <button type="button" onClick={() => setDrawMode("SUPPORT")}>
-                {he.support}
-              </button>
-              <button type="button" onClick={() => setDrawMode("RESISTANCE")}>
-                {he.resistance}
-              </button>
-              <button type="button" onClick={() => setDrawMode("TREND_LINE")}>
-                {he.trendLine}
-              </button>
-              <button type="button" onClick={() => setDrawMode("TEXT_NOTE")}>
-                {he.textNote}
-              </button>
-              <button type="button" onClick={() => setDrawMode("none")}>
-                {he.cancelDraw}
-              </button>
-              <button type="button" onClick={onDeleteSelected} disabled={!selectedAnn}>
-                {he.deleteSelected}
-              </button>
-              <button type="button" onClick={onClearDrawings}>
-                {he.clearDrawings}
-              </button>
-              {selectedAnn ? (
-                <button type="button" onClick={editSelected}>
-                  {he.editSelected}
-                </button>
-              ) : null}
-            </div>
-          </details>
-          <details className="chart-menu">
-            <summary>{he.markers}</summary>
-            <div className="chart-menu-body">
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={showVotes}
-                  onChange={(e) => setShowVotes(e.target.checked)}
-                />
-                {he.agentDecisions}
-              </label>
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={showFills}
-                  onChange={(e) => setShowFills(e.target.checked)}
-                />
-                {he.executedTrades}
-              </label>
-              <label className="chk">
-                <input type="checkbox" checked={showBuy} onChange={(e) => setShowBuy(e.target.checked)} />
-                {he.buyMarkers}
-              </label>
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={showSell}
-                  onChange={(e) => setShowSell(e.target.checked)}
-                />
-                {he.sellMarkers}
-              </label>
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={showHold}
-                  onChange={(e) => setShowHold(e.target.checked)}
-                />
-                {he.holdDecisions}
-              </label>
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={showDrawings}
-                  onChange={(e) => setShowDrawings(e.target.checked)}
-                />
-                {he.manualDrawings}
-              </label>
-              <label className="chk">
-                <input
-                  type="checkbox"
-                  checked={showIndicators}
-                  onChange={(e) => setShowIndicators(e.target.checked)}
-                />
-                {he.indicators}
-              </label>
-              <div className="compact-legend menu-legend" aria-label={he.markers}>
-                <span>
-                  <i className="lg-tri buy" /> {he.legendBuy}
-                </span>
-                <span>
-                  <i className="lg-tri sell" /> {he.legendSell}
-                </span>
-                <span>
-                  <i className="lg-arrow buy" /> {he.legendFillBuy}
-                </span>
-                <span>
-                  <i className="lg-arrow sell" /> {he.legendFillSell}
-                </span>
-                <span>
-                  <i className="lg-dot" /> {he.legendYellow}
-                </span>
+          {compact ? (
+            <details className="chart-menu chart-menu-more">
+              <summary>{he.moreActions}</summary>
+              <div className="chart-menu-body chart-menu-more-body">
+                {indicatorMenu}
+                {drawMenu}
+                {markersMenu}
               </div>
-            </div>
-          </details>
+            </details>
+          ) : (
+            <>
+              {indicatorMenu}
+              {drawMenu}
+              {markersMenu}
+            </>
+          )}
           <button type="button" className="chart-ctrl-btn" onClick={goLive}>
             {he.goLive}
           </button>
@@ -1226,7 +1260,7 @@ export default function LiveChart({
             <div className="chart-unavailable">{he.dataUnavailable}</div>
           ) : null}
           <div className="chart-canvas" ref={wrapRef} style={canvasStyle} />
-          {!isMobile && !expanded ? (
+          {!compact && !isMobile && !expanded ? (
             <div
               className="chart-resize-handle"
               title="Drag to resize chart height"
