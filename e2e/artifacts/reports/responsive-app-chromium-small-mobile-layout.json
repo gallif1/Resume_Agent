@@ -1,0 +1,6 @@
+[
+  {
+    "type": "horizontal-overflow",
+    "detail": "document.scrollWidth=330 > clientWidth=320"
+  }
+]
