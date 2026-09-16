@@ -652,6 +652,9 @@ export default function App() {
                 <a href="/job-apply" className="btn btn-secondary btn-sm">
                   Auto Apply
                 </a>
+                <a href="/live-scanner" className="btn btn-secondary btn-sm">
+                  Live Job Scanner
+                </a>
               </>
             )}
             {authUser?.email && (

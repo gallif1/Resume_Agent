@@ -156,6 +156,9 @@ export default function JobApplyPage() {
             <a href="/cv-tailor" className="btn btn-secondary btn-sm">
               Create Tailored CV
             </a>
+            <a href="/live-scanner" className="btn btn-secondary btn-sm">
+              Live Job Scanner
+            </a>
             <a href="/" className="btn btn-ghost btn-sm">
               <ArrowLeft size={16} aria-hidden="true" />
               Job search
