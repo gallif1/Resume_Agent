@@ -622,7 +622,7 @@ def clear_session_display(user_id: str, *, db_path: Path | None = None) -> dict[
         conn.execute("DELETE FROM live_scanner_activity WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM live_scanner_session_jobs WHERE user_id = ?", (user_id,))
         conn.commit()
-    state = get_state(user_id, db_path=path)
+    stats = source_stats(user_id, db_path=path)
     return save_state(
         user_id,
         {
@@ -630,7 +630,7 @@ def clear_session_display(user_id: str, *, db_path: Path | None = None) -> dict[
             "new_jobs": 0,
             "duplicates_skipped": 0,
             "relevant_jobs": 0,
-            # Keep baseline_jobs / sources_* / status / session_id intact
+            **stats,
         },
         db_path=path,
     )
