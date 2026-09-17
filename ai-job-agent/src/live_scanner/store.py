@@ -761,6 +761,41 @@ def list_session_jobs(
         return [_row(r) for r in rows]
 
 
+def list_known_jobs_for_display(
+    user_id: str,
+    *,
+    limit: int = SESSION_JOBS_LIMIT_DEFAULT,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return recent known/baseline jobs for the live jobs table when the session feed is empty."""
+    path = db_path or workspace_db(user_id)
+    with db.get_connection(path) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                k.id AS id,
+                k.job_id AS job_id,
+                COALESCE(k.last_seen_at, k.first_seen_at) AS discovered_at,
+                k.is_baseline AS is_baseline,
+                COALESCE(j.title, '') AS title,
+                COALESCE(j.company, s.company_name, '') AS company,
+                COALESCE(j.location, '') AS location,
+                COALESCE(j.provider, s.provider, '') AS provider,
+                k.source_id AS source_id,
+                COALESCE(j.job_url, k.canonical_url, '') AS job_url,
+                j.match_score AS match_score
+            FROM live_scanner_known_jobs k
+            LEFT JOIN jobs j ON j.id = k.job_id
+            LEFT JOIN live_scanner_sources s ON s.id = k.source_id
+            WHERE k.user_id = ?
+            ORDER BY COALESCE(k.last_seen_at, k.first_seen_at) DESC
+            LIMIT ?
+            """,
+            (user_id, max(1, min(limit, 500))),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+
 def annotate_job_live_metadata(
     job_id: int,
     *,
