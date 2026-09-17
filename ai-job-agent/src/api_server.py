@@ -58,6 +58,11 @@ CV Tailor MVP (require Bearer JWT):
     POST   /api/cv-tailor/generate            upload CV + job description → tailored JSON
     GET    /api/cv-tailor/download/{result_id} download tailored CV as PDF
 
+Live Job Scanner (require Bearer JWT):
+    GET    /api/live-scanner/status           scanner state + activity + sources + new jobs
+    POST   /api/live-scanner/play|pause|stop|clear
+    GET/POST/PATCH/DELETE /api/live-scanner/sources[/{id}]
+
 Legacy (single global CV) endpoints, kept for backward compatibility:
     GET  /api/health            server + pipeline/scan availability
     GET  /api/jobs              jobs with match scores (query: min_score, all)
@@ -177,6 +182,13 @@ app.add_middleware(
 )
 
 app.include_router(cv_tailor_router)
+
+try:
+    from live_scanner.routes import router as live_scanner_router
+
+    app.include_router(live_scanner_router)
+except Exception as _live_scanner_import_exc:  # noqa: BLE001
+    print(f"[warn] live_scanner routes not loaded: {_live_scanner_import_exc}")
 
 
 def _ensure_job_apply_on_path() -> Path | None:
@@ -3571,7 +3583,7 @@ FRONTEND_DIST = PROJECT_ROOT.parent / "resume-agent-web" / "dist"
 # Only these frontend entrypoints should soft-404 into index.html.
 # Broader fallbacks (e.g. /cv-tailor/jobs/<uuid>) used to return the SPA shell
 # as HTTP 200 HTML — CV Tailor then reported "HTML instead of API".
-_SPA_EXACT_PATHS = frozenset({"/", "/cv-tailor", "/job-apply"})
+_SPA_EXACT_PATHS = frozenset({"/", "/cv-tailor", "/job-apply", "/live-scanner"})
 
 
 def _is_spa_navigation_path(path: str) -> bool:

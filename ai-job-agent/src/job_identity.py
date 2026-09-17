@@ -27,6 +27,20 @@ INDEED_JOB_KEY_RE = re.compile(r"(?:[?&]jk=|/viewjob\?jk=)([a-f0-9]+)", re.IGNOR
 SECRET_TEL_AVIV_JOB_SLUG_RE = re.compile(r"/job/([^/?#]+)/?", re.IGNORECASE)
 GEEKTIME_JOB_ID_RE = re.compile(r"(?:jid|job[_-]?id|id_job)=(\d+)", re.IGNORECASE)
 
+# ATS career-board job URLs (Live Job Scanner / company pages).
+LEVER_JOB_ID_RE = re.compile(
+    r"jobs\.lever\.co/[^/]+/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.IGNORECASE,
+)
+GREENHOUSE_JOB_ID_RE = re.compile(
+    r"(?:boards(?:-api)?\.greenhouse\.io/[^/]+/jobs/|gh_jid=)(\d+)",
+    re.IGNORECASE,
+)
+ASHBY_JOB_ID_RE = re.compile(
+    r"jobs\.ashbyhq\.com/[^/]+/([0-9a-f-]{36})",
+    re.IGNORECASE,
+)
+
 # Query params stripped from job URLs (tracking / session noise).
 _TRACKING_QUERY_PARAMS = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
@@ -86,6 +100,27 @@ def extract_geektime_job_id(url: str | None) -> str | None:
     if not url:
         return None
     match = GEEKTIME_JOB_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def extract_lever_job_id(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = LEVER_JOB_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def extract_greenhouse_job_id(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = GREENHOUSE_JOB_ID_RE.search(url)
+    return match.group(1) if match else None
+
+
+def extract_ashby_job_id(url: str | None) -> str | None:
+    if not url:
+        return None
+    match = ASHBY_JOB_ID_RE.search(url)
     return match.group(1) if match else None
 
 
@@ -213,6 +248,18 @@ def compute_job_identity_key(
     geektime_id = extract_geektime_job_id(canonical_url)
     if geektime_id:
         return f"geektime:job:{geektime_id}"
+
+    lever_id = extract_lever_job_id(canonical_url)
+    if lever_id:
+        return f"lever:job:{lever_id}"
+
+    greenhouse_id = extract_greenhouse_job_id(canonical_url)
+    if greenhouse_id:
+        return f"greenhouse:job:{greenhouse_id}"
+
+    ashby_id = extract_ashby_job_id(canonical_url)
+    if ashby_id:
+        return f"ashby:job:{ashby_id}"
 
     if canonical_url:
         return f"url:{hashlib.sha256(canonical_url.encode('utf-8')).hexdigest()[:32]}"

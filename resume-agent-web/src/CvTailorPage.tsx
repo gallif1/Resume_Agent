@@ -455,6 +455,12 @@ export default function CvTailorPage() {
             </span>
           </div>
           <div className="header-actions">
+            <a href="/live-scanner" className="btn btn-secondary btn-sm">
+              Live Job Scanner
+            </a>
+            <a href="/job-apply" className="btn btn-secondary btn-sm">
+              Auto Apply
+            </a>
             <a href="/" className="btn btn-ghost btn-sm">
               <ArrowLeft size={16} aria-hidden="true" />
               Job search

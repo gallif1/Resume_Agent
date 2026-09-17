@@ -5047,3 +5047,265 @@ code {
   border: 1px solid #e4e7ec;
   background: #f9fafb;
 }
+
+/* Live Job Scanner */
+.live-scanner-main {
+  max-width: 1100px;
+}
+
+.live-scanner-card {
+  margin-bottom: 20px;
+}
+
+.live-scanner-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.live-scanner-title-row .cv-tailor-title {
+  margin: 0;
+}
+
+.live-status-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #d0d5dd;
+  background: #f2f4f7;
+  color: #344054;
+}
+
+.live-status-running {
+  background: #ecfdf3;
+  border-color: #abefc6;
+  color: #067647;
+}
+
+.live-status-baseline {
+  background: #fffaeb;
+  border-color: #fedf89;
+  color: #b54708;
+}
+
+.live-status-paused {
+  background: #eff8ff;
+  border-color: #b2ddff;
+  color: #175cd3;
+}
+
+.live-status-stopped {
+  background: #f2f4f7;
+  border-color: #d0d5dd;
+  color: #475467;
+}
+
+.live-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 16px 0;
+}
+
+.live-controls .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.live-stat {
+  background: #f9fafb;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.live-stat-label {
+  display: block;
+  font-size: 0.75rem;
+  color: #667085;
+  margin-bottom: 4px;
+}
+
+.live-stat-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #101828;
+}
+
+.live-hint {
+  margin: 14px 0 0;
+  color: #475467;
+  font-size: 0.92rem;
+}
+
+.live-section-title {
+  margin: 0 0 10px;
+  font-size: 1.1rem;
+}
+
+.live-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.live-section-header .live-section-title {
+  margin: 0;
+}
+
+.live-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.live-activity-item {
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f2f4f7;
+  font-size: 0.9rem;
+}
+
+.live-activity-time {
+  color: #667085;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-activity-new_job .live-activity-msg {
+  color: #067647;
+  font-weight: 600;
+}
+
+.live-activity-error .live-activity-msg {
+  color: #b42318;
+}
+
+.live-activity-baseline .live-activity-msg {
+  color: #b54708;
+}
+
+.live-table-wrap {
+  overflow-x: auto;
+}
+
+.live-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.live-table th,
+.live-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eaecf0;
+  vertical-align: top;
+}
+
+.live-table th {
+  color: #667085;
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.live-source-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #d0d5dd;
+}
+
+.live-badge-live {
+  background: #ecfdf3;
+  border-color: #abefc6;
+  color: #067647;
+}
+
+.live-badge-baseline {
+  background: #fffaeb;
+  border-color: #fedf89;
+  color: #b54708;
+}
+
+.live-badge-error {
+  background: #fef3f2;
+  border-color: #fecdca;
+  color: #b42318;
+}
+
+.live-badge-disabled,
+.live-badge-pending {
+  background: #f2f4f7;
+  border-color: #d0d5dd;
+  color: #475467;
+}
+
+.live-source-error {
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: #b42318;
+  max-width: 260px;
+}
+
+.live-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.live-add-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #f9fafb;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+}
+
+.spin {
+  animation: live-spin 0.9s linear infinite;
+}
+
+@keyframes live-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 640px) {
+  .live-activity-item {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .live-controls .btn {
+    flex: 1 1 calc(50% - 8px);
+    justify-content: center;
+  }
+}
