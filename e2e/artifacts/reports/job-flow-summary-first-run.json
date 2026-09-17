@@ -1,0 +1,13 @@
+# First-run job-flow evidence (restored)
+
+Captured during the initial full suite against production before SKIP_EXPENSIVE_SCAN reruns.
+
+```json
+{
+  "scanStarted": true,
+  "scanFinished": true,
+  "hadMatches": false,
+  "skipScan": false,
+  "notes": "Drushim-only scan completed; workspace showed no match banner. Screenshots: artifacts/screenshots/job-scan-running.png, job-scan-after-wait.png, job-results-none.png"
+}
+```

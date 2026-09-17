@@ -1,0 +1,168 @@
+
+Running 48 tests using 1 worker
+
+(node:13928) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:13928) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   1 [chromium-desktop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (1.4s)
+  ✓   2 [chromium-desktop] › tests/accessibility.spec.ts:144:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe (23.5s)
+  ✓   3 [chromium-desktop] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password (1.4s)
+  ✓   4 [chromium-desktop] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh (16.9s)
+  ✓   5 [chromium-desktop] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out (846ms)
+  ✓   6 [chromium-desktop] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note (1ms)
+  ✓   7 [chromium-desktop] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls (23.6s)
+  ✓   8 [chromium-desktop] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop (22.9s)
+  ✓   9 [chromium-desktop] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites (23.1s)
+  ✓  10 [chromium-desktop] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (24.0s)
+  ✓  11 [chromium-desktop] › tests/responsive-rtl.spec.ts:99:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth (21.9s)
+  ✓  12 [chromium-desktop] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup (31.8s)
+  ✓  13 [chromium-desktop] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior (26.8s)
+  ✓  14 [chromium-desktop] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (615ms)
+  ✓  15 [chromium-desktop] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave (1.8s)
+  ✓  16 [chromium-desktop] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load (1.9s)
+(node:14310) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:14310) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  17 [chromium-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (1.4s)
+  -  18 [chromium-mobile] › tests/accessibility.spec.ts:144:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  ✓  19 [chromium-mobile] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password (1.5s)
+  ✓  20 [chromium-mobile] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh (16.8s)
+  ✓  21 [chromium-mobile] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out (1.0s)
+  ✓  22 [chromium-mobile] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note (1ms)
+  -  23 [chromium-mobile] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls
+  -  24 [chromium-mobile] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop
+  -  25 [chromium-mobile] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✓  26 [chromium-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (23.2s)
+  -  27 [chromium-mobile] › tests/responsive-rtl.spec.ts:99:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+  -  28 [chromium-mobile] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup
+  -  29 [chromium-mobile] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior
+  ✓  30 [chromium-mobile] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (613ms)
+  ✓  31 [chromium-mobile] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave (1.8s)
+  -  32 [chromium-mobile] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load
+(node:14609) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:14609) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  33 [chromium-small-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe
+  -  34 [chromium-small-mobile] › tests/accessibility.spec.ts:144:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  -  35 [chromium-small-mobile] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password
+  -  36 [chromium-small-mobile] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh
+  -  37 [chromium-small-mobile] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out
+  -  38 [chromium-small-mobile] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note
+  -  39 [chromium-small-mobile] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls
+  -  40 [chromium-small-mobile] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop
+  -  41 [chromium-small-mobile] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✘  42 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (21.8s)
+(node:14698) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:14698) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  43 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (retry #1) (21.9s)
+(node:14812) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:14812) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  44 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:99:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+  -  45 [chromium-small-mobile] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup
+  -  46 [chromium-small-mobile] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior
+  ✓  47 [chromium-small-mobile] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (676ms)
+  -  48 [chromium-small-mobile] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave
+  -  49 [chromium-small-mobile] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load
+
+
+  1) [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport 
+
+    Error: [
+      {
+        "type": "horizontal-overflow",
+        "detail": "document.scrollWidth=330 > clientWidth=320"
+      }
+    ]
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 1
+    + Received  + 6
+
+    - Array []
+    + Array [
+    +   Object {
+    +     "detail": "document.scrollWidth=330 > clientWidth=320",
+    +     "type": "horizontal-overflow",
+    +   },
+    + ]
+
+      65 |         ].includes(i.type)
+      66 |       );
+    > 67 |       expect(appOverflow, JSON.stringify(appOverflow, null, 2)).toEqual([]);
+         |                                                                 ^
+      68 |
+      69 |       const fixtures = await prepareAllFixtures();
+      70 |       const input = page.locator('input[type="file"]');
+        at /workspace/e2e/tests/responsive-rtl.spec.ts:67:65
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: [
+      {
+        "type": "horizontal-overflow",
+        "detail": "document.scrollWidth=330 > clientWidth=320"
+      }
+    ]
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 1
+    + Received  + 6
+
+    - Array []
+    + Array [
+    +   Object {
+    +     "detail": "document.scrollWidth=330 > clientWidth=320",
+    +     "type": "horizontal-overflow",
+    +   },
+    + ]
+
+      65 |         ].includes(i.type)
+      66 |       );
+    > 67 |       expect(appOverflow, JSON.stringify(appOverflow, null, 2)).toEqual([]);
+         |                                                                 ^
+      68 |
+      69 |       const fixtures = await prepareAllFixtures();
+      70 |       const input = page.locator('input[type="file"]');
+        at /workspace/e2e/tests/responsive-rtl.spec.ts:67:65
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport 
+  22 skipped
+  25 passed (5.3m)
