@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,12 @@ import db
 import pytest
 from collect_jobs import filter_plan_by_domains
 from conftest import register_test_user
+from date_utils import today_iso
+
+
+def _days_ago(days: int) -> str:
+    """ISO date within the default match max-age window (relative to today)."""
+    return (date.fromisoformat(today_iso()) - timedelta(days=days)).isoformat()
 
 
 SAMPLE_CV_TEXT = """
@@ -385,7 +392,7 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
             with db.get_connection(cv_db) as conn:
                 conn.execute(
                     "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
-                    ("Fullstack developer role with detailed requirements." * 2, "2026-08-20", new_id),
+                    ("Fullstack developer role with detailed requirements." * 2, _days_ago(5), new_id),
                 )
                 conn.commit()
         scan_id = db.create_scan(cv_id_arg, db_path=cv_db)
@@ -439,7 +446,7 @@ def test_search_preserves_previous_jobs(interactive_env, monkeypatch):
         with db.get_connection(cv_db) as conn:
             conn.execute(
                 "UPDATE jobs SET description = ?, posted_date = ? WHERE id = ?",
-                ("Existing fullstack role with enough description text." * 2, "2026-08-15", existing_id),
+                ("Existing fullstack role with enough description text." * 2, _days_ago(10), existing_id),
             )
             conn.commit()
         scan1 = db.create_scan(cv_id, db_path=cv_db)
