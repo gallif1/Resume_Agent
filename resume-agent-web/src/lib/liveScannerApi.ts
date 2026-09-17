@@ -74,6 +74,9 @@ export interface LiveScannerSnapshot {
   worker_alive: boolean;
   sources: LiveSource[];
   activity: LiveActivity[];
+  /** All jobs discovered this session (baseline + new), newest first. */
+  discovered_jobs: LiveSessionJob[];
+  /** Subset of discovered_jobs where is_baseline is falsy. */
   new_jobs: LiveSessionJob[];
   providers: Array<{ id: string; supported: boolean; requires_browser: boolean }>;
 }

@@ -45,13 +45,22 @@ class LiveScannerService:
         stats = store.source_stats(self.user_id, db_path=db_path)
         sources = store.list_sources(self.user_id, db_path=db_path)
         activity = store.list_activity(self.user_id, db_path=db_path)
-        new_jobs = store.list_session_jobs(self.user_id, new_only=True, db_path=db_path)
+        discovered_jobs = store.list_session_jobs(
+            self.user_id, new_only=False, limit=300, db_path=db_path
+        )
+        if not discovered_jobs:
+            # After CLEAR / page reload, still show indexed baseline jobs.
+            discovered_jobs = store.list_known_jobs_for_display(
+                self.user_id, limit=300, db_path=db_path
+            )
+        new_jobs = [j for j in discovered_jobs if not j.get("is_baseline")]
         worker = get_registry().get(self.user_id)
         return {
             "state": {**state, **stats},
             "worker_alive": worker.is_alive,
             "sources": sources,
             "activity": activity,
+            "discovered_jobs": discovered_jobs,
             "new_jobs": new_jobs,
             "providers": list_providers(),
         }

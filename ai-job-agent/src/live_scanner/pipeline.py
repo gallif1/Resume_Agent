@@ -142,6 +142,23 @@ def persist_collected_job(
             is_baseline=is_baseline,
             db_path=db_path,
         )
+        if job_id is not None:
+            # Surface in the live session feed while scanning (baseline + true inserts).
+            # For live scans, skip duplicates so "New Jobs" stays accurate.
+            if is_baseline:
+                store.add_session_job(
+                    user_id,
+                    job_id=job_id,
+                    is_baseline=True,
+                    title=job.title,
+                    company=company,
+                    location=job.location or "",
+                    provider=provider,
+                    source_id=source_id,
+                    job_url=canonical,
+                    match_score=existing.get("match_score") if existing else None,
+                    db_path=db_path,
+                )
         return {
             "action": "duplicate",
             "job_id": job_id,
@@ -176,22 +193,21 @@ def persist_collected_job(
     if run_match:
         match_score, relevant = _try_match_job(user_id, job_id, db_path=db_path)
 
-    # Session table: only non-baseline "new live" jobs appear in New Jobs UI.
-    # Baseline jobs are recorded only when we want counts — skip session_jobs for baseline.
-    if not is_baseline:
-        store.add_session_job(
-            user_id,
-            job_id=job_id,
-            is_baseline=False,
-            title=job.title,
-            company=company,
-            location=job.location or "",
-            provider=provider,
-            source_id=source_id,
-            job_url=canonical,
-            match_score=match_score,
-            db_path=db_path,
-        )
+    # Always record in the live session feed (baseline and new), so the UI can
+    # stream discoveries. New-job counters / alerts still use is_baseline=0 only.
+    store.add_session_job(
+        user_id,
+        job_id=job_id,
+        is_baseline=is_baseline,
+        title=job.title,
+        company=company,
+        location=job.location or "",
+        provider=provider,
+        source_id=source_id,
+        job_url=canonical,
+        match_score=match_score,
+        db_path=db_path,
+    )
 
     return {
         "action": "inserted",

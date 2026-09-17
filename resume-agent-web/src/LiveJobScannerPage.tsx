@@ -136,15 +136,20 @@ export default function LiveJobScannerPage() {
   useEffect(() => {
     if (!authUser) return;
     void refresh();
+    const active =
+      snapshot?.state?.status === "RUNNING" ||
+      snapshot?.state?.status === "BUILDING_BASELINE";
     const id = window.setInterval(() => {
       void refresh();
-    }, 2500);
+    }, active ? 1000 : 2500);
     return () => window.clearInterval(id);
-  }, [authUser, refresh]);
+  }, [authUser, refresh, snapshot?.state?.status]);
 
   const state = snapshot?.state ?? emptyState;
   const sources: LiveSource[] = snapshot?.sources ?? [];
   const activity: LiveActivity[] = snapshot?.activity ?? [];
+  const discoveredJobs: LiveSessionJob[] =
+    snapshot?.discovered_jobs ?? snapshot?.new_jobs ?? [];
   const newJobs: LiveSessionJob[] = snapshot?.new_jobs ?? [];
   const badge = statusLabel(state.status);
 
@@ -374,6 +379,86 @@ export default function LiveJobScannerPage() {
         </section>
 
         <section className="card cv-tailor-card live-scanner-card">
+          <div className="live-section-header" dir="ltr">
+            <h2 className="live-section-title">Jobs discovered (live)</h2>
+            <span className="muted" dir="ltr">
+              {discoveredJobs.length} shown
+              {state.status === "RUNNING" || state.status === "BUILDING_BASELINE"
+                ? " · updating…"
+                : ""}
+            </span>
+          </div>
+          <p className="muted" dir="rtl">
+            הרשימה מתעדכנת אוטומטית בזמן הסריקה. משרות baseline הן משרות שכבר היו
+            פעילות בתחילת הניטור; רק משרות{" "}
+            <strong>NEW</strong> הן משרות חדשות שפורסמו אחרי ה-baseline.
+          </p>
+          {discoveredJobs.length === 0 ? (
+            <p className="muted" dir="rtl">
+              עדיין אין משרות בסשן הזה. לחץ PLAY כדי להתחיל — המשרות יופיעו כאן בזמן
+              אמת.
+            </p>
+          ) : (
+            <div className="live-table-wrap live-jobs-live" dir="ltr">
+              <table className="live-table">
+                <thead>
+                  <tr>
+                    <th>Found</th>
+                    <th>Type</th>
+                    <th>Title</th>
+                    <th>Company</th>
+                    <th>Location</th>
+                    <th>Provider</th>
+                    <th>Match</th>
+                    <th>Link</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {discoveredJobs.map((job) => {
+                    const isBaseline = Boolean(job.is_baseline);
+                    return (
+                      <tr
+                        key={job.id}
+                        className={
+                          isBaseline ? "live-job-row-baseline" : "live-job-row-new"
+                        }
+                      >
+                        <td>{formatTime(job.discovered_at)}</td>
+                        <td>
+                          <span
+                            className={
+                              isBaseline
+                                ? "live-source-badge live-badge-baseline"
+                                : "live-source-badge live-badge-live"
+                            }
+                          >
+                            {isBaseline ? "BASELINE" : "NEW"}
+                          </span>
+                        </td>
+                        <td>{job.title}</td>
+                        <td>{job.company}</td>
+                        <td>{job.location || "—"}</td>
+                        <td>{job.provider}</td>
+                        <td>{job.match_score ?? "—"}</td>
+                        <td>
+                          {job.job_url ? (
+                            <a href={job.job_url} target="_blank" rel="noreferrer">
+                              Open
+                            </a>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
+        <section className="card cv-tailor-card live-scanner-card">
           <h2 className="live-section-title" dir="ltr">
             Live Activity
           </h2>
@@ -400,11 +485,10 @@ export default function LiveJobScannerPage() {
 
         <section className="card cv-tailor-card live-scanner-card">
           <h2 className="live-section-title" dir="ltr">
-            New Jobs
+            New Jobs only
           </h2>
           <p className="muted" dir="ltr">
-            Only jobs discovered after each source’s baseline. Open the original
-            link, or use Job search / Tailored CV / Auto Apply with the job URL.
+            Jobs first seen after each source’s baseline (excludes baseline).
           </p>
           {newJobs.length === 0 ? (
             <p className="muted">No new live jobs this session.</p>
