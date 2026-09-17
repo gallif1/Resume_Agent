@@ -5309,3 +5309,25 @@ code {
     justify-content: center;
   }
 }
+
+.live-jobs-live {
+  max-height: 480px;
+  overflow: auto;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+}
+
+.live-job-row-new td {
+  background: #f6fef9;
+}
+
+.live-job-row-new td:first-child {
+  box-shadow: inset 3px 0 0 #12b76a;
+}
+
+.live-jobs-live thead th {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
