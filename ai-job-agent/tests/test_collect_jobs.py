@@ -241,11 +241,22 @@ def test_collect_drushim_with_page_skips_visible_retry_when_disabled():
 
 
 def test_apply_collect_filters_applies_age_in_delta_mode():
+    from datetime import date, timedelta
+
     from collect_jobs import _apply_collect_filters
 
+    today = date.today()
     page_jobs = [
-        {"title": "fresh", "posted_date": "2026-08-20", "job_url": "https://example.com/1"},
-        {"title": "stale", "posted_date": "2025-01-01", "job_url": "https://example.com/2"},
+        {
+            "title": "fresh",
+            "posted_date": (today - timedelta(days=5)).isoformat(),
+            "job_url": "https://example.com/1",
+        },
+        {
+            "title": "stale",
+            "posted_date": (today - timedelta(days=60)).isoformat(),
+            "job_url": "https://example.com/2",
+        },
     ]
     kept, age_skipped, known_skipped, all_old, hit_delta = _apply_collect_filters(
         page_jobs,

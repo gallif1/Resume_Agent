@@ -126,12 +126,16 @@ def test_baseline_then_live_new_job(user_db):
             title="Engineer 1",
             company="DemoCo",
             job_url="https://jobs.lever.co/leverdemo/job-1",
+            location="Tel Aviv, Israel",
+            country_code="IL",
         ),
         CollectedJob(
             external_job_id="job-2",
             title="Engineer 2",
             company="DemoCo",
             job_url="https://jobs.lever.co/leverdemo/job-2",
+            location="Haifa, Israel",
+            country_code="IL",
         ),
     ]
     live_jobs = baseline_jobs + [
@@ -140,7 +144,17 @@ def test_baseline_then_live_new_job(user_db):
             title="Engineer 3 NEW",
             company="DemoCo",
             job_url="https://jobs.lever.co/leverdemo/job-3",
-        )
+            location="Herzliya, Israel",
+            country_code="IL",
+        ),
+        CollectedJob(
+            external_job_id="job-us",
+            title="US Only",
+            company="DemoCo",
+            job_url="https://jobs.lever.co/leverdemo/job-us",
+            location="New York, USA",
+            country_code="US",
+        ),
     ]
 
     worker = UserScannerWorker(user_id)
@@ -365,3 +379,131 @@ def test_job_identity_ats_keys():
     assert compute_job_identity_key(
         "https://boards.greenhouse.io/airbnb/jobs/999"
     ) == "greenhouse:job:999"
+
+
+def test_provider_failure_does_not_stop_other_sources(user_db):
+    user_id, path = user_db
+    ok_source = store.add_source(
+        user_id,
+        company_name="OkCo",
+        provider="lever",
+        board_identifier="ok",
+        db_path=path,
+    )
+    bad_source = store.add_source(
+        user_id,
+        company_name="BadCo",
+        provider="greenhouse",
+        board_identifier="bad",
+        db_path=path,
+    )
+    worker = UserScannerWorker(user_id)
+
+    def collect_for(board_identifier, **_kwargs):
+        if board_identifier == "bad":
+            return CollectResult(status="error", error="boom")
+        return CollectResult(
+            jobs=[
+                CollectedJob(
+                    external_job_id="il-1",
+                    title="TLV Eng",
+                    company="OkCo",
+                    job_url="https://jobs.lever.co/ok/il-1",
+                    location="Tel Aviv, Israel",
+                    country_code="IL",
+                )
+            ],
+            status="ok",
+            http_status=200,
+        )
+
+    with patch("live_scanner.scheduler.get_collector") as gc:
+        class FakeCollector:
+            def collect(self, *, board_identifier: str, careers_url: str | None = None):
+                return collect_for(board_identifier)
+
+        gc.return_value = FakeCollector()
+        worker._scan_source(bad_source)
+        worker._scan_source(ok_source)
+
+    bad_after = store.get_source(user_id, bad_source["id"], db_path=path)
+    ok_after = store.get_source(user_id, ok_source["id"], db_path=path)
+    assert bad_after["status"] == "ERROR"
+    assert ok_after["status"] == "LIVE"
+    assert ok_after["baseline_created_at"]
+    state = store.get_state(user_id, db_path=path)
+    assert state["new_jobs"] == 0
+    assert int(state.get("israel_jobs") or 0) == 1
+
+
+def test_foreign_jobs_never_reach_ai_matching(user_db):
+    user_id, path = user_db
+    source = store.add_source(
+        user_id,
+        company_name="GlobalCo",
+        provider="lever",
+        board_identifier="global",
+        db_path=path,
+    )
+    # Establish Israel baseline first
+    baseline = [
+        CollectedJob(
+            external_job_id="il-base",
+            title="IL Base",
+            company="GlobalCo",
+            job_url="https://jobs.lever.co/global/il-base",
+            location="Tel Aviv, Israel",
+            country_code="IL",
+        )
+    ]
+    live = baseline + [
+        CollectedJob(
+            external_job_id="us-new",
+            title="US New Should Not Match",
+            company="GlobalCo",
+            job_url="https://jobs.lever.co/global/us-new",
+            location="New York, USA",
+            country_code="US",
+        ),
+        CollectedJob(
+            external_job_id="il-new",
+            title="IL New",
+            company="GlobalCo",
+            job_url="https://jobs.lever.co/global/il-new",
+            location="Haifa, Israel",
+            country_code="IL",
+        ),
+    ]
+    worker = UserScannerWorker(user_id)
+    calls = {"n": 0}
+
+    def fake_collect(**_kwargs):
+        calls["n"] += 1
+        jobs = baseline if calls["n"] == 1 else live
+        return CollectResult(jobs=list(jobs), status="ok", http_status=200)
+
+    with (
+        patch("live_scanner.scheduler.get_collector") as gc,
+        patch("live_scanner.pipeline._try_match_job") as match_mock,
+    ):
+        match_mock.return_value = (50, False)
+        collector = type("C", (), {"collect": staticmethod(fake_collect)})()
+        gc.return_value = collector
+        worker._scan_source(source)
+        source_live = store.get_source(user_id, source["id"], db_path=path)
+        worker._scan_source(source_live)
+
+    # Matching runs only for the new Israeli job (baseline uses run_match=False).
+    assert match_mock.call_count == 1
+    matched_job_id = match_mock.call_args.args[1]
+    # Foreign US job must not be in the jobs table as a live discovery
+    with db.get_connection(path) as conn:
+        rows = conn.execute(
+            "SELECT title, location FROM jobs WHERE title LIKE ?",
+            ("%US New%",),
+        ).fetchall()
+    assert rows == []
+    state = store.get_state(user_id, db_path=path)
+    assert state["new_jobs"] == 1
+    assert int(state.get("foreign_filtered") or 0) >= 1
+    assert matched_job_id is not None

@@ -79,9 +79,25 @@ class ComeetCollector(BaseCollector):
             if not job_url:
                 job_url = f"https://www.comeet.com/jobs/position/{ext_id}"
             location = ""
+            country = ""
+            country_code = ""
+            is_remote = None
             loc = item.get("location")
             if isinstance(loc, dict):
-                location = str(loc.get("name") or loc.get("city") or "").strip()
+                city = str(loc.get("city") or loc.get("name") or "").strip()
+                country = str(
+                    loc.get("country") or loc.get("country_name") or ""
+                ).strip()
+                country_code = str(
+                    loc.get("country_code") or loc.get("countryCode") or ""
+                ).strip()
+                location = str(loc.get("name") or "").strip()
+                if not location:
+                    location = ", ".join(p for p in (city, country or country_code) if p)
+                if loc.get("is_remote") is not None:
+                    is_remote = bool(loc.get("is_remote"))
+                elif loc.get("remote") is not None:
+                    is_remote = bool(loc.get("remote"))
             elif isinstance(loc, str):
                 location = loc.strip()
             company = str(
@@ -98,6 +114,9 @@ class ComeetCollector(BaseCollector):
                     company=company or company_uid,
                     job_url=job_url,
                     location=location,
+                    country=country,
+                    country_code=country_code,
+                    is_remote=is_remote,
                     description=desc[:4000] if desc else "",
                     posted_date=_comeet_date(item.get("time_updated") or item.get("time_created")),
                     raw=item,

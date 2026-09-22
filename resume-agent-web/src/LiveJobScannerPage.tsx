@@ -268,6 +268,9 @@ export default function LiveJobScannerPage() {
             <span className={`live-status-pill ${badge.className}`} dir="ltr">
               {badge.text}
             </span>
+            <span className="live-market-pill" dir="ltr" title="Current market filter">
+              Market: 🇮🇱 Israel
+            </span>
           </div>
           <p className="cv-tailor-subtitle">
             Continuously monitor company career boards. First scan builds a baseline;
@@ -324,6 +327,18 @@ export default function LiveJobScannerPage() {
               <span className="live-stat-value">
                 {state.sources_initialized} / {state.sources_monitored}
               </span>
+            </div>
+            <div className="live-stat">
+              <span className="live-stat-label">Jobs fetched</span>
+              <span className="live-stat-value">{state.jobs_fetched ?? 0}</span>
+            </div>
+            <div className="live-stat">
+              <span className="live-stat-label">Israel jobs</span>
+              <span className="live-stat-value">{state.israel_jobs ?? 0}</span>
+            </div>
+            <div className="live-stat">
+              <span className="live-stat-label">Foreign filtered</span>
+              <span className="live-stat-value">{state.foreign_filtered ?? 0}</span>
             </div>
             <div className="live-stat">
               <span className="live-stat-label">Jobs checked</span>
@@ -561,11 +576,23 @@ export default function LiveJobScannerPage() {
                   value={newProvider}
                   onChange={(e) => setNewProvider(e.target.value)}
                 >
-                  <option value="lever">Lever</option>
-                  <option value="greenhouse">Greenhouse</option>
-                  <option value="ashby">Ashby</option>
-                  <option value="workday">Workday</option>
-                  <option value="comeet">Comeet</option>
+                  {(
+                    snapshot?.providers?.map((p) => p.id) ?? [
+                      "lever",
+                      "greenhouse",
+                      "ashby",
+                      "workday",
+                      "comeet",
+                      "smartrecruiters",
+                      "workable",
+                      "teamtailor",
+                      "recruitee",
+                    ]
+                  ).map((id) => (
+                    <option key={id} value={id}>
+                      {id}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="field-label">
@@ -623,7 +650,12 @@ export default function LiveJobScannerPage() {
                   const sb = sourceStatusBadge(String(src.status));
                   return (
                     <tr key={src.id}>
-                      <td>{src.company_name}</td>
+                      <td>
+                        {src.company_name}
+                        {src.is_demo || (src.notes || "").toUpperCase().includes("DEMO") ? (
+                          <span className="live-demo-tag"> DEMO</span>
+                        ) : null}
+                      </td>
                       <td>{src.provider}</td>
                       <td>{Math.round((src.scan_interval_seconds || 0) / 60)}m</td>
                       <td>
