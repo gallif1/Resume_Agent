@@ -7,6 +7,10 @@ from live_scanner.collectors.base import BaseCollector
 from live_scanner.collectors.comeet import ComeetCollector
 from live_scanner.collectors.greenhouse import GreenhouseCollector
 from live_scanner.collectors.lever import LeverCollector
+from live_scanner.collectors.recruitee import RecruiteeCollector
+from live_scanner.collectors.smartrecruiters import SmartRecruitersCollector
+from live_scanner.collectors.teamtailor import TeamtailorCollector
+from live_scanner.collectors.workable import WorkableCollector
 from live_scanner.collectors.workday import WorkdayCollector
 from live_scanner.constants import PROVIDERS
 
@@ -16,6 +20,10 @@ _COLLECTORS: dict[str, BaseCollector] = {
     "ashby": AshbyCollector(),
     "workday": WorkdayCollector(),
     "comeet": ComeetCollector(),
+    "smartrecruiters": SmartRecruitersCollector(),
+    "workable": WorkableCollector(),
+    "teamtailor": TeamtailorCollector(),
+    "recruitee": RecruiteeCollector(),
 }
 
 

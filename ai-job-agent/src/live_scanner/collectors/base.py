@@ -18,6 +18,9 @@ class CollectedJob:
     location: str = ""
     description: str = ""
     posted_date: str | None = None
+    country: str = ""
+    country_code: str = ""
+    is_remote: bool | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -29,6 +32,9 @@ class CollectedJob:
             "location": self.location,
             "description": self.description,
             "posted_date": self.posted_date,
+            "country": self.country,
+            "country_code": self.country_code,
+            "is_remote": self.is_remote,
         }
 
 

@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-PROVIDERS = ("lever", "greenhouse", "comeet", "workday", "ashby")
+PROVIDERS = (
+    "lever",
+    "greenhouse",
+    "ashby",
+    "workday",
+    "comeet",
+    "smartrecruiters",
+    "workable",
+    "teamtailor",
+    "recruitee",
+)
 
 DEFAULT_INTERVALS_SECONDS: dict[str, int] = {
     "lever": 5 * 60,
@@ -10,8 +20,14 @@ DEFAULT_INTERVALS_SECONDS: dict[str, int] = {
     "comeet": 5 * 60,
     "ashby": 5 * 60,
     "workday": 10 * 60,
+    "smartrecruiters": 5 * 60,
+    "workable": 5 * 60,
+    "teamtailor": 5 * 60,
+    "recruitee": 5 * 60,
     "browser": 15 * 60,
 }
+
+MARKET = "Israel"
 
 # Source lifecycle
 SOURCE_NOT_INITIALIZED = "NOT_INITIALIZED"

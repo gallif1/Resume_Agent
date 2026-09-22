@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from live_scanner.collectors import list_providers, validate_source_config
-from live_scanner.constants import STATUS_STOPPED
+from live_scanner.constants import MARKET, STATUS_STOPPED
 from live_scanner.defaults import default_interval_for
 from live_scanner.scheduler import get_registry
 from live_scanner import store
@@ -56,7 +56,8 @@ class LiveScannerService:
         new_jobs = [j for j in discovered_jobs if not j.get("is_baseline")]
         worker = get_registry().get(self.user_id)
         return {
-            "state": {**state, **stats},
+            "state": {**state, **stats, "market": MARKET},
+            "market": MARKET,
             "worker_alive": worker.is_alive,
             "sources": sources,
             "activity": activity,
@@ -112,6 +113,25 @@ class LiveScannerService:
         )
         if err:
             raise ValueError(err)
+
+        # Soft reachability check — never crash; surface parse/HTTP issues early.
+        from live_scanner.collectors import get_collector
+
+        collector = get_collector(provider)
+        if collector is not None and (board or careers_url):
+            try:
+                probe = collector.collect(
+                    board_identifier=board, careers_url=careers_url
+                )
+                if probe.status in {"error", "unsupported"}:
+                    raise ValueError(
+                        f"Source validation failed: {probe.error or probe.status}"
+                    )
+            except ValueError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"Source validation failed: {exc}") from exc
+
         interval = payload.get("scan_interval_seconds")
         if interval is None:
             interval = default_interval_for(provider)
@@ -124,6 +144,7 @@ class LiveScannerService:
             enabled=bool(payload.get("enabled", True)),
             scan_interval_seconds=int(interval),
             notes=str(payload.get("notes") or "") or None,
+            is_demo=bool(payload.get("is_demo", False)),
             db_path=self._db(),
         )
         return source

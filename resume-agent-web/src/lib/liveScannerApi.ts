@@ -24,9 +24,13 @@ export interface LiveScannerState {
   duplicates_skipped: number;
   relevant_jobs: number;
   baseline_jobs: number;
+  jobs_fetched?: number;
+  foreign_filtered?: number;
+  israel_jobs?: number;
   sources_monitored: number;
   sources_initialized: number;
   sources_failed: number;
+  market?: string;
 }
 
 export interface LiveSource {
@@ -44,6 +48,7 @@ export interface LiveSource {
   baseline_created_at?: string | null;
   baseline_job_count?: number | null;
   notes?: string | null;
+  is_demo?: number | boolean;
 }
 
 export interface LiveActivity {
@@ -71,6 +76,7 @@ export interface LiveSessionJob {
 
 export interface LiveScannerSnapshot {
   state: LiveScannerState;
+  market?: string;
   worker_alive: boolean;
   sources: LiveSource[];
   activity: LiveActivity[];

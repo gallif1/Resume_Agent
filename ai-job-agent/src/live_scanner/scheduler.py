@@ -25,6 +25,7 @@ from live_scanner.constants import (
     STATUS_STOPPED,
 )
 from live_scanner import store
+from live_scanner.israel_filter import filter_israel_jobs
 from live_scanner.pipeline import persist_collected_job
 
 logger = logging.getLogger("live_scanner.scheduler")
@@ -100,6 +101,9 @@ class UserScannerWorker:
                     "new_jobs": 0,
                     "duplicates_skipped": 0,
                     "relevant_jobs": 0,
+                    "jobs_fetched": 0,
+                    "foreign_filtered": 0,
+                    "israel_jobs": 0,
                     **stats,
                 },
                 db_path=db_path,
@@ -376,7 +380,8 @@ class UserScannerWorker:
             self._bump_failed()
             return
 
-        jobs = list(result.jobs or [])
+        jobs_global = list(result.jobs or [])
+        jobs, fetched_count, foreign_filtered = filter_israel_jobs(jobs_global)
         known = store.get_known_external_ids(user_id, source_id, db_path=db_path)
 
         checked = len(jobs)
@@ -387,6 +392,17 @@ class UserScannerWorker:
         present_ids: set[str] = set()
 
         baseline_ts = _iso() if is_baseline_pass else source.get("baseline_created_at")
+
+        store.add_activity(
+            user_id,
+            (
+                f"{company} [{provider}] → {fetched_count} jobs returned → "
+                f"{checked} Israel → {foreign_filtered} foreign filtered"
+            ),
+            level="info",
+            source_id=source_id,
+            db_path=db_path,
+        )
 
         for job in jobs:
             present_ids.add(job.external_job_id)
@@ -437,13 +453,19 @@ class UserScannerWorker:
                     new_count += 1
                     if outcome.get("relevant"):
                         relevant_count += 1
+                    loc_bit = f" — {job.location}" if (job.location or "").strip() else ""
                     store.add_activity(
                         user_id,
-                        f"NEW JOB: {job.title} @ {job.company or company}",
+                        f"NEW: {job.title}{loc_bit}",
                         level="new_job",
                         source_id=source_id,
                         job_id=outcome.get("job_id"),
-                        payload={"title": job.title, "company": job.company, "url": job.job_url},
+                        payload={
+                            "title": job.title,
+                            "company": job.company,
+                            "location": job.location,
+                            "url": job.job_url,
+                        },
                         db_path=db_path,
                     )
                     logger.info(
@@ -489,8 +511,9 @@ class UserScannerWorker:
             store.add_activity(
                 user_id,
                 (
-                    f"{company} / {provider.title()} → {checked} active jobs found → "
-                    f"Baseline complete ({inserted_baseline} added to index)"
+                    f"{company} / {provider.title()} → {fetched_count} global → "
+                    f"{checked} Israel jobs → Baseline complete "
+                    f"({inserted_baseline} added; {foreign_filtered} foreign filtered)"
                 ),
                 level="baseline",
                 source_id=source_id,
@@ -508,6 +531,9 @@ class UserScannerWorker:
                 jobs_checked=checked,
                 duplicates_skipped=dup_count,
                 baseline_delta=inserted_baseline,
+                jobs_fetched=fetched_count,
+                foreign_filtered=foreign_filtered,
+                israel_jobs=checked,
             )
         else:
             store.update_source_scan_result(
@@ -521,7 +547,10 @@ class UserScannerWorker:
             if new_count:
                 store.add_activity(
                     user_id,
-                    f"{company} [{provider}] → {checked} checked, {new_count} NEW",
+                    (
+                        f"{company} [{provider}] → {fetched_count} fetched, "
+                        f"{checked} Israel, {dup_count} known, {new_count} NEW Israeli"
+                    ),
                     level="info",
                     source_id=source_id,
                     db_path=db_path,
@@ -529,15 +558,19 @@ class UserScannerWorker:
             else:
                 store.add_activity(
                     user_id,
-                    f"{company} [{provider}] → {checked} checked, no new jobs",
+                    (
+                        f"{company} [{provider}] → {fetched_count} fetched, "
+                        f"{checked} Israel, no new Israeli jobs"
+                    ),
                     level="info",
                     source_id=source_id,
                     db_path=db_path,
                 )
             logger.info(
-                "scan completed user=%s source=%s checked=%s new=%s dups=%s",
+                "scan completed user=%s source=%s fetched=%s israel=%s new=%s dups=%s",
                 user_id,
                 source_id,
+                fetched_count,
                 checked,
                 new_count,
                 dup_count,
@@ -547,6 +580,9 @@ class UserScannerWorker:
                 new_jobs=new_count,
                 duplicates_skipped=dup_count,
                 relevant_jobs=relevant_count,
+                jobs_fetched=fetched_count,
+                foreign_filtered=foreign_filtered,
+                israel_jobs=checked,
             )
 
     def _bump_counters(
@@ -557,6 +593,9 @@ class UserScannerWorker:
         duplicates_skipped: int = 0,
         relevant_jobs: int = 0,
         baseline_delta: int = 0,
+        jobs_fetched: int = 0,
+        foreign_filtered: int = 0,
+        israel_jobs: int = 0,
     ) -> None:
         db_path = store.workspace_db(self.user_id)
         state = store.get_state(self.user_id, db_path=db_path)
@@ -569,8 +608,15 @@ class UserScannerWorker:
                 "duplicates_skipped": int(state.get("duplicates_skipped") or 0)
                 + duplicates_skipped,
                 "relevant_jobs": int(state.get("relevant_jobs") or 0) + relevant_jobs,
+                "jobs_fetched": int(state.get("jobs_fetched") or 0) + jobs_fetched,
+                "foreign_filtered": int(state.get("foreign_filtered") or 0)
+                + foreign_filtered,
+                "israel_jobs": int(state.get("israel_jobs") or 0) + israel_jobs,
                 "baseline_jobs": stats["baseline_jobs"],
-                **{k: stats[k] for k in ("sources_monitored", "sources_initialized", "sources_failed")},
+                **{
+                    k: stats[k]
+                    for k in ("sources_monitored", "sources_initialized", "sources_failed")
+                },
             },
             db_path=db_path,
         )

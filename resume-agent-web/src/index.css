@@ -5331,3 +5331,23 @@ code {
   background: #fff;
   z-index: 1;
 }
+
+.live-market-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #d0d5dd;
+  background: #f9fafb;
+  color: #344054;
+}
+
+.live-demo-tag {
+  margin-inline-start: 6px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #b54708;
+  letter-spacing: 0.04em;
+}

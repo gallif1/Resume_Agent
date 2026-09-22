@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS live_scanner_sources (
     baseline_created_at TEXT,
     baseline_job_count INTEGER DEFAULT 0,
     notes TEXT,
+    is_demo INTEGER NOT NULL DEFAULT 0,
     created_at TEXT,
     updated_at TEXT
 );
@@ -122,6 +123,9 @@ CREATE TABLE IF NOT EXISTS live_scanner_state (
     duplicates_skipped INTEGER NOT NULL DEFAULT 0,
     relevant_jobs INTEGER NOT NULL DEFAULT 0,
     baseline_jobs INTEGER NOT NULL DEFAULT 0,
+    jobs_fetched INTEGER NOT NULL DEFAULT 0,
+    foreign_filtered INTEGER NOT NULL DEFAULT 0,
+    israel_jobs INTEGER NOT NULL DEFAULT 0,
     sources_monitored INTEGER NOT NULL DEFAULT 0,
     sources_initialized INTEGER NOT NULL DEFAULT 0,
     sources_failed INTEGER NOT NULL DEFAULT 0,
@@ -189,6 +193,27 @@ def ensure_live_scanner_schema(db_path: Path) -> None:
             conn.executescript(_SCHEMA)
             conn.commit()
 
+    # Additive columns for older DBs
+    for column, col_type in (
+        ("jobs_fetched", "INTEGER NOT NULL DEFAULT 0"),
+        ("foreign_filtered", "INTEGER NOT NULL DEFAULT 0"),
+        ("israel_jobs", "INTEGER NOT NULL DEFAULT 0"),
+        ("is_demo", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        table = "live_scanner_sources" if column == "is_demo" else "live_scanner_state"
+        try:
+            with db.get_connection(db_path) as conn:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            if not db._is_operational_error(exc):
+                raise
+            try:
+                with db.get_connection(db_path) as conn:
+                    conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+
 
 def seed_default_sources(user_id: str, db_path: Path | None = None) -> int:
     """Insert seed sources if the user has none yet. Returns inserted count."""
@@ -211,6 +236,7 @@ def seed_default_sources(user_id: str, db_path: Path | None = None) -> int:
             careers_url=str(spec.get("careers_url") or "") or None,
             enabled=bool(spec.get("enabled", True)),
             notes=str(spec.get("notes") or "") or None,
+            is_demo=bool(spec.get("is_demo", False)),
             db_path=path,
         )
         inserted += 1
@@ -258,6 +284,7 @@ def add_source(
     enabled: bool = True,
     scan_interval_seconds: int | None = None,
     notes: str | None = None,
+    is_demo: bool = False,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
     path = db_path or workspace_db(user_id)
@@ -270,8 +297,8 @@ def add_source(
             """
             INSERT INTO live_scanner_sources (
                 id, user_id, company_name, provider, board_identifier, careers_url,
-                enabled, scan_interval_seconds, status, notes, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                enabled, scan_interval_seconds, status, notes, is_demo, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id,
@@ -284,6 +311,7 @@ def add_source(
                 int(interval),
                 status,
                 notes,
+                1 if is_demo else 0,
                 now,
                 now,
             ),
@@ -585,6 +613,9 @@ def save_state(user_id: str, patch: dict[str, Any], *, db_path: Path | None = No
         "duplicates_skipped",
         "relevant_jobs",
         "baseline_jobs",
+        "jobs_fetched",
+        "foreign_filtered",
+        "israel_jobs",
         "sources_monitored",
         "sources_initialized",
         "sources_failed",
@@ -630,6 +661,9 @@ def clear_session_display(user_id: str, *, db_path: Path | None = None) -> dict[
             "new_jobs": 0,
             "duplicates_skipped": 0,
             "relevant_jobs": 0,
+            "jobs_fetched": 0,
+            "foreign_filtered": 0,
+            "israel_jobs": 0,
             **stats,
         },
         db_path=path,
@@ -871,6 +905,9 @@ def _default_state(user_id: str) -> dict[str, Any]:
         "duplicates_skipped": 0,
         "relevant_jobs": 0,
         "baseline_jobs": 0,
+        "jobs_fetched": 0,
+        "foreign_filtered": 0,
+        "israel_jobs": 0,
         "sources_monitored": 0,
         "sources_initialized": 0,
         "sources_failed": 0,
