@@ -1,0 +1,15 @@
+# WhatsApp Monitor — local runtime (never commit secrets / sessions)
+session/**
+!session/.gitkeep
+data/*.db
+data/*.db-*
+logs/**
+!logs/.gitkeep
+backend/node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.wwebjs_auth/
+.wwebjs_cache/
+**/session/session-*/
+**/session/.wwebjs_*/

@@ -478,6 +478,23 @@ _register_job_apply_routes()
 _register_trading_routes()
 
 
+def _register_whatsapp_monitor_proxy() -> None:
+    """Mount reverse-proxy to the isolated WhatsApp Monitor Node service.
+
+    The WhatsApp listener/DB/session live entirely under ``whatsapp_monitor/``.
+    This only forwards ``/whatsapp-monitor/*`` so the existing SPA can link to it.
+    """
+    try:
+        from whatsapp_monitor_proxy import register_whatsapp_monitor_proxy
+
+        register_whatsapp_monitor_proxy(app)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] WhatsApp Monitor proxy not registered: {exc}")
+
+
+_register_whatsapp_monitor_proxy()
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -3620,8 +3637,9 @@ async def spa_fallback_middleware(request: Request, call_next):
     if response.status_code != 404 or request.method != "GET":
         return response
     path = request.url.path or "/"
-    if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading")):
+    if path.startswith(("/api/", "/cvs/", "/jobs/", "/assets/", "/trading", "/whatsapp-monitor")):
         # /trading is owned by the isolated AI Trading System (API + SPA).
+        # /whatsapp-monitor is owned by the isolated WhatsApp Monitor (Node proxy).
         return response
     if not _is_spa_navigation_path(path):
         return response

@@ -51,6 +51,19 @@ cd trading/frontend && npm install && npm run build
 
 תיעוד: [trading/README.md](trading/README.md)
 
+### WhatsApp Monitor (מודול מבודד)
+
+מאזין לקבוצות WhatsApp נבחרות ושומר הודעות חדשות בלבד (ללא AI / הגשות).
+זמין מתפריט הניווט או ב־`/whatsapp-monitor`.
+
+```bash
+cd whatsapp_monitor/backend && npm install && npm start
+cd whatsapp_monitor/frontend && npm install && npm run build
+# ה-Backend הראשי מפרוקסי ל־/whatsapp-monitor → localhost:3100
+```
+
+תיעוד: [whatsapp_monitor/README.md](whatsapp_monitor/README.md)
+
 ### שיתוף לפלאפון (קישור ציבורי זמני)
 
 מהשורש של הפרויקט, פקודה אחת מפעילה הכל ומדפיסה קישור:

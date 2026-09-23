@@ -11,3 +11,10 @@ ai-job-agent/logs
 resume-agent-web/dist
 trading/frontend/dist
 trading/data/*.json
+whatsapp_monitor/frontend/dist
+whatsapp_monitor/session/**
+whatsapp_monitor/data/*.db
+whatsapp_monitor/logs/**
+!whatsapp_monitor/session/.gitkeep
+!whatsapp_monitor/data/.gitkeep
+!whatsapp_monitor/logs/.gitkeep

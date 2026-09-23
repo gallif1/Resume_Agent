@@ -1,0 +1,2 @@
+# WhatsApp Web session / LocalAuth data — NEVER commit
+# Runtime writes auth state here. Directory is gitignored via module .gitignore.

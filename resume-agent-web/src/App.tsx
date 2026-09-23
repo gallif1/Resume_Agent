@@ -644,6 +644,13 @@ export default function App() {
             >
               AI Trading System
             </a>
+            <a
+              href="/whatsapp-monitor"
+              className="btn btn-secondary btn-sm"
+              title="Open WhatsApp Monitor"
+            >
+              WhatsApp Monitor
+            </a>
             {authUser && (
               <>
                 <a href="/cv-tailor" className="btn btn-secondary btn-sm">

@@ -55,6 +55,18 @@ ai-job-agent/data/quality_intelligence/
 *.sqlite
 *.sqlite3
 
+# WhatsApp Monitor — never commit auth/session or runtime DBs
+whatsapp_monitor/session/**
+!whatsapp_monitor/session/.gitkeep
+whatsapp_monitor/data/**
+!whatsapp_monitor/data/.gitkeep
+whatsapp_monitor/logs/**
+!whatsapp_monitor/logs/.gitkeep
+whatsapp_monitor/**/.wwebjs_auth/
+whatsapp_monitor/**/.wwebjs_cache/
+**/.wwebjs_auth/
+**/.wwebjs_cache/
+
 # OS / IDE
 .DS_Store
 Thumbs.db
