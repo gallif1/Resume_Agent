@@ -1,226 +1,130 @@
-"""Reverse-proxy the isolated WhatsApp Monitor Node service.
+"""Serve the WhatsApp Monitor UI and point clients at a local agent.
 
-Mounted under ``/whatsapp-monitor`` by the host Resume Agent. Does not import
-any WhatsApp/session logic — the Node process owns that.
+WhatsApp Web auth (QR / session / Chromium) runs on the **user's PC**, not on
+the Resume Agent server. The cloud/EC2 host only serves the static dashboard.
 
-If the Node sidecar is down, this module attempts to start it automatically
-(see ``whatsapp_monitor_launcher``) so EC2 --no-build injects and local
-``python api_server.py`` still serve the UI.
+The browser talks directly to ``http://127.0.0.1:3100`` (local Node agent).
 """
 
 from __future__ import annotations
 
 import os
-from typing import AsyncIterator
+from pathlib import Path
 
-import httpx
-from fastapi import APIRouter, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-WHATSAPP_UPSTREAM = os.getenv("WHATSAPP_MONITOR_UPSTREAM", "http://127.0.0.1:3100").rstrip("/")
 BASE_PATH = (os.getenv("WHATSAPP_MONITOR_BASE_PATH") or "/whatsapp-monitor").rstrip("/") or "/whatsapp-monitor"
+LOCAL_AGENT_URL = os.getenv("WHATSAPP_LOCAL_AGENT_URL", "http://127.0.0.1:3100").rstrip("/")
 
-router = APIRouter(tags=["whatsapp-monitor-proxy"])
-
-_HOP_BY_HOP = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "host",
-    "content-length",
-}
+router = APIRouter(tags=["whatsapp-monitor"])
 
 
-def _filter_request_headers(headers) -> dict[str, str]:
-    return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
+def _frontend_dist_candidates() -> list[Path]:
+    here = Path(__file__).resolve()
+    return [
+        Path("/app/whatsapp_monitor/frontend/dist"),
+        here.parents[2] / "whatsapp_monitor" / "frontend" / "dist",
+    ]
 
 
-def _filter_response_headers(headers) -> dict[str, str]:
-    out = {}
-    for k, v in headers.items():
-        lk = k.lower()
-        if lk in _HOP_BY_HOP or lk == "content-encoding":
-            continue
-        out[k] = v
-    return out
+def find_frontend_dist() -> Path | None:
+    for d in _frontend_dist_candidates():
+        if (d / "index.html").is_file():
+            return d
+    return None
 
 
-def _ensure_upstream() -> dict:
-    try:
-        from whatsapp_monitor_launcher import ensure_whatsapp_monitor_running
-
-        return ensure_whatsapp_monitor_running(wait_seconds=12.0)
-    except Exception as exc:  # noqa: BLE001
-        return {"action": "launcher_error", "last_error": f"{type(exc).__name__}: {exc}"}
-
-
-def _unavailable_html(info: dict | None = None) -> str:
-    info = info or {}
-    detail = info.get("last_error") or info.get("action") or "unknown"
-    backend = info.get("backend_dir") or "—"
-    node = info.get("node_bin") or "—"
+def _setup_html() -> str:
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"/><title>WhatsApp Monitor</title>
-<meta http-equiv="refresh" content="5"/>
-<style>
- body{{font-family:system-ui,sans-serif;padding:2rem;max-width:40rem;line-height:1.45}}
- code{{background:#f1f5f9;padding:.15rem .35rem;border-radius:.35rem}}
- .muted{{color:#64748b;font-size:.9rem}}
-</style></head><body>
-<h1>WhatsApp Monitor</h1>
-<p>Starting the WhatsApp Monitor service…</p>
-<p class="muted">If this page does not reload into the dashboard, the Node sidecar could not start.</p>
-<ul class="muted">
- <li>status: <code>{detail}</code></li>
- <li>backend: <code>{backend}</code></li>
- <li>node: <code>{node}</code></li>
-</ul>
-<p><a href="/whatsapp-monitor/">Retry now</a> · <a href="/">Back to Resume Agent</a></p>
-<script>setTimeout(function(){{location.reload()}},4000)</script>
-</body></html>"""
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>WhatsApp Monitor — הפעלה מקומית</title>
+  <style>
+    body{{font-family:Heebo,system-ui,sans-serif;margin:0;background:#f8fafc;color:#1e293b}}
+    main{{max-width:40rem;margin:2rem auto;padding:1.5rem;background:#fff;border-radius:1rem;
+      box-shadow:0 10px 40px rgba(15,23,42,.08);border:1px solid rgba(15,23,42,.08)}}
+    h1{{margin-top:0}}
+    code,pre{{background:#f1f5f9;border-radius:.5rem}}
+    pre{{padding:1rem;overflow:auto;direction:ltr;text-align:left}}
+    .muted{{color:#64748b}}
+    a{{color:#2563eb}}
+  </style>
+</head>
+<body>
+<main>
+  <h1>WhatsApp Monitor</h1>
+  <p>חיבור הוואטסאפ רץ <b>על המחשב שלך</b> (לא על השרת).</p>
+  <p class="muted">בנה את ממשק המודול ואז רענן, או הפעל את הסוכן המקומי:</p>
+  <pre>cd whatsapp_monitor/frontend && npm install && npm run build
+cd ../backend && npm install && npm start</pre>
+  <p>הסוכן המקומי: <code dir="ltr">{LOCAL_AGENT_URL}</code></p>
+  <p><a href="/">חזרה ל-Resume Agent</a></p>
+</main>
+</body>
+</html>"""
 
 
-async def _proxy(
-    request: Request,
-    full_path: str = "",
-    *,
-    _retried: bool = False,
-    _body: bytes | None = None,
-) -> Response:
-    """Forward every /whatsapp-monitor/* request to the local Node service."""
-    suffix = (full_path or "").lstrip("/")
-    upstream_url = f"{WHATSAPP_UPSTREAM}{BASE_PATH}"
-    if suffix:
-        upstream_url = f"{upstream_url}/{suffix}"
-    elif (request.url.path or "").endswith("/"):
-        upstream_url = f"{upstream_url}/"
-    if request.url.query:
-        upstream_url = f"{upstream_url}?{request.url.query}"
+@router.get("/api/client-mode")
+async def whatsapp_client_mode() -> dict:
+    """Tell the UI that WhatsApp must run as a local agent on the user PC."""
+    return {
+        "ok": True,
+        "mode": "client_local_agent",
+        "local_agent_url": LOCAL_AGENT_URL,
+        "local_api_base": f"{LOCAL_AGENT_URL}{BASE_PATH}/api",
+        "message": "WhatsApp QR/session runs on the user's PC via the local Node agent.",
+    }
 
-    body = _body if _body is not None else await request.body()
-    headers = _filter_request_headers(request.headers)
 
-    accept = (request.headers.get("accept") or "").lower()
-    is_events = suffix.endswith("events") or "text/event-stream" in accept
-    timeout = httpx.Timeout(None if is_events else 60.0, connect=5.0)
+@router.get("/")
+async def whatsapp_monitor_index():
+    dist = find_frontend_dist()
+    if dist is None:
+        return HTMLResponse(_setup_html(), status_code=503)
+    return FileResponse(dist / "index.html")
 
-    try:
-        if is_events and request.method == "GET":
-            # Ensure sidecar before opening a long-lived stream.
-            if not _retried:
-                _ensure_upstream()
-            client = httpx.AsyncClient(timeout=timeout)
 
-            async def event_stream() -> AsyncIterator[bytes]:
-                try:
-                    async with client.stream(
-                        "GET",
-                        upstream_url,
-                        headers={**headers, "accept": "text/event-stream"},
-                    ) as upstream:
-                        async for chunk in upstream.aiter_bytes():
-                            yield chunk
-                except Exception:
-                    yield b'event: error\ndata: {"error":"upstream unavailable"}\n\n'
-                finally:
-                    await client.aclose()
-
-            return StreamingResponse(
-                event_stream(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            upstream = await client.request(
-                request.method,
-                upstream_url,
-                headers=headers,
-                content=body,
-            )
-    except (httpx.ConnectError, httpx.ConnectTimeout):
-        info = _ensure_upstream()
-        if not _retried and info.get("action") in {
-            "started",
-            "starting",
-            "already_running",
-        }:
-            return await _proxy(request, full_path, _retried=True, _body=body)
-
-        wants_html = "text/html" in accept or suffix in ("",) or suffix.endswith("index.html")
-        if wants_html and request.method == "GET":
-            return HTMLResponse(content=_unavailable_html(info), status_code=503)
+@router.get("/{full_path:path}")
+async def whatsapp_monitor_spa(full_path: str, request: Request):
+    # API under this mount is only client-mode metadata — WA APIs live on localhost.
+    if full_path.startswith("api/"):
         return JSONResponse(
             {
                 "ok": False,
-                "service": "whatsapp-monitor",
-                "status": "unavailable",
-                **{
-                    k: info.get(k)
-                    for k in ("action", "last_error", "backend_dir", "node_bin", "upstream_up")
-                },
+                "error": "whatsapp_apis_are_on_local_agent",
+                "local_api_base": f"{LOCAL_AGENT_URL}{BASE_PATH}/api",
+                "hint": "Start: cd whatsapp_monitor/backend && npm start",
             },
             status_code=503,
         )
-    except Exception as exc:  # noqa: BLE001
-        return JSONResponse(
-            {"ok": False, "error": type(exc).__name__},
-            status_code=502,
-        )
-
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        headers=_filter_response_headers(upstream.headers),
-        media_type=upstream.headers.get("content-type"),
-    )
-
-
-@router.get("/api/sidecar-status")
-async def whatsapp_sidecar_status() -> dict:
-    """Host-side status (does not require the Node process)."""
-    try:
-        from whatsapp_monitor_launcher import status as launcher_status
-
-        info = launcher_status()
-    except Exception as exc:  # noqa: BLE001
-        info = {"error": f"{type(exc).__name__}: {exc}"}
-    return {"ok": True, "service": "whatsapp-monitor-proxy", **info}
-
-
-@router.post("/api/sidecar-start")
-async def whatsapp_sidecar_start() -> dict:
-    info = _ensure_upstream()
-    return {"ok": bool(info.get("upstream_up")), **info}
-
-
-@router.api_route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
-async def proxy_whatsapp_monitor_root(request: Request) -> Response:
-    return await _proxy(request, "")
-
-
-@router.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
-async def proxy_whatsapp_monitor_path(full_path: str, request: Request) -> Response:
-    # Host-managed endpoints (must not be forwarded blindly before matching).
-    # FastAPI matches more specific routes first; these are registered above.
-    return await _proxy(request, full_path)
+    dist = find_frontend_dist()
+    if dist is None:
+        return HTMLResponse(_setup_html(), status_code=503)
+    candidate = dist / full_path
+    if candidate.is_file() and dist in candidate.resolve().parents:
+        return FileResponse(candidate)
+    # SPA fallback
+    return FileResponse(dist / "index.html")
 
 
 def register_whatsapp_monitor_proxy(app) -> None:
-    """Attach the proxy router and best-effort start the Node sidecar."""
+    """Mount static WhatsApp Monitor UI. WhatsApp auth stays on the user PC."""
+    dist = find_frontend_dist()
+    if dist is not None:
+        assets = dist / "assets"
+        if assets.is_dir():
+            app.mount(
+                f"{BASE_PATH}/assets",
+                StaticFiles(directory=str(assets)),
+                name="whatsapp-monitor-assets",
+            )
     app.include_router(router, prefix=BASE_PATH)
-    print(f"[info] WhatsApp Monitor proxy mounted at {BASE_PATH} → {WHATSAPP_UPSTREAM}")
-    try:
-        info = _ensure_upstream()
-        print(f"[info] WhatsApp Monitor sidecar ensure: {info.get('action')} up={info.get('upstream_up')}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"[warn] WhatsApp Monitor sidecar ensure skipped: {exc}")
+    print(
+        f"[info] WhatsApp Monitor UI at {BASE_PATH} "
+        f"(client-local-agent → {LOCAL_AGENT_URL}; "
+        f"frontend={'yes' if dist else 'missing — build whatsapp_monitor/frontend'})"
+    )

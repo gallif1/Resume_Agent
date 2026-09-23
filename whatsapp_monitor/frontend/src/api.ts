@@ -55,11 +55,22 @@ export type Snapshot = {
   groups: GroupInfo[];
 };
 
-const API_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api`;
+/** Local WhatsApp agent on the user's PC (QR + session + Chromium). */
+export const LOCAL_AGENT_ORIGIN =
+  (import.meta.env.VITE_WHATSAPP_LOCAL_AGENT as string | undefined)?.replace(/\/$/, "") ||
+  "http://127.0.0.1:3100";
+
+export const LOCAL_API_BASE = `${LOCAL_AGENT_ORIGIN}/whatsapp-monitor/api`;
+
+export const START_LOCAL_COMMAND =
+  "cd whatsapp_monitor/backend && npm install && npm start";
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}) },
+  const res = await fetch(`${LOCAL_API_BASE}${path}`, {
+    headers: {
+      Accept: "application/json",
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+    },
     ...init,
   });
   if (!res.ok) {
@@ -73,6 +84,18 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
+}
+
+export async function pingLocalAgent(): Promise<boolean> {
+  try {
+    const res = await fetch(`${LOCAL_AGENT_ORIGIN}/healthz`, {
+      method: "GET",
+      signal: AbortSignal.timeout(2500),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export function getStatus() {
@@ -107,7 +130,9 @@ export function fetchGroups(refresh = false) {
   }>(`/groups${refresh ? "?refresh=1" : ""}`);
 }
 
-export function saveGroupSelection(groups: { group_id: string; group_name: string; enabled: boolean }[]) {
+export function saveGroupSelection(
+  groups: { group_id: string; group_name: string; enabled: boolean }[]
+) {
   return api<Snapshot>("/groups/selection", {
     method: "POST",
     body: JSON.stringify({ groups }),
@@ -130,5 +155,5 @@ export function fetchMessages(params: {
 }
 
 export function eventsUrl() {
-  return `${API_BASE}/events`;
+  return `${LOCAL_API_BASE}/events`;
 }
