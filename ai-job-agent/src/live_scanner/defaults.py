@@ -90,15 +90,12 @@ SEED_SOURCES: list[dict[str, object]] = [
         "notes": "DEMO/TEST seed — Teamtailor jobs.json (Israel locations)",
     },
     {
-        "company_name": "Comeet",
+        "company_name": "Upstream Security",
         "provider": "comeet",
-        "board_identifier": "",
-        "careers_url": "",
-        "enabled": False,
+        "board_identifier": "upstream/E4.003",
+        "careers_url": "https://www.comeet.com/jobs/upstream/E4.003",
+        "enabled": True,
         "is_demo": True,
-        "notes": (
-            "DEMO — Comeet public API needs board_identifier as "
-            "company_uid:token before enabling"
-        ),
+        "notes": "DEMO/TEST seed — Comeet public careers board (Israel roles)",
     },
 ]

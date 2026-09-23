@@ -203,45 +203,51 @@ def test_recruitee_collector():
     assert fetched == 2 and foreign == 1 and kept[0].external_job_id == "2"
 
 
-def test_comeet_still_requires_token():
+def test_comeet_requires_board_url():
     result = ComeetCollector().collect(board_identifier="")
-    assert result.status == "unsupported"
+    assert result.status == "error"
+    assert "careers" in (result.error or "").lower() or "comeet" in (result.error or "").lower()
 
 
-def test_comeet_parses_with_token_and_country():
+def test_comeet_resolves_public_page_like_other_ats():
+    html = (
+        '<script>var COMPANY_DATA = {"name": "WeSki", "company_uid": "F8.00C", '
+        '"token": "PUBLICTOKEN123", "slug": "weski"};</script>'
+    )
     sample = [
         {
-            "uid": "pos-il",
-            "name": "IL Role",
-            "url_comeet_hosted_page": "https://www.comeet.com/jobs/x/pos-il",
+            "uid": "il1",
+            "name": "Backend",
+            "company_name": "WeSki",
+            "url_comeet_hosted_page": "https://www.comeet.com/jobs/weski/F8.00C/backend/il1",
             "location": {
-                "name": "Tel Aviv",
-                "city": "Tel Aviv",
-                "country": "Israel",
-                "country_code": "IL",
+                "name": "Herzliya, Israel",
+                "city": "Herzliya",
+                "country": "IL",
             },
-            "company": {"name": "AcmeIL"},
         },
         {
-            "uid": "pos-us",
-            "name": "US Role",
-            "url_comeet_hosted_page": "https://www.comeet.com/jobs/x/pos-us",
-            "location": {
-                "name": "New York",
-                "city": "New York",
-                "country": "United States",
-                "country_code": "US",
-            },
-            "company": {"name": "AcmeIL"},
+            "uid": "uk1",
+            "name": "UK Role",
+            "company_name": "WeSki",
+            "url_comeet_hosted_page": "https://www.comeet.com/jobs/weski/F8.00C/uk/uk1",
+            "location": {"name": "London", "city": "London", "country": "GB"},
         },
     ]
-    with patch(
-        "live_scanner.collectors.comeet.http_json",
-        return_value=(sample, 200),
+    with (
+        patch(
+            "live_scanner.collectors.comeet.http_text",
+            return_value=(html, 200),
+        ),
+        patch(
+            "live_scanner.collectors.comeet.http_json",
+            return_value=(sample, 200),
+        ) as mock_json,
     ):
-        result = ComeetCollector().collect(board_identifier="uid123:tok456")
+        result = ComeetCollector().collect(board_identifier="weski/F8.00C")
     assert result.status == "ok"
+    assert mock_json.call_args.args[0].endswith(
+        "company/F8.00C/positions?token=PUBLICTOKEN123&details=true"
+    )
     kept, fetched, foreign = filter_israel_jobs(result.jobs)
-    assert fetched == 2 and foreign == 1
-    assert kept[0].external_job_id == "pos-il"
-    assert kept[0].country_code.upper() == "IL"
+    assert fetched == 2 and foreign == 1 and kept[0].external_job_id == "il1"
