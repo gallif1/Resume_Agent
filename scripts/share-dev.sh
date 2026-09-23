@@ -63,6 +63,22 @@ else
       npm run build
     )
   fi
+  # Ensure WhatsApp Monitor UI + deps so /whatsapp-monitor works.
+  if [[ ! -f "$ROOT/whatsapp_monitor/frontend/dist/index.html" ]]; then
+    echo "→ בונה את ממשק WhatsApp Monitor..."
+    (
+      cd "$ROOT/whatsapp_monitor/frontend"
+      if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+      npm run build
+    )
+  fi
+  if [[ ! -d "$ROOT/whatsapp_monitor/backend/node_modules" ]]; then
+    echo "→ מתקין תלויות WhatsApp Monitor..."
+    (
+      cd "$ROOT/whatsapp_monitor/backend"
+      if [[ -f package-lock.json ]]; then npm ci; else npm install; fi
+    )
+  fi
   echo "→ מפעיל Backend על פורט ${API_PORT}..."
   (
     cd "$ROOT/ai-job-agent"
@@ -70,6 +86,7 @@ else
     export PYTHONPATH="${ROOT}/trading/backend:${PYTHONPATH:-}"
     export TRADING_BASE_PATH="/trading"
     export TRADING_DATA_DIR="${ROOT}/trading/data"
+    export WHATSAPP_MONITOR_ROOT="${ROOT}/whatsapp_monitor"
     python3 src/api_server.py --port "$API_PORT"
   ) &
   API_PID=$!

@@ -94,10 +94,41 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
-  deploy:
-    needs: [build-frontend, build-trading-frontend]
+  build-whatsapp-frontend:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install and build WhatsApp Monitor UI
+        working-directory: whatsapp_monitor/frontend
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+          test -f dist/index.html
+          echo "WhatsApp Monitor frontend dist ready:"
+          du -sh dist
+          find dist -maxdepth 2 -type f | head -30
+
+      - name: Upload WhatsApp Monitor frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: whatsapp-frontend-dist
+          path: whatsapp_monitor/frontend/dist
+          if-no-files-found: error
+          retention-days: 2
+
+  deploy:
+    needs: [build-frontend, build-trading-frontend, build-whatsapp-frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Download frontend dist
@@ -111,6 +142,12 @@ jobs:
         with:
           name: trading-frontend-dist
           path: trading-frontend-dist
+
+      - name: Download WhatsApp Monitor frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: whatsapp-frontend-dist
+          path: whatsapp-frontend-dist
 
       - name: Prepare SSH key
         env:
@@ -203,6 +240,27 @@ jobs:
             /tmp/ra-trading-frontend-dist.tgz \
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-trading-frontend-dist.tgz"
           echo "Step 3b done: trading frontend uploaded"
+
+      - name: Upload WhatsApp Monitor frontend bundle to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          echo "Step 3c: upload WhatsApp Monitor frontend dist"
+          test -f whatsapp-frontend-dist/index.html
+          tar -C whatsapp-frontend-dist -czf /tmp/ra-whatsapp-frontend-dist.tgz .
+          timeout 60s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            /tmp/ra-whatsapp-frontend-dist.tgz \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-whatsapp-frontend-dist.tgz"
+          echo "Step 3c done: WhatsApp Monitor frontend uploaded"
 
       - name: Deploy via SSH
         env:
@@ -431,6 +489,145 @@ jobs:
               'mkdir -p /app/trading/frontend/dist && tar -C /app/trading/frontend/dist -xzf /tmp/ra-trading-frontend-dist.tgz && rm -f /tmp/ra-trading-frontend-dist.tgz'
           }
 
+          ensure_node_in_container() {
+            local cid="$1"
+            if timeout 20s sudo docker exec "$cid" node -v >/dev/null 2>&1; then
+              echo "Node already present in container: $(sudo docker exec "$cid" node -v 2>/dev/null || true)"
+              return 0
+            fi
+            echo "Installing Node.js 22 binary into $cid (WhatsApp Monitor sidecar)"
+            timeout 180s sudo docker exec "$cid" sh -c '
+              set -eu
+              arch="$(uname -m)"
+              case "$arch" in
+                x86_64|amd64) node_arch=x64 ;;
+                aarch64|arm64) node_arch=arm64 ;;
+                *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+              esac
+              ver=v22.14.0
+              url="https://nodejs.org/dist/${ver}/node-${ver}-linux-${node_arch}.tar.xz"
+              tmp=/tmp/node-whatsapp.tgz
+              if command -v curl >/dev/null 2>&1; then
+                curl -fsSL "$url" -o "$tmp"
+              else
+                wget -qO "$tmp" "$url"
+              fi
+              tar -xJf "$tmp" -C /usr/local --strip-components=1
+              rm -f "$tmp"
+              node -v
+              npm -v
+            ' >"$HOME/ra-node-install.log" 2>&1 || {
+              echo "WARN: Node install failed" >&2
+              tail -n 40 "$HOME/ra-node-install.log" 2>/dev/null || true
+              return 1
+            }
+            tail -n 20 "$HOME/ra-node-install.log" 2>/dev/null || true
+          }
+
+          inject_whatsapp_monitor() {
+            local cid="$1"
+            if [ ! -d whatsapp_monitor/backend/src ]; then
+              echo "WARN: skip WhatsApp Monitor inject — package missing on host" >&2
+              return 0
+            fi
+            echo "Injecting WhatsApp Monitor into $cid"
+            rm -rf /tmp/ra-whatsapp-bundle
+            mkdir -p /tmp/ra-whatsapp-bundle/whatsapp_monitor
+            # Source tree without heavy/local runtime dirs.
+            tar -C whatsapp_monitor \
+              --exclude=node_modules \
+              --exclude=frontend/node_modules \
+              --exclude=frontend/dist \
+              --exclude=backend/node_modules \
+              --exclude=session \
+              --exclude=data \
+              --exclude=logs \
+              -czf /tmp/ra-whatsapp-src.tgz .
+            mkdir -p /tmp/ra-whatsapp-bundle/whatsapp_monitor
+            tar -C /tmp/ra-whatsapp-bundle/whatsapp_monitor -xzf /tmp/ra-whatsapp-src.tgz
+            mkdir -p /tmp/ra-whatsapp-bundle/whatsapp_monitor/frontend/dist \
+              /tmp/ra-whatsapp-bundle/whatsapp_monitor/data \
+              /tmp/ra-whatsapp-bundle/whatsapp_monitor/session \
+              /tmp/ra-whatsapp-bundle/whatsapp_monitor/logs
+            if [ -f /tmp/ra-whatsapp-frontend-dist.tgz ]; then
+              tar -C /tmp/ra-whatsapp-bundle/whatsapp_monitor/frontend/dist -xzf /tmp/ra-whatsapp-frontend-dist.tgz
+            else
+              echo "WARN: WhatsApp frontend dist tarball missing" >&2
+            fi
+            tar -C /tmp/ra-whatsapp-bundle -czf /tmp/ra-whatsapp.tgz whatsapp_monitor
+            sudo docker cp /tmp/ra-whatsapp.tgz "$cid:/tmp/ra-whatsapp.tgz"
+            sudo docker exec "$cid" sh -c \
+              'rm -rf /app/whatsapp_monitor && tar -C /app -xzf /tmp/ra-whatsapp.tgz && rm -f /tmp/ra-whatsapp.tgz && mkdir -p /app/whatsapp_monitor/data /app/whatsapp_monitor/session /app/whatsapp_monitor/logs /app/ai-job-agent/data/whatsapp_monitor/data /app/ai-job-agent/data/whatsapp_monitor/session /app/ai-job-agent/data/whatsapp_monitor/logs'
+
+            ensure_node_in_container "$cid" || true
+
+            echo "Installing WhatsApp Monitor npm deps inside $cid"
+            timeout 300s sudo docker exec \
+              -e PUPPETEER_SKIP_DOWNLOAD=true \
+              "$cid" sh -c '
+                set -eu
+                cd /app/whatsapp_monitor/backend
+                if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+              ' >"$HOME/ra-whatsapp-npm.log" 2>&1 || {
+              echo "WARN: WhatsApp npm install failed" >&2
+              tail -n 60 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
+              return 0
+            }
+            tail -n 20 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
+
+            # Point puppeteer at Playwright Chromium when available.
+            sudo docker exec "$cid" sh -c '
+              set -eu
+              chrome="$(find /ms-playwright -type f -name chrome -path "*/chrome-linux*/chrome" 2>/dev/null | head -n1 || true)"
+              if [ -n "$chrome" ]; then
+                printf "%s\n" "$chrome" > /app/whatsapp_monitor/.chrome_path
+              fi
+            ' || true
+          }
+
+          start_whatsapp_sidecar() {
+            local cid="$1"
+            echo "Starting WhatsApp Monitor sidecar in $cid"
+            sudo docker exec "$cid" sh -c '
+              set -eu
+              # Stop previous managed process if any.
+              if [ -f /tmp/whatsapp-monitor.pid ]; then
+                kill "$(cat /tmp/whatsapp-monitor.pid)" 2>/dev/null || true
+                rm -f /tmp/whatsapp-monitor.pid
+              fi
+              pkill -f "whatsapp_monitor/backend/src/index.js" 2>/dev/null || true
+              export WHATSAPP_MONITOR_HOST=127.0.0.1
+              export WHATSAPP_MONITOR_PORT=3100
+              export WHATSAPP_MONITOR_BASE_PATH=/whatsapp-monitor
+              export WHATSAPP_PERSIST_ROOT=/app/ai-job-agent/data/whatsapp_monitor
+              export WHATSAPP_DATA_DIR=/app/ai-job-agent/data/whatsapp_monitor/data
+              export WHATSAPP_SESSION_DIR=/app/ai-job-agent/data/whatsapp_monitor/session
+              export WHATSAPP_LOG_DIR=/app/ai-job-agent/data/whatsapp_monitor/logs
+              export PUPPETEER_SKIP_DOWNLOAD=true
+              mkdir -p "$WHATSAPP_DATA_DIR" "$WHATSAPP_SESSION_DIR" "$WHATSAPP_LOG_DIR"
+              if [ -f /app/whatsapp_monitor/.chrome_path ]; then
+                export PUPPETEER_EXECUTABLE_PATH="$(cat /app/whatsapp_monitor/.chrome_path)"
+              fi
+              if [ ! -f /app/whatsapp_monitor/backend/src/index.js ]; then
+                echo "WhatsApp backend missing — skip sidecar start"
+                exit 0
+              fi
+              if ! command -v node >/dev/null 2>&1; then
+                echo "node missing — skip sidecar start"
+                exit 0
+              fi
+              cd /app/whatsapp_monitor/backend
+              nohup node src/index.js >>"$WHATSAPP_LOG_DIR/monitor.stdout.log" 2>&1 &
+              echo $! > /tmp/whatsapp-monitor.pid
+              echo "WhatsApp sidecar pid=$(cat /tmp/whatsapp-monitor.pid)"
+            ' >"$HOME/ra-whatsapp-start.log" 2>&1 || {
+              echo "WARN: WhatsApp sidecar start failed" >&2
+              cat "$HOME/ra-whatsapp-start.log" 2>/dev/null || true
+              return 0
+            }
+            cat "$HOME/ra-whatsapp-start.log" 2>/dev/null || true
+          }
+
           backend_imports_ok() {
             local cid="$1"
             # Freshly injected trees have no __pycache__. Importing api_server on a
@@ -653,6 +850,7 @@ jobs:
           inject_backend "$CID"
           inject_job_apply_sidecar "$CID"
           inject_trading_sidecar "$CID"
+          inject_whatsapp_monitor "$CID"
 
           echo "Step R7b0: ensure trading runtime deps before import check"
           ensure_trading_runtime "$CID"
@@ -708,6 +906,12 @@ jobs:
             || timeout 30s sudo docker restart "$CID" </dev/null >/dev/null 2>&1 \
             || true
           tail -n 40 "$HOME/ra-compose-restart.log" 2>/dev/null || true
+
+          # Container restart kills background sidecars — start WhatsApp after restart.
+          CID="$(find_container_id)"
+          if [ -n "${CID:-}" ]; then
+            start_whatsapp_sidecar "$CID"
+          fi
 
           echo "Step R8: post-inject health check"
           if ! wait_for_health 45; then
@@ -803,6 +1007,35 @@ jobs:
             || echo 000)"
           echo "SPA /trading/ HTTP $TRADING_SPA_CODE"
           head -c 120 /tmp/ra-trading-spa.body 2>/dev/null || true
+          echo
+          echo "Step R9d: WhatsApp Monitor health"
+          # Give Chromium/WhatsApp client a moment after sidecar start.
+          sleep 3
+          WA_CODE="$(curl -sS -m 12 -o "$HOME/ra-whatsapp-health.json" -w '%{http_code}' http://127.0.0.1:8001/whatsapp-monitor/api/health \
+            || curl -sS -m 12 -o "$HOME/ra-whatsapp-health.json" -w '%{http_code}' http://127.0.0.1:8000/whatsapp-monitor/api/health \
+            || echo 000)"
+          echo "WhatsApp /whatsapp-monitor/api/health HTTP $WA_CODE"
+          if [ -f "$HOME/ra-whatsapp-health.json" ]; then
+            head -c 400 "$HOME/ra-whatsapp-health.json"; echo
+          fi
+          if [ "$WA_CODE" != "200" ]; then
+            echo "WARN: WhatsApp Monitor not healthy yet — attempting sidecar restart" >&2
+            start_whatsapp_sidecar "$CID" || true
+            sleep 4
+            # Host-side ensure endpoint (does not require Node to already be up).
+            curl -sS -m 20 -X POST http://127.0.0.1:8001/whatsapp-monitor/api/sidecar-start >/dev/null 2>&1 \
+              || curl -sS -m 20 -X POST http://127.0.0.1:8000/whatsapp-monitor/api/sidecar-start >/dev/null 2>&1 \
+              || true
+            WA_CODE="$(curl -sS -m 12 -o "$HOME/ra-whatsapp-health.json" -w '%{http_code}' http://127.0.0.1:8001/whatsapp-monitor/api/health \
+              || curl -sS -m 12 -o "$HOME/ra-whatsapp-health.json" -w '%{http_code}' http://127.0.0.1:8000/whatsapp-monitor/api/health \
+              || echo 000)"
+            echo "WhatsApp retry HTTP $WA_CODE"
+            cat "$HOME/ra-whatsapp-start.log" 2>/dev/null || true
+            sudo docker exec "$CID" sh -c 'tail -n 40 /app/ai-job-agent/data/whatsapp_monitor/logs/monitor.stdout.log 2>/dev/null || tail -n 40 /app/whatsapp_monitor/logs/monitor.stdout.log 2>/dev/null || true' || true
+            if [ "$WA_CODE" != "200" ]; then
+              echo "::warning::WhatsApp Monitor still unavailable after inject. Open /whatsapp-monitor/api/sidecar-status for details. A rebuild_image=true deploy may be needed if Node/Chromium is missing."
+            fi
+          fi
           echo
           echo "Step R9d: trading WebSocket upgrade"
           TRADING_BASE=""
