@@ -69,6 +69,55 @@ def http_json(
     raise RuntimeError(f"Request failed for {url}: {last_error}")
 
 
+def http_text(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = HTTP_TIMEOUT_SECONDS,
+    retries: int = HTTP_RETRIES,
+) -> tuple[str, int]:
+    """GET text/html (or any text body). Returns (text, http_status)."""
+    hdrs = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+    }
+    if headers:
+        hdrs.update(headers)
+
+    last_error: Exception | None = None
+    for attempt in range(max(1, retries + 1)):
+        req = urllib.request.Request(url, headers=hdrs, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                status = getattr(resp, "status", 200) or 200
+                charset = "utf-8"
+                ctype = resp.headers.get("Content-Type") or ""
+                if "charset=" in ctype.lower():
+                    charset = ctype.lower().split("charset=", 1)[1].split(";")[0].strip() or "utf-8"
+                return raw.decode(charset, errors="replace"), status
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code in {429, 500, 502, 503, 504} and attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            body_preview = ""
+            try:
+                body_preview = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:  # noqa: BLE001
+                pass
+            raise RuntimeError(
+                f"HTTP {exc.code} for {url}: {body_preview or exc.reason}"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if attempt < retries:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            raise RuntimeError(f"Request failed for {url}: {exc}") from exc
+    raise RuntimeError(f"Request failed for {url}: {last_error}")
+
+
 def host_of(url: str | None) -> str:
     if not url:
         return ""

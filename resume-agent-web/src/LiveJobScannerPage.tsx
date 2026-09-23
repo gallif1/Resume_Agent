@@ -601,7 +601,7 @@ export default function LiveJobScannerPage() {
                   className="job-apply-input"
                   placeholder={
                     newProvider === "comeet"
-                      ? "company_uid:token"
+                      ? "https://www.comeet.com/jobs/company/UID or slug/UID"
                       : newProvider === "teamtailor"
                         ? "company.teamtailor.com"
                         : "e.g. leverdemo / airbnb / nuvei / orcam"
@@ -672,9 +672,10 @@ export default function LiveJobScannerPage() {
                           <div className="live-source-error">{src.last_error}</div>
                         ) : !src.enabled &&
                           String(src.provider).toLowerCase() === "comeet" &&
-                          !(src.board_identifier || "").trim() ? (
+                          !(src.board_identifier || "").trim() &&
+                          !(src.careers_url || "").trim() ? (
                           <div className="live-source-error">
-                            Needs company_uid:token — click Enable
+                            Needs public Comeet careers URL — click Enable
                           </div>
                         ) : null}
                       </td>
@@ -694,15 +695,16 @@ export default function LiveJobScannerPage() {
                               if (
                                 enabling &&
                                 String(src.provider).toLowerCase() === "comeet" &&
-                                !(src.board_identifier || "").trim()
+                                !(src.board_identifier || "").trim() &&
+                                !(src.careers_url || "").trim()
                               ) {
                                 const next = window.prompt(
-                                  "Comeet requires board_identifier as company_uid:token",
+                                  "Comeet public careers URL (e.g. https://www.comeet.com/jobs/weski/F8.00C)",
                                   ""
                                 );
                                 if (!next || !next.trim()) {
                                   throw new Error(
-                                    "Comeet requires company_uid:token before enabling"
+                                    "Comeet requires a public careers board URL"
                                   );
                                 }
                                 payload.board_identifier = next.trim();
