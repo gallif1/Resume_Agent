@@ -599,7 +599,13 @@ export default function LiveJobScannerPage() {
                 Board identifier
                 <input
                   className="job-apply-input"
-                  placeholder="e.g. leverdemo / airbnb / nvidia.wd5…/Site"
+                  placeholder={
+                    newProvider === "comeet"
+                      ? "company_uid:token"
+                      : newProvider === "teamtailor"
+                        ? "company.teamtailor.com"
+                        : "e.g. leverdemo / airbnb / nuvei / orcam"
+                  }
                   value={newBoard}
                   onChange={(e) => setNewBoard(e.target.value)}
                 />
@@ -664,6 +670,12 @@ export default function LiveJobScannerPage() {
                         </span>
                         {src.last_error ? (
                           <div className="live-source-error">{src.last_error}</div>
+                        ) : !src.enabled &&
+                          String(src.provider).toLowerCase() === "comeet" &&
+                          !(src.board_identifier || "").trim() ? (
+                          <div className="live-source-error">
+                            Needs company_uid:token — click Enable
+                          </div>
                         ) : null}
                       </td>
                       <td>{formatTime(src.last_scan_at)}</td>
@@ -673,11 +685,30 @@ export default function LiveJobScannerPage() {
                           className="btn btn-ghost btn-sm"
                           disabled={actionBusy}
                           onClick={() =>
-                            void runAction(() =>
-                              updateLiveSource(src.id, {
-                                enabled: !src.enabled,
-                              })
-                            )
+                            void runAction(async () => {
+                              const enabling = !src.enabled;
+                              const payload: {
+                                enabled: boolean;
+                                board_identifier?: string;
+                              } = { enabled: enabling };
+                              if (
+                                enabling &&
+                                String(src.provider).toLowerCase() === "comeet" &&
+                                !(src.board_identifier || "").trim()
+                              ) {
+                                const next = window.prompt(
+                                  "Comeet requires board_identifier as company_uid:token",
+                                  ""
+                                );
+                                if (!next || !next.trim()) {
+                                  throw new Error(
+                                    "Comeet requires company_uid:token before enabling"
+                                  );
+                                }
+                                payload.board_identifier = next.trim();
+                              }
+                              return updateLiveSource(src.id, payload);
+                            })
                           }
                         >
                           {src.enabled ? "Disable" : "Enable"}
