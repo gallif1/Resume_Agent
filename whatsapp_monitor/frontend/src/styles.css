@@ -349,8 +349,23 @@ body {
   word-break: break-all;
 }
 
-.muted {
-  color: var(--text-muted);
+.agent-setup h2 {
+  margin-top: 0;
+}
+
+.setup-steps {
+  padding-inline-start: 1.25rem;
+}
+
+.setup-cmd {
+  direction: ltr;
+  text-align: left;
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 1rem 1.1rem;
+  border-radius: 0.75rem;
+  overflow: auto;
+  font-size: 0.9rem;
 }
 
 .error-text {

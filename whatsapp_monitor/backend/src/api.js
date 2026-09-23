@@ -117,9 +117,13 @@ function createApiRouter() {
 
   /** Server-Sent Events: status + live messages */
   router.get("/events", (req, res) => {
+    const origin = req.headers.origin || "*";
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
+    res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "*" : origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
     res.flushHeaders?.();
 
     const send = (event, data) => {

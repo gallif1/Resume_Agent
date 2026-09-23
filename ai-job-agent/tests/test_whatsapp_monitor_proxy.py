@@ -1,30 +1,14 @@
-"""Smoke tests for WhatsApp Monitor reverse-proxy helpers."""
+"""WhatsApp Monitor is client-local-agent mode (UI only on server)."""
 
-from __future__ import annotations
-
-from whatsapp_monitor_proxy import BASE_PATH, WHATSAPP_UPSTREAM, _filter_request_headers
+from whatsapp_monitor_proxy import BASE_PATH, LOCAL_AGENT_URL, find_frontend_dist
 
 
-def test_proxy_defaults_are_localhost_only():
+def test_client_mode_defaults():
     assert BASE_PATH == "/whatsapp-monitor"
-    assert "127.0.0.1" in WHATSAPP_UPSTREAM or "localhost" in WHATSAPP_UPSTREAM
+    assert "127.0.0.1" in LOCAL_AGENT_URL or "localhost" in LOCAL_AGENT_URL
 
 
-def test_filter_strips_hop_by_hop_headers():
-    class H(dict):
-        def items(self):
-            return super().items()
-
-    headers = H(
-        {
-            "Host": "example.com",
-            "Connection": "keep-alive",
-            "Accept": "application/json",
-            "X-Request-Id": "abc",
-        }
-    )
-    out = _filter_request_headers(headers)
-    assert "Host" not in out and "host" not in {k.lower() for k in out}
-    assert "Connection" not in out
-    assert out.get("Accept") == "application/json"
-    assert out.get("X-Request-Id") == "abc"
+def test_find_frontend_dist_optional():
+    # Dist may or may not exist in CI before build — helper must not raise.
+    dist = find_frontend_dist()
+    assert dist is None or (dist / "index.html").is_file()

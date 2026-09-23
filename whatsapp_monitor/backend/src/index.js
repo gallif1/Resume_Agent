@@ -2,7 +2,6 @@
 
 const fs = require("fs");
 const express = require("express");
-const cors = require("cors");
 const {
   HOST,
   PORT,
@@ -27,7 +26,21 @@ function main() {
 
   const app = express();
   app.disable("x-powered-by");
-  app.use(cors({ origin: true }));
+
+  // Browser on remote Resume Agent host (e.g. EC2) calls this local agent.
+  // Chrome Private Network Access requires Allow-Private-Network on preflight.
+  app.use((req, res, next) => {
+    const origin = req.headers.origin || "*";
+    res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "*" : origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+    if (req.method === "OPTIONS") {
+      return res.status(204).end();
+    }
+    next();
+  });
   app.use(express.json({ limit: "1mb" }));
 
   // Never expose session files via static routes.
