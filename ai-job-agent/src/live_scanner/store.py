@@ -215,22 +215,42 @@ def ensure_live_scanner_schema(db_path: Path) -> None:
                 pass
 
 
+def _seed_source_key(provider: str, board_identifier: str, company_name: str) -> str:
+    """Stable identity for seed upsert — board when present, else provider+name."""
+    provider_key = (provider or "").strip().lower()
+    board = (board_identifier or "").strip().lower()
+    if board:
+        return f"{provider_key}|board:{board}"
+    return f"{provider_key}|name:{(company_name or '').strip().lower()}"
+
+
 def seed_default_sources(user_id: str, db_path: Path | None = None) -> int:
-    """Insert seed sources if the user has none yet. Returns inserted count."""
+    """Insert any missing seed sources (safe for existing workspaces).
+
+    Comeet is seeded as a DISABLED DEMO row even without credentials so it
+    appears in Sources; set board_identifier to ``company_uid:token`` to enable.
+    """
     path = db_path or workspace_db(user_id)
     existing = list_sources(user_id, db_path=path)
-    if existing:
-        return 0
+    existing_keys = {
+        _seed_source_key(
+            str(src.get("provider") or ""),
+            str(src.get("board_identifier") or ""),
+            str(src.get("company_name") or ""),
+        )
+        for src in existing
+    }
     inserted = 0
     for spec in SEED_SOURCES:
         provider = str(spec["provider"])
         board = str(spec.get("board_identifier") or "")
-        # Skip Comeet seed without credentials
-        if provider == "comeet" and not board:
+        company = str(spec["company_name"])
+        key = _seed_source_key(provider, board, company)
+        if key in existing_keys:
             continue
         add_source(
             user_id,
-            company_name=str(spec["company_name"]),
+            company_name=company,
             provider=provider,
             board_identifier=board,
             careers_url=str(spec.get("careers_url") or "") or None,
@@ -239,6 +259,7 @@ def seed_default_sources(user_id: str, db_path: Path | None = None) -> int:
             is_demo=bool(spec.get("is_demo", False)),
             db_path=path,
         )
+        existing_keys.add(key)
         inserted += 1
     return inserted
 

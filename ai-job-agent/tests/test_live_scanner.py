@@ -103,10 +103,10 @@ def test_ashby_and_workday_collectors():
     assert result.jobs[0].external_job_id.endswith("JR12345")
 
 
-def test_comeet_requires_token():
+def test_comeet_requires_board_url():
     result = ComeetCollector().collect(board_identifier="")
-    assert result.status == "unsupported"
-    assert "token" in (result.error or "").lower()
+    assert result.status == "error"
+    assert "careers" in (result.error or "").lower() or "comeet" in (result.error or "").lower()
 
 
 def test_baseline_then_live_new_job(user_db):
@@ -507,3 +507,27 @@ def test_foreign_jobs_never_reach_ai_matching(user_db):
     assert state["new_jobs"] == 1
     assert int(state.get("foreign_filtered") or 0) >= 1
     assert matched_job_id is not None
+
+
+def test_seed_includes_comeet_and_backfills(user_db):
+    user_id, path = user_db
+    # Pretend workspace already has legacy seeds only
+    store.add_source(
+        user_id,
+        company_name="Lever Demo",
+        provider="lever",
+        board_identifier="leverdemo",
+        is_demo=True,
+        db_path=path,
+    )
+    inserted = store.seed_default_sources(user_id, db_path=path)
+    assert inserted >= 1
+    sources = store.list_sources(user_id, db_path=path)
+    by_provider = {str(s["provider"]).lower(): s for s in sources}
+    assert "comeet" in by_provider
+    comeet = by_provider["comeet"]
+    assert comeet["enabled"]
+    assert (comeet.get("board_identifier") or "").strip()
+    assert comeet.get("is_demo") in (1, True)
+    # Idempotent — second seed inserts nothing new for same keys
+    assert store.seed_default_sources(user_id, db_path=path) == 0
