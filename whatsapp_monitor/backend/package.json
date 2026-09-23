@@ -1,0 +1,22 @@
+{
+  "name": "whatsapp-monitor-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated WhatsApp group monitor — listen, store, display",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "qrcode": "^1.5.4",
+    "whatsapp-web.js": "^1.34.7"
+  }
+}

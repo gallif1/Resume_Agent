@@ -28,6 +28,7 @@ services:
         - resume-agent-web/**
         - job-apply-automation/**
         - trading/**
+        - whatsapp_monitor/**
         - scripts/**
     envVars:
       - key: API_HOST
@@ -42,6 +43,14 @@ services:
         value: /trading
       - key: TRADING_DATA_DIR
         value: /app/trading/data
+      - key: WHATSAPP_MONITOR_HOST
+        value: 127.0.0.1
+      - key: WHATSAPP_MONITOR_PORT
+        value: "3100"
+      - key: WHATSAPP_MONITOR_BASE_PATH
+        value: /whatsapp-monitor
+      - key: WHATSAPP_MONITOR_UPSTREAM
+        value: http://127.0.0.1:3100
       - key: OPENAI_API_KEY
         sync: false
       - key: FINNHUB_API_KEY

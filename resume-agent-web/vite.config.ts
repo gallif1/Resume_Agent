@@ -20,6 +20,10 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           ws: true,
         },
+        "/whatsapp-monitor": {
+          target: apiTarget,
+          changeOrigin: true,
+        },
       },
     },
     test: {
