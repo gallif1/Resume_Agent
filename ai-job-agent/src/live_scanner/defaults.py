@@ -90,12 +90,15 @@ SEED_SOURCES: list[dict[str, object]] = [
         "notes": "DEMO/TEST seed — Teamtailor jobs.json (Israel locations)",
     },
     {
-        "company_name": "Comeet (needs token)",
+        "company_name": "Comeet",
         "provider": "comeet",
         "board_identifier": "",
         "careers_url": "",
         "enabled": False,
         "is_demo": True,
-        "notes": "Set board_identifier to company_uid:token to enable",
+        "notes": (
+            "DEMO — Comeet public API needs board_identifier as "
+            "company_uid:token before enabling"
+        ),
     },
 ]
