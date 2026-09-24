@@ -62,6 +62,8 @@ whatsapp_monitor/data/**
 !whatsapp_monitor/data/.gitkeep
 whatsapp_monitor/logs/**
 !whatsapp_monitor/logs/.gitkeep
+whatsapp_monitor/.node/
+whatsapp_monitor/.node-*/
 whatsapp_monitor/**/.wwebjs_auth/
 whatsapp_monitor/**/.wwebjs_cache/
 **/.wwebjs_auth/

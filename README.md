@@ -51,14 +51,15 @@ cd trading/frontend && npm install && npm run build
 
 תיעוד: [trading/README.md](trading/README.md)
 
-### WhatsApp Monitor (מודול מבודד — חיבור מהמחשב שלך)
+### WhatsApp Monitor (מודול מבודד — רץ בענן)
 
-הדשבורד זמין ב־`/whatsapp-monitor`. **חיבור הוואטסאפ (QR/session) רץ אצלך במחשב**, לא על השרת.
+מאזין לקבוצות WhatsApp נבחרות ושומר הודעות חדשות. זמין ב־`/whatsapp-monitor`.
+החיבור (QR/session) רץ **על שרת Resume Agent** בענן.
 
 ```bash
-# על המחשב שלך — השאר רץ ברקע:
-./whatsapp_monitor/start-local.sh
-# אחר כך פתח WhatsApp Monitor מהאתר וסרוק QR
+# פיתוח מקומי (אופציונלי):
+cd whatsapp_monitor/frontend && npm install && npm run build
+cd ../backend && npm install && npm start
 ```
 
 תיעוד: [whatsapp_monitor/README.md](whatsapp_monitor/README.md)

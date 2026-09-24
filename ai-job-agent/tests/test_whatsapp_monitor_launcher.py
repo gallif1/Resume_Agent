@@ -1,4 +1,4 @@
-"""Tests for WhatsApp Monitor sidecar launcher helpers."""
+"""Tests for WhatsApp Monitor cloud sidecar launcher helpers."""
 
 from __future__ import annotations
 
@@ -11,14 +11,12 @@ def test_find_backend_dir_in_repo():
     assert (backend / "src" / "index.js").is_file()
 
 
-def test_status_shape():
+def test_status_reports_cloud_mode():
     snap = status()
-    assert "upstream_up" in snap
-    assert "port" in snap
+    assert snap.get("mode") == "cloud_server"
     assert snap["port"] == 3100
 
 
 def test_find_node_bin_optional():
-    # In CI/dev node is usually present; either way the helper must not raise.
     node = find_node_bin()
     assert node is None or isinstance(node, str)

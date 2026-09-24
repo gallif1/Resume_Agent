@@ -3,41 +3,39 @@
 Isolated subsystem that connects to **your** WhatsApp account via WhatsApp Web,
 monitors selected groups, and stores **new** messages for display.
 
-**WhatsApp auth runs on your PC (client-side local agent)** — not on the EC2/cloud
-server. The hosted UI only shows the dashboard; Chromium + QR + session stay local.
+**Runs on the cloud server** (EC2 / Docker). The browser opens `/whatsapp-monitor`;
+FastAPI reverse-proxies to a Node sidecar on `127.0.0.1:3100` inside the container.
 
 ## Layout
 
 ```
 whatsapp_monitor/
-  backend/     Node.js local agent (whatsapp-web.js) on 127.0.0.1:3100
-  frontend/    React dashboard (hosted under /whatsapp-monitor/)
-  data/        SQLite DB on your PC
-  session/     LocalAuth session on your PC (gitignored)
-  logs/        monitor.log
-  start-local.sh
+  backend/     Node.js API + whatsapp-web.js listener
+  frontend/    React dashboard (served under /whatsapp-monitor/)
+  data/        SQLite (persisted under ai-job-agent/data/whatsapp_monitor on Docker)
+  session/     LocalAuth session (gitignored)
+  logs/
 ```
 
-## How it works
+## Cloud behaviour
 
-1. Open **WhatsApp Monitor** in Resume Agent (even on the cloud host).
-2. On **your computer**, start the local agent:
+1. Open **WhatsApp Monitor** in the Resume Agent UI.
+2. The server starts the Node sidecar automatically if needed (downloads Node.js
+   when missing, installs npm deps, launches Chromium via Playwright browsers).
+3. Scan the QR code → select groups → **START**.
+
+Session and DB persist on the server volume:
+`/app/ai-job-agent/data/whatsapp_monitor/`.
+
+## Local development
 
 ```bash
-./whatsapp_monitor/start-local.sh
-# or: cd whatsapp_monitor/backend && npm install && npm start
+cd whatsapp_monitor/frontend && npm install && npm run build
+cd ../backend && npm install && npm start   # :3100
+# then start Resume Agent API — it proxies /whatsapp-monitor
 ```
-
-3. The browser talks to `http://127.0.0.1:3100` (your machine).
-4. Scan the QR, select groups, press **START**.
-
-## Requirements
-
-- Node.js **≥ 18** on the PC that runs the agent
-- Chrome/Chromium for Puppeteer
 
 ## Notes
 
-- Session files never leave your PC.
-- The cloud server does **not** need Node.js for WhatsApp.
-- Do not analyze jobs / send WhatsApp messages in this MVP.
+- No job AI / outbound WhatsApp messages in this MVP.
+- Session files are never exposed via HTTP APIs.
