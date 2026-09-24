@@ -158,7 +158,7 @@ def ensure_npm_deps(backend: Path, node: str) -> bool:
     if not Path(npm).is_file():
         npm = shutil.which("npm") or "npm"
     env = os.environ.copy()
-    env["PUPPETEER_SKIP_DOWNLOAD"] = "false"
+    env["PUPPETEER_SKIP_DOWNLOAD"] = "true"
     print(f"[info] Installing WhatsApp Monitor npm deps in {backend}…", flush=True)
     try:
         cmd = [npm, "ci", "--omit=dev"] if (backend / "package-lock.json").is_file() else [npm, "install", "--omit=dev"]

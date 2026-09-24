@@ -125,8 +125,48 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
+  # Install WhatsApp Node deps on the runner (not on the tiny EC2 host).
+  # EC2 npm ci + Puppeteer Chrome previously hung the 14-minute SSH deploy.
+  build-whatsapp-backend-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install WhatsApp Monitor backend deps
+        working-directory: whatsapp_monitor/backend
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" || true
+          git config --global url."https://github.com/".insteadOf "git@github.com:" || true
+          if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+          test -d node_modules/whatsapp-web.js
+          test -d node_modules/express
+          echo "WhatsApp backend node_modules ready:"
+          du -sh node_modules
+          tar -C node_modules -czf /tmp/ra-whatsapp-node-modules.tgz .
+          du -sh /tmp/ra-whatsapp-node-modules.tgz
+          mkdir -p "$GITHUB_WORKSPACE/whatsapp-backend-node-modules-artifact"
+          mv /tmp/ra-whatsapp-node-modules.tgz "$GITHUB_WORKSPACE/whatsapp-backend-node-modules-artifact/"
+
+      - name: Upload WhatsApp backend node_modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: whatsapp-backend-node-modules
+          path: whatsapp-backend-node-modules-artifact/ra-whatsapp-node-modules.tgz
+          if-no-files-found: error
+          retention-days: 2
+
   deploy:
-    needs: [build-frontend, build-trading-frontend, build-whatsapp-frontend]
+    needs: [build-frontend, build-trading-frontend, build-whatsapp-frontend, build-whatsapp-backend-deps]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -148,6 +188,12 @@ jobs:
         with:
           name: whatsapp-frontend-dist
           path: whatsapp-frontend-dist
+
+      - name: Download WhatsApp backend node_modules
+        uses: actions/download-artifact@v4
+        with:
+          name: whatsapp-backend-node-modules
+          path: whatsapp-backend-node-modules
 
       - name: Prepare SSH key
         env:
@@ -261,6 +307,27 @@ jobs:
             /tmp/ra-whatsapp-frontend-dist.tgz \
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-whatsapp-frontend-dist.tgz"
           echo "Step 3c done: WhatsApp Monitor frontend uploaded"
+
+      - name: Upload WhatsApp backend node_modules to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          echo "Step 3d: upload WhatsApp backend node_modules"
+          test -f whatsapp-backend-node-modules/ra-whatsapp-node-modules.tgz
+          du -sh whatsapp-backend-node-modules/ra-whatsapp-node-modules.tgz
+          timeout 120s scp \
+            -i ~/.ssh/ec2.key \
+            -o BatchMode=yes \
+            -o ConnectTimeout=8 \
+            -o ConnectionAttempts=1 \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=~/.ssh/known_hosts \
+            -o IdentitiesOnly=yes \
+            whatsapp-backend-node-modules/ra-whatsapp-node-modules.tgz \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-whatsapp-node-modules.tgz"
+          echo "Step 3d done: WhatsApp backend node_modules uploaded"
 
       - name: Deploy via SSH
         env:
@@ -565,38 +632,50 @@ jobs:
               tail -n 60 "$HOME/ra-node-install.log" 2>/dev/null || true
             }
 
-            if timeout 20s sudo docker exec "$cid" node -v >/dev/null 2>&1; then
-              echo "Installing WhatsApp Monitor npm deps inside $cid"
-              timeout 420s sudo docker exec \
-                -e PUPPETEER_SKIP_DOWNLOAD=false \
-                "$cid" sh -c '
-                  set -eu
-                  # GitHub deps must use HTTPS (no deploy SSH key for github.com).
-                  git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" || true
-                  git config --global url."https://github.com/".insteadOf "git@github.com:" || true
-                  cd /app/whatsapp_monitor/backend
-                  if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
-                ' >"$HOME/ra-whatsapp-npm.log" 2>&1 || {
-                echo "WARN: WhatsApp npm install failed" >&2
-                tail -n 60 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
-                return 0
+            # Prefer prebuilt node_modules from GitHub Actions (avoids npm hang on EC2).
+            if [ -f /tmp/ra-whatsapp-node-modules.tgz ]; then
+              echo "Injecting prebuilt WhatsApp node_modules into $cid"
+              sudo docker cp /tmp/ra-whatsapp-node-modules.tgz "$cid:/tmp/ra-whatsapp-node-modules.tgz"
+              sudo docker exec "$cid" sh -c '
+                set -eu
+                rm -rf /app/whatsapp_monitor/backend/node_modules
+                mkdir -p /app/whatsapp_monitor/backend/node_modules
+                tar -C /app/whatsapp_monitor/backend/node_modules -xzf /tmp/ra-whatsapp-node-modules.tgz
+                rm -f /tmp/ra-whatsapp-node-modules.tgz
+                test -d /app/whatsapp_monitor/backend/node_modules/whatsapp-web.js
+                echo "WhatsApp node_modules injected OK"
+              ' || {
+                echo "WARN: prebuilt WhatsApp node_modules inject failed" >&2
               }
-              tail -n 20 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
             else
-              echo "WARN: skip WhatsApp npm install — node not available yet" >&2
+              echo "WARN: /tmp/ra-whatsapp-node-modules.tgz missing — falling back to short npm install" >&2
+              if timeout 20s sudo docker exec "$cid" node -v >/dev/null 2>&1; then
+                timeout 90s sudo docker exec \
+                  -e PUPPETEER_SKIP_DOWNLOAD=true \
+                  "$cid" sh -c '
+                    set -eu
+                    git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" || true
+                    git config --global url."https://github.com/".insteadOf "git@github.com:" || true
+                    cd /app/whatsapp_monitor/backend
+                    if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+                  ' >"$HOME/ra-whatsapp-npm.log" 2>&1 || {
+                  echo "WARN: WhatsApp npm install failed/timed out — launcher may retry later" >&2
+                  tail -n 40 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
+                }
+              fi
             fi
 
-            # Prefer Puppeteer-bundled Chrome (matches whatsapp-web.js); fall back to Playwright.
+            # Prefer Playwright Chromium already in the image (Puppeteer Chrome is skipped to save disk).
             sudo docker exec "$cid" sh -c '
               set -eu
               chrome=""
               if [ -d /app/whatsapp_monitor/backend/node_modules/puppeteer ]; then
                 chrome="$(cd /app/whatsapp_monitor/backend && node -e "try{console.log(require(\"puppeteer\").executablePath())}catch(e){}" 2>/dev/null || true)"
               fi
-              if [ -z "$chrome" ] || [ ! -x "$chrome" ]; then
+              if [ -z "${chrome:-}" ] || [ ! -e "${chrome:-}" ]; then
                 chrome="$(find /ms-playwright -type f \( -name chrome -o -name chrome-headless-shell \) 2>/dev/null | head -n1 || true)"
               fi
-              if [ -n "$chrome" ] && [ -e "$chrome" ]; then
+              if [ -n "${chrome:-}" ] && [ -e "$chrome" ]; then
                 printf "%s\n" "$chrome" > /app/whatsapp_monitor/.chrome_path
                 echo "Chrome for WhatsApp: $chrome"
               else
