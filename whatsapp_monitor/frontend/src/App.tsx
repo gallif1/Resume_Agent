@@ -126,13 +126,16 @@ export default function App() {
       try {
         const status = await getStatus();
         if (cancelled) return;
-        applySnap(status);
-        // Kick client so QR appears when not authenticated.
-        if (status.connection.status === "DISCONNECTED") {
-          const after = await connect();
-          if (!cancelled) applySnap(after);
-        }
-        const g = await fetchGroups(status.connection.status === "CONNECTED");
+        const afterStatus =
+          status.connection.status === "DISCONNECTED" ||
+          status.connection.status === "SESSION_ERROR"
+            ? (
+                await connect({ reset: status.connection.status === "SESSION_ERROR" })
+              )
+            : status;
+        if (!cancelled) applySnap(afterStatus);
+        const connected = afterStatus.connection.status === "CONNECTED";
+        const g = await fetchGroups(connected);
         if (!cancelled) {
           setGroups(g.groups);
           setSelected(new Set(g.selected.filter((x) => x.enabled).map((x) => x.group_id)));
@@ -217,9 +220,23 @@ export default function App() {
 
   const conn = connectionLabel(snap.connection.status);
   const mon = monitorLabel(snap.monitor_status);
-  const showQr =
+  const needsAuth =
     snap.connection.status === "AUTHENTICATION_REQUIRED" ||
-    (snap.connection.status === "CONNECTING" && Boolean(snap.connection.qr));
+    snap.connection.status === "CONNECTING" ||
+    snap.connection.status === "RECONNECTING" ||
+    snap.connection.status === "SESSION_ERROR" ||
+    snap.connection.status === "DISCONNECTED";
+  const showQrPanel = needsAuth && snap.connection.status !== "CONNECTED";
+
+  const handleConnect = () =>
+    run(() =>
+      connect({
+        reset:
+          snap.connection.status === "SESSION_ERROR" ||
+          snap.connection.status === "AUTHENTICATION_REQUIRED" ||
+          Boolean(snap.connection.last_error),
+      })
+    );
 
   const toggleGroup = (id: string) => {
     setSelected((prev) => {
@@ -326,8 +343,8 @@ export default function App() {
             type="button"
             className="btn btn-ghost"
             disabled={busy}
-            onClick={() => run(() => connect())}
-            title="Start / restore WhatsApp session"
+            onClick={handleConnect}
+            title="Start / restore WhatsApp session and show QR"
           >
             Connect / Refresh QR
           </button>
@@ -347,19 +364,39 @@ export default function App() {
           </button>
         </section>
 
-        {showQr || snap.connection.status === "AUTHENTICATION_REQUIRED" ? (
+        {showQrPanel ? (
           <section className="panel qr-panel" dir="ltr">
-            <h2>WhatsApp Status: NOT CONNECTED</h2>
+            <h2>
+              {snap.connection.status === "SESSION_ERROR"
+                ? "WhatsApp Status: SESSION ERROR"
+                : snap.connection.status === "AUTHENTICATION_REQUIRED"
+                  ? "WhatsApp Status: SCAN QR CODE"
+                  : "WhatsApp Status: CONNECTING…"}
+            </h2>
             <p className="muted">
-              Scan this QR code with WhatsApp on your phone: Linked devices → Link a device.
+              On your phone open WhatsApp → Linked devices → Link a device, then scan the QR below.
             </p>
             {snap.connection.qr ? (
               <img className="qr-image" src={snap.connection.qr} alt="WhatsApp QR code" />
             ) : (
-              <p className="muted">Waiting for QR…</p>
+              <p className="muted">
+                {busy || snap.connection.status === "CONNECTING"
+                  ? "Waiting for QR from the cloud server…"
+                  : "No QR yet — click Connect / Refresh QR."}
+              </p>
             )}
             {snap.connection.last_error ? (
               <p className="error-text">{snap.connection.last_error}</p>
+            ) : null}
+            {snap.connection.status === "SESSION_ERROR" ? (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => run(() => connect({ reset: true }))}
+              >
+                Reset session &amp; show QR
+              </button>
             ) : null}
           </section>
         ) : null}
