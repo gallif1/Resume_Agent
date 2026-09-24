@@ -567,10 +567,13 @@ jobs:
 
             if timeout 20s sudo docker exec "$cid" node -v >/dev/null 2>&1; then
               echo "Installing WhatsApp Monitor npm deps inside $cid"
-              timeout 300s sudo docker exec \
-                -e PUPPETEER_SKIP_DOWNLOAD=true \
+              timeout 420s sudo docker exec \
+                -e PUPPETEER_SKIP_DOWNLOAD=false \
                 "$cid" sh -c '
                   set -eu
+                  # GitHub deps must use HTTPS (no deploy SSH key for github.com).
+                  git config --global url."https://github.com/".insteadOf "ssh://git@github.com/" || true
+                  git config --global url."https://github.com/".insteadOf "git@github.com:" || true
                   cd /app/whatsapp_monitor/backend
                   if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
                 ' >"$HOME/ra-whatsapp-npm.log" 2>&1 || {
@@ -583,15 +586,21 @@ jobs:
               echo "WARN: skip WhatsApp npm install — node not available yet" >&2
             fi
 
-            # Point puppeteer at Playwright Chromium when available.
+            # Prefer Puppeteer-bundled Chrome (matches whatsapp-web.js); fall back to Playwright.
             sudo docker exec "$cid" sh -c '
               set -eu
-              chrome="$(find /ms-playwright -type f \( -name chrome -o -name chrome-headless-shell \) 2>/dev/null | head -n1 || true)"
-              if [ -n "$chrome" ]; then
+              chrome=""
+              if [ -d /app/whatsapp_monitor/backend/node_modules/puppeteer ]; then
+                chrome="$(cd /app/whatsapp_monitor/backend && node -e "try{console.log(require(\"puppeteer\").executablePath())}catch(e){}" 2>/dev/null || true)"
+              fi
+              if [ -z "$chrome" ] || [ ! -x "$chrome" ]; then
+                chrome="$(find /ms-playwright -type f \( -name chrome -o -name chrome-headless-shell \) 2>/dev/null | head -n1 || true)"
+              fi
+              if [ -n "$chrome" ] && [ -e "$chrome" ]; then
                 printf "%s\n" "$chrome" > /app/whatsapp_monitor/.chrome_path
                 echo "Chrome for WhatsApp: $chrome"
               else
-                echo "WARN: no Playwright Chromium found under /ms-playwright" >&2
+                echo "WARN: no Chrome binary found for WhatsApp" >&2
               fi
             ' || true
           }

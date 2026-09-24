@@ -415,16 +415,24 @@ export default function App() {
             </h2>
             <p className="muted">
               On your phone open WhatsApp → Linked devices → Link a device, then scan the QR below.
+              Codes expire in ~20 seconds — wait for a fresh QR (it refreshes automatically), then scan immediately.
             </p>
             {snap.connection.qr ? (
               <img className="qr-image" src={snap.connection.qr} alt="WhatsApp QR code" />
             ) : (
               <p className="muted">
                 {busy || snap.connection.status === "CONNECTING"
-                  ? "Waiting for QR from the cloud server…"
+                  ? snap.connection.loading_percent != null
+                    ? `WhatsApp Web loading ${snap.connection.loading_percent}%…`
+                    : "Waiting for QR from the cloud server…"
                   : "No QR yet — click Connect / Refresh QR."}
               </p>
             )}
+            {snap.connection.status === "CONNECTING" && !snap.connection.qr ? (
+              <p className="muted">
+                If you already scanned: keep this tab open. Sync can take 1–2 minutes after the phone says Linked.
+              </p>
+            ) : null}
             {snap.connection.last_error ? (
               <p className="error-text">{snap.connection.last_error}</p>
             ) : null}
