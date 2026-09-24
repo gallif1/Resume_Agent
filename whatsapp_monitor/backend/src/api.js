@@ -25,13 +25,32 @@ function createApiRouter() {
     res.json(monitorService.getSnapshot());
   });
 
-  router.post("/connect", async (_req, res) => {
+  router.post("/connect", async (req, res) => {
     try {
-      await monitorService.ensureClient();
+      const reset =
+        req.query.reset === "1" ||
+        req.query.reset === "true" ||
+        req.body?.reset === true ||
+        whatsappService.status === "SESSION_ERROR";
+      if (reset) {
+        await whatsappService.resetAndConnect();
+      } else {
+        await monitorService.ensureClient();
+      }
       res.json(monitorService.getSnapshot());
     } catch (err) {
       logger.error("Connect failed", err?.message || String(err));
       res.status(500).json({ error: err?.message || "Connect failed" });
+    }
+  });
+
+  router.post("/session/reset", async (_req, res) => {
+    try {
+      await whatsappService.resetAndConnect();
+      res.json(monitorService.getSnapshot());
+    } catch (err) {
+      logger.error("Session reset failed", err?.message || String(err));
+      res.status(500).json({ error: err?.message || "Session reset failed" });
     }
   });
 

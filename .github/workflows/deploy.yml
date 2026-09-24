@@ -586,9 +586,12 @@ jobs:
             # Point puppeteer at Playwright Chromium when available.
             sudo docker exec "$cid" sh -c '
               set -eu
-              chrome="$(find /ms-playwright -type f -name chrome -path "*/chrome-linux*/chrome" 2>/dev/null | head -n1 || true)"
+              chrome="$(find /ms-playwright -type f \( -name chrome -o -name chrome-headless-shell \) 2>/dev/null | head -n1 || true)"
               if [ -n "$chrome" ]; then
                 printf "%s\n" "$chrome" > /app/whatsapp_monitor/.chrome_path
+                echo "Chrome for WhatsApp: $chrome"
+              else
+                echo "WARN: no Playwright Chromium found under /ms-playwright" >&2
               fi
             ' || true
           }
@@ -596,6 +599,8 @@ jobs:
           start_whatsapp_sidecar() {
             local cid="$1"
             echo "Starting WhatsApp Monitor sidecar in $cid"
+            # Brief wait — right after compose restart the container may reject exec.
+            sleep 2
             sudo docker exec "$cid" sh -c '
               set -eu
               # Stop previous managed process if any.
@@ -604,6 +609,7 @@ jobs:
                 rm -f /tmp/whatsapp-monitor.pid
               fi
               pkill -f "whatsapp_monitor/backend/src/index.js" 2>/dev/null || true
+              export PATH="/usr/local/bin:/usr/bin:$PATH"
               export WHATSAPP_MONITOR_HOST=127.0.0.1
               export WHATSAPP_MONITOR_PORT=3100
               export WHATSAPP_MONITOR_BASE_PATH=/whatsapp-monitor
@@ -616,6 +622,13 @@ jobs:
               if [ -f /app/whatsapp_monitor/.chrome_path ]; then
                 export PUPPETEER_EXECUTABLE_PATH="$(cat /app/whatsapp_monitor/.chrome_path)"
               fi
+              if [ -z "${PUPPETEER_EXECUTABLE_PATH:-}" ]; then
+                chrome="$(find /ms-playwright -type f \( -name chrome -o -name chrome-headless-shell \) 2>/dev/null | head -n1 || true)"
+                if [ -n "$chrome" ]; then
+                  export PUPPETEER_EXECUTABLE_PATH="$chrome"
+                  printf "%s\n" "$chrome" > /app/whatsapp_monitor/.chrome_path
+                fi
+              fi
               if [ ! -f /app/whatsapp_monitor/backend/src/index.js ]; then
                 echo "WhatsApp backend missing — skip sidecar start"
                 exit 0
@@ -624,6 +637,7 @@ jobs:
                 echo "node missing — skip sidecar start"
                 exit 0
               fi
+              echo "node=$(command -v node) $(node -v) chrome=${PUPPETEER_EXECUTABLE_PATH:-none}"
               cd /app/whatsapp_monitor/backend
               nohup node src/index.js >>"$WHATSAPP_LOG_DIR/monitor.stdout.log" 2>&1 &
               echo $! > /tmp/whatsapp-monitor.pid

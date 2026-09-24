@@ -107,7 +107,7 @@ async def _proxy(
 
     accept = (request.headers.get("accept") or "").lower()
     is_events = suffix.endswith("events") or "text/event-stream" in accept
-    timeout = httpx.Timeout(None if is_events else 60.0, connect=5.0)
+    timeout = httpx.Timeout(None if is_events else 90.0, connect=5.0)
 
     try:
         if is_events and request.method == "GET":

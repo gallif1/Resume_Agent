@@ -43,6 +43,7 @@ export type Snapshot = {
     status: ConnectionStatus;
     qr?: string | null;
     last_error?: string | null;
+    chrome_path?: string | null;
     groups_count?: number;
   };
   monitor_status: MonitorStatus;
@@ -79,8 +80,16 @@ export function getStatus() {
   return api<Snapshot>("/status");
 }
 
-export function connect() {
-  return api<Snapshot>("/connect", { method: "POST" });
+export function connect(opts?: { reset?: boolean }) {
+  const qs = opts?.reset ? "?reset=1" : "";
+  return api<Snapshot>(`/connect${qs}`, {
+    method: "POST",
+    body: opts?.reset ? JSON.stringify({ reset: true }) : undefined,
+  });
+}
+
+export function resetSession() {
+  return api<Snapshot>("/session/reset", { method: "POST" });
 }
 
 export function startMonitor() {

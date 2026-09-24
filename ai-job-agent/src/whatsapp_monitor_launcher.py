@@ -204,12 +204,17 @@ def _resolve_chrome() -> str | None:
     ):
         if Path(candidate).is_file():
             return candidate
-    # Playwright browsers path
+    # Playwright browsers path (full chrome or headless shell)
     ms = Path("/ms-playwright")
     if ms.is_dir():
         matches = sorted(ms.glob("chromium-*/chrome-linux*/chrome"))
         if matches:
             return str(matches[-1])
+        shells = sorted(ms.glob("chromium_headless_shell-*/chrome-linux*/chrome-headless-shell"))
+        if not shells:
+            shells = sorted(ms.glob("**/chrome-headless-shell"))
+        if shells:
+            return str(shells[-1])
     return None
 
 
