@@ -28,6 +28,9 @@ class WhatsAppService extends EventEmitter {
     this._reconnectTimer = null;
     this._reconnectAttempts = 0;
     this._initPromise = null;
+    this.loadingPercent = null;
+    this.qrUpdatedAt = null;
+    this._readyWatchdog = null;
   }
 
   getSnapshot() {
@@ -38,8 +41,10 @@ class WhatsAppService extends EventEmitter {
     return {
       status: this.status,
       qr: needsQr && this.qrDataUrl ? this.qrDataUrl : null,
+      qr_updated_at: this.qrUpdatedAt,
       last_error: this.lastError,
       chrome_path: this.chromePath,
+      loading_percent: this.loadingPercent,
       groups_count: this.groupsCache.length,
       groups_loaded_at: this.groupsLoadedAt,
       reconnect_attempts: this._reconnectAttempts,
@@ -56,6 +61,26 @@ class WhatsAppService extends EventEmitter {
 
   resolveChromePath() {
     const candidates = [];
+    // Prefer Puppeteer's bundled Chrome (matches whatsapp-web.js); Playwright Chromium
+    // versions are often too old and hang after QR scan without emitting ready.
+    try {
+      const puppeteer = require("puppeteer");
+      if (typeof puppeteer.executablePath === "function") {
+        const p = puppeteer.executablePath();
+        if (p) candidates.push(p);
+      }
+    } catch {
+      // puppeteer may be nested under whatsapp-web.js
+      try {
+        const puppeteer = require("whatsapp-web.js/node_modules/puppeteer");
+        if (typeof puppeteer.executablePath === "function") {
+          const p = puppeteer.executablePath();
+          if (p) candidates.push(p);
+        }
+      } catch {
+        // ignore
+      }
+    }
     if (PUPPETEER_EXECUTABLE_PATH) candidates.push(PUPPETEER_EXECUTABLE_PATH);
     const hintFile = path.join(path.dirname(SESSION_DIR), "..", ".chrome_path");
     // Prefer explicit module hint written by deploy/entrypoint.
@@ -211,10 +236,12 @@ class WhatsAppService extends EventEmitter {
 
       logger.activity("Starting WhatsApp connection… opening Chromium on the cloud server");
       logger.info("WhatsApp client starting", { chrome });
+      this.loadingPercent = null;
       this._setStatus("CONNECTING");
 
       const puppeteerOpts = {
-        headless: true,
+        // 'new' headless is required for current WhatsApp Web in many environments.
+        headless: "new",
         executablePath: chrome,
         args: [
           "--no-sandbox",
@@ -224,6 +251,7 @@ class WhatsAppService extends EventEmitter {
           "--no-first-run",
           "--no-default-browser-check",
           "--disable-blink-features=AutomationControlled",
+          "--window-size=1280,720",
         ],
       };
 
@@ -234,6 +262,8 @@ class WhatsAppService extends EventEmitter {
         }),
         puppeteer: puppeteerOpts,
         restartOnAuthFail: false,
+        authTimeoutMs: 0,
+        qrMaxRetries: 10,
       });
 
       this._bindClientEvents(this.client);
@@ -280,11 +310,38 @@ class WhatsAppService extends EventEmitter {
     return this.getSnapshot();
   }
 
+  _clearReadyWatchdog() {
+    if (this._readyWatchdog) {
+      clearTimeout(this._readyWatchdog);
+      this._readyWatchdog = null;
+    }
+  }
+
+  _armReadyWatchdog() {
+    this._clearReadyWatchdog();
+    this._readyWatchdog = setTimeout(async () => {
+      if (this.status === "CONNECTED") return;
+      this.lastError =
+        "Phone scanned but WhatsApp Web never became ready (known library issue). Resetting session — click Connect and scan again.";
+      logger.activity(`FAILED: ${this.lastError}`);
+      logger.error(this.lastError);
+      try {
+        await this.destroyClient();
+        this.clearSessionFiles();
+      } catch {
+        // ignore
+      }
+      this._setStatus("SESSION_ERROR");
+    }, 120000);
+  }
+
   _bindClientEvents(client) {
     client.on("qr", async (qr) => {
       try {
         this.qrDataUrl = await qrcode.toDataURL(qr, { margin: 1, width: 280 });
-        logger.activity("QR code generated — waiting for phone scan");
+        this.qrUpdatedAt = new Date().toISOString();
+        this.loadingPercent = null;
+        logger.activity("QR code ready — scan NOW (codes expire ~20s; a new one appears automatically)");
         logger.info("QR code generated — authentication required");
         this.lastError = null;
         this._setStatus("AUTHENTICATION_REQUIRED");
@@ -296,19 +353,30 @@ class WhatsAppService extends EventEmitter {
       }
     });
 
+    client.on("loading_screen", (percent, message) => {
+      this.loadingPercent = Number(percent) || 0;
+      logger.activity(`WhatsApp Web loading ${percent}%${message ? ` — ${message}` : ""}`);
+      this.emit("status", this.getSnapshot());
+    });
+
     client.on("authenticated", () => {
-      logger.activity("Phone scanned — authenticating session (this can take a minute)…");
+      logger.activity("Phone linked — finishing WhatsApp Web sync (can take 1–2 minutes)…");
       logger.info("Authentication successful");
       this.qrDataUrl = null;
+      this.qrUpdatedAt = null;
       this.lastError = null;
       this._setStatus("CONNECTING");
+      this._armReadyWatchdog();
     });
 
     client.on("ready", async () => {
+      this._clearReadyWatchdog();
       logger.activity("SUCCESS: WhatsApp connected and ready");
       logger.info("WhatsApp connected");
       this._reconnectAttempts = 0;
       this.qrDataUrl = null;
+      this.qrUpdatedAt = null;
+      this.loadingPercent = 100;
       this.lastError = null;
       this._setStatus("CONNECTED");
       try {
@@ -321,6 +389,7 @@ class WhatsAppService extends EventEmitter {
     });
 
     client.on("auth_failure", (msg) => {
+      this._clearReadyWatchdog();
       this.lastError = typeof msg === "string" ? msg : "Authentication failed — session reset needed";
       logger.activity(`FAILED: authentication expired/failed — ${this.lastError}`);
       logger.error("Authentication expired or failed", this.lastError);
@@ -328,6 +397,7 @@ class WhatsAppService extends EventEmitter {
     });
 
     client.on("disconnected", (reason) => {
+      this._clearReadyWatchdog();
       const why = reason || "unknown";
       logger.warn("WhatsApp disconnected", why);
       this.groupsCache = [];
@@ -369,6 +439,7 @@ class WhatsAppService extends EventEmitter {
   }
 
   async destroyClient() {
+    this._clearReadyWatchdog();
     const c = this.client;
     this.client = null;
     this._initPromise = null;
@@ -382,6 +453,7 @@ class WhatsAppService extends EventEmitter {
 
   async stopClient() {
     this._intentionalStop = true;
+    this._clearReadyWatchdog();
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;

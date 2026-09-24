@@ -50,8 +50,10 @@ export type Snapshot = {
   connection: {
     status: ConnectionStatus;
     qr?: string | null;
+    qr_updated_at?: string | null;
     last_error?: string | null;
     chrome_path?: string | null;
+    loading_percent?: number | null;
     groups_count?: number;
   };
   monitor_status: MonitorStatus;
