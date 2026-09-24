@@ -559,7 +559,11 @@ jobs:
             sudo docker exec "$cid" sh -c \
               'rm -rf /app/whatsapp_monitor && tar -C /app -xzf /tmp/ra-whatsapp.tgz && rm -f /tmp/ra-whatsapp.tgz && mkdir -p /app/whatsapp_monitor/data /app/whatsapp_monitor/session /app/whatsapp_monitor/logs /app/ai-job-agent/data/whatsapp_monitor/data /app/ai-job-agent/data/whatsapp_monitor/session /app/ai-job-agent/data/whatsapp_monitor/logs'
 
-            ensure_node_in_container "$cid" || true
+            ensure_node_in_container "$cid" || {
+              echo "ERROR: Node.js is required for cloud WhatsApp Monitor" >&2
+              tail -n 60 "$HOME/ra-node-install.log" 2>/dev/null || true
+              return 1
+            }
 
             echo "Installing WhatsApp Monitor npm deps inside $cid"
             timeout 300s sudo docker exec \
