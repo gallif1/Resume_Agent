@@ -496,6 +496,7 @@ jobs:
               return 0
             fi
             echo "Installing Node.js 22 binary into $cid (WhatsApp Monitor sidecar)"
+            # Use .tar.gz — many slim images lack the xz binary required for .tar.xz.
             timeout 180s sudo docker exec "$cid" sh -c '
               set -eu
               arch="$(uname -m)"
@@ -505,14 +506,14 @@ jobs:
                 *) echo "unsupported arch: $arch" >&2; exit 1 ;;
               esac
               ver=v22.14.0
-              url="https://nodejs.org/dist/${ver}/node-${ver}-linux-${node_arch}.tar.xz"
+              url="https://nodejs.org/dist/${ver}/node-${ver}-linux-${node_arch}.tar.gz"
               tmp=/tmp/node-whatsapp.tgz
               if command -v curl >/dev/null 2>&1; then
                 curl -fsSL "$url" -o "$tmp"
               else
                 wget -qO "$tmp" "$url"
               fi
-              tar -xJf "$tmp" -C /usr/local --strip-components=1
+              tar -xzf "$tmp" -C /usr/local --strip-components=1
               rm -f "$tmp"
               node -v
               npm -v
@@ -560,24 +561,27 @@ jobs:
               'rm -rf /app/whatsapp_monitor && tar -C /app -xzf /tmp/ra-whatsapp.tgz && rm -f /tmp/ra-whatsapp.tgz && mkdir -p /app/whatsapp_monitor/data /app/whatsapp_monitor/session /app/whatsapp_monitor/logs /app/ai-job-agent/data/whatsapp_monitor/data /app/ai-job-agent/data/whatsapp_monitor/session /app/ai-job-agent/data/whatsapp_monitor/logs'
 
             ensure_node_in_container "$cid" || {
-              echo "ERROR: Node.js is required for cloud WhatsApp Monitor" >&2
+              echo "WARN: Node install failed during inject — cloud launcher will retry on first /whatsapp-monitor request" >&2
               tail -n 60 "$HOME/ra-node-install.log" 2>/dev/null || true
-              return 1
             }
 
-            echo "Installing WhatsApp Monitor npm deps inside $cid"
-            timeout 300s sudo docker exec \
-              -e PUPPETEER_SKIP_DOWNLOAD=true \
-              "$cid" sh -c '
-                set -eu
-                cd /app/whatsapp_monitor/backend
-                if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
-              ' >"$HOME/ra-whatsapp-npm.log" 2>&1 || {
-              echo "WARN: WhatsApp npm install failed" >&2
-              tail -n 60 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
-              return 0
-            }
-            tail -n 20 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
+            if timeout 20s sudo docker exec "$cid" node -v >/dev/null 2>&1; then
+              echo "Installing WhatsApp Monitor npm deps inside $cid"
+              timeout 300s sudo docker exec \
+                -e PUPPETEER_SKIP_DOWNLOAD=true \
+                "$cid" sh -c '
+                  set -eu
+                  cd /app/whatsapp_monitor/backend
+                  if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+                ' >"$HOME/ra-whatsapp-npm.log" 2>&1 || {
+                echo "WARN: WhatsApp npm install failed" >&2
+                tail -n 60 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
+                return 0
+              }
+              tail -n 20 "$HOME/ra-whatsapp-npm.log" 2>/dev/null || true
+            else
+              echo "WARN: skip WhatsApp npm install — node not available yet" >&2
+            fi
 
             # Point puppeteer at Playwright Chromium when available.
             sudo docker exec "$cid" sh -c '
