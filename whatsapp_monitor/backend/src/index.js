@@ -27,8 +27,7 @@ function main() {
   const app = express();
   app.disable("x-powered-by");
 
-  // Browser on remote Resume Agent host (e.g. EC2) calls this local agent.
-  // Chrome Private Network Access requires Allow-Private-Network on preflight.
+  // CORS kept for local/dev direct access; production uses same-origin proxy.
   app.use((req, res, next) => {
     const origin = req.headers.origin || "*";
     res.setHeader("Access-Control-Allow-Origin", origin === "null" ? "*" : origin);

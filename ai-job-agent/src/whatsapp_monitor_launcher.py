@@ -113,13 +113,13 @@ def ensure_node_installed() -> str | None:
     if node_bin.is_file() and os.access(node_bin, os.X_OK):
         return str(node_bin)
 
-    url = f"https://nodejs.org/dist/{NODE_VERSION}/node-{NODE_VERSION}-linux-{arch}.tar.xz"
-    tmp = backend.parent / f".node-{NODE_VERSION}-{arch}.tar.xz"
+    url = f"https://nodejs.org/dist/{NODE_VERSION}/node-{NODE_VERSION}-linux-{arch}.tar.gz"
+    tmp = backend.parent / f".node-{NODE_VERSION}-{arch}.tar.gz"
     print(f"[info] Downloading Node.js {NODE_VERSION} for WhatsApp Monitor…", flush=True)
     try:
         urllib.request.urlretrieve(url, tmp)  # noqa: S310 — official nodejs.org
         install_root.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(tmp, "r:xz") as tf:
+        with tarfile.open(tmp, "r:gz") as tf:
             # Extract into a staging dir then move bin/lib
             staging = backend.parent / f".node-staging-{NODE_VERSION}"
             if staging.exists():
