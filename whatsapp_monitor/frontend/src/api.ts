@@ -38,6 +38,14 @@ export type WaMessage = {
   media_type?: string | null;
 };
 
+export type ActivityLogEntry = {
+  id: number;
+  at: string;
+  level: string;
+  message: string;
+  detail?: string | null;
+};
+
 export type Snapshot = {
   connection: {
     status: ConnectionStatus;
@@ -54,6 +62,7 @@ export type Snapshot = {
   total_messages: number;
   last_message_at?: string | null;
   groups: GroupInfo[];
+  activity_log?: ActivityLogEntry[];
 };
 
 const API_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api`;
@@ -136,6 +145,10 @@ export function fetchMessages(params: {
   if (params.message_type) q.set("message_type", params.message_type);
   const qs = q.toString();
   return api<{ messages: WaMessage[] }>(`/messages${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchLogs(limit = 100) {
+  return api<{ ok: boolean; logs: ActivityLogEntry[] }>(`/logs?limit=${limit}`);
 }
 
 export function eventsUrl() {

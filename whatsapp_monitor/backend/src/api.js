@@ -25,6 +25,11 @@ function createApiRouter() {
     res.json(monitorService.getSnapshot());
   });
 
+  router.get("/logs", (req, res) => {
+    const limit = Number(req.query.limit) || 100;
+    res.json({ ok: true, logs: logger.recent(limit) });
+  });
+
   router.post("/connect", async (req, res) => {
     try {
       const reset =
@@ -134,7 +139,7 @@ function createApiRouter() {
     }
   });
 
-  /** Server-Sent Events: status + live messages */
+  /** Server-Sent Events: status + live messages + activity log */
   router.get("/events", (req, res) => {
     const origin = req.headers.origin || "*";
     res.setHeader("Content-Type", "text/event-stream");
@@ -150,14 +155,17 @@ function createApiRouter() {
     };
 
     send("status", monitorService.getSnapshot());
+    send("logs", { logs: logger.recent(80) });
 
     const onStatus = (snap) => send("status", snap);
     const onMessage = (msg) => send("message", msg);
     const onCleared = (payload) => send("cleared", payload);
+    const onLog = (entry) => send("log", entry);
 
     monitorService.on("status", onStatus);
     monitorService.on("message", onMessage);
     monitorService.on("cleared", onCleared);
+    const offLog = logger.onLog(onLog);
 
     const heartbeat = setInterval(() => {
       res.write(`: ping ${Date.now()}\n\n`);
@@ -168,6 +176,7 @@ function createApiRouter() {
       monitorService.off("status", onStatus);
       monitorService.off("message", onMessage);
       monitorService.off("cleared", onCleared);
+      offLog();
     });
   });
 

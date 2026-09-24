@@ -128,7 +128,7 @@ class WhatsAppService extends EventEmitter {
         if (name === ".gitkeep") continue;
         fs.rmSync(path.join(target, name), { recursive: true, force: true });
       }
-      logger.info("WhatsApp session files cleared", { session_dir: path.basename(target) });
+      logger.activity("Cleared broken WhatsApp session files — will request a fresh QR");
       return { cleared: true };
     } catch (err) {
       logger.error("Failed to clear session files", err?.message || String(err));
@@ -203,11 +203,13 @@ class WhatsAppService extends EventEmitter {
       if (!chrome) {
         this.lastError =
           "Chromium not found on the server. Redeploy with the Playwright image (rebuild_image=true) so WhatsApp can open a browser for the QR code.";
+        logger.activity("FAILED: Chromium browser missing on server — cannot show QR");
         logger.error(this.lastError);
         this._setStatus("SESSION_ERROR");
         return this.getSnapshot();
       }
 
+      logger.activity("Starting WhatsApp connection… opening Chromium on the cloud server");
       logger.info("WhatsApp client starting", { chrome });
       this._setStatus("CONNECTING");
 
@@ -239,10 +241,13 @@ class WhatsAppService extends EventEmitter {
       // initialize() resolves after browser+inject (not after QR scan). Catch async failures.
       this._initPromise = this.client.initialize().catch((err) => {
         this.lastError = err?.message || String(err);
+        logger.activity(`FAILED: browser/WhatsApp init error — ${this.lastError}`);
         logger.error("WhatsApp client initialize failed", this.lastError);
         this._setStatus("SESSION_ERROR");
         this.client = null;
       });
+
+      logger.activity("Waiting for QR code from WhatsApp Web (can take up to ~45s)…");
 
       // Wait for QR / ready / error so Connect can return something useful.
       await this._waitForStatus(
@@ -254,12 +259,18 @@ class WhatsAppService extends EventEmitter {
         this.lastError =
           this.lastError ||
           "Timed out waiting for WhatsApp QR. Click Connect again to reset the session.";
+        logger.activity(`FAILED: timed out waiting for QR — ${this.lastError}`);
         logger.error(this.lastError);
         await this.destroyClient();
         this._setStatus("SESSION_ERROR");
+      } else if (this.status === "AUTHENTICATION_REQUIRED") {
+        logger.activity("QR is ready — scan it with your phone (Linked devices → Link a device)");
+      } else if (this.status === "CONNECTED") {
+        logger.activity("SUCCESS: WhatsApp is connected");
       }
     } catch (err) {
       this.lastError = err?.message || String(err);
+      logger.activity(`FAILED: ${this.lastError}`);
       logger.error("WhatsApp client failed to start", this.lastError);
       this._setStatus("SESSION_ERROR");
       this.client = null;
@@ -273,17 +284,20 @@ class WhatsAppService extends EventEmitter {
     client.on("qr", async (qr) => {
       try {
         this.qrDataUrl = await qrcode.toDataURL(qr, { margin: 1, width: 280 });
+        logger.activity("QR code generated — waiting for phone scan");
         logger.info("QR code generated — authentication required");
         this.lastError = null;
         this._setStatus("AUTHENTICATION_REQUIRED");
       } catch (err) {
         this.lastError = err?.message || String(err);
+        logger.activity(`FAILED: could not render QR — ${this.lastError}`);
         logger.error("Failed to render QR", this.lastError);
         this._setStatus("SESSION_ERROR");
       }
     });
 
     client.on("authenticated", () => {
+      logger.activity("Phone scanned — authenticating session (this can take a minute)…");
       logger.info("Authentication successful");
       this.qrDataUrl = null;
       this.lastError = null;
@@ -291,6 +305,7 @@ class WhatsAppService extends EventEmitter {
     });
 
     client.on("ready", async () => {
+      logger.activity("SUCCESS: WhatsApp connected and ready");
       logger.info("WhatsApp connected");
       this._reconnectAttempts = 0;
       this.qrDataUrl = null;
@@ -298,30 +313,37 @@ class WhatsAppService extends EventEmitter {
       this._setStatus("CONNECTED");
       try {
         await this.refreshGroups();
+        logger.activity(`Loaded ${this.groupsCache.length} WhatsApp groups`);
       } catch (err) {
         logger.warn("Group discovery after connect failed", err?.message || String(err));
+        logger.activity(`Connected, but group discovery failed: ${err?.message || String(err)}`);
       }
     });
 
     client.on("auth_failure", (msg) => {
       this.lastError = typeof msg === "string" ? msg : "Authentication failed — session reset needed";
+      logger.activity(`FAILED: authentication expired/failed — ${this.lastError}`);
       logger.error("Authentication expired or failed", this.lastError);
       this._setStatus("SESSION_ERROR");
     });
 
     client.on("disconnected", (reason) => {
-      logger.warn("WhatsApp disconnected", reason || "");
+      const why = reason || "unknown";
+      logger.warn("WhatsApp disconnected", why);
       this.groupsCache = [];
       if (this._intentionalStop) {
+        logger.activity("Disconnected intentionally (session files kept)");
         this._setStatus("DISCONNECTED");
         return;
       }
+      logger.activity(`Connection dropped (${why}) — reconnecting…`);
       this._setStatus("RECONNECTING");
       this._scheduleReconnect();
     });
 
     client.on("change_state", (state) => {
       logger.info("WhatsApp state change", state);
+      logger.activity(`WhatsApp state: ${state}`);
     });
   }
 
@@ -330,6 +352,7 @@ class WhatsAppService extends EventEmitter {
     if (this._reconnectTimer) return;
     this._reconnectAttempts += 1;
     const delay = Math.min(30000, 2000 * this._reconnectAttempts);
+    logger.activity(`Reconnect attempt #${this._reconnectAttempts} in ${Math.round(delay / 1000)}s`);
     logger.info("Attempting reconnect", { attempt: this._reconnectAttempts, delay_ms: delay });
     this._reconnectTimer = setTimeout(async () => {
       this._reconnectTimer = null;
@@ -338,6 +361,7 @@ class WhatsAppService extends EventEmitter {
         await this.start();
       } catch (err) {
         logger.error("Reconnect failed", err?.message || String(err));
+        logger.activity(`FAILED: reconnect — ${err?.message || String(err)}`);
         this._setStatus("RECONNECTING");
         this._scheduleReconnect();
       }
