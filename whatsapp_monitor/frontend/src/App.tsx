@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   clearMessages,
   connect,
   eventsUrl,
   fetchGroups,
+  fetchLogs,
   fetchMessages,
   getStatus,
   pauseMonitor,
   saveGroupSelection,
   startMonitor,
   stopMonitor,
+  type ActivityLogEntry,
   type GroupInfo,
   type MonitorStatus,
   type Snapshot,
@@ -101,6 +103,17 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [clearOpen, setClearOpen] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
+  const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
+  const activityEndRef = useRef<HTMLDivElement | null>(null);
+
+  const mergeLogs = useCallback((incoming: ActivityLogEntry[]) => {
+    setActivityLog((prev) => {
+      const byId = new Map<number, ActivityLogEntry>();
+      for (const e of prev) byId.set(e.id, e);
+      for (const e of incoming) byId.set(e.id, e);
+      return [...byId.values()].sort((a, b) => a.id - b.id).slice(-120);
+    });
+  }, []);
 
   const applySnap = useCallback((s: Snapshot) => {
     setSnap(s);
@@ -108,7 +121,8 @@ export default function App() {
     if (s.monitored_groups) {
       setSelected(new Set(s.monitored_groups.filter((g) => g.enabled).map((g) => g.group_id)));
     }
-  }, []);
+    if (s.activity_log?.length) mergeLogs(s.activity_log);
+  }, [mergeLogs]);
 
   const reloadMessages = useCallback(async () => {
     const data = await fetchMessages({
@@ -141,6 +155,12 @@ export default function App() {
           setSelected(new Set(g.selected.filter((x) => x.enabled).map((x) => x.group_id)));
         }
         await reloadMessages();
+        try {
+          const logs = await fetchLogs(80);
+          if (!cancelled) mergeLogs(logs.logs);
+        } catch {
+          // ignore — SSE will fill logs
+        }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load");
       } finally {
@@ -150,13 +170,29 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [applySnap, reloadMessages]);
+  }, [applySnap, reloadMessages, mergeLogs]);
 
   useEffect(() => {
     const es = new EventSource(eventsUrl());
     es.addEventListener("status", (ev) => {
       try {
         applySnap(JSON.parse((ev as MessageEvent).data));
+      } catch {
+        // ignore
+      }
+    });
+    es.addEventListener("logs", (ev) => {
+      try {
+        const payload = JSON.parse((ev as MessageEvent).data) as { logs?: ActivityLogEntry[] };
+        if (payload.logs) mergeLogs(payload.logs);
+      } catch {
+        // ignore
+      }
+    });
+    es.addEventListener("log", (ev) => {
+      try {
+        const entry = JSON.parse((ev as MessageEvent).data) as ActivityLogEntry;
+        mergeLogs([entry]);
       } catch {
         // ignore
       }
@@ -189,7 +225,11 @@ export default function App() {
       // Browser auto-reconnects EventSource.
     };
     return () => es.close();
-  }, [applySnap, filterGroup, filterSender, filterType, msgSearch]);
+  }, [applySnap, mergeLogs, filterGroup, filterSender, filterType, msgSearch]);
+
+  useEffect(() => {
+    activityEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [activityLog]);
 
   useEffect(() => {
     if (bootstrapping) return;
@@ -400,6 +440,55 @@ export default function App() {
             ) : null}
           </section>
         ) : null}
+
+        <section className="panel activity-panel" dir="ltr">
+          <div className="panel-head">
+            <h2>Connection activity</h2>
+            <span className="muted">Live logs · newest at bottom</span>
+          </div>
+          <p className="muted activity-hint">
+            After you scan the QR, look here for SUCCESS / FAILED. Authentication can take 30–90 seconds.
+          </p>
+          <div className="activity-log" role="log" aria-live="polite">
+            {activityLog.length === 0 ? (
+              <p className="muted">No activity yet. Click Connect / Refresh QR to start.</p>
+            ) : (
+              activityLog.map((entry) => {
+                const level = (entry.level || "INFO").toUpperCase();
+                const msg = entry.message || "";
+                const tone =
+                  level === "ERROR" || msg.startsWith("FAILED")
+                    ? "activity-error"
+                    : msg.startsWith("SUCCESS")
+                      ? "activity-ok"
+                      : level === "WARNING"
+                        ? "activity-warn"
+                        : "activity-info";
+                let clock = entry.at;
+                try {
+                  clock = new Date(entry.at).toLocaleTimeString(undefined, {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  });
+                } catch {
+                  // keep raw
+                }
+                return (
+                  <div key={entry.id} className={`activity-row ${tone}`}>
+                    <span className="activity-time">{clock}</span>
+                    <span className="activity-level">{level}</span>
+                    <span className="activity-msg">
+                      {msg}
+                      {entry.detail ? <span className="activity-detail"> {entry.detail}</span> : null}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+            <div ref={activityEndRef} />
+          </div>
+        </section>
 
         <div className="layout">
           <section className="panel" dir="ltr">

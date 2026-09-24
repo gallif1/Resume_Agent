@@ -235,6 +235,86 @@ body {
   background: #fff;
 }
 
+.activity-panel {
+  margin-top: 0.25rem;
+}
+
+.activity-hint {
+  margin: 0 0 0.65rem;
+  font-size: 0.9rem;
+}
+
+.activity-log {
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface-2);
+  padding: 0.5rem 0.65rem;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.activity-row {
+  display: grid;
+  grid-template-columns: 4.5rem 4.2rem 1fr;
+  gap: 0.45rem;
+  padding: 0.28rem 0.15rem;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.05);
+}
+
+.activity-row:last-child {
+  border-bottom: 0;
+}
+
+.activity-time {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.activity-level {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.activity-msg {
+  color: var(--text);
+  word-break: break-word;
+}
+
+.activity-detail {
+  color: var(--text-muted);
+}
+
+.activity-ok .activity-level,
+.activity-ok .activity-msg {
+  color: var(--success);
+}
+
+.activity-error .activity-level,
+.activity-error .activity-msg {
+  color: var(--danger);
+}
+
+.activity-warn .activity-level,
+.activity-warn .activity-msg {
+  color: var(--warning);
+}
+
+.activity-info .activity-level {
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .activity-row {
+    grid-template-columns: 3.6rem 1fr;
+  }
+  .activity-level {
+    display: none;
+  }
+}
+
 .input {
   width: 100%;
   border: 1px solid var(--border);

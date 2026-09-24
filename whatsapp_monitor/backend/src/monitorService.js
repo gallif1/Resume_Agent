@@ -31,6 +31,7 @@ class MonitorService extends EventEmitter {
       total_messages: stats.total_messages,
       last_message_at: stats.last_message_at,
       groups: whatsappService.getGroups(),
+      activity_log: logger.recent(80),
     };
   }
 
