@@ -51,6 +51,7 @@ export type Snapshot = {
     status: ConnectionStatus;
     qr?: string | null;
     qr_updated_at?: string | null;
+    pairing_code?: string | null;
     last_error?: string | null;
     chrome_path?: string | null;
     loading_percent?: number | null;
@@ -96,6 +97,13 @@ export function connect(opts?: { reset?: boolean }) {
   return api<Snapshot>(`/connect${qs}`, {
     method: "POST",
     body: opts?.reset ? JSON.stringify({ reset: true }) : undefined,
+  });
+}
+
+export function requestPairingCode(phone: string) {
+  return api<Snapshot>("/pair", {
+    method: "POST",
+    body: JSON.stringify({ phone }),
   });
 }
 

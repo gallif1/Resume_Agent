@@ -30,6 +30,7 @@ class WhatsAppService extends EventEmitter {
     this._initPromise = null;
     this.loadingPercent = null;
     this.qrUpdatedAt = null;
+    this.pairingCode = null;
     this._readyWatchdog = null;
   }
 
@@ -42,6 +43,7 @@ class WhatsAppService extends EventEmitter {
       status: this.status,
       qr: needsQr && this.qrDataUrl ? this.qrDataUrl : null,
       qr_updated_at: this.qrUpdatedAt,
+      pairing_code: this.pairingCode,
       last_error: this.lastError,
       chrome_path: this.chromePath,
       loading_percent: this.loadingPercent,
@@ -264,6 +266,11 @@ class WhatsAppService extends EventEmitter {
         restartOnAuthFail: false,
         authTimeoutMs: 0,
         qrMaxRetries: 10,
+        // Pull current WhatsApp Web HTML — stale bundled versions often hang on link/passkey.
+        webVersionCache: {
+          type: "remote",
+          remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
+        },
       });
 
       this._bindClientEvents(this.client);
@@ -376,6 +383,7 @@ class WhatsAppService extends EventEmitter {
       this._reconnectAttempts = 0;
       this.qrDataUrl = null;
       this.qrUpdatedAt = null;
+      this.pairingCode = null;
       this.loadingPercent = 100;
       this.lastError = null;
       this._setStatus("CONNECTED");
@@ -465,7 +473,68 @@ class WhatsAppService extends EventEmitter {
   }
 
   async resetAndConnect() {
+    this.pairingCode = null;
     return this.start({ resetSession: true });
+  }
+
+  /**
+   * Normalize to digits-only international number (no +), e.g. 9725xxxxxxx.
+   */
+  static normalizePhone(raw) {
+    let digits = String(raw || "").replace(/\D/g, "");
+    if (!digits) return null;
+    // Israeli local numbers: 05x… → 9725x…
+    if (digits.startsWith("0") && digits.length >= 9) {
+      digits = `972${digits.slice(1)}`;
+    }
+    if (digits.length < 8 || digits.length > 15) return null;
+    return digits;
+  }
+
+  async requestPairingCode(phoneRaw) {
+    const phone = WhatsAppService.normalizePhone(phoneRaw);
+    if (!phone) {
+      throw new Error("Enter a valid phone with country code (e.g. 9725… or 05…)");
+    }
+
+    // Need an active client waiting for auth (QR screen).
+    if (
+      !this.client ||
+      (this.status !== "AUTHENTICATION_REQUIRED" && this.status !== "CONNECTING")
+    ) {
+      await this.start({ resetSession: this.status === "SESSION_ERROR" });
+    }
+    if (!this.client) {
+      throw new Error("WhatsApp client is not running — click Connect first");
+    }
+    if (this.status === "CONNECTED") {
+      return this.getSnapshot();
+    }
+
+    // Wait until page is ready for pairing (QR phase).
+    if (this.status !== "AUTHENTICATION_REQUIRED") {
+      await this._waitForStatus(["AUTHENTICATION_REQUIRED", "CONNECTED", "SESSION_ERROR"], 45000);
+    }
+    if (this.status === "CONNECTED") return this.getSnapshot();
+    if (this.status === "SESSION_ERROR" || !this.client) {
+      throw new Error(this.lastError || "Cannot request pairing code — session error");
+    }
+
+    logger.activity(`Requesting phone pairing code for ${phone}…`);
+    try {
+      const code = await this.client.requestPairingCode(phone);
+      this.pairingCode = String(code || "").replace(/\s+/g, "").toUpperCase();
+      logger.activity(
+        `Pairing code ready: ${this.pairingCode} — on phone choose “Link with phone number” and enter this code`
+      );
+      this.emit("status", this.getSnapshot());
+      return this.getSnapshot();
+    } catch (err) {
+      this.lastError = err?.message || String(err);
+      logger.activity(`FAILED: pairing code — ${this.lastError}`);
+      logger.error("Pairing code failed", this.lastError);
+      throw err;
+    }
   }
 
   async refreshGroups() {

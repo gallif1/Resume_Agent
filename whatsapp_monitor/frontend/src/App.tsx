@@ -8,6 +8,7 @@ import {
   fetchMessages,
   getStatus,
   pauseMonitor,
+  requestPairingCode,
   saveGroupSelection,
   startMonitor,
   stopMonitor,
@@ -104,6 +105,7 @@ export default function App() {
   const [clearOpen, setClearOpen] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([]);
+  const [phone, setPhone] = useState("972");
   const activityEndRef = useRef<HTMLDivElement | null>(null);
 
   const mergeLogs = useCallback((incoming: ActivityLogEntry[]) => {
@@ -410,12 +412,15 @@ export default function App() {
               {snap.connection.status === "SESSION_ERROR"
                 ? "WhatsApp Status: SESSION ERROR"
                 : snap.connection.status === "AUTHENTICATION_REQUIRED"
-                  ? "WhatsApp Status: SCAN QR CODE"
+                  ? "WhatsApp Status: LINK DEVICE"
                   : "WhatsApp Status: CONNECTING…"}
             </h2>
+            <div className="banner banner-warn" dir="rtl">
+              אם בטלפון מופיע &quot;כרגע אי אפשר לקשר מכשירים חדשים&quot; — זו חסימה של WhatsApp (לא באג במערכת).
+              חכו כמה שעות, מחקו מכשירים מקושרים ישנים, ונסו קישור בקוד מספר טלפון למטה במקום QR.
+            </div>
             <p className="muted">
-              On your phone open WhatsApp → Linked devices → Link a device, then scan the QR below.
-              Codes expire in ~20 seconds — wait for a fresh QR (it refreshes automatically), then scan immediately.
+              Option A — QR: WhatsApp → Linked devices → Link a device → scan a fresh QR (~20s lifetime).
             </p>
             {snap.connection.qr ? (
               <img className="qr-image" src={snap.connection.qr} alt="WhatsApp QR code" />
@@ -428,9 +433,38 @@ export default function App() {
                   : "No QR yet — click Connect / Refresh QR."}
               </p>
             )}
+            <div className="pair-box">
+              <h3>Option B — Link with phone number</h3>
+              <p className="muted">
+                On the phone choose &quot;Link with phone number&quot;, then enter the 8-character code shown here.
+              </p>
+              <div className="pair-row">
+                <input
+                  className="input pair-input"
+                  inputMode="tel"
+                  placeholder="9725… or 05…"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  disabled={busy}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={busy || !phone.trim()}
+                  onClick={() => run(() => requestPairingCode(phone.trim()))}
+                >
+                  Get pairing code
+                </button>
+              </div>
+              {snap.connection.pairing_code ? (
+                <div className="pairing-code" aria-live="polite">
+                  {snap.connection.pairing_code}
+                </div>
+              ) : null}
+            </div>
             {snap.connection.status === "CONNECTING" && !snap.connection.qr ? (
               <p className="muted">
-                If you already scanned: keep this tab open. Sync can take 1–2 minutes after the phone says Linked.
+                If you already scanned/entered a code: keep this tab open. Sync can take 1–2 minutes.
               </p>
             ) : null}
             {snap.connection.last_error ? (
