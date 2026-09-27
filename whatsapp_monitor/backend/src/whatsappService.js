@@ -253,44 +253,70 @@ class WhatsAppService extends EventEmitter {
           "--no-first-run",
           "--no-default-browser-check",
           "--disable-blink-features=AutomationControlled",
+          // Reduce OOPIF navigations that trigger "Navigating frame was detached".
+          "--disable-features=site-per-process,IsolateOrigins",
           "--window-size=1280,720",
         ],
       };
 
-      this.client = new Client({
-        authStrategy: new LocalAuth({
-          dataPath: SESSION_DIR,
-          clientId: "whatsapp-monitor",
-        }),
-        puppeteer: puppeteerOpts,
-        restartOnAuthFail: false,
-        authTimeoutMs: 0,
-        qrMaxRetries: 10,
-        // Pull current WhatsApp Web HTML — stale bundled versions often hang on link/passkey.
-        webVersionCache: {
-          type: "remote",
-          remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
-        },
-      });
+      const maxInitAttempts = 3;
+      for (let attempt = 1; attempt <= maxInitAttempts; attempt++) {
+        this.client = new Client({
+          authStrategy: new LocalAuth({
+            dataPath: SESSION_DIR,
+            clientId: "whatsapp-monitor",
+          }),
+          puppeteer: puppeteerOpts,
+          restartOnAuthFail: false,
+          authTimeoutMs: 0,
+          qrMaxRetries: 10,
+          // Pull current WhatsApp Web HTML — stale bundled versions often hang on link/passkey.
+          webVersionCache: {
+            type: "remote",
+            remotePath:
+              "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
+          },
+        });
 
-      this._bindClientEvents(this.client);
+        this._bindClientEvents(this.client);
 
-      // initialize() resolves after browser+inject (not after QR scan). Catch async failures.
-      this._initPromise = this.client.initialize().catch((err) => {
-        this.lastError = err?.message || String(err);
-        logger.activity(`FAILED: browser/WhatsApp init error — ${this.lastError}`);
-        logger.error("WhatsApp client initialize failed", this.lastError);
-        this._setStatus("SESSION_ERROR");
-        this.client = null;
-      });
+        // initialize() resolves after browser+inject (not after QR scan). Catch async failures.
+        this._initPromise = this.client.initialize().catch((err) => {
+          this.lastError = err?.message || String(err);
+          logger.activity(`FAILED: browser/WhatsApp init error — ${this.lastError}`);
+          logger.error("WhatsApp client initialize failed", this.lastError);
+          this._setStatus("SESSION_ERROR");
+          this.client = null;
+        });
 
-      logger.activity("Waiting for QR code from WhatsApp Web (can take up to ~45s)…");
+        logger.activity(
+          attempt === 1
+            ? "Waiting for QR code from WhatsApp Web (can take up to ~45s)…"
+            : `Retry ${attempt}/${maxInitAttempts}: waiting for QR…`
+        );
 
-      // Wait for QR / ready / error so Connect can return something useful.
-      await this._waitForStatus(
-        ["AUTHENTICATION_REQUIRED", "CONNECTED", "SESSION_ERROR"],
-        45000
-      );
+        // Wait for QR / ready / error so Connect can return something useful.
+        await this._waitForStatus(
+          ["AUTHENTICATION_REQUIRED", "CONNECTED", "SESSION_ERROR"],
+          45000
+        );
+
+        if (
+          this.status === "SESSION_ERROR" &&
+          WhatsAppService.isTransientBrowserError(this.lastError) &&
+          attempt < maxInitAttempts
+        ) {
+          logger.activity(
+            `Transient browser error — clearing session and retrying (${attempt}/${maxInitAttempts})…`
+          );
+          await this.destroyClient();
+          this.clearSessionFiles();
+          this.lastError = null;
+          this._setStatus("CONNECTING");
+          continue;
+        }
+        break;
+      }
 
       if (this.status === "CONNECTING" && !this.qrDataUrl) {
         this.lastError =
@@ -479,16 +505,73 @@ class WhatsAppService extends EventEmitter {
 
   /**
    * Normalize to digits-only international number (no +), e.g. 9725xxxxxxx.
+   * Handles common mistakes like "+972 05…" → 97205… → 9725….
    */
   static normalizePhone(raw) {
     let digits = String(raw || "").replace(/\D/g, "");
     if (!digits) return null;
     // Israeli local numbers: 05x… → 9725x…
-    if (digits.startsWith("0") && digits.length >= 9) {
+    if (digits.startsWith("0") && digits.length >= 9 && digits.length <= 10) {
       digits = `972${digits.slice(1)}`;
+    }
+    // Country code + national trunk 0 (user typed +972 05x…): 97205… → 9725…
+    if (digits.startsWith("9720") && digits.length >= 12) {
+      digits = `972${digits.slice(4)}`;
     }
     if (digits.length < 8 || digits.length > 15) return null;
     return digits;
+  }
+
+  static isTransientBrowserError(message) {
+    const m = String(message || "").toLowerCase();
+    return (
+      m.includes("navigating frame was detached") ||
+      m.includes("frame was detached") ||
+      m.includes("target closed") ||
+      m.includes("session closed") ||
+      m.includes("execution context was destroyed") ||
+      m.includes("protocol error")
+    );
+  }
+
+  /**
+   * Fork bug: Client.requestPairingCode evaluates window.onCodeReceivedEvent
+   * without exposing it unless pairWithPhoneNumber was set at initialize().
+   * Our UI requests a code after the QR screen, so we must bridge it ourselves.
+   */
+  async _ensurePairingCodeBridge() {
+    const client = this.client;
+    const page = client?.pupPage;
+    if (!page) {
+      throw new Error("WhatsApp page not ready for pairing — wait for the QR, then try again");
+    }
+    let exposeFunctionIfAbsent;
+    try {
+      ({ exposeFunctionIfAbsent } = require("whatsapp-web.js/src/util/Puppeteer"));
+    } catch {
+      exposeFunctionIfAbsent = async (p, name, fn) => {
+        const exists = await p.evaluate((n) => typeof window[n] === "function", name);
+        if (exists) return;
+        try {
+          await p.exposeFunction(name, fn);
+        } catch (err) {
+          if (String(err?.message || err).includes("already exists")) {
+            try {
+              await p.removeExposedFunction(name);
+              await p.exposeFunction(name, fn);
+            } catch {
+              // prior binding may still work
+            }
+          } else {
+            throw err;
+          }
+        }
+      };
+    }
+    await exposeFunctionIfAbsent(page, "onCodeReceivedEvent", async (code) => {
+      client.emit("code", code);
+      return code;
+    });
   }
 
   async requestPairingCode(phoneRaw) {
@@ -522,6 +605,7 @@ class WhatsAppService extends EventEmitter {
 
     logger.activity(`Requesting phone pairing code for ${phone}…`);
     try {
+      await this._ensurePairingCodeBridge();
       const code = await this.client.requestPairingCode(phone);
       this.pairingCode = String(code || "").replace(/\s+/g, "").toUpperCase();
       logger.activity(

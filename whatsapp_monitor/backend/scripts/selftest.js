@@ -20,10 +20,22 @@ delete require.cache[require.resolve("../src/messageUtils")];
 
 const db = require("../src/db");
 const { extractLinks } = require("../src/messageUtils");
+const { WhatsAppService } = require("../src/whatsappService");
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || "assertion failed");
 }
+
+assert(WhatsAppService.normalizePhone("0523527293") === "972523527293", "il local");
+assert(WhatsAppService.normalizePhone("+972 52-352-7293") === "972523527293", "il intl");
+assert(WhatsAppService.normalizePhone("9720523527293") === "972523527293", "il trunk 0");
+assert(WhatsAppService.normalizePhone("+972 052 352 7293") === "972523527293", "il +972 0");
+assert(WhatsAppService.normalizePhone("") === null, "empty phone");
+assert(
+  WhatsAppService.isTransientBrowserError("Navigating frame was detached"),
+  "frame detach transient"
+);
+assert(!WhatsAppService.isTransientBrowserError("auth timeout"), "auth timeout not transient");
 
 db.initDb();
 
