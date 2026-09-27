@@ -59,6 +59,17 @@ function createApiRouter() {
     }
   });
 
+  router.post("/pair", async (req, res) => {
+    try {
+      const phone = req.body?.phone || req.query.phone;
+      await whatsappService.requestPairingCode(phone);
+      res.json(monitorService.getSnapshot());
+    } catch (err) {
+      logger.error("Pairing failed", err?.message || String(err));
+      res.status(400).json({ error: err?.message || "Pairing failed" });
+    }
+  });
+
   router.post("/disconnect", async (_req, res) => {
     try {
       // Stops the browser client but keeps LocalAuth session on disk.
