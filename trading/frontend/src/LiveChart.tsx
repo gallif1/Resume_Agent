@@ -153,6 +153,7 @@ type Props = {
   onLayoutModeChange?: (mode: SizeMode) => void;
   assetModes?: Record<string, TradingAssetMode | string>;
   onOpenAssetSettings?: (symbol: string) => void;
+  onSymbolChange?: (symbol: string) => void;
 };
 
 function fmtPrice(n: number) {
@@ -295,10 +296,15 @@ export default function LiveChart({
   onLayoutModeChange,
   assetModes = {},
   onOpenAssetSettings,
+  onSymbolChange,
 }: Props) {
   void _votes; // votes are not primary markers (UnifiedDecision only)
   const [symbol, setSymbol] = useState(symbols[0] || "BTC-USD");
   const active = symbols.includes(symbol) ? symbol : symbols[0] || symbol;
+
+  useEffect(() => {
+    onSymbolChange?.(active);
+  }, [active, onSymbolChange]);
   const tfs = timeframes.length ? timeframes : DEFAULT_TFS;
   const meta = marketMeta?.symbols?.[active];
   const activeMode = String(assetModes[active] || assetModes[normalizeSymbol(active)] || "MONITOR_ONLY");

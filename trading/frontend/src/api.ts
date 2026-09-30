@@ -33,6 +33,13 @@ export type AgentVote = {
   rationale: string;
   ts: number;
   inputs?: Record<string, unknown>;
+  timeframe?: string;
+  market_timestamp?: number | null;
+  score?: number | null;
+  components?: Record<string, number | unknown>;
+  used_for_decision?: Record<string, unknown>;
+  informational?: Record<string, unknown>;
+  volatility_regime?: string | null;
 };
 
 export type Decision = {
@@ -308,6 +315,7 @@ export type Snapshot = {
   market: Tick[];
   price_history?: Record<string, PricePoint[]>;
   chart_timeframe?: string;
+  analysis_timeframe?: string;
   market_meta?: MarketMeta;
   events: MarketEvent[];
   decisions: Decision[];
