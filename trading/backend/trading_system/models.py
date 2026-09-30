@@ -75,6 +75,16 @@ class AgentVote:
     ts: float = field(default_factory=time.time)
     # Numeric inputs used by the rule (for transparent logs). Optional.
     inputs: dict[str, Any] = field(default_factory=dict)
+    # Explicit analysis context — must match other votes in a decision cycle.
+    timeframe: str = ""
+    market_timestamp: float | None = None
+    score: float | None = None
+    # Component contributions actually used for the decision (−1..+1).
+    components: dict[str, Any] = field(default_factory=dict)
+    # Explicit split: used_for_decision vs informational_only.
+    used_for_decision: dict[str, Any] = field(default_factory=dict)
+    informational: dict[str, Any] = field(default_factory=dict)
+    volatility_regime: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -96,6 +106,10 @@ class Decision:
     ts: float = field(default_factory=time.time)
     # Structured Decision Engine explanation (weights, confidence math).
     engine: dict[str, Any] = field(default_factory=dict)
+    timeframe: str = ""
+    market_timestamp: float | None = None
+    # Analytical recommendation kept when execution is gated to HOLD/BLOCKED.
+    analytical_side: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

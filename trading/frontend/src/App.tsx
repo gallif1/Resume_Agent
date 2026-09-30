@@ -34,6 +34,8 @@ import { he, stateLabel, sessionLabel, assetModeLabel } from "./i18n/he";
 import LiveChart from "./LiveChart";
 
 type LatestVotes = Record<string, AgentVote>;
+/** agent_id → latest vote for the currently filtered symbol set */
+type VotesBySymbol = Record<string, LatestVotes>;
 
 const HISTORY_CAP = 360;
 const VOTE_CAP = 120;
@@ -113,9 +115,13 @@ function sessionBadge(t: Tick): { label: string; cls: string } {
 
 function pickAiSymbol(
   ai: AIStatus | null,
+  preferredSymbol: string | null,
   symbols: string[]
 ): { symbol: string; entry: NonNullable<AIStatus["last_by_symbol"]>[string] } | null {
   const by = ai?.last_by_symbol || {};
+  if (preferredSymbol && by[preferredSymbol]) {
+    return { symbol: preferredSymbol, entry: by[preferredSymbol] };
+  }
   const preferred = [...symbols, "BTC-USD"];
   for (const sym of preferred) {
     if (by[sym]) return { symbol: sym, entry: by[sym] };
@@ -123,6 +129,27 @@ function pickAiSymbol(
   const first = Object.entries(by)[0];
   if (first) return { symbol: first[0], entry: first[1] };
   return null;
+}
+
+function componentLabel(key: string): string {
+  const map: Record<string, string> = {
+    price_momentum: "מומנטום מחיר",
+    ema_trend: "מגמת EMA",
+    macd: "MACD",
+    rsi: "RSI",
+    volume: "נפח",
+    sma20_deviation: "סטיית SMA20",
+    bollinger_position: "בולינגר",
+    vwap_deviation: "סטיית VWAP",
+    directional_tilt: "הטיה כיוונית",
+  };
+  return map[key] || key;
+}
+
+function componentTone(v: number): string {
+  if (v > 0.15) return "Bullish";
+  if (v < -0.15) return "Bearish";
+  return "Neutral";
 }
 
 function accLabel(v?: number | null): string {
@@ -160,8 +187,11 @@ export default function App() {
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
   const [manualCopyText, setManualCopyText] = useState<string | null>(null);
-  const [votes, setVotes] = useState<LatestVotes>({});
+  const [votesBySymbol, setVotesBySymbol] = useState<VotesBySymbol>({});
   const [chartVotes, setChartVotes] = useState<AgentVote[]>([]);
+  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
+  const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
+  const [analysisTimeframe, setAnalysisTimeframe] = useState("5m");
   const [, setHistory] = useState<Record<string, PricePoint[]>>({});
   const [trades, setTrades] = useState<TradeMarker[]>([]);
   const [chartTimeframe, setChartTimeframeState] = useState("5m");
@@ -229,6 +259,20 @@ export default function App() {
     setTrades((s.trades || []).slice(0, TRADE_CAP));
     setChartVotes(votesFromDecisions(s.decisions || []));
     if (s.chart_timeframe) setChartTimeframeState(s.chart_timeframe);
+    if (s.analysis_timeframe) {
+      setAnalysisTimeframe(s.analysis_timeframe || "5m");
+    }
+    // Seed votes-by-symbol from recent decisions (per-symbol latest).
+    const seeded: VotesBySymbol = {};
+    for (const d of s.decisions || []) {
+      for (const v of d.votes || []) {
+        if (!v.symbol || !v.agent_id) continue;
+        const sym = v.symbol;
+        seeded[sym] = seeded[sym] || {};
+        seeded[sym][v.agent_id] = v;
+      }
+    }
+    if (Object.keys(seeded).length) setVotesBySymbol(seeded);
     if (s.market_meta) {
       setMarketMeta(s.market_meta);
       if (s.market_meta.timeframes?.length) setTimeframes(s.market_meta.timeframes);
@@ -302,6 +346,7 @@ export default function App() {
               price_points?: Array<PricePoint & { symbol: string }>;
               price_history?: Record<string, PricePoint[]>;
               chart_timeframe?: string;
+              analysis_timeframe?: string;
               events: MarketEvent[];
               votes: AgentVote[];
               decisions: Decision[];
@@ -394,26 +439,25 @@ export default function App() {
               )
             );
             if (p.votes?.length) {
-              const byAgent: Record<string, AgentVote[]> = {};
-              for (const v of p.votes) {
-                (byAgent[v.agent_id] ||= []).push(v);
-              }
-              const next: LatestVotes = {};
-              for (const [id, list] of Object.entries(byAgent)) {
-                // Prefer last actionable vote in the tick so HOLD on NVDA does not
-                // hide a BUY/SELL that just moved cash on SOL/AAPL.
-                const actionableSym = list.filter((v) => v.side === "BUY" || v.side === "SELL");
-                next[id] = actionableSym.length
-                  ? actionableSym[actionableSym.length - 1]
-                  : list[list.length - 1];
-              }
-              setVotes(next);
+              setVotesBySymbol((prev) => {
+                const next: VotesBySymbol = { ...prev };
+                for (const v of p.votes!) {
+                  if (!v.symbol || !v.agent_id) continue;
+                  const symMap = { ...(next[v.symbol] || {}) };
+                  symMap[v.agent_id] = v;
+                  next[v.symbol] = symMap;
+                }
+                return next;
+              });
               const actionable = p.votes.filter((v) => v.side === "BUY" || v.side === "SELL");
               if (actionable.length) {
                 setChartVotes((prev) => [...actionable, ...prev].slice(0, VOTE_CAP));
                 setFlash(true);
                 window.setTimeout(() => setFlash(false), 450);
               }
+            }
+            if (p.analysis_timeframe) {
+              setAnalysisTimeframe(String(p.analysis_timeframe));
             }
           } else if (msg.type === "error") {
             const payload = msg.payload as { message?: string };
@@ -650,11 +694,21 @@ export default function App() {
   const symbols = snap?.symbols?.length
     ? snap.symbols
     : market.map((t) => t.symbol);
+  const selectedChartSymbol = chartSymbol || symbols[0] || null;
+  const votesForSelected: LatestVotes = selectedChartSymbol
+    ? votesBySymbol[selectedChartSymbol] || {}
+    : {};
   const realData = dataMode !== "simulated";
-  const aiPick = pickAiSymbol(aiStatus, symbols);
+  const aiPick = pickAiSymbol(aiStatus, selectedChartSymbol, symbols);
   const aiCalls = aiStatus?.calls_this_hour ?? 0;
   const aiMax = aiStatus?.max_calls_per_hour ?? 0;
   const filledDecisions = decisions.filter((d) => d.executed);
+  const onChartSymbolChange = useCallback((sym: string) => {
+    setChartSymbol(sym);
+  }, []);
+  const toggleAgentExpand = (id: string) => {
+    setExpandedAgents((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
   const copyLogs = async (limit: number | "all") => {
     const n = limit === "all" ? decisionLogs.length : limit;
     if (!decisionLogs.length) {
@@ -791,6 +845,7 @@ export default function App() {
         onLayoutModeChange={onChartLayout}
         assetModes={assetModeMap}
         onOpenAssetSettings={openAssetSettings}
+        onSymbolChange={onChartSymbolChange}
       />
       <div className="grid">
         <section className="panel asset-control-panel" ref={assetPanelRef} style={{ gridColumn: "1 / -1" }}>
@@ -1083,24 +1138,92 @@ export default function App() {
         </section>
 
         <section className="panel" style={{ gridColumn: "1 / -1" }}>
-          <h2>{he.agents}</h2>
+          <div className="panel-head-row">
+            <h2>{he.agents}</h2>
+            <span className="mono muted agent-tf-hint">
+              {selectedChartSymbol || "—"} · {he.analysisTimeframe}: {analysisTimeframe}
+              {chartTimeframe !== analysisTimeframe
+                ? ` · ${he.chartTimeframe}: ${chartTimeframe}`
+                : ""}
+            </span>
+          </div>
           <div className="agents">
             {agents.map((a) => {
-              const vote = votes[a.id];
+              const vote = votesForSelected[a.id];
+              const expanded = !!expandedAgents[a.id];
+              const comps = (vote?.components || {}) as Record<string, number>;
+              const used = vote?.used_for_decision || {};
               return (
                 <div key={a.id} className={`agent-card ${flash && vote ? "flash" : ""}`}>
-                  <h3>{a.name}</h3>
+                  <button
+                    type="button"
+                    className="agent-card-toggle"
+                    onClick={() => toggleAgentExpand(a.id)}
+                    aria-expanded={expanded}
+                  >
+                    <h3>{a.name}</h3>
+                    <span className="muted mono agent-expand-hint">
+                      {expanded ? he.collapseAgent : he.expandAgent}
+                    </span>
+                  </button>
                   {vote ? (
                     <>
-                      <div className="row" style={{ display: "flex", gap: "0.5rem" }}>
+                      <div className="row" style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                         <span className={`tag ${vote.side}`}>{vote.side}</span>
                         <span className="mono muted">
-                          {(vote.confidence * 100).toFixed(0)}% · {vote.symbol}
+                          {(vote.confidence * 100).toFixed(0)}%
                         </span>
+                        {a.id === "volatility" && vote.volatility_regime ? (
+                          <span className="tag HOLD">
+                            {he.volRegime}: {vote.volatility_regime}
+                          </span>
+                        ) : null}
                       </div>
-                      <p className="muted" style={{ margin: "0.4rem 0 0" }}>
-                        {vote.rationale}
-                      </p>
+                      <div className="mono muted agent-meta-line">
+                        {vote.symbol}
+                        {vote.timeframe ? ` · ${vote.timeframe}` : ` · ${analysisTimeframe}`}
+                        {vote.score != null ? ` · ${he.agentScore} ${vote.score >= 0 ? "+" : ""}${Number(vote.score).toFixed(2)}` : ""}
+                      </div>
+                      {!expanded ? (
+                        <p className="muted" style={{ margin: "0.4rem 0 0" }}>
+                          {vote.rationale}
+                        </p>
+                      ) : (
+                        <div className="agent-components">
+                          {Object.keys(comps).length ? (
+                            <ul>
+                              {Object.entries(comps).map(([k, v]) => {
+                                const num = typeof v === "number" ? v : Number(v);
+                                let detail = componentTone(num);
+                                if (k === "rsi" && typeof used.rsi_14 === "number") {
+                                  detail = `${used.rsi_14} — ${detail === "Bullish" ? "supportive" : detail === "Bearish" ? "soft" : "neutral"}`;
+                                }
+                                if (k === "volume" && typeof used.relative_volume === "number") {
+                                  detail = `${Number(used.relative_volume).toFixed(2)}x — ${num > 0 ? "confirmation" : "weak"}`;
+                                }
+                                if (k === "bollinger_position" && typeof used.bb_position === "number") {
+                                  detail = `${Number(used.bb_position).toFixed(2)} — ${detail}`;
+                                }
+                                return (
+                                  <li key={k}>
+                                    <span>{componentLabel(k)}</span>
+                                    <span className="mono">{detail}</span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          ) : null}
+                          {vote.score != null ? (
+                            <div className="mono agent-score-line">
+                              {he.agentScore}: {vote.score >= 0 ? "+" : ""}
+                              {Number(vote.score).toFixed(2)}
+                            </div>
+                          ) : null}
+                          <p className="muted" style={{ margin: "0.35rem 0 0" }}>
+                            {vote.rationale}
+                          </p>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <p className="muted" style={{ margin: 0 }}>
@@ -1117,7 +1240,7 @@ export default function App() {
                   {aiPick?.entry.source || (aiStatus?.enabled ? he.idle : he.off)}
                 </span>
               </div>
-              {aiPick ? (
+              {aiPick && (!selectedChartSymbol || aiPick.symbol === selectedChartSymbol) ? (
                 <>
                   <div className="row" style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
                     <span className={`tag ${aiPick.entry.action || "HOLD"}`}>
@@ -1125,6 +1248,7 @@ export default function App() {
                     </span>
                     <span className="mono muted">
                       {((aiPick.entry.confidence ?? 0) * 100).toFixed(0)}% · {aiPick.symbol}
+                      {` · ${analysisTimeframe}`}
                     </span>
                   </div>
                   <p className="muted" style={{ margin: "0.45rem 0 0" }}>
