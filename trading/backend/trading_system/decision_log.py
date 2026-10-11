@@ -19,7 +19,10 @@ def _fmt_ts(ts: float | None) -> str:
 def _pct(v: float | None) -> str:
     if v is None:
         return "—"
-    return f"{v:+.2f}%"
+    try:
+        return f"{float(v):+.2f}%"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def _yes_no(v: bool | None) -> str:
@@ -28,6 +31,13 @@ def _yes_no(v: bool | None) -> str:
     if v is False:
         return "NO"
     return "PENDING"
+
+
+def _safe_conf_pct(v: Any) -> str:
+    try:
+        return f"{float(v or 0) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def build_market_snapshot(
@@ -87,6 +97,50 @@ def build_market_snapshot(
     return snap
 
 
+def _compact_agent_inputs(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep log payloads small — bulky snapshot blobs crash browser copy/UI."""
+    if not isinstance(raw, dict):
+        return {}
+    skip = {
+        "INFORMATIONAL_ONLY",
+        "market_snapshot_keys",
+        "chart_indicators_informational",
+        "timeframe_signals",
+        "portfolio_risk",
+        "human_levels",
+        "data_quality",
+        "indicators_used",
+    }
+    out: dict[str, Any] = {}
+    for key, val in raw.items():
+        if key in skip:
+            continue
+        if key == "USED_FOR_DECISION" and isinstance(val, dict):
+            # Keep scalars / short lists only.
+            slim: dict[str, Any] = {}
+            for uk, uv in list(val.items())[:12]:
+                if isinstance(uv, (str, int, float, bool)) or uv is None:
+                    slim[uk] = uv
+                elif isinstance(uv, (list, tuple)):
+                    slim[uk] = list(uv)[:5]
+                else:
+                    slim[uk] = str(uv)[:80]
+            out[key] = slim
+            continue
+        if isinstance(val, (str, int, float, bool)) or val is None:
+            out[key] = val
+        elif isinstance(val, dict):
+            out[key] = {str(k): v for k, v in list(val.items())[:8]
+                        if isinstance(v, (str, int, float, bool)) or v is None}
+        elif isinstance(val, (list, tuple)):
+            out[key] = list(val)[:5]
+        else:
+            out[key] = str(val)[:80]
+        if len(out) >= 16:
+            break
+    return out
+
+
 def build_agent_entries(
     votes: list[dict[str, Any]],
     ai_meta: dict[str, Any] | None,
@@ -100,7 +154,7 @@ def build_agent_entries(
             "action": v.get("side"),
             "confidence": v.get("confidence"),
             "reason": v.get("rationale"),
-            "inputs": v.get("inputs") or {},
+            "inputs": _compact_agent_inputs(v.get("inputs") if isinstance(v.get("inputs"), dict) else {}),
             "ts": v.get("ts"),
         }
         if v.get("agent_id") == "ai_analyst":
@@ -530,15 +584,26 @@ def format_decision_logs_text(logs: list[dict[str, Any]], limit: int | None = No
             lines.append(f"{a.get('agent_name') or a.get('agent_id')}:")
             lines.append(f"Action: {a.get('action')}")
             conf = a.get("confidence")
-            lines.append(f"Confidence: {float(conf) * 100:.0f}%" if conf is not None else "Confidence: —")
+            conf_s = "—"
+            if conf is not None:
+                try:
+                    conf_s = f"{float(conf) * 100:.0f}%"
+                except (TypeError, ValueError):
+                    conf_s = "—"
+            lines.append(f"Confidence: {conf_s}")
             lines.append(f"Reason: {a.get('reason') or '—'}")
             if a.get("agent_id") == "ai_analyst" or a.get("source"):
                 lines.append(f"Source: {a.get('source') or '—'}")
                 lines.append(f"Last analysis: {_fmt_ts(a.get('ts'))}")
             inputs = a.get("inputs") or {}
-            if inputs:
-                shown = ", ".join(f"{k}={v}" for k, v in list(inputs.items())[:8])
-                lines.append(f"Inputs: {shown}")
+            if isinstance(inputs, dict) and inputs:
+                parts = []
+                for k, v in list(inputs.items())[:8]:
+                    if isinstance(v, (dict, list, tuple)):
+                        parts.append(f"{k}=…")
+                    else:
+                        parts.append(f"{k}={v}")
+                lines.append(f"Inputs: {', '.join(parts)}")
             lines.append("")
 
         if pretrade:
@@ -562,7 +627,7 @@ def format_decision_logs_text(logs: list[dict[str, Any]], limit: int | None = No
                 f"Action score: {decision.get('action_score')}",
                 f"Hold gate (hold*0.85): {decision.get('hold_gate')}",
                 f"Final action: {decision.get('action')}",
-                f"Final confidence: {float(decision.get('final_confidence') or 0) * 100:.0f}%",
+                f"Final confidence: {_safe_conf_pct(decision.get('final_confidence'))}",
                 f"Explanation: {decision.get('explanation') or decision.get('rationale') or '—'}",
                 "",
                 "CONFIDENCE DEBUG",
