@@ -351,6 +351,7 @@ export default function App() {
               votes: AgentVote[];
               decisions: Decision[];
               decision_logs?: DecisionLog[];
+              decision_logs_rev?: number;
               trades?: TradeMarker[];
               portfolio: Snapshot["portfolio"];
               market_meta?: MarketMeta;
@@ -409,6 +410,7 @@ export default function App() {
             if (p.decisions?.length) {
               setDecisions((prev) => [...p.decisions, ...prev].slice(0, 40));
             }
+            // Only replace logs when the server says they changed (or heartbeat).
             if (p.decision_logs) {
               setDecisionLogs(p.decision_logs);
             }
@@ -570,13 +572,14 @@ export default function App() {
     try {
       const s = await resetPaperSystem();
       applySnapshot(s);
-      setVotes({});
+      setVotesBySymbol({});
       setChartVotes([]);
       setTrades([]);
       setEvents([]);
       setDecisions([]);
       setDecisionLogs([]);
       setExpandedLogId(null);
+      setExpandedAgents({});
       setManualCopyText(null);
       setPerformance(s.performance ?? null);
       setCopyMsg(`${he.resetPaper} — ${he.start}`);

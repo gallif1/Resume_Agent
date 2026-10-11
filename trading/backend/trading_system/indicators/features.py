@@ -109,15 +109,19 @@ def build_feature_snapshot(
     multi_timeframe: dict[str, Any] | None = None,
     data_quality: dict[str, Any] | None = None,
     momentum_window: int = 5,
+    indicator: IndicatorSnapshot | None = None,
 ) -> FeatureSnapshot:
-    """Build FeatureSnapshot from candles using shared IndicatorEngine/calc."""
+    """Build FeatureSnapshot from candles using shared IndicatorEngine/calc.
+
+    Pass ``indicator`` when already computed in the same tick to avoid a
+    second full indicator pass (major CPU win under multi-symbol loops).
+    """
     candles = list(candles)
     closes = ic.closes(candles)
     px = float(price if price is not None else (closes[-1] if closes else 0.0))
     candle_ts = float(candles[-1].ts) if candles else 0.0
 
-    eng = IndicatorEngine()
-    snap: IndicatorSnapshot = eng.compute(symbol, candles, price=px)
+    snap: IndicatorSnapshot = indicator or IndicatorEngine().compute(symbol, candles, price=px)
     extras = snap.extras or {}
 
     ema20 = extras.get("ema_20")

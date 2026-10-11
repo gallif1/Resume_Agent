@@ -197,7 +197,7 @@ class DecisionEngine:
 
     @property
     def recent(self) -> list[dict]:
-        return [d.to_dict() for d in self._decisions[-50:]]
+        return [d.to_public_dict() for d in self._decisions[-50:]]
 
     def decide(
         self,
@@ -345,7 +345,7 @@ class DecisionEngine:
             symbol=symbol,
             side=side,
             confidence=round(confidence, 3),
-            votes=[v.to_dict() for v in compatible],
+            votes=[v.to_public_dict() for v in compatible],
             rationale=rationale,
             engine=engine,
             timeframe=tf,
