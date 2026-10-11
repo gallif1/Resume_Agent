@@ -58,8 +58,8 @@ def test_decision_engine_aggregates():
 
 
 def test_decision_engine_executes_sell_against_opposing_buy():
-    """Winning SELL must not be diluted below threshold by a competing BUY vote."""
-    engine = DecisionEngine(min_confidence=0.45)
+    """Winning SELL keeps analytical side; low calibrated conf may block fill."""
+    engine = DecisionEngine(min_confidence=0.45, min_execution_confidence=0.55)
     votes = [
         AgentVote("momentum", "Momentum", "BTC-USD", Side.SELL, 0.80, "down"),
         AgentVote("mean_reversion", "MeanRev", "BTC-USD", Side.BUY, 0.69, "fade"),
@@ -68,10 +68,15 @@ def test_decision_engine_executes_sell_against_opposing_buy():
     decision = engine.decide("BTC-USD", votes, price=78000)
     assert decision is not None
     assert decision.side == Side.SELL
-    assert decision.executed is True
-    # Action score still clears the gate; calibrated confidence is reduced by opposition.
+    # Action score still clears the aggregation gate; calibrated confidence is reduced by opposition.
     assert decision.engine["action_score"] >= 0.45
     assert decision.engine["confidence_debug"]["opposition_ratio"] > 0
+    # Execution gate: conflicting votes → low calibrated confidence → not auto-filled.
+    if decision.confidence < engine.min_execution_confidence:
+        assert decision.executed is False
+        assert decision.engine.get("execution_gate")
+        decision.executed = True
+        decision.fill_price = 78000
     # Fill should free cash from an open position.
     from trading_system.models import Portfolio, Position
 
@@ -115,8 +120,9 @@ def test_momentum_reason_uses_real_threshold():
     history = [100, 100.2, 100.5, 100.8, 101.5]
     tick = Tick(symbol="BTC-USD", price=101.5, change_pct=0.5, volume=1)
     vote = agent.vote(tick, history, [])
-    assert "threshold" in vote.rationale.lower() or "BUY" in vote.rationale or "HOLD" in vote.rationale
-    assert "price_change_pct" in vote.inputs or "history_len" in vote.inputs
+    assert vote.side in {Side.BUY, Side.SELL, Side.HOLD}
+    assert "BUY" in vote.rationale or "SELL" in vote.rationale or "HOLD" in vote.rationale
+    assert vote.components or "history_len" in vote.inputs or "score" in vote.inputs
 
 
 def test_decision_log_text_export_and_cooldown_coalesce():

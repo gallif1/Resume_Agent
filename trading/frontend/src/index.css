@@ -475,6 +475,57 @@ a {
   font-size: 0.85rem;
 }
 
+.agent-card-toggle {
+  display: flex;
+  width: 100%;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  text-align: inherit;
+}
+
+.agent-card-toggle h3 {
+  margin: 0;
+}
+
+.agent-expand-hint {
+  font-size: 0.7rem;
+}
+
+.agent-meta-line {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.agent-tf-hint {
+  font-size: 0.75rem;
+}
+
+.agent-components ul {
+  list-style: none;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.agent-components li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+}
+
+.agent-score-line {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+}
+
 .muted {
   color: var(--muted);
 }

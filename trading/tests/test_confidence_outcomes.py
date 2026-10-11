@@ -237,7 +237,11 @@ def test_sell_lower_price_marked_correct():
 def test_signal_still_active_noise_reduced():
     buf = DecisionLogBuffer(limit=50, heartbeat_sec=60)
     engine = DecisionEngine(min_confidence=0.45)
-    votes = _votes_buy_hold()
+    votes = [
+        AgentVote("momentum", "Momentum", "SOL-USD", Side.HOLD, 0.40, "flat"),
+        AgentVote("mean_reversion", "MeanRev", "SOL-USD", Side.BUY, 0.76, "oversold"),
+        AgentVote("volatility", "Vol", "SOL-USD", Side.BUY, 0.55, "spike"),
+    ]
     decision = engine.decide("SOL-USD", votes, 140)
     assert decision
     decision.executed = False
@@ -292,7 +296,12 @@ def test_signal_still_active_noise_reduced():
 def test_trade_execution_logs_preserved():
     buf = DecisionLogBuffer(limit=50, heartbeat_sec=60)
     engine = DecisionEngine(min_confidence=0.45)
-    decision = engine.decide("SOL-USD", _votes_buy_hold(), 140)
+    votes = [
+        AgentVote("momentum", "Momentum", "SOL-USD", Side.HOLD, 0.40, "flat"),
+        AgentVote("mean_reversion", "MeanRev", "SOL-USD", Side.BUY, 0.76, "oversold"),
+        AgentVote("volatility", "Vol", "SOL-USD", Side.BUY, 0.55, "spike"),
+    ]
+    decision = engine.decide("SOL-USD", votes, 140)
     assert decision
     decision.executed = True
     decision.fill_price = 140

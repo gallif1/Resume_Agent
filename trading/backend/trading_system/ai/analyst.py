@@ -35,7 +35,13 @@ class AIResult:
     source: str  # API | CACHE | SKIPPED | PRETRADE_API | PRETRADE_CACHE | ...
     skip_reason: str | None = None
 
-    def to_vote(self, symbol: str) -> AgentVote:
+    def to_vote(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "",
+        market_timestamp: float | None = None,
+    ) -> AgentVote:
         side = Side.HOLD
         if self.action.upper() == "BUY":
             side = Side.BUY
@@ -57,10 +63,19 @@ class AIResult:
             side=side,
             confidence=float(self.confidence),
             rationale=self.reason[:240],
+            timeframe=timeframe,
+            market_timestamp=market_timestamp,
+            used_for_decision={
+                "source": src,
+                "action": self.action,
+                "confidence": self.confidence,
+            },
+            informational={"skip_reason": self.skip_reason} if self.skip_reason else {},
             inputs={
                 "source": src,
                 "raw_source": self.source,
                 "skip_reason": self.skip_reason,
+                "USED_FOR_DECISION": True,
             },
         )
 
@@ -202,12 +217,18 @@ class AIMarketAnalyst:
         """Return AI vote or None when skipped (heuristics still run)."""
         ok, why = self.trigger.should_call(tick.symbol, tick.price, events, heuristic_votes)
         cache_key = self._cache_key(snapshot)
+        tf = str(snapshot.get("timeframe") or snapshot.get("analysis_timeframe") or "")
+        mts = snapshot.get("candle_timestamp")
+        try:
+            mts_f = float(mts) if mts is not None else None
+        except (TypeError, ValueError):
+            mts_f = None
         cached = self._cache.get(cache_key)
         if cached and time.time() - cached[0] < AI_CACHE_TTL_SECONDS:
             result = cached[1]
             result.source = "CACHE"
             self._remember(tick.symbol, result, cache_key=cache_key, price=tick.price)
-            return result.to_vote(tick.symbol)
+            return result.to_vote(tick.symbol, timeframe=tf, market_timestamp=mts_f)
 
         if not ok:
             self._last_by_symbol[tick.symbol] = {
@@ -218,6 +239,8 @@ class AIMarketAnalyst:
                 "skip_reason": why,
                 "ts": time.time(),
                 "cache_key": cache_key,
+                "timeframe": tf,
+                "candle_timestamp": mts_f,
             }
             self.trigger.note_price(tick.symbol, tick.price)
             return None
@@ -228,7 +251,7 @@ class AIMarketAnalyst:
             self.trigger.record_call()
             self._cache[cache_key] = (time.time(), result)
             self._remember(tick.symbol, result, cache_key=cache_key, price=tick.price)
-            return result.to_vote(tick.symbol)
+            return result.to_vote(tick.symbol, timeframe=tf, market_timestamp=mts_f)
         except Exception as exc:  # noqa: BLE001
             logger.warning("AI call failed: %s", exc)
             self._last_by_symbol[tick.symbol] = {
@@ -239,6 +262,8 @@ class AIMarketAnalyst:
                 "skip_reason": "api_error",
                 "ts": time.time(),
                 "cache_key": cache_key,
+                "timeframe": tf,
+                "candle_timestamp": mts_f,
             }
             self.trigger.note_price(tick.symbol, tick.price)
             return None
@@ -255,6 +280,12 @@ class AIMarketAnalyst:
         """
         meta: dict[str, Any] = {"source": "PRETRADE_SKIPPED", "skip_reason": None}
         cache_key = self._cache_key(snapshot)
+        tf = str(snapshot.get("timeframe") or snapshot.get("analysis_timeframe") or "")
+        mts = snapshot.get("candle_timestamp")
+        try:
+            mts_f = float(mts) if mts is not None else None
+        except (TypeError, ValueError):
+            mts_f = None
 
         if self.is_fresh_for_pretrade(tick.symbol, snapshot):
             cached = self._cache.get(cache_key)
@@ -269,7 +300,7 @@ class AIMarketAnalyst:
                     "reason": result.reason,
                     "ts": time.time(),
                 }
-                return result.to_vote(tick.symbol), meta
+                return result.to_vote(tick.symbol, timeframe=tf, market_timestamp=mts_f), meta
             # Fresh last_by_symbol without exact cache entry — rebuild vote from meta.
             last = self._last_by_symbol.get(tick.symbol) or {}
             result = AIResult(
@@ -285,7 +316,7 @@ class AIMarketAnalyst:
                 "reason": result.reason,
                 "ts": float(last.get("ts") or time.time()),
             }
-            return result.to_vote(tick.symbol), meta
+            return result.to_vote(tick.symbol, timeframe=tf, market_timestamp=mts_f), meta
 
         if not AI_ENABLED:
             meta = {"source": "PRETRADE_UNAVAILABLE", "skip_reason": "ai_disabled"}
@@ -314,7 +345,7 @@ class AIMarketAnalyst:
                 "reason": result.reason,
                 "ts": time.time(),
             }
-            return result.to_vote(tick.symbol), meta
+            return result.to_vote(tick.symbol, timeframe=tf, market_timestamp=mts_f), meta
         except Exception as exc:  # noqa: BLE001
             logger.warning("Pretrade AI call failed: %s", exc)
             meta = {
@@ -356,16 +387,43 @@ class AIMarketAnalyst:
         self.trigger.note_price(symbol, price)
 
     def _cache_key(self, snapshot: dict[str, Any]) -> str:
-        # Bucket numeric fields to reuse similar states.
+        # Explicit symbol + timeframe + candle/market version — never cross-mix.
+        candle_ts = snapshot.get("candle_timestamp")
+        if candle_ts is None:
+            candle_ts = snapshot.get("market_timestamp")
+        try:
+            candle_bucket = int(float(candle_ts)) if candle_ts is not None else 0
+        except (TypeError, ValueError):
+            candle_bucket = 0
+        tf = snapshot.get("timeframe") or snapshot.get("analysis_timeframe") or ""
+        # Soft buckets for similar indicator state within the same candle.
         payload = {
             "symbol": snapshot.get("symbol"),
+            "timeframe": tf,
+            "candle_timestamp": candle_bucket,
             "trend": snapshot.get("short_trend"),
             "vol": snapshot.get("volume_state"),
             "hv": snapshot.get("heuristic_votes"),
             "chg5": round(float(snapshot.get("change_5m_pct") or 0), 1),
             "rsi": round(float(snapshot.get("rsi_14") or 0) / 5) * 5,
         }
-        return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+        return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+    @staticmethod
+    def compact_heuristic_context(votes: list[AgentVote]) -> dict[str, Any]:
+        """Compact structured heuristic summary for the LLM (low token use)."""
+        out: dict[str, Any] = {}
+        for v in votes:
+            entry: dict[str, Any] = {
+                "side": v.side.value,
+                "confidence": round(float(v.confidence), 2),
+            }
+            if v.score is not None:
+                entry["score"] = round(float(v.score), 2)
+            if v.volatility_regime:
+                entry["regime"] = v.volatility_regime
+            out[v.agent_id] = entry
+        return out
 
     def _call_llm(self, snapshot: dict[str, Any]) -> AIResult:
         from openai import OpenAI

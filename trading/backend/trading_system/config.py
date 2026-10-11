@@ -101,3 +101,50 @@ AI_AGENT_WEIGHT = float(os.getenv("AI_AGENT_WEIGHT", "1.0"))
 AI_CACHE_TTL_SECONDS = float(os.getenv("AI_CACHE_TTL_SECONDS", "180"))
 # Max age of an AI analysis that can be reused for pre-trade validation.
 AI_PRETRADE_MAX_AGE_SECONDS = float(os.getenv("AI_PRETRADE_MAX_AGE_SECONDS", "90"))
+
+# --- Analysis timeframe (agents) vs chart timeframe ---
+# Agents use this TF for FeatureSnapshot / decisions. Chart may differ.
+ANALYSIS_TIMEFRAME = os.getenv("TRADING_ANALYSIS_TIMEFRAME", "5m").strip() or "5m"
+
+# DecisionEngine: reject executable BUY/SELL below this calibrated confidence.
+MIN_EXECUTION_CONFIDENCE = float(os.getenv("TRADING_MIN_EXECUTION_CONFIDENCE", "0.55"))
+
+# Max age (seconds) for a vote's market_timestamp vs decision snapshot.
+VOTE_SNAPSHOT_TOLERANCE_SEC = float(os.getenv("TRADING_VOTE_SNAPSHOT_TOLERANCE_SEC", "120"))
+
+# Heuristic confidence cap (never claim near-certainty from indicators alone).
+HEURISTIC_CONFIDENCE_CAP = float(os.getenv("TRADING_HEURISTIC_CONFIDENCE_CAP", "0.92"))
+
+# --- Momentum agent scoring weights (must sum ≈ 1.0) ---
+MOMENTUM_W_PRICE = float(os.getenv("TRADING_MOMENTUM_W_PRICE", "0.30"))
+MOMENTUM_W_EMA = float(os.getenv("TRADING_MOMENTUM_W_EMA", "0.25"))
+MOMENTUM_W_MACD = float(os.getenv("TRADING_MOMENTUM_W_MACD", "0.20"))
+MOMENTUM_W_RSI = float(os.getenv("TRADING_MOMENTUM_W_RSI", "0.15"))
+MOMENTUM_W_VOLUME = float(os.getenv("TRADING_MOMENTUM_W_VOLUME", "0.10"))
+MOMENTUM_BUY_THRESHOLD = float(os.getenv("TRADING_MOMENTUM_BUY_THRESHOLD", "0.35"))
+MOMENTUM_SELL_THRESHOLD = float(os.getenv("TRADING_MOMENTUM_SELL_THRESHOLD", "-0.35"))
+MOMENTUM_PRICE_SCALE_PCT = float(os.getenv("TRADING_MOMENTUM_PRICE_SCALE_PCT", "0.50"))
+
+# --- Mean reversion agent ---
+MEANREV_W_SMA20 = float(os.getenv("TRADING_MEANREV_W_SMA20", "0.30"))
+MEANREV_W_BB = float(os.getenv("TRADING_MEANREV_W_BB", "0.30"))
+MEANREV_W_RSI = float(os.getenv("TRADING_MEANREV_W_RSI", "0.20"))
+MEANREV_W_VWAP = float(os.getenv("TRADING_MEANREV_W_VWAP", "0.20"))
+MEANREV_BUY_THRESHOLD = float(os.getenv("TRADING_MEANREV_BUY_THRESHOLD", "0.35"))
+MEANREV_SELL_THRESHOLD = float(os.getenv("TRADING_MEANREV_SELL_THRESHOLD", "-0.35"))
+MEANREV_SMA_DEV_SCALE_PCT = float(os.getenv("TRADING_MEANREV_SMA_DEV_SCALE_PCT", "1.2"))
+MEANREV_VWAP_DEV_SCALE_PCT = float(os.getenv("TRADING_MEANREV_VWAP_DEV_SCALE_PCT", "0.8"))
+MEANREV_TREND_DAMPEN = float(os.getenv("TRADING_MEANREV_TREND_DAMPEN", "0.45"))
+
+# --- Volatility agent regimes (ATR % of price) ---
+VOL_ATR_LOW = float(os.getenv("TRADING_VOL_ATR_LOW", "0.35"))
+VOL_ATR_HIGH = float(os.getenv("TRADING_VOL_ATR_HIGH", "1.5"))
+VOL_ATR_EXTREME = float(os.getenv("TRADING_VOL_ATR_EXTREME", "3.0"))
+VOL_BB_WIDTH_HIGH = float(os.getenv("TRADING_VOL_BB_WIDTH_HIGH", "3.5"))
+VOL_BB_WIDTH_EXTREME = float(os.getenv("TRADING_VOL_BB_WIDTH_EXTREME", "7.0"))
+
+# --- Risk engine ---
+RISK_DEFAULT_ALLOCATION_PCT = float(os.getenv("TRADING_RISK_ALLOCATION_PCT", "0.02"))
+RISK_ATR_STOP_MULT = float(os.getenv("TRADING_RISK_ATR_STOP_MULT", "2.0"))
+RISK_REWARD_RATIO = float(os.getenv("TRADING_RISK_REWARD_RATIO", "2.0"))
+RISK_MIN_NOTIONAL = float(os.getenv("TRADING_RISK_MIN_NOTIONAL", "1.0"))

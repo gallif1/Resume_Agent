@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable
 from .agents import default_agents, BaseAgent
 from .ai import AIMarketAnalyst
 from .config import (
+    ANALYSIS_TIMEFRAME,
     DATA_DIR,
     DEFAULT_CHART_TIMEFRAME,
     DEFAULT_SYMBOLS,
@@ -31,6 +32,7 @@ from .decision_log import (
 )
 from .event_engine import EventEngine
 from .indicators import IndicatorEngine
+from .indicators.features import FeatureSnapshot, build_feature_snapshot
 from .market_data import MarketDataService
 from .market_data.models import DataFreshness
 from .market_feed import MarketFeed
@@ -38,6 +40,7 @@ from .models import AgentVote, Portfolio, Side, SystemState, Tick
 from .outcomes import OutcomeStore
 from .market_data.candle_store import get_market_db
 from .market_snapshot import build_market_snapshot
+from .risk_engine import RiskEngine
 from .unified_decision import build_unified_decision
 from . import asset_config as asset_config_mod
 
@@ -56,8 +59,10 @@ class TradingRuntime:
         self.events = EventEngine()
         self.indicators = IndicatorEngine()
         self.decision_engine = DecisionEngine()
+        self.risk_engine = RiskEngine()
         self.agents: list[BaseAgent] = default_agents()
         self.ai = AIMarketAnalyst()
+        self.analysis_timeframe = ANALYSIS_TIMEFRAME
         self.portfolio = Portfolio(cash=STARTING_CASH)
         self.tick_count = 0
         self.started_at: float | None = None
@@ -200,6 +205,7 @@ class TradingRuntime:
             "market": market_rows,
             "price_history": self._price_history(),
             "chart_timeframe": self.chart_timeframe,
+            "analysis_timeframe": self.analysis_timeframe,
             "market_meta": (
                 {"source": "SIMULATED", "simulated": True}
                 if self.use_simulated
@@ -445,31 +451,41 @@ class TradingRuntime:
         )
 
     def _apply_snapshot_to_vote(self, vote: AgentVote, snap: dict[str, Any]) -> AgentVote:
-        """Attach snapshot inputs; reduce confidence / force HOLD when stale."""
+        """Attach INFORMATIONAL snapshot context; do not pretend it drove the vote.
+
+        Indicators used for the decision already live on vote.used_for_decision /
+        vote.components from the FeatureSnapshot scoring path.
+        """
         quality = snap.get("data_quality") or {}
         stale = bool(quality.get("stale"))
         missing = quality.get("missing_fields") or []
         human = (snap.get("market_structure") or {}).get("human_levels") or []
         inputs = dict(vote.inputs or {})
-        inputs["market_snapshot_keys"] = [
+        info = dict(vote.informational or {})
+        info["market_snapshot_keys"] = [
             "multi_timeframe",
             "indicators",
             "market_structure",
             "portfolio_risk",
             "data_quality",
         ]
-        inputs["timeframe_signals"] = snap.get("multi_timeframe")
-        inputs["indicators_used"] = {
+        info["timeframe_signals"] = snap.get("multi_timeframe")
+        info["chart_indicators_informational"] = {
             k: (snap.get("indicators") or {}).get(k)
             for k in ("rsi_14", "sma_20", "sma_50", "macd", "atr_14", "short_trend")
         }
-        inputs["human_levels"] = human
-        inputs["data_quality"] = quality
-        inputs["portfolio_risk"] = {
+        info["human_levels"] = human
+        info["data_quality"] = quality
+        info["portfolio_risk"] = {
             "available_cash": (snap.get("portfolio_risk") or {}).get("available_cash"),
             "position_size": (snap.get("portfolio_risk") or {}).get("position_size"),
             "cooldown_status": (snap.get("portfolio_risk") or {}).get("cooldown_status"),
         }
+        inputs["INFORMATIONAL_ONLY"] = {
+            **(inputs.get("INFORMATIONAL_ONLY") or {}),
+            **{k: info[k] for k in ("chart_indicators_informational", "human_levels", "data_quality")},
+        }
+        inputs["USED_FOR_DECISION"] = inputs.get("USED_FOR_DECISION") or vote.used_for_decision
         if stale or "candles" in missing or "live_quote" in missing:
             vote.confidence = min(float(vote.confidence), 0.35)
             if vote.side != Side.HOLD and (stale or "candles" in missing):
@@ -483,8 +499,42 @@ class TradingRuntime:
             else:
                 inputs["confidence_reduced_for_stale"] = True
         vote.inputs = inputs
+        vote.informational = info
+        if not vote.timeframe:
+            vote.timeframe = self.analysis_timeframe
         return vote
 
+    def _build_feature_snapshot(
+        self,
+        tick: Tick,
+        candles: list,
+        agent_snap: dict[str, Any],
+    ) -> FeatureSnapshot:
+        """One shared FeatureSnapshot for all agents in this decision cycle."""
+        from .market_data.models import Candle as MCandle
+
+        tf = self.analysis_timeframe
+        if not candles and self.use_simulated:
+            hist = self.events.history_prices(tick.symbol)
+            candles = [
+                MCandle(
+                    ts=time.time() - (len(hist) - i),
+                    open=p,
+                    high=p,
+                    low=p,
+                    close=p,
+                    volume=0,
+                )
+                for i, p in enumerate(hist)
+            ]
+        return build_feature_snapshot(
+            symbol=tick.symbol,
+            timeframe=tf,
+            candles=candles,
+            price=tick.price,
+            multi_timeframe=agent_snap.get("multi_timeframe") or {},
+            data_quality=agent_snap.get("data_quality") or {},
+        )
     def _persist_chart_events(
         self,
         decision,
@@ -798,6 +848,9 @@ class TradingRuntime:
         heuristic_votes: list[AgentVote],
         all_votes: list[AgentVote],
         decision,
+        *,
+        timeframe: str | None = None,
+        market_timestamp: float | None = None,
     ):
         """If candidate BUY/SELL is about to fill, ensure fresh AI and re-decide."""
         pretrade_meta: dict[str, Any] | None = None
@@ -826,7 +879,13 @@ class TradingRuntime:
         # Replace any prior AI vote, then re-aggregate.
         without_ai = [v for v in all_votes if v.agent_id != "ai_analyst"]
         refreshed = without_ai + [ai_vote]
-        new_decision = self.decision_engine.decide(tick.symbol, refreshed, tick.price)
+        new_decision = self.decision_engine.decide(
+            tick.symbol,
+            refreshed,
+            tick.price,
+            timeframe=timeframe or self.analysis_timeframe,
+            market_timestamp=market_timestamp,
+        )
         if new_decision is None:
             return refreshed, decision, pretrade_meta
         return refreshed, new_decision, pretrade_meta
@@ -870,10 +929,11 @@ class TradingRuntime:
             if not asset_config_mod.can_analyze(tick.symbol):
                 continue
 
-            # Prefer real candle closes for heuristics; fall back to short event history.
+            # Prefer analysis-timeframe candles for heuristics; fall back to short event history.
             candles = []
+            analysis_tf = self.analysis_timeframe
             if not self.use_simulated:
-                candles = self.market.get_candles(tick.symbol, "5m") or self.market.get_candles(
+                candles = self.market.get_candles(tick.symbol, analysis_tf) or self.market.get_candles(
                     tick.symbol, "1m"
                 )
                 # Update forming candle in store from live tick (no fabricated history).
@@ -922,16 +982,25 @@ class TradingRuntime:
             except Exception:  # noqa: BLE001
                 agent_snap = {"data_quality": {"stale": True, "missing_fields": ["snapshot_error"]}}
 
+            # Shared FeatureSnapshot — SAME symbol/TF/timestamp for all agents.
+            features = self._build_feature_snapshot(tick, candles, agent_snap)
+            market_ts = features.candle_timestamp
+
             heuristic_votes = []
             for agent in self.agents:
-                v = agent.vote(tick, history, new_events)
+                v = agent.vote(tick, history, new_events, features=features)
                 heuristic_votes.append(self._apply_snapshot_to_vote(v, agent_snap))
             votes_out.extend(v.to_dict() for v in heuristic_votes)
 
+            heuristic_compact = self.ai.compact_heuristic_context(heuristic_votes)
             ai_snapshot = {
-                **indicator.compact_for_ai(),
+                **features.compact_for_ai(),
+                "symbol": tick.symbol,
+                "timeframe": analysis_tf,
+                "analysis_timeframe": analysis_tf,
+                "candle_timestamp": market_ts,
                 "events": [e.kind for e in new_events if e.symbol == tick.symbol][:5],
-                "heuristic_votes": {v.agent_id: v.side.value for v in heuristic_votes},
+                "heuristic_votes": heuristic_compact,
                 "multi_timeframe": agent_snap.get("multi_timeframe"),
                 "human_levels": (agent_snap.get("market_structure") or {}).get("human_levels"),
                 "data_quality": agent_snap.get("data_quality"),
@@ -951,13 +1020,21 @@ class TradingRuntime:
                 ai_votes_out.append(ai_vote.to_dict())
                 votes_out.append(ai_vote.to_dict())
 
-            decision = self.decision_engine.decide(tick.symbol, all_votes, tick.price)
+            decision = self.decision_engine.decide(
+                tick.symbol,
+                all_votes,
+                tick.price,
+                timeframe=analysis_tf,
+                market_timestamp=market_ts,
+            )
             if decision is None:
                 continue
 
             # Candidate BUY/SELL → pretrade AI validation + re-decide before fill.
             all_votes, decision, pretrade_meta = self._maybe_pretrade_ai(
-                tick, ai_snapshot, heuristic_votes, all_votes, decision
+                tick, ai_snapshot, heuristic_votes, all_votes, decision,
+                timeframe=analysis_tf,
+                market_timestamp=market_ts,
             )
             if pretrade_meta and any(v.agent_id == "ai_analyst" for v in all_votes):
                 ai_v = next(v for v in all_votes if v.agent_id == "ai_analyst")
@@ -967,76 +1044,74 @@ class TradingRuntime:
 
             block_reason: str | None = None
             cooldown_remaining: float | None = None
+            risk_verdict = None
             cash_before = self.portfolio.cash
             pos_before = None
             if decision.symbol in self.portfolio.positions:
                 p = self.portfolio.positions[decision.symbol]
                 pos_before = {"quantity": p.quantity, "avg_price": p.avg_price}
 
-            if decision.executed:
-                last_fill = self._last_fill_ts.get(tick.symbol, 0.0)
-                elapsed = time.time() - last_fill
-                if last_fill and elapsed < FILL_COOLDOWN_SEC:
-                    cooldown_remaining = FILL_COOLDOWN_SEC - elapsed
-                    decision.executed = False
-                    decision.fill_price = None
-                    decision.quantity = None
-                    block_reason = (
-                        f"המתנה פעילה ({FILL_COOLDOWN_SEC:.0f}ש׳); "
-                        f"נותרו {cooldown_remaining:.0f}ש׳"
-                    )
-                    decision.rationale = f"{decision.rationale} · {block_reason}"
-                else:
-                    # Asset-config / portfolio-controls gate before paper fill.
-                    est_qty = None
-                    if decision.side.value == "BUY":
-                        est_qty = asset_config_mod.estimate_paper_quantity(
-                            self.portfolio,
-                            "BUY",
-                            tick.price,
-                            decision.confidence,
-                        )
-                    else:
-                        pos = self.portfolio.positions.get(tick.symbol)
-                        if pos and pos.quantity > 0:
-                            frac = 0.75 if decision.confidence >= 0.7 else 0.5
-                            est_qty = pos.quantity * frac
-                    ok_trade, deny_he = asset_config_mod.can_open_order(
-                        tick.symbol,
-                        decision.side.value,
-                        est_qty,
-                        tick.price,
-                        decision.confidence,
-                        self.portfolio,
-                        timeframe=self.chart_timeframe,
-                    )
-                    if not ok_trade:
+            # Deterministic Risk Engine — final veto before paper broker.
+            risk_verdict = self.risk_engine.evaluate(
+                decision=decision,
+                portfolio=self.portfolio,
+                price=tick.price,
+                symbol=tick.symbol,
+                features=features.to_dict(),
+                last_fill_ts=self._last_fill_ts.get(tick.symbol),
+                analysis_timeframe=analysis_tf,
+            )
+            if decision.side in {Side.BUY, Side.SELL}:
+                if risk_verdict.status == "BLOCKED" or not risk_verdict.approved:
+                    if decision.executed:
                         decision.executed = False
                         decision.fill_price = None
                         decision.quantity = None
-                        block_reason = deny_he
-                        decision.rationale = f"{decision.rationale} · {block_reason}"
-                    else:
-                        self.portfolio = self.decision_engine.apply_fill(
-                            self.portfolio, decision
+                    block_reason = risk_verdict.reason
+                    if risk_verdict.reason_code == "cooldown":
+                        cooldown_remaining = (risk_verdict.details or {}).get(
+                            "cooldown_remaining_sec"
                         )
-                        if decision.executed:
-                            self._last_fill_ts[tick.symbol] = time.time()
-                            try:
-                                controls = asset_config_mod.load_portfolio_controls()
-                                controls.daily_trade_count = int(
-                                    controls.daily_trade_count
-                                ) + 1
-                                asset_config_mod.save_portfolio_controls(controls)
-                            except Exception:  # noqa: BLE001
-                                pass
-                        else:
-                            block_reason = (
-                                "אין מספיק מזומן למינימום קנייה"
-                                if decision.side.value == "BUY"
-                                else "אין פוזיציה פתוחה למכירה"
-                            )
-                            decision.rationale = f"{decision.rationale} · {block_reason}"
+                    decision.rationale = f"{decision.rationale} · Risk: {block_reason}"
+                    decision.engine = {
+                        **(decision.engine or {}),
+                        "risk": risk_verdict.to_dict(),
+                    }
+                elif risk_verdict.approved and decision.executed:
+                    decision.engine = {
+                        **(decision.engine or {}),
+                        "risk": risk_verdict.to_dict(),
+                    }
+                    self.portfolio = self.decision_engine.apply_fill(
+                        self.portfolio, decision
+                    )
+                    if decision.executed:
+                        self._last_fill_ts[tick.symbol] = time.time()
+                        try:
+                            controls = asset_config_mod.load_portfolio_controls()
+                            controls.daily_trade_count = int(
+                                controls.daily_trade_count
+                            ) + 1
+                            asset_config_mod.save_portfolio_controls(controls)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        block_reason = (
+                            "אין מספיק מזומן למינימום קנייה"
+                            if decision.side.value == "BUY"
+                            else "אין פוזיציה פתוחה למכירה"
+                        )
+                        decision.rationale = f"{decision.rationale} · {block_reason}"
+                else:
+                    decision.engine = {
+                        **(decision.engine or {}),
+                        "risk": risk_verdict.to_dict(),
+                    }
+            elif risk_verdict is not None:
+                decision.engine = {
+                    **(decision.engine or {}),
+                    "risk": risk_verdict.to_dict(),
+                }
 
             quote = None if self.use_simulated else self.market.get_quote(tick.symbol)
             quote_meta = (
@@ -1258,6 +1333,7 @@ class TradingRuntime:
                     "candle_updates": candle_updates,
                     "price_history": self._price_history(),
                     "chart_timeframe": self.chart_timeframe,
+                    "analysis_timeframe": self.analysis_timeframe,
                     "events": [e.to_dict() for e in new_events],
                     "votes": votes_out,
                     "ai_votes": ai_votes_out,

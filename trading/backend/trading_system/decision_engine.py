@@ -17,15 +17,26 @@ Calibrated confidence (exposed in engine.confidence_debug):
 
 HOLD disagreement and opposing BUY/SELL both reduce confidence. Near-99%
 requires near-unanimous strong support with minimal HOLD/opposition.
+
+Before aggregation, votes must share symbol / analysis timeframe /
+market snapshot timestamp (when provided).
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import Counter
 from typing import Any
 
+from .config import (
+    ANALYSIS_TIMEFRAME,
+    MIN_EXECUTION_CONFIDENCE,
+    VOTE_SNAPSHOT_TOLERANCE_SEC,
+)
 from .models import AgentVote, Decision, Portfolio, Position, Side
+
+logger = logging.getLogger("trading.decision")
 
 
 def calibrated_confidence(
@@ -86,7 +97,6 @@ def calibrated_confidence(
         "clamp_max": 0.95,
         "final_confidence": round(confidence, 4),
         "formula": formula,
-        # Backward-compatible aliases used by older UI copy formatters
         "raw_score": round(winning_score, 4),
         "action_total_buy_sell": round(buy_score + sell_score, 4),
         "total_all_weights": round(total_weight, 4),
@@ -101,12 +111,83 @@ def calibrated_confidence(
     return confidence, debug
 
 
+def filter_compatible_votes(
+    symbol: str,
+    votes: list[AgentVote],
+    *,
+    timeframe: str | None = None,
+    market_timestamp: float | None = None,
+    tolerance_sec: float | None = None,
+) -> tuple[list[AgentVote], list[dict[str, Any]]]:
+    """Keep only votes matching symbol / TF / snapshot timestamp.
+
+    Legacy votes with empty timeframe / missing timestamp are allowed
+    (backward compatible with unit tests).
+    """
+    tol = VOTE_SNAPSHOT_TOLERANCE_SEC if tolerance_sec is None else tolerance_sec
+    expected_tf = (timeframe or ANALYSIS_TIMEFRAME or "").strip()
+    kept: list[AgentVote] = []
+    skipped: list[dict[str, Any]] = []
+    sym_u = symbol.upper()
+
+    for vote in votes:
+        reasons: list[str] = []
+        if vote.symbol and vote.symbol.upper() != sym_u:
+            reasons.append(
+                f"symbol mismatch vote={vote.symbol} decision={sym_u}"
+            )
+        vote_tf = (vote.timeframe or "").strip()
+        if expected_tf and vote_tf and vote_tf != expected_tf:
+            reasons.append(
+                f"timeframe mismatch vote={vote_tf} decision={expected_tf}"
+            )
+        if (
+            market_timestamp is not None
+            and vote.market_timestamp is not None
+            and tol >= 0
+        ):
+            delta = abs(float(vote.market_timestamp) - float(market_timestamp))
+            if delta > tol:
+                reasons.append(
+                    f"stale/mismatched snapshot delta={delta:.1f}s "
+                    f"tol={tol:.1f}s"
+                )
+        if reasons:
+            logger.info(
+                "SKIPPED %s vote: %s",
+                vote.agent_id,
+                "; ".join(reasons),
+            )
+            skipped.append(
+                {
+                    "agent_id": vote.agent_id,
+                    "symbol": vote.symbol,
+                    "timeframe": vote.timeframe,
+                    "market_timestamp": vote.market_timestamp,
+                    "reasons": reasons,
+                }
+            )
+            continue
+        kept.append(vote)
+    return kept, skipped
+
+
 class DecisionEngine:
-    def __init__(self, min_confidence: float = 0.45, ai_weight: float | None = None):
+    def __init__(
+        self,
+        min_confidence: float = 0.45,
+        ai_weight: float | None = None,
+        min_execution_confidence: float | None = None,
+    ):
         from .config import AI_AGENT_WEIGHT
 
         self.min_confidence = min_confidence
         self.ai_weight = AI_AGENT_WEIGHT if ai_weight is None else ai_weight
+        self.min_execution_confidence = (
+            MIN_EXECUTION_CONFIDENCE
+            if min_execution_confidence is None
+            else min_execution_confidence
+        )
         self._decisions: list[Decision] = []
 
     def clear(self) -> int:
@@ -118,12 +199,37 @@ class DecisionEngine:
     def recent(self) -> list[dict]:
         return [d.to_dict() for d in self._decisions[-50:]]
 
-    def decide(self, symbol: str, votes: list[AgentVote], price: float) -> Decision | None:
+    def decide(
+        self,
+        symbol: str,
+        votes: list[AgentVote],
+        price: float,
+        *,
+        timeframe: str | None = None,
+        market_timestamp: float | None = None,
+    ) -> Decision | None:
         if not votes:
             return None
+
+        tf = timeframe or ANALYSIS_TIMEFRAME
+        compatible, skipped = filter_compatible_votes(
+            symbol,
+            votes,
+            timeframe=tf,
+            market_timestamp=market_timestamp,
+        )
+        if not compatible:
+            logger.warning(
+                "No compatible votes for %s tf=%s (skipped=%d)",
+                symbol,
+                tf,
+                len(skipped),
+            )
+            return None
+
         weights: dict[Side, float] = {Side.BUY: 0.0, Side.SELL: 0.0, Side.HOLD: 0.0}
         contributions: list[dict[str, Any]] = []
-        for vote in votes:
+        for vote in compatible:
             w = self.ai_weight if vote.agent_id == "ai_analyst" else 1.0
             weighted = vote.confidence * w
             weights[vote.side] += weighted
@@ -135,6 +241,9 @@ class DecisionEngine:
                     "confidence": round(vote.confidence, 4),
                     "weight_multiplier": w,
                     "weighted_contribution": round(weighted, 4),
+                    "score": vote.score,
+                    "timeframe": vote.timeframe,
+                    "market_timestamp": vote.market_timestamp,
                 }
             )
 
@@ -149,9 +258,9 @@ class DecisionEngine:
         else:
             side, score = Side.HOLD, hold_score
 
-        confidence, conf_debug = calibrated_confidence(side, weights, votes)
+        confidence, conf_debug = calibrated_confidence(side, weights, compatible)
 
-        counts = Counter(v.side.value for v in votes)
+        counts = Counter(v.side.value for v in compatible)
         buy_n = counts.get("BUY", 0)
         sell_n = counts.get("SELL", 0)
         hold_n = counts.get("HOLD", 0)
@@ -185,6 +294,29 @@ class DecisionEngine:
             f"(ציון פעולה {score:.2f}, ביטחון {confidence:.0%})"
         )
 
+        execution_gate: dict[str, Any] | None = None
+        can_execute = side != Side.HOLD and score >= self.min_confidence
+        if can_execute and confidence < self.min_execution_confidence:
+            execution_gate = {
+                "code": "min_execution_confidence",
+                "reason": (
+                    f"ביטחון מכויל {confidence:.0%} מתחת לסף ביצוע "
+                    f"{self.min_execution_confidence:.0%} — BLOCKED"
+                ),
+                "calibrated_confidence": round(confidence, 4),
+                "min_execution_confidence": self.min_execution_confidence,
+                "analytical_side": side.value,
+            }
+            can_execute = False
+            rationale = f"{rationale} · {execution_gate['reason']}"
+            logger.info(
+                "EXECUTION GATE %s %s conf=%.3f < %.3f",
+                symbol,
+                side.value,
+                confidence,
+                self.min_execution_confidence,
+            )
+
         engine = {
             "vote_counts": {"BUY": buy_n, "SELL": sell_n, "HOLD": hold_n},
             "weighted_contributions": contributions,
@@ -197,10 +329,15 @@ class DecisionEngine:
             "hold_score": round(hold_score, 4),
             "hold_gate": round(hold_score * 0.85, 4),
             "threshold": self.min_confidence,
+            "min_execution_confidence": self.min_execution_confidence,
             "ai_weight": self.ai_weight,
             "winning_action": side.value,
             "explanation": explanation,
             "confidence_debug": conf_debug,
+            "skipped_votes": skipped,
+            "analysis_timeframe": tf,
+            "market_timestamp": market_timestamp,
+            "execution_gate": execution_gate,
         }
 
         decision = Decision(
@@ -208,11 +345,14 @@ class DecisionEngine:
             symbol=symbol,
             side=side,
             confidence=round(confidence, 3),
-            votes=[v.to_dict() for v in votes],
+            votes=[v.to_dict() for v in compatible],
             rationale=rationale,
             engine=engine,
+            timeframe=tf,
+            market_timestamp=market_timestamp,
+            analytical_side=side.value,
         )
-        if side != Side.HOLD and score >= self.min_confidence:
+        if can_execute:
             decision.executed = True
             decision.fill_price = price
             decision.quantity = 0.0
