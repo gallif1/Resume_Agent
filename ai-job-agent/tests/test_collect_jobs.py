@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from collect_jobs import (
@@ -30,6 +31,11 @@ SAMPLE_DRUSHIM_HTML = """
 </body></html>
 """
 
+# Keep within JOB_MAX_AGE_DAYS (30) so collect_* tests are not calendar-flaky.
+_SAMPLE_DRUSHIM_POSTED = (datetime.now(timezone.utc) - timedelta(days=2)).strftime(
+    "%Y-%m-%d"
+)
+
 SAMPLE_DRUSHIM_API_PAGE = {
     "ResultList": [
         {
@@ -45,7 +51,7 @@ SAMPLE_DRUSHIM_API_PAGE = {
                 "Link": "/job/111/abcd/",
                 "Hash": "ABCD",
                 "JumpDateString": "היום",
-                "DateActual": "2026-09-01T08:00:00Z",
+                "DateActual": f"{_SAMPLE_DRUSHIM_POSTED}T08:00:00Z",
             }
         },
         {
@@ -89,7 +95,7 @@ def test_parse_drushim_api_jobs_extracts_fields():
     assert jobs[0]["job_url"] == "https://www.drushim.co.il/job/111/abcd"
     assert jobs[0]["description"] == "Build APIs"
     assert jobs[0]["source"] == "drushim"
-    assert jobs[0]["posted_date"] == "2026-09-01"
+    assert jobs[0]["posted_date"] == _SAMPLE_DRUSHIM_POSTED
 
 
 def test_build_drushim_api_search_url_pagination():
