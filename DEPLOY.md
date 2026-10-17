@@ -176,6 +176,11 @@ fatal: unpack-objects failed
 images/containers/build-cache לא בשימוש, truncate ל־`*-json.log`,
 journal vacuum, apt clean/autoremove, snap revisions ישנים, לוגי מערכת דחוסים.
 Volumes **לא** נמחקים (שם נשמרים קו״ח / DB).
+קובץ ה־host `.env` (ש־docker-compose דורש) **לא** נמחק בניקוי.
+
+אם הדיפלוי נכשל עם `env file .../.env not found`:
+הקובץ נמחק בטעות או חסר — ה־workflow יוצר stub ריק אוטומטית;
+אפשר גם ידנית: `touch ~/resume-backend/Resume_Agent/.env` ואז Re-run.
 
 אחרי merge של תיקון הניקוי: **Re-run** את ה־workflow (Actions → Deploy → Re-run)
 או `workflow_dispatch` — הסקריפט החדש עולה ב־SCP לפני ה־pull.
