@@ -31,7 +31,9 @@ import {
 import { formatDecisionLogsText, MAX_COPY_CHARS } from "./decisionLogFormat";
 import { copyTextToClipboard } from "./clipboard";
 import { he, stateLabel, sessionLabel, assetModeLabel } from "./i18n/he";
+import AgentInsights from "./AgentInsights";
 import LiveChart from "./LiveChart";
+import { fetchUnifiedDecisions, type UnifiedDecision } from "./api";
 
 type LatestVotes = Record<string, AgentVote>;
 /** agent_id → latest vote for the currently filtered symbol set */
@@ -199,6 +201,7 @@ export default function App() {
   const [marketMeta, setMarketMeta] = useState<MarketMeta | null>(null);
   const [aiStatus, setAiStatus] = useState<AIStatus | null>(null);
   const [performance, setPerformance] = useState<PerformanceStats | null>(null);
+  const [insightDecisions, setInsightDecisions] = useState<UnifiedDecision[]>([]);
   const [candleUpdates, setCandleUpdates] = useState<
     Array<{ symbol: string; timeframe: string; candle: import("./api").OhlcCandle; provider?: string }>
   >([]);
@@ -709,6 +712,26 @@ export default function App() {
   const onChartSymbolChange = useCallback((sym: string) => {
     setChartSymbol(sym);
   }, []);
+
+  useEffect(() => {
+    const sym = selectedChartSymbol;
+    if (!sym) {
+      setInsightDecisions([]);
+      return;
+    }
+    let cancelled = false;
+    void fetchUnifiedDecisions(sym, { timeframe: chartTimeframe })
+      .then((res) => {
+        if (!cancelled) setInsightDecisions(res.unified || []);
+      })
+      .catch(() => {
+        if (!cancelled) setInsightDecisions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedChartSymbol, chartTimeframe, decisionLogs.length, decisions.length]);
+
   const toggleAgentExpand = (id: string) => {
     setExpandedAgents((prev) => ({ ...prev, [id]: !prev[id] }));
   };
@@ -857,7 +880,10 @@ export default function App() {
         assetModes={assetModeMap}
         onOpenAssetSettings={openAssetSettings}
         onSymbolChange={onChartSymbolChange}
+        decisionLogs={decisionLogs}
+        performance={performance}
       />
+      <AgentInsights decisions={insightDecisions} performance={performance} />
       <div className="grid">
         <section className="panel asset-control-panel" ref={assetPanelRef} style={{ gridColumn: "1 / -1" }}>
           <div className="panel-head-row">

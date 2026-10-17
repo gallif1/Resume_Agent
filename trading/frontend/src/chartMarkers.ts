@@ -8,6 +8,7 @@ export type MarkerKind =
   | "signal"
   | "hold"
   | "blocked"
+  | "pending"
   | "vote_buy"
   | "vote_sell"
   | "vote_hold"
@@ -99,9 +100,70 @@ export function kindFromUnified(u: UnifiedDecision): MarkerKind {
   if (status === "FILLED") {
     return action === "SELL" ? "fill_sell" : "fill_buy";
   }
+  if (status === "PENDING" || status === "SUBMITTED" || status === "ACCEPTED") {
+    return "pending";
+  }
   if (status === "BLOCKED" || status === "REJECTED") return "blocked";
   if (status === "HOLD" || action === "HOLD") return "hold";
   return "signal";
+}
+
+/** Compact chart label: BUY · 2/3, BLOCKED · RISK, SIGNAL · HOLD */
+export function markerLabelFromDecision(u: UnifiedDecision | DecisionMarkerItem): string {
+  const action = String(
+    ("final_action" in u ? u.final_action : u.action) || "HOLD"
+  ).toUpperCase();
+  const status = String(u.status || "").toUpperCase();
+  const agreement =
+    ("agreement" in u ? u.agreement : undefined) ||
+    (u as DecisionMarkerItem).agreement;
+  const total = Number(agreement?.total || 0);
+  const supporting = Number(agreement?.supporting || 0);
+  const votes =
+    ("agent_votes" in u ? u.agent_votes : undefined) ||
+    (u as DecisionMarkerItem).agents ||
+    [];
+  const voteTotal = total || (Array.isArray(votes) ? votes.length : 0);
+  const voteSupport =
+    total > 0
+      ? supporting
+      : Array.isArray(votes)
+        ? votes.filter((v) => {
+            const side = String(
+              (v as { side?: string; action?: string }).side ||
+                (v as { action?: string }).action ||
+                ""
+            ).toUpperCase();
+            return side === action;
+          }).length
+        : 0;
+
+  if (status === "FILLED") {
+    return voteTotal > 0 ? `${action} · ${voteSupport}/${voteTotal}` : action;
+  }
+  if (status === "BLOCKED" || status === "REJECTED") {
+    const reason = String(
+      ("block_reason" in u ? u.block_reason : undefined) ||
+        (u as DecisionMarkerItem).skipReason ||
+        ""
+    ).toUpperCase();
+    const tag =
+      reason.includes("COOLDOWN") || reason.includes("המתנה")
+        ? "COOLDOWN"
+        : reason.includes("FUND") || reason.includes("CASH") || reason.includes("מזומן")
+          ? "FUNDS"
+          : reason.includes("RISK") || reason.includes("סיכון") || reason
+            ? "RISK"
+            : "BLOCK";
+    return `BLOCKED · ${tag}`;
+  }
+  if (status === "PENDING" || status === "SUBMITTED" || status === "ACCEPTED") {
+    return `PENDING · ${action}`;
+  }
+  if (status === "HOLD" || action === "HOLD") {
+    return "SIGNAL · HOLD";
+  }
+  return voteTotal > 0 ? `${action} · ${voteSupport}/${voteTotal}` : `SIGNAL · ${action}`;
 }
 
 /** Primary UI markers: one per UnifiedDecision (not every vote / raw event). */
@@ -158,6 +220,12 @@ export function unifiedToMarkerItems(
         side: a.side,
         confidence: a.confidence,
         rationale: a.rationale,
+        score: a.score,
+        components: a.components,
+        used_for_decision: a.used_for_decision,
+        timeframe: a.timeframe,
+        volatility_regime: a.volatility_regime,
+        ts: a.ts,
       })),
       payload: {
         summary: u.summary,
@@ -208,21 +276,19 @@ function buildGroupLabel(group: DecisionMarkerItem[], primary: MarkerKind): stri
   const fills = group.filter((g) => g.kind === "fill_buy" || g.kind === "fill_sell");
   if (fills.length === 1) {
     const f = fills[0];
-    const qty = f.quantity != null ? Number(f.quantity).toFixed(4) : "";
-    const px = f.price != null ? Number(f.price).toFixed(2) : "";
-    return `${f.action} ${qty} @ ${px}`.trim();
+    if (f.unified) return markerLabelFromDecision(f.unified);
+    return markerLabelFromDecision(f);
   }
   if (fills.length > 1) {
-    return `${fills.length} fills`;
+    return `${fills.length} FILLS`;
   }
-  if (primary === "blocked") return "blocked";
-  if (primary === "hold") return "HOLD";
-  if (primary === "signal") {
-    const top = [...group].sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
-    const pct = top?.confidence != null ? `${Math.round(top.confidence * 100)}%` : "";
-    return `${top?.action || "SIGNAL"} ${pct}`.trim();
-  }
-  return primary.replace(/_/g, " ");
+  const top = [...group].sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+  if (top?.unified) return markerLabelFromDecision(top.unified);
+  if (top) return markerLabelFromDecision(top);
+  if (primary === "blocked") return "BLOCKED · RISK";
+  if (primary === "pending") return "PENDING";
+  if (primary === "hold") return "SIGNAL · HOLD";
+  return primary.replace(/_/g, " ").toUpperCase();
 }
 
 export type SeriesMarkerOut = {
@@ -247,31 +313,42 @@ export function toSeriesMarkers(groups: GroupedMarker[]): SeriesMarkerOut[] {
       color = "#22c55e";
       shape = "arrowUp";
       position = "belowBar";
-      size = 1.4;
+      size = 1.2;
     } else if (g.primary === "fill_sell") {
       color = "#ef4444";
       shape = "arrowDown";
       position = "aboveBar";
-      size = 1.4;
+      size = 1.2;
     } else if (g.primary === "blocked" || g.primary === "rejected") {
-      color = "#f97316";
+      color = "#f59e0b";
       shape = "square";
       position = "aboveBar";
       size = 0.9;
+    } else if (g.primary === "pending") {
+      color = "#94a3b8";
+      shape = "circle";
+      position = "inBar";
+      size = 0.75;
     } else if (g.primary === "hold" || g.primary === "vote_hold") {
-      color = "#9aa4b2";
+      color = "#64748b";
       shape = "square";
       position = "inBar";
       size = 0.5;
     } else if (g.primary === "signal" || g.primary === "vote_buy" || g.primary === "vote_sell") {
-      color = "#4da3ff";
+      // Outlined-style signal: lighter blue circle (LWC has no stroke-only shape).
+      color = "#60a5fa";
       shape = "circle";
       position = g.primary === "vote_sell" ? "aboveBar" : "belowBar";
-      size = 0.8;
+      size = 0.7;
     }
 
     const fillCount = g.fillCount || g.items.filter((i) => i.kind.startsWith("fill_")).length;
-    const text = fillCount > 1 ? `×${fillCount}` : g.count > 1 && fillCount === 0 ? `×${g.count}` : "";
+    // Prefer compact decision labels; fall back to count when many overlap.
+    let text = g.label || "";
+    if (fillCount > 1) text = `${fillCount} FILLS`;
+    else if (g.count > 1 && fillCount === 0 && text.length > 18) text = `×${g.count}`;
+    // Keep series marker text short for LWC readability.
+    if (text.length > 16) text = text.slice(0, 15);
     return {
       time: g.time,
       position,

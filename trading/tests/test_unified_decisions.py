@@ -175,6 +175,46 @@ def test_historical_grouping_helper_documented():
     assert any(len(g) == 2 for g in groups)
 
 
+def test_compact_agent_votes_preserve_measured_fields():
+    decision = Decision(
+        id="obs1",
+        symbol="SOL-USD",
+        side=Side.BUY,
+        confidence=0.72,
+        votes=[],
+        rationale="test",
+        executed=False,
+    )
+    votes = [
+        AgentVote(
+            "momentum",
+            "מומנטום",
+            "SOL-USD",
+            Side.BUY,
+            0.8,
+            "עולה",
+            score=0.42,
+            components={"rsi": 0.3, "macd": 0.2},
+            used_for_decision={"rsi_14": 31.4, "macd_hist": 0.01},
+            volatility_regime="normal",
+            timeframe="5m",
+        )
+    ]
+    unified = build_unified_decision(decision=decision, votes=votes)
+    av = unified["agent_votes"][0]
+    assert av["score"] == 0.42
+    assert av["components"]["rsi"] == 0.3
+    assert av["used_for_decision"]["rsi_14"] == 31.4
+    assert av["timeframe"] == "5m"
+    assert av["volatility_regime"] == "normal"
+    # Empty rationale stays empty — UI labels unavailable; do not invent.
+    empty = build_unified_decision(
+        decision=decision,
+        votes=[AgentVote("x", "X", "SOL-USD", Side.HOLD, 0.1, "")],
+    )
+    assert empty["agent_votes"][0]["rationale"] == ""
+
+
 def test_paper_events_migration_adds_decision_id(tmp_path):
     import sqlite3
 

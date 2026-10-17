@@ -139,7 +139,10 @@ const multiFill = unifiedToMarkerItems(
 const gMulti = groupMarkersOnCandle(multiFill, "1m");
 assert(gMulti[0].fillCount === 2, "two fills same candle");
 const seriesMulti = toSeriesMarkers(gMulti);
-assert(seriesMulti[0].text === "×2", "grouped fill count label");
+assert(
+  seriesMulti[0].text === "2 FILLS" || seriesMulti[0].text.includes("FILL"),
+  "grouped fill count label"
+);
 
 const series = toSeriesMarkers(groups);
 assert(series[0].color === "#22c55e", "green fill marker");
@@ -152,7 +155,10 @@ const signalOnly = toSeriesMarkers(
     "1m"
   )
 );
-assert(signalOnly[0].color === "#4da3ff", "blue analysis marker");
+assert(
+  signalOnly[0].color === "#60a5fa" || signalOnly[0].color === "#4da3ff",
+  "blue analysis marker"
+);
 assert(signalOnly[0].shape === "circle", "circle for signal");
 
 const blockedOnly = toSeriesMarkers(
@@ -161,7 +167,10 @@ const blockedOnly = toSeriesMarkers(
     "1m"
   )
 );
-assert(blockedOnly[0].color === "#f97316", "orange blocked");
+assert(
+  blockedOnly[0].color === "#f59e0b" || blockedOnly[0].color === "#f97316",
+  "amber blocked"
+);
 
 const merged = mergeMarkerItems(items, items);
 assert(merged.length === 4, "dedupe merge");

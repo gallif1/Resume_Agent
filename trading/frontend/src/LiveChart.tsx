@@ -20,7 +20,9 @@ import {
 } from "lightweight-charts";
 import type {
   AgentVote,
+  DecisionLog,
   MarketMeta,
+  PerformanceStats,
   TradeMarker,
   TradingAssetMode,
   UnifiedDecision,
@@ -53,6 +55,20 @@ import {
 } from "./chartMarkers";
 import { copyTextToClipboard } from "./clipboard";
 import { assetModeLabel, he } from "./i18n/he";
+import AgentTimeline from "./AgentTimeline";
+import DecisionExplanation from "./DecisionExplanation";
+import LiveDecisionBar from "./LiveDecisionBar";
+import ReplayControls from "./ReplayControls";
+import {
+  DEFAULT_CC_FILTERS,
+  DEFAULT_REPLAY,
+  discoverAgents,
+  filterMarkerItems,
+  latestDecisionForSymbol,
+  sortedDecisionsForReplay,
+  type CommandCenterFilters,
+  type ReplayState,
+} from "./commandCenter";
 
 const DEFAULT_TFS = ["1m", "5m", "15m", "1h", "4h", "1d"];
 const SIZE_KEY = "trading.chart.sizeMode";
@@ -154,6 +170,8 @@ type Props = {
   assetModes?: Record<string, TradingAssetMode | string>;
   onOpenAssetSettings?: (symbol: string) => void;
   onSymbolChange?: (symbol: string) => void;
+  decisionLogs?: DecisionLog[];
+  performance?: PerformanceStats | null;
 };
 
 function fmtPrice(n: number) {
@@ -297,8 +315,11 @@ export default function LiveChart({
   assetModes = {},
   onOpenAssetSettings,
   onSymbolChange,
+  decisionLogs = [],
+  performance: _performance = null,
 }: Props) {
   void _votes; // votes are not primary markers (UnifiedDecision only)
+  void _performance; // surfaced via App AgentInsights; reserved for chart badges
   const [symbol, setSymbol] = useState(symbols[0] || "BTC-USD");
   const active = symbols.includes(symbol) ? symbol : symbols[0] || symbol;
 
@@ -341,14 +362,31 @@ export default function LiveChart({
   const [hasMore, setHasMore] = useState(false);
   const [indicators, setIndicators] = useState<Record<string, Array<{ time: number; value: number }>>>({});
   const [indConfig, setIndConfig] = useState<IndicatorConfig>(() => loadIndicatorConfig());
-  const [showVotes, setShowVotes] = useState(true);
-  const [showFills, setShowFills] = useState(true);
-  const [showBuy, setShowBuy] = useState(true);
-  const [showSell, setShowSell] = useState(true);
-  const [showHold, setShowHold] = useState(false);
-  const [showBlocked, setShowBlocked] = useState(true);
+  const [ccFilters, setCcFilters] = useState<CommandCenterFilters>(() => {
+    try {
+      const raw = localStorage.getItem("trading.cc.filters");
+      if (raw) return { ...DEFAULT_CC_FILTERS, ...JSON.parse(raw) };
+    } catch {
+      /* ignore */
+    }
+    return { ...DEFAULT_CC_FILTERS };
+  });
+  const showVotes = ccFilters.showSignals;
+  const showFills = ccFilters.showExecuted;
+  const showBuy = ccFilters.showBuy;
+  const showSell = ccFilters.showSell;
+  const showHold = ccFilters.showHold;
+  const showBlocked = ccFilters.showBlocked;
+  const showIndicators = ccFilters.showIndicators;
+  const setShowVotes = (v: boolean) => setCcFilters((f) => ({ ...f, showSignals: v }));
+  const setShowFills = (v: boolean) => setCcFilters((f) => ({ ...f, showExecuted: v }));
+  const setShowBuy = (v: boolean) => setCcFilters((f) => ({ ...f, showBuy: v }));
+  const setShowSell = (v: boolean) => setCcFilters((f) => ({ ...f, showSell: v }));
+  const setShowHold = (v: boolean) => setCcFilters((f) => ({ ...f, showHold: v }));
+  const setShowBlocked = (v: boolean) => setCcFilters((f) => ({ ...f, showBlocked: v }));
+  const setShowIndicators = (v: boolean) => setCcFilters((f) => ({ ...f, showIndicators: v }));
   const [showDrawings, setShowDrawings] = useState(true);
-  const [showIndicators, setShowIndicators] = useState(true);
+  const [replay, setReplay] = useState<ReplayState>(DEFAULT_REPLAY);
   const [drawMode, setDrawMode] = useState<"none" | "SUPPORT" | "RESISTANCE" | "TREND_LINE" | "TEXT_NOTE">(
     "none"
   );
@@ -358,8 +396,6 @@ export default function LiveChart({
   const [pickList, setPickList] = useState<DecisionMarkerItem[] | null>(null);
   const [drawerDecision, setDrawerDecision] = useState<UnifiedDecision | null>(null);
   const [drawerLoading, setDrawerLoading] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
-  const [techOpen, setTechOpen] = useState(false);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [unifiedRows, setUnifiedRows] = useState<UnifiedDecision[]>([]);
@@ -505,18 +541,77 @@ export default function LiveChart({
     [unifiedItems, persistedFallback]
   );
 
-  const filteredItems = useMemo(() => {
-    return allItems.filter((it) => {
-      if ((it.kind === "fill_buy" || it.kind === "fill_sell") && !showFills) return false;
-      if ((it.kind === "signal" || it.kind.startsWith("vote_")) && !showVotes) return false;
-      if ((it.kind === "blocked" || it.kind === "rejected") && !showBlocked) return false;
-      if ((it.kind === "hold" || it.kind === "vote_hold") && !showHold) return false;
-      if (it.action === "BUY" && !showBuy) return false;
-      if (it.action === "SELL" && !showSell) return false;
-      if (it.action === "HOLD" && !showHold) return false;
-      return true;
-    });
-  }, [allItems, showVotes, showFills, showBuy, showSell, showHold, showBlocked]);
+  const filteredItems = useMemo(
+    () => filterMarkerItems(allItems, ccFilters),
+    [allItems, ccFilters]
+  );
+
+  const symbolUnified = useMemo(() => {
+    const norm = normalizeSymbol(active);
+    return unifiedRows.filter((u) => normalizeSymbol(String(u.symbol || "")) === norm);
+  }, [unifiedRows, active]);
+
+  const filteredUnified = useMemo(() => {
+    // Keep timeline in sync with marker filters (same decision ids).
+    if (!allItems.length) return symbolUnified;
+    const ids = new Set(
+      filteredItems.map((i) => i.decisionId).filter((id): id is string => !!id)
+    );
+    if (!ids.size) return [];
+    return symbolUnified.filter((u) => ids.has(u.decision_id));
+  }, [symbolUnified, filteredItems, allItems.length]);
+
+  const liveDecision = useMemo(() => {
+    if (replay.active && replay.index >= 0) {
+      const sorted = sortedDecisionsForReplay(symbolUnified);
+      return sorted[replay.index] || null;
+    }
+    return latestDecisionForSymbol(symbolUnified, active);
+  }, [replay, symbolUnified, active]);
+
+  const agentOptions = useMemo(() => discoverAgents(symbolUnified), [symbolUnified]);
+
+  const earliestReplayTs = useMemo(() => {
+    const sorted = sortedDecisionsForReplay(symbolUnified);
+    return sorted[0]?.decision_time != null ? Number(sorted[0].decision_time) : null;
+  }, [symbolUnified]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("trading.cc.filters", JSON.stringify(ccFilters));
+    } catch {
+      /* ignore */
+    }
+  }, [ccFilters]);
+
+  // Replay play loop — display only; never calls start/trade APIs.
+  useEffect(() => {
+    if (!replay.active || !replay.playing) return;
+    const sorted = sortedDecisionsForReplay(symbolUnified);
+    if (!sorted.length) return;
+    const ms = Math.max(200, 1000 / Math.max(0.25, replay.speed));
+    const id = window.setInterval(() => {
+      setReplay((r) => {
+        const next = r.index + 1;
+        if (next >= sorted.length) {
+          return { ...r, playing: false, index: sorted.length - 1 };
+        }
+        return { ...r, index: next };
+      });
+    }, ms);
+    return () => window.clearInterval(id);
+  }, [replay.active, replay.playing, replay.speed, symbolUnified]);
+
+  // When replay index changes, open that decision in the drawer.
+  useEffect(() => {
+    if (!replay.active || replay.index < 0) return;
+    const sorted = sortedDecisionsForReplay(symbolUnified);
+    const u = sorted[replay.index];
+    if (!u) return;
+    setDrawerDecision(u);
+    setDrawerOpen(true);
+    setPickList(null);
+  }, [replay.active, replay.index, symbolUnified]);
 
   const grouped = useMemo(
     () => groupMarkersOnCandle(filteredItems, timeframe),
@@ -667,8 +762,6 @@ export default function LiveChart({
     setPickList(null);
     setDrawerLoading(true);
     setDrawerOpen(true);
-    setAgentsOpen(false);
-    setTechOpen(false);
     try {
       if (item.unified && (item.unified.primary_reasons || item.unified.summary)) {
         setDrawerDecision(item.unified);
@@ -1469,6 +1562,30 @@ export default function LiveChart({
       .map(([k, v]) => `${k}=${typeof v === "number" ? Number(v).toFixed(4) : String(v)}`);
   };
 
+  const selectDecisionById = useCallback(
+    (decisionId: string) => {
+      const u = symbolUnified.find((d) => d.decision_id === decisionId);
+      if (u) {
+        setDrawerDecision(u);
+        setDrawerOpen(true);
+        setPickList(null);
+        if (replay.active) {
+          const sorted = sortedDecisionsForReplay(symbolUnified);
+          const idx = sorted.findIndex((d) => d.decision_id === decisionId);
+          if (idx >= 0) setReplay((r) => ({ ...r, index: idx, playing: false }));
+        }
+      }
+    },
+    [symbolUnified, replay.active]
+  );
+
+  const highlightTs =
+    drawerDecision?.candle_time != null
+      ? Math.floor(toUnixSeconds(Number(drawerDecision.candle_time)))
+      : drawerDecision?.decision_time != null
+        ? Math.floor(toUnixSeconds(Number(drawerDecision.decision_time)))
+        : null;
+
   return (
     <section
       ref={panelRef}
@@ -1477,6 +1594,50 @@ export default function LiveChart({
       }${isNarrow ? " is-narrow" : ""}`}
       data-testid="live-chart-panel"
     >
+      <LiveDecisionBar
+        symbol={active}
+        decision={liveDecision}
+        replayActive={replay.active}
+      />
+
+      <div className="cc-filter-bar" dir="rtl">
+        <span className="muted">{he.ccFilters}</span>
+        <label>
+          {he.ccFilterAgent}{" "}
+          <select
+            value={ccFilters.agentId}
+            onChange={(e) =>
+              setCcFilters((f) => ({
+                ...f,
+                agentId: e.target.value as CommandCenterFilters["agentId"],
+                showSystemOnly: false,
+              }))
+            }
+          >
+            <option value="all">{he.ccFilterAllAgents}</option>
+            {agentOptions.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="chk">
+          <input
+            type="checkbox"
+            checked={ccFilters.showSystemOnly}
+            onChange={(e) =>
+              setCcFilters((f) => ({
+                ...f,
+                showSystemOnly: e.target.checked,
+                agentId: e.target.checked ? "all" : f.agentId,
+              }))
+            }
+          />
+          {he.ccSystemOnly}
+        </label>
+      </div>
+
       <div className="chart-toolbar chart-toolbar-compact">
         <div className="symbol-tabs" role="tablist">
           {symbols.map((sym) => {
@@ -1942,89 +2103,16 @@ export default function LiveChart({
 
               {drawerDecision ? (
                 <div className="unified-card">
-                  <section className="ud-outcome">
-                    <div className="row ud-outcome-row">
-                      <span className={`tag ${drawerDecision.final_action}`}>
-                        {drawerDecision.final_action}
-                      </span>
-                      <span className="ud-status">{drawerDecision.status}</span>
-                    </div>
-                    {drawerDecision.summary ? (
-                      <p className="ud-summary">{drawerDecision.summary}</p>
-                    ) : (
-                      <p className="muted">{he.noSummary}</p>
-                    )}
-                    <dl className="ud-dl">
-                      <Field label={he.fillPrice}>
-                        {drawerDecision.fill_price != null
-                          ? fmtPrice(Number(drawerDecision.fill_price))
-                          : null}
-                      </Field>
-                      <Field label={he.quantity}>
-                        {drawerDecision.quantity != null
-                          ? Number(drawerDecision.quantity).toFixed(4)
-                          : null}
-                      </Field>
-                      <Field label={he.totalValue}>
-                        {drawerDecision.total_value != null
-                          ? fmtPrice(Number(drawerDecision.total_value))
-                          : null}
-                      </Field>
-                      <Field label={he.executionTime}>
-                        {new Date(
-                          toUnixSeconds(Number(drawerDecision.decision_time)) * 1000
-                        ).toLocaleString()}
-                      </Field>
-                      <Field label={he.symbol}>
-                        <span dir="ltr">{drawerDecision.symbol}</span>
-                      </Field>
-                    </dl>
-                  </section>
-
-                  {drawerDecision.primary_reasons?.length ? (
-                    <section>
-                      <h4>{he.whySystemActed}</h4>
-                      <ul className="ud-list">
-                        {drawerDecision.primary_reasons.map((r, i) => (
-                          <li key={i}>{r}</li>
-                        ))}
-                      </ul>
-                    </section>
-                  ) : null}
-
-                  {drawerDecision.risk_factors?.length ? (
-                    <section>
-                      <h4>{he.whyMayBeWrong}</h4>
-                      <ul className="ud-list risk">
-                        {drawerDecision.risk_factors.map((r, i) => (
-                          <li key={i}>{r}</li>
-                        ))}
-                      </ul>
-                    </section>
-                  ) : null}
-
-                  <section>
-                    <h4>{he.decisionStrength}</h4>
-                    <dl className="ud-dl">
-                      <Field label={he.confidence}>
-                        {drawerDecision.confidence != null
-                          ? `${(Number(drawerDecision.confidence) <= 1
-                              ? Number(drawerDecision.confidence) * 100
-                              : Number(drawerDecision.confidence)
-                            ).toFixed(0)}%`
-                          : null}
-                      </Field>
-                      <Field label={he.agreement}>{agreementText(drawerDecision)}</Field>
-                      <Field label={he.riskLevel}>{drawerDecision.risk_level || null}</Field>
-                      <Field label={he.freshness}>{freshnessText(drawerDecision)}</Field>
-                      <Field label={he.status}>{drawerDecision.status || null}</Field>
-                    </dl>
-                  </section>
-
+                  <DecisionExplanation
+                    decision={drawerDecision}
+                    decisionLogs={decisionLogs}
+                    onCopy={() => void copyTechnical()}
+                    copyMsg={copyMsg}
+                  />
                   {interpretedList(drawerDecision).length ||
                   indicatorsUsedList(drawerDecision).length ? (
-                    <section>
-                      <h4>{he.marketEvidence}</h4>
+                    <details className="ud-collapse">
+                      <summary>{he.marketEvidence}</summary>
                       <ul className="ud-list">
                         {interpretedList(drawerDecision).map((r, i) => (
                           <li key={`i-${i}`}>{r}</li>
@@ -2035,86 +2123,12 @@ export default function LiveChart({
                           </li>
                         ))}
                       </ul>
-                    </section>
-                  ) : null}
-
-                  {(drawerDecision.agent_votes || []).length ? (
-                    <details
-                      className="ud-collapse"
-                      open={agentsOpen}
-                      onToggle={(e) => setAgentsOpen((e.target as HTMLDetailsElement).open)}
-                    >
-                      <summary>{he.agentOpinions}</summary>
-                      <ul className="agent-vote-rows">
-                        {(drawerDecision.agent_votes || []).map((v, i) => {
-                          const side = String(v.side || "HOLD").toUpperCase();
-                          const final = String(drawerDecision.final_action || "").toUpperCase();
-                          let cls = "hold";
-                          if (side === "HOLD") cls = "hold";
-                          else if (side === final) cls = "support";
-                          else cls = "oppose";
-                          return (
-                            <li key={`${v.agent_id || i}-${i}`} className={`agent-vote-row ${cls}`}>
-                              <strong>{v.agent_name || v.agent_id || "—"}</strong>
-                              <span className={`tag ${side}`}>{side}</span>
-                              <span dir="ltr" className="mono muted">
-                                {v.confidence != null
-                                  ? `${(Number(v.confidence) <= 1
-                                      ? Number(v.confidence) * 100
-                                      : Number(v.confidence)
-                                    ).toFixed(0)}%`
-                                  : ""}
-                              </span>
-                              {v.rationale ? <p className="muted">{v.rationale}</p> : null}
-                            </li>
-                          );
-                        })}
-                      </ul>
                     </details>
                   ) : null}
-
-                  <details
-                    className="ud-collapse"
-                    open={techOpen}
-                    onToggle={(e) => setTechOpen((e.target as HTMLDetailsElement).open)}
-                  >
-                    <summary>
-                      {he.technicalDetails}
-                      <button
-                        type="button"
-                        className="btn-copy tiny"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void copyTechnical();
-                        }}
-                      >
-                        {he.copyTechnical}
-                      </button>
-                      {copyMsg ? <span className="copy-toast mono">{copyMsg}</span> : null}
-                    </summary>
-                    <dl className="ud-dl">
-                      <Field label={he.decisionId}>
-                        <span dir="ltr">{drawerDecision.decision_id}</span>
-                      </Field>
-                      <Field label={he.paperOrderId}>
-                        {drawerDecision.execution?.order_id != null
-                          ? String(drawerDecision.execution.order_id)
-                          : null}
-                      </Field>
-                      <Field label={he.fillId}>
-                        {drawerDecision.execution?.fill_id != null
-                          ? String(drawerDecision.execution.fill_id)
-                          : null}
-                      </Field>
-                    </dl>
-                    {(drawerDecision.raw_events || []).length ? (
-                      <pre className="detail-pre" dir="ltr">
-                        {JSON.stringify(drawerDecision.raw_events, null, 2)}
-                      </pre>
-                    ) : null}
-                  </details>
-
+                  <dl className="ud-dl">
+                    <Field label={he.agreement}>{agreementText(drawerDecision)}</Field>
+                    <Field label={he.freshness}>{freshnessText(drawerDecision)}</Field>
+                  </dl>
                   {groupedOpen ? (
                     <p className="mono muted">
                       {he.candleTime}{" "}
@@ -2149,6 +2163,21 @@ export default function LiveChart({
           </aside>
         ) : null}
       </div>
+
+      <AgentTimeline
+        decisions={filteredUnified.length ? filteredUnified : symbolUnified}
+        timeframe={timeframe}
+        selectedDecisionId={drawerDecision?.decision_id}
+        highlightTs={highlightTs}
+        onSelectDecision={selectDecisionById}
+      />
+
+      <ReplayControls
+        decisions={symbolUnified}
+        replay={replay}
+        onChange={setReplay}
+        earliestReplayTs={earliestReplayTs}
+      />
     </section>
   );
 }

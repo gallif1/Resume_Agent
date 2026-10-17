@@ -446,6 +446,13 @@ export type UnifiedAgentVote = {
   side?: string;
   confidence?: number | null;
   rationale?: string | null;
+  ts?: number | null;
+  score?: number | null;
+  components?: Record<string, number | unknown>;
+  used_for_decision?: Record<string, unknown>;
+  volatility_regime?: string | null;
+  timeframe?: string;
+  source?: string;
 };
 
 export type UnifiedDecision = {
