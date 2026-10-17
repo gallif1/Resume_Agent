@@ -432,12 +432,11 @@ jobs:
           rm -rf "$HOME/.cache/pip" "$HOME/.npm" "$HOME/.cache/typescript" \
             "$HOME/.local/share/Trash" 2>/dev/null || true
           # Drop unreachable git objects in the checkout if present.
+          # Do NOT run `git clean -fdX` here — it deletes host-only ignored
+          # files such as `.env` that docker-compose requires (env_file).
           if [ -d "$HOME/resume-backend/Resume_Agent/.git" ]; then
             git -C "$HOME/resume-backend/Resume_Agent" \
               gc --prune=now --quiet 2>/dev/null || true
-            # Untracked build/cache junk under the checkout (never delete data/).
-            git -C "$HOME/resume-backend/Resume_Agent" clean -fdX \
-              -e 'ai-job-agent/data' -e 'trading/data' 2>/dev/null || true
           fi
 
           disk_report "after cleanup"
@@ -964,26 +963,47 @@ jobs:
           fi
 
           echo "Step R5: ensure containers are running (detached, FDs closed, no build)"
+          # Host docker-compose.yml references env_file: .env (gitignored).
+          # An earlier aggressive `git clean -fdX` deleted it and broke compose.
+          # An empty file is enough for compose to start; real secrets are
+          # injected into the container later (FINNHUB / OPENAI).
+          ensure_host_dotenv() {
+            if [ ! -f .env ]; then
+              echo "WARN: host .env missing — creating empty stub for compose env_file"
+              : > .env
+            fi
+          }
+          ensure_host_dotenv
+
           ensure_container_running() {
             timeout 90s sudo sh -c "$UP_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
               echo "WARN: compose up failed; retrying with force-recreate" >&2
+              ensure_host_dotenv
               timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || return 1
             }
             return 0
           }
 
           if ! ensure_container_running; then
-            echo "ERROR: compose up failed/timed out" >&2
+            echo "WARN: compose up failed — checking for already-running container" >&2
             tail -n 80 "$HOME/ra-compose-up.log" || true
             sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
-            exit 1
+            # Prefer continuing inject if the site container is still up
+            # (common after a host-.env mishap). Only hard-fail when nothing runs.
+            if [ -z "$(find_container_id)" ]; then
+              echo "ERROR: compose up failed and no running container found" >&2
+              exit 1
+            fi
+            echo "WARN: continuing deploy against already-running container"
+          else
+            echo "compose up finished"
+            tail -n 40 "$HOME/ra-compose-up.log" || true
           fi
-          echo "compose up finished"
-          tail -n 40 "$HOME/ra-compose-up.log" || true
 
           CID="$(find_container_id)"
           if [ -z "${CID:-}" ]; then
             echo "WARN: no running container after compose up; forcing recreate" >&2
+            ensure_host_dotenv
             timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-up.log" 2>&1 || {
               echo "ERROR: force-recreate failed" >&2
               tail -n 80 "$HOME/ra-compose-up.log" || true
