@@ -47,18 +47,64 @@ def _vote_dicts(votes: list[Any] | None) -> list[dict[str, Any]]:
     return out
 
 
+def _top_components(raw: Any, *, limit: int = 6) -> dict[str, float]:
+    """Keep measured component scores only (no fabricated values)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, val in list(raw.items())[:limit]:
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            out[str(key)] = round(float(val), 4)
+    return out
+
+
+def _compact_used_for_decision(raw: Any, *, limit: int = 8) -> dict[str, Any]:
+    """Scalars / short lists from USED_FOR_DECISION — never invent missing keys."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, val in list(raw.items())[:limit]:
+        if isinstance(val, (str, int, float, bool)) or val is None:
+            out[str(key)] = val if not isinstance(val, str) else val[:120]
+        elif isinstance(val, (list, tuple)):
+            out[str(key)] = list(val)[:4]
+    return out
+
+
 def _compact_agent_votes(votes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Observability-focused vote rows for Command Center cards/timeline.
+
+    Preserves measured confidence/score/components when present. Does not
+    invent explanations — empty rationale stays empty for the UI to label
+    as unavailable.
+    """
     compact: list[dict[str, Any]] = []
     for v in votes:
-        compact.append(
-            {
-                "agent_id": v.get("agent_id"),
-                "agent_name": v.get("agent_name"),
-                "side": v.get("side") or v.get("action"),
-                "confidence": v.get("confidence"),
-                "rationale": v.get("rationale") or v.get("reason"),
-            }
-        )
+        inputs = v.get("inputs") if isinstance(v.get("inputs"), dict) else {}
+        used = v.get("used_for_decision") or inputs.get("USED_FOR_DECISION")
+        rationale = v.get("rationale")
+        if rationale is None:
+            rationale = v.get("reason")
+        entry: dict[str, Any] = {
+            "agent_id": v.get("agent_id"),
+            "agent_name": v.get("agent_name"),
+            "side": v.get("side") or v.get("action"),
+            "confidence": v.get("confidence"),
+            # Preserve empty string — UI shows "unavailable"; never invent text.
+            "rationale": rationale,
+            "ts": v.get("ts"),
+            "score": v.get("score"),
+            "components": _top_components(v.get("components")),
+            "used_for_decision": _compact_used_for_decision(used),
+            "volatility_regime": v.get("volatility_regime"),
+            "timeframe": v.get("timeframe") or "",
+        }
+        if v.get("agent_id") == "ai_analyst" or (v.get("inputs") or {}).get("source"):
+            src = None
+            if isinstance(v.get("inputs"), dict):
+                src = v["inputs"].get("source")
+            entry["source"] = src or v.get("source")
+        compact.append(entry)
     return compact
 
 

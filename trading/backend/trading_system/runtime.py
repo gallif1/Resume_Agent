@@ -79,6 +79,9 @@ class TradingRuntime:
         self.outcomes = OutcomeStore()
         self._last_outcome_resolve = 0.0
         self._sim_price_history: dict[str, list[tuple[float, float]]] = {}
+        self._snap_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._snap_cache_ttl_sec = 5.0
+        self._last_ws_logs_rev: int | None = None
         try:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001 — never block route registration
@@ -375,8 +378,13 @@ class TradingRuntime:
             self.state = SystemState.STOPPED
             await self._broadcast({"type": "error", "payload": {"message": str(exc)}})
 
-    def build_symbol_snapshot(self, symbol: str) -> dict[str, Any]:
+    def build_symbol_snapshot(self, symbol: str, *, bypass_cache: bool = False) -> dict[str, Any]:
         symbol = symbol.upper()
+        now = time.time()
+        if not bypass_cache:
+            cached = self._snap_cache.get(symbol)
+            if cached and (now - cached[0]) < self._snap_cache_ttl_sec:
+                return cached[1]
         quote = None if self.use_simulated else self.market.get_quote(symbol)
         candles_by_tf: dict[str, list] = {}
         if self.use_simulated:
@@ -440,7 +448,7 @@ class TradingRuntime:
             if self.use_simulated
             else self.market.provider_for_symbol(symbol)
         )
-        return build_market_snapshot(
+        snap = build_market_snapshot(
             symbol=symbol,
             quote=quote,
             candles_by_tf=candles_by_tf,
@@ -449,42 +457,19 @@ class TradingRuntime:
             cooldown_remaining_sec=cooldown,
             provider_name=provider,
         )
+        self._snap_cache[symbol] = (time.time(), snap)
+        return snap
 
     def _apply_snapshot_to_vote(self, vote: AgentVote, snap: dict[str, Any]) -> AgentVote:
-        """Attach INFORMATIONAL snapshot context; do not pretend it drove the vote.
+        """Apply stale-data gates only — do not attach bulky snapshot copies.
 
-        Indicators used for the decision already live on vote.used_for_decision /
-        vote.components from the FeatureSnapshot scoring path.
+        Indicator evidence already lives on vote.used_for_decision / components.
+        Dumping full market snapshots into every vote froze the browser over WS.
         """
         quality = snap.get("data_quality") or {}
         stale = bool(quality.get("stale"))
         missing = quality.get("missing_fields") or []
-        human = (snap.get("market_structure") or {}).get("human_levels") or []
         inputs = dict(vote.inputs or {})
-        info = dict(vote.informational or {})
-        info["market_snapshot_keys"] = [
-            "multi_timeframe",
-            "indicators",
-            "market_structure",
-            "portfolio_risk",
-            "data_quality",
-        ]
-        info["timeframe_signals"] = snap.get("multi_timeframe")
-        info["chart_indicators_informational"] = {
-            k: (snap.get("indicators") or {}).get(k)
-            for k in ("rsi_14", "sma_20", "sma_50", "macd", "atr_14", "short_trend")
-        }
-        info["human_levels"] = human
-        info["data_quality"] = quality
-        info["portfolio_risk"] = {
-            "available_cash": (snap.get("portfolio_risk") or {}).get("available_cash"),
-            "position_size": (snap.get("portfolio_risk") or {}).get("position_size"),
-            "cooldown_status": (snap.get("portfolio_risk") or {}).get("cooldown_status"),
-        }
-        inputs["INFORMATIONAL_ONLY"] = {
-            **(inputs.get("INFORMATIONAL_ONLY") or {}),
-            **{k: info[k] for k in ("chart_indicators_informational", "human_levels", "data_quality")},
-        }
         inputs["USED_FOR_DECISION"] = inputs.get("USED_FOR_DECISION") or vote.used_for_decision
         if stale or "candles" in missing or "live_quote" in missing:
             vote.confidence = min(float(vote.confidence), 0.35)
@@ -498,17 +483,28 @@ class TradingRuntime:
                 inputs["stale_override"] = True
             else:
                 inputs["confidence_reduced_for_stale"] = True
+            inputs["data_stale"] = True
+            inputs["missing_fields"] = list(missing)[:8]
+        # Drop accidental bulky blobs if an agent put them in inputs.
+        inputs.pop("INFORMATIONAL_ONLY", None)
         vote.inputs = inputs
-        vote.informational = info
+        vote.informational = {}
         if not vote.timeframe:
             vote.timeframe = self.analysis_timeframe
         return vote
+
+    def _market_meta_light(self) -> dict[str, Any]:
+        if self.use_simulated:
+            return {"source": "SIMULATED", "simulated": True}
+        return self.market.market_meta()
 
     def _build_feature_snapshot(
         self,
         tick: Tick,
         candles: list,
         agent_snap: dict[str, Any],
+        *,
+        indicator=None,
     ) -> FeatureSnapshot:
         """One shared FeatureSnapshot for all agents in this decision cycle."""
         from .market_data.models import Candle as MCandle
@@ -534,6 +530,7 @@ class TradingRuntime:
             price=tick.price,
             multi_timeframe=agent_snap.get("multi_timeframe") or {},
             data_quality=agent_snap.get("data_quality") or {},
+            indicator=indicator,
         )
     def _persist_chart_events(
         self,
@@ -983,14 +980,17 @@ class TradingRuntime:
                 agent_snap = {"data_quality": {"stale": True, "missing_fields": ["snapshot_error"]}}
 
             # Shared FeatureSnapshot — SAME symbol/TF/timestamp for all agents.
-            features = self._build_feature_snapshot(tick, candles, agent_snap)
+            # Reuse the indicator already computed above (avoid a second full pass).
+            features = self._build_feature_snapshot(
+                tick, candles, agent_snap, indicator=indicator
+            )
             market_ts = features.candle_timestamp
 
             heuristic_votes = []
             for agent in self.agents:
                 v = agent.vote(tick, history, new_events, features=features)
                 heuristic_votes.append(self._apply_snapshot_to_vote(v, agent_snap))
-            votes_out.extend(v.to_dict() for v in heuristic_votes)
+            votes_out.extend(v.to_public_dict() for v in heuristic_votes)
 
             heuristic_compact = self.ai.compact_heuristic_context(heuristic_votes)
             ai_snapshot = {
@@ -1017,8 +1017,8 @@ class TradingRuntime:
             if ai_vote is not None:
                 ai_vote = self._apply_snapshot_to_vote(ai_vote, agent_snap)
                 all_votes.append(ai_vote)
-                ai_votes_out.append(ai_vote.to_dict())
-                votes_out.append(ai_vote.to_dict())
+                ai_votes_out.append(ai_vote.to_public_dict())
+                votes_out.append(ai_vote.to_public_dict())
 
             decision = self.decision_engine.decide(
                 tick.symbol,
@@ -1039,8 +1039,8 @@ class TradingRuntime:
             if pretrade_meta and any(v.agent_id == "ai_analyst" for v in all_votes):
                 ai_v = next(v for v in all_votes if v.agent_id == "ai_analyst")
                 if not any(x.get("agent_id") == "ai_analyst" for x in ai_votes_out):
-                    ai_votes_out.append(ai_v.to_dict())
-                    votes_out.append(ai_v.to_dict())
+                    ai_votes_out.append(ai_v.to_public_dict())
+                    votes_out.append(ai_v.to_public_dict())
 
             block_reason: str | None = None
             cooldown_remaining: float | None = None
@@ -1243,31 +1243,34 @@ class TradingRuntime:
             if stored is None and outcome_summary and prev_log:
                 self.decision_logs.patch_outcome(str(prev_log.get("id")), outcome_summary)
 
-            decisions_out.append(decision.to_dict())
+            decisions_out.append(decision.to_public_dict())
 
-            # Evaluation log for later "did AI help?" analysis.
-            self.ai.log_evaluation_row(
-                {
-                    "timestamp": time.time(),
-                    "symbol": tick.symbol,
-                    "market_price": tick.price,
-                    "market_snapshot": ai_snapshot,
-                    "indicators": indicator.to_dict(),
-                    "heuristic_votes": [v.to_dict() for v in heuristic_votes],
-                    "ai_vote": None if ai_vote is None else ai_vote.to_dict(),
-                    "ai_meta": self.ai._last_by_symbol.get(tick.symbol),  # noqa: SLF001
-                    "pretrade": pretrade_meta,
-                    "final_decision": decision.to_dict(),
-                    "decision_log": log_record if stored is not None else None,
-                    "trade_executed": decision.executed,
-                    "portfolio": self.portfolio.to_dict(),
-                    "followup_targets": {
-                        "t_plus_5m": time.time() + 300,
-                        "t_plus_15m": time.time() + 900,
-                        "t_plus_1h": time.time() + 3600,
-                    },
-                }
-            )
+            # Evaluation log — only on meaningful rows (not every HOLD heartbeat).
+            if stored is not None or decision.executed or pretrade_meta:
+                self.ai.log_evaluation_row(
+                    {
+                        "timestamp": time.time(),
+                        "symbol": tick.symbol,
+                        "market_price": tick.price,
+                        "market_snapshot": {
+                            k: ai_snapshot.get(k)
+                            for k in (
+                                "symbol",
+                                "timeframe",
+                                "candle_timestamp",
+                                "price",
+                                "rsi_14",
+                                "short_trend",
+                                "heuristic_votes",
+                            )
+                        },
+                        "heuristic_votes": [v.to_public_dict() for v in heuristic_votes],
+                        "ai_vote": None if ai_vote is None else ai_vote.to_public_dict(),
+                        "pretrade": pretrade_meta,
+                        "final_decision": decision.to_public_dict(),
+                        "trade_executed": decision.executed,
+                    }
+                )
 
         self._resolve_outcomes_if_due()
 
@@ -1300,76 +1303,90 @@ class TradingRuntime:
                         }
                     )
 
-        await self._broadcast(
-            {
-                "type": "tick",
-                "payload": {
-                    "tick_count": self.tick_count,
-                    "state": self.state.value,
-                    "market": [
-                        {
-                            **t.to_dict(),
-                            **(
-                                {}
-                                if self.use_simulated
-                                else {
-                                    "provider": (self.market.get_quote(t.symbol).provider if self.market.get_quote(t.symbol) else ""),
-                                    "session": (
-                                        self.market.get_quote(t.symbol).session.value
-                                        if self.market.get_quote(t.symbol)
-                                        else "unknown"
-                                    ),
-                                    "freshness": (
-                                        self.market.get_quote(t.symbol).freshness.value
-                                        if self.market.get_quote(t.symbol)
-                                        else DataFreshness.UNAVAILABLE.value
-                                    ),
-                                }
+        # Keep tick payloads small: full price_history / decision_logs every 2s
+        # was freezing browsers after the indicator upgrade.
+        logs_rev = self.decision_logs.revision
+        send_logs = (
+            not hasattr(self, "_last_ws_logs_rev")
+            or self._last_ws_logs_rev != logs_rev
+            or self.tick_count <= 1
+            or self.tick_count % 15 == 0
+        )
+        if send_logs:
+            self._last_ws_logs_rev = logs_rev
+
+        tick_payload: dict[str, Any] = {
+            "tick_count": self.tick_count,
+            "state": self.state.value,
+            "market": [
+                {
+                    **t.to_dict(),
+                    **(
+                        {}
+                        if self.use_simulated
+                        else {
+                            "provider": (
+                                self.market.get_quote(t.symbol).provider
+                                if self.market.get_quote(t.symbol)
+                                else ""
+                            ),
+                            "session": (
+                                self.market.get_quote(t.symbol).session.value
+                                if self.market.get_quote(t.symbol)
+                                else "unknown"
+                            ),
+                            "freshness": (
+                                self.market.get_quote(t.symbol).freshness.value
+                                if self.market.get_quote(t.symbol)
+                                else DataFreshness.UNAVAILABLE.value
                             ),
                         }
-                        for t in ticks
-                    ],
-                    "price_points": price_points,
-                    "candle_updates": candle_updates,
-                    "price_history": self._price_history(),
-                    "chart_timeframe": self.chart_timeframe,
-                    "analysis_timeframe": self.analysis_timeframe,
-                    "events": [e.to_dict() for e in new_events],
-                    "votes": votes_out,
-                    "ai_votes": ai_votes_out,
-                    "decisions": decisions_out,
-                    "decision_logs": self.decision_logs.recent,
-                    "trades": [
+                    ),
+                }
+                for t in ticks
+            ],
+            "price_points": price_points,
+            "candle_updates": candle_updates,
+            "chart_timeframe": self.chart_timeframe,
+            "analysis_timeframe": self.analysis_timeframe,
+            "events": [e.to_dict() for e in new_events],
+            "votes": votes_out,
+            "ai_votes": ai_votes_out,
+            "decisions": decisions_out,
+            "decision_logs_rev": logs_rev,
+            "trades": [
+                {
+                    "id": d["id"],
+                    "symbol": d["symbol"],
+                    "side": d["side"],
+                    "price": d.get("fill_price"),
+                    "quantity": d.get("quantity"),
+                    "ts": d["ts"],
+                    "confidence": d.get("confidence"),
+                    "agents": [
                         {
-                            "id": d["id"],
-                            "symbol": d["symbol"],
-                            "side": d["side"],
-                            "price": d.get("fill_price"),
-                            "quantity": d.get("quantity"),
-                            "ts": d["ts"],
-                            "confidence": d.get("confidence"),
-                            "agents": [
-                                {
-                                    "id": v.get("agent_id"),
-                                    "name": v.get("agent_name"),
-                                    "side": v.get("side"),
-                                    "confidence": v.get("confidence"),
-                                }
-                                for v in (d.get("votes") or [])
-                                if v.get("side") in ("BUY", "SELL")
-                            ],
+                            "id": v.get("agent_id"),
+                            "name": v.get("agent_name"),
+                            "side": v.get("side"),
+                            "confidence": v.get("confidence"),
                         }
-                        for d in decisions_out
-                        if d.get("executed") and d.get("side") in ("BUY", "SELL")
+                        for v in (d.get("votes") or [])
+                        if v.get("side") in ("BUY", "SELL")
                     ],
-                    "portfolio": self.portfolio.to_dict(),
-                    "ai": self.ai.status(),
-                    "performance": self.outcomes.performance_stats(),
-                    "market_meta": self.snapshot()["market_meta"],
-                    "paper_trading_only": True,
-                },
-            }
-        )
+                }
+                for d in decisions_out
+                if d.get("executed") and d.get("side") in ("BUY", "SELL")
+            ],
+            "portfolio": self.portfolio.to_dict(),
+            "ai": self.ai.status(),
+            "performance": self.outcomes.performance_stats(),
+            "market_meta": self._market_meta_light(),
+            "paper_trading_only": True,
+        }
+        if send_logs:
+            tick_payload["decision_logs"] = self.decision_logs.recent
+
+        await self._broadcast({"type": "tick", "payload": tick_payload})
 
 _runtime: TradingRuntime | None = None
 _runtime_lock = threading.Lock()
