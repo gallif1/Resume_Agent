@@ -347,6 +347,9 @@ a {
 }
 
 .manual-copy-textarea {
+  max-height: 280px;
+  overflow: auto;
+  word-break: break-word;
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
