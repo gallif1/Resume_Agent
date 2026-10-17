@@ -194,6 +194,17 @@ Volumes **לא** נמחקים (שם נשמרים קו״ח / DB).
    (התאם את שם ההתקן ל־`lsblk`)
 3. אל תמחק volumes של Docker ידנית בלי גיבוי — שם יושבים נתוני המשתמשים
 
+### EC2 — health נכשל אחרי inject (R8)
+
+אם הדיפלוי מגיע ל־`Health attempt 1/45…45/45` ואז rollback ל־image baseline:
+
+- הסיבה הנפוצה על דיסק 8GB: הזרקת **Node (~100MB) + WhatsApp `node_modules` (~98MB)**
+  לפני שהשרת עלה מחדש — ה־writable layer מתמלא ו־uvicorn לא מאזין ל־`/api/health`.
+- ה־workflow מזריק קודם רק backend/trading/frontend, בודק health, ורק אז
+  מנסה WhatsApp. אם נשאר פחות מ־~250MB פנויים — WhatsApp נדלג עם אזהרה
+  והאתר הראשי עדיין נחשב לפריסה מוצלחת.
+- בלוג יופיעו גם `docker logs` / `df` לפני ה־rollback (לא רק אחרי).
+
 ### FINNHUB_API_KEY
 
 אם בלוג מופיע `WARN: FINNHUB_API_KEY GitHub secret is empty` — מחירי מניות

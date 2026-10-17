@@ -515,11 +515,26 @@ jobs:
           wait_for_health() {
             local max_attempts="$1"
             local i=1
+            local cid_hint=""
             while [ "$i" -le "$max_attempts" ]; do
               echo "Health attempt $i/$max_attempts..."
               if curl -sf --max-time 8 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json" \
                 || curl -sf --max-time 8 http://127.0.0.1:8000/api/health >"$HOME/ra-health.json"; then
                 return 0
+              fi
+              # Mid-poll breadcrumbs — previously we only saw logs AFTER rollback.
+              if [ $((i % 10)) -eq 0 ]; then
+                cid_hint="$(find_container_id)"
+                echo "--- health still failing (attempt $i); container/disk snapshot ---"
+                df -h / 2>/dev/null || true
+                if [ -n "${cid_hint:-}" ]; then
+                  sudo docker inspect --format \
+                    'State={{.State.Status}} Exit={{.State.ExitCode}} OOM={{.State.OOMKilled}} Error={{.State.Error}}' \
+                    "$cid_hint" 2>/dev/null || true
+                  sudo docker logs --tail 40 "$cid_hint" 2>&1 | tail -n 40 || true
+                else
+                  echo "(no container id yet)"
+                fi
               fi
               i=$((i + 1))
               sleep 3
@@ -534,6 +549,37 @@ jobs:
               cid="$(sudo docker ps -q | head -n 1)"
             fi
             printf '%s' "$cid"
+          }
+
+          # Dump WHY /api/health never answered — before force-recreate wipes evidence.
+          dump_health_failure_diagnostics() {
+            local cid="$1"
+            echo "=== diagnostics: post-inject health failure ==="
+            disk_report "health failure"
+            free -m 2>/dev/null || true
+            sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
+            if [ -n "${cid:-}" ]; then
+              sudo docker inspect --format \
+                'State={{.State.Status}} Exit={{.State.ExitCode}} OOM={{.State.OOMKilled}} Error={{.State.Error}} Started={{.State.StartedAt}} Finished={{.State.FinishedAt}}' \
+                "$cid" 2>/dev/null || true
+              echo "--- docker logs (tail 200) ---"
+              sudo docker logs --tail 200 "$cid" 2>&1 || true
+            fi
+            echo "=== end diagnostics ==="
+          }
+
+          # Reclaim container JSON logs + pip cache after heavy inject/pip work.
+          reclaim_container_disk() {
+            echo "Reclaiming container log + pip cache space..."
+            sudo find /var/lib/docker/containers -type f -name '*-json.log' \
+              -exec truncate -s 0 {} \; >/dev/null 2>&1 || true
+            local cid="$1"
+            if [ -n "${cid:-}" ]; then
+              timeout 30s sudo docker exec "$cid" pip cache purge >/dev/null 2>&1 || true
+              timeout 15s sudo docker exec "$cid" sh -c \
+                'rm -rf /root/.cache/pip /tmp/pip-* /tmp/ra-*.tgz 2>/dev/null || true' || true
+            fi
+            df -h / 2>/dev/null || true
           }
 
           inject_backend() {
@@ -620,7 +666,15 @@ jobs:
               echo "Node already present in container: $(sudo docker exec "$cid" node -v 2>/dev/null || true)"
               return 0
             fi
-            echo "Installing Node.js 22 binary into $cid (WhatsApp Monitor sidecar)"
+            # Node 22 linux binary expands to ~80–100MB in the container writable layer.
+            # On an 8GB root with ~280MB free this alone can starve uvicorn after restart.
+            local free_now
+            free_now="$(free_kb)"
+            if [ "${free_now:-0}" -lt 180000 ]; then
+              echo "WARN: skip Node install — only ${free_now} KB free on / (need ≥180000 KB)" >&2
+              return 1
+            fi
+            echo "Installing Node.js 22 binary into $cid (WhatsApp Monitor sidecar; ${free_now} KB free)"
             # Use .tar.gz — many slim images lack the xz binary required for .tar.xz.
             timeout 180s sudo docker exec "$cid" sh -c '
               set -eu
@@ -691,20 +745,26 @@ jobs:
             }
 
             # Prefer prebuilt node_modules from GitHub Actions (avoids npm hang on EC2).
+            # Uncompressed size is ~98MB — refuse when root is already tight.
             if [ -f /tmp/ra-whatsapp-node-modules.tgz ]; then
-              echo "Injecting prebuilt WhatsApp node_modules into $cid"
-              sudo docker cp /tmp/ra-whatsapp-node-modules.tgz "$cid:/tmp/ra-whatsapp-node-modules.tgz"
-              sudo docker exec "$cid" sh -c '
-                set -eu
-                rm -rf /app/whatsapp_monitor/backend/node_modules
-                mkdir -p /app/whatsapp_monitor/backend/node_modules
-                tar -C /app/whatsapp_monitor/backend/node_modules -xzf /tmp/ra-whatsapp-node-modules.tgz
-                rm -f /tmp/ra-whatsapp-node-modules.tgz
-                test -d /app/whatsapp_monitor/backend/node_modules/whatsapp-web.js
-                echo "WhatsApp node_modules injected OK"
-              ' || {
-                echo "WARN: prebuilt WhatsApp node_modules inject failed" >&2
-              }
+              free_now="$(free_kb)"
+              if [ "${free_now:-0}" -lt 150000 ]; then
+                echo "WARN: skip WhatsApp node_modules — only ${free_now} KB free on / (need ≥150000 KB for ~98MB extract)" >&2
+              else
+                echo "Injecting prebuilt WhatsApp node_modules into $cid (${free_now} KB free)"
+                sudo docker cp /tmp/ra-whatsapp-node-modules.tgz "$cid:/tmp/ra-whatsapp-node-modules.tgz"
+                sudo docker exec "$cid" sh -c '
+                  set -eu
+                  rm -rf /app/whatsapp_monitor/backend/node_modules
+                  mkdir -p /app/whatsapp_monitor/backend/node_modules
+                  tar -C /app/whatsapp_monitor/backend/node_modules -xzf /tmp/ra-whatsapp-node-modules.tgz
+                  rm -f /tmp/ra-whatsapp-node-modules.tgz
+                  test -d /app/whatsapp_monitor/backend/node_modules/whatsapp-web.js
+                  echo "WhatsApp node_modules injected OK"
+                ' || {
+                  echo "WARN: prebuilt WhatsApp node_modules inject failed" >&2
+                }
+              fi
             else
               echo "WARN: /tmp/ra-whatsapp-node-modules.tgz missing — falling back to short npm install" >&2
               if timeout 20s sudo docker exec "$cid" node -v >/dev/null 2>&1; then
@@ -1036,13 +1096,16 @@ jobs:
           echo "Step R7: inject backend + frontend into running container"
           test -f /tmp/ra-frontend-dist.tgz
           echo "Target container: $CID"
+          # Core site first. WhatsApp (Node ~100MB + node_modules ~98MB) is deferred
+          # until AFTER post-inject health — packing it onto a ~280MB-free 8GB root
+          # previously left uvicorn unable to bind and caused R8 rollback.
           inject_backend "$CID"
           inject_job_apply_sidecar "$CID"
           inject_trading_sidecar "$CID"
-          inject_whatsapp_monitor "$CID"
 
           echo "Step R7b0: ensure trading runtime deps before import check"
           ensure_trading_runtime "$CID"
+          reclaim_container_disk "$CID"
 
           echo "Step R7b: check the injected backend imports before restarting"
           IMPORT_OK=0
@@ -1089,6 +1152,7 @@ jobs:
           inject_frontend "$CID"
           test -f /tmp/ra-trading-frontend-dist.tgz
           inject_trading_frontend "$CID"
+          reclaim_container_disk "$CID"
 
           echo "Restarting container to pick up backend + frontend updates"
           timeout 60s sudo sh -c "$RESTART_CMD" </dev/null >"$HOME/ra-compose-restart.log" 2>&1 \
@@ -1096,15 +1160,12 @@ jobs:
             || true
           tail -n 40 "$HOME/ra-compose-restart.log" 2>/dev/null || true
 
-          # Container restart kills background sidecars — start WhatsApp after restart.
           CID="$(find_container_id)"
-          if [ -n "${CID:-}" ]; then
-            start_whatsapp_sidecar "$CID"
-          fi
 
-          echo "Step R8: post-inject health check"
+          echo "Step R8: post-inject health check (core site — before heavy WhatsApp inject)"
           if ! wait_for_health 45; then
-            echo "WARN: health failed after inject; rolling back to image baseline" >&2
+            echo "WARN: health failed after inject; dumping diagnostics then rolling back" >&2
+            dump_health_failure_diagnostics "$CID"
             timeout 90s sudo sh -c "$UP_FORCE_CMD" </dev/null >"$HOME/ra-compose-recover.log" 2>&1 || true
             tail -n 40 "$HOME/ra-compose-recover.log" 2>/dev/null || true
             CID="$(find_container_id)"
@@ -1128,6 +1189,23 @@ jobs:
             tail -n 120 "$HOME/ra-compose-logs.log" || true
             sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
             exit 1
+          fi
+
+          echo "Step R8a: WhatsApp Monitor inject (optional; skipped when disk is tight)"
+          # Sidecar only — does not require another backend restart for the SPA/API.
+          CID="$(find_container_id)"
+          WA_FREE="$(free_kb)"
+          # Node (~100MB) + node_modules (~98MB) + margin. Prefer core site up over WA.
+          if [ -z "${CID:-}" ]; then
+            echo "WARN: no container for WhatsApp inject" >&2
+          elif [ "${WA_FREE:-0}" -lt 250000 ]; then
+            echo "WARN: skip WhatsApp Monitor inject — only ${WA_FREE} KB free on / (need ≥250000 KB)"
+            echo "::warning::WhatsApp Monitor skipped due to low EC2 disk. Expand EBS to ≥20GB, then re-run Deploy."
+          else
+            echo "Disk OK for WhatsApp inject: ${WA_FREE} KB free"
+            inject_whatsapp_monitor "$CID" || echo "WARN: WhatsApp inject returned non-zero" >&2
+            reclaim_container_disk "$CID"
+            start_whatsapp_sidecar "$CID" || true
           fi
 
           echo "Step R8b: verify the live backend is the revision we just shipped"
