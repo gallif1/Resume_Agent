@@ -28,7 +28,7 @@ import {
   type TradingConfig,
   type PerformanceStats,
 } from "./api";
-import { formatDecisionLogsText } from "./decisionLogFormat";
+import { formatDecisionLogsText, MAX_COPY_CHARS } from "./decisionLogFormat";
 import { copyTextToClipboard } from "./clipboard";
 import { he, stateLabel, sessionLabel, assetModeLabel } from "./i18n/he";
 import LiveChart from "./LiveChart";
@@ -719,19 +719,27 @@ export default function App() {
       window.setTimeout(() => setCopyMsg(null), 2500);
       return;
     }
-    const text = formatDecisionLogsText(decisionLogs, n);
-    const count = Math.min(n, decisionLogs.length);
+    let text = "";
+    let count = 0;
     try {
+      // Format can throw on dirty payloads — never let that crash the UI.
+      text = formatDecisionLogsText(decisionLogs, n);
+      count = Math.min(n, decisionLogs.length, 50);
       const result = await copyTextToClipboard(text);
       if (result === "ok") {
         setManualCopyText(null);
         setCopyMsg(he.copiedN(count));
       } else {
-        setManualCopyText(text);
+        // Manual box: keep a bounded preview so React textarea cannot OOM.
+        setManualCopyText(text.length > MAX_COPY_CHARS ? text.slice(0, MAX_COPY_CHARS) : text);
         setCopyMsg(he.clipboardBlocked);
       }
     } catch {
-      setManualCopyText(text);
+      if (text) {
+        setManualCopyText(text.slice(0, Math.min(text.length, 20_000)));
+      } else {
+        setManualCopyText(null);
+      }
       setCopyMsg(he.copyFailed);
     }
     window.setTimeout(() => setCopyMsg(null), 4000);
