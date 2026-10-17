@@ -363,50 +363,109 @@ jobs:
           #!/bin/bash
           set -eu
           echo "Step R0: free disk space before git pull"
-          # Small EC2 roots fill up from Docker layers, /tmp deploy tarballs, and
-          # journal logs. git pull then dies with "No space left on device".
+          # Small 8GB EC2 roots fill from Docker layers, container JSON logs,
+          # journald, apt/snap caches. git pull / docker inject then hit ENOSPC.
+          # /tmp is often a separate tmpfs — reclaim / (root) specifically.
           free_kb() {
             df -Pk / | awk 'NR==2 {print $4}'
           }
-          echo "Disk before cleanup:"
-          df -h / /tmp 2>/dev/null || df -h /
-          df -i / 2>/dev/null || true
-          # Drop leftover deploy scratch — keep freshly SCP'd frontend/trading
-          # bundles and secrets that later steps still need.
+          disk_report() {
+            echo "--- disk ($1) ---"
+            df -h / /tmp 2>/dev/null || df -h /
+            df -i / 2>/dev/null || true
+          }
+          disk_report "before cleanup"
+          KEEP_TMP_RE='ra-frontend-dist\.tgz|ra-trading-frontend-dist\.tgz|ra-whatsapp-frontend-dist\.tgz|ra-whatsapp-node-modules\.tgz|ra-trading-secrets\.env|ra-remote-deploy\.sh'
+          # Drop leftover deploy scratch — keep freshly SCP'd bundles + secrets.
           rm -rf /tmp/ra-backend-bundle /tmp/ra-backend-src.tgz \
-            /tmp/ra-job-apply.tgz /tmp/ra-trading.tgz \
+            /tmp/ra-job-apply.tgz /tmp/ra-trading.tgz /tmp/ra-whatsapp-bundle \
+            /tmp/ra-whatsapp-src.tgz \
             /tmp/ra-health.json /tmp/ra-index.html /tmp/ra-trading-spa.body \
             /tmp/ra-trading-ws.body /tmp/ra-trading-ws2.body 2>/dev/null || true
+          # Other /tmp junk older than 1 day (never touch keep-list above).
+          sudo find /tmp -xdev -mindepth 1 -maxdepth 1 -mtime +0 2>/dev/null \
+            | while read -r p; do
+                base="$(basename "$p")"
+                echo "$base" | grep -Eq "$KEEP_TMP_RE" && continue
+                rm -rf "$p" 2>/dev/null || true
+              done || true
+
           # Prune unused Docker data but NEVER volumes (user CVs / DB live there).
           if command -v docker >/dev/null 2>&1; then
+            echo "Docker disk (before prune):"
+            sudo docker system df 2>/dev/null || true
+            # Stopped containers + unused images/networks/build cache.
             sudo docker container prune -f >/dev/null 2>&1 || true
             sudo docker image prune -af >/dev/null 2>&1 || true
             sudo docker builder prune -af >/dev/null 2>&1 || true
-            # system prune without --volumes: dangling nets/build cache only.
-            sudo docker system prune -f >/dev/null 2>&1 || true
+            sudo docker network prune -f >/dev/null 2>&1 || true
+            # system prune without --volumes.
+            sudo docker system prune -af >/dev/null 2>&1 || true
             # Container JSON logs often eat the whole root volume on small hosts.
-            sudo sh -c 'truncate -s 0 /var/lib/docker/containers/*/*-json.log' \
-              >/dev/null 2>&1 || true
+            sudo find /var/lib/docker/containers -type f -name '*-json.log' \
+              -exec truncate -s 0 {} \; >/dev/null 2>&1 || true
+            # Drop unused dangling buildkit state if present.
+            sudo rm -rf /var/lib/docker/buildkit/cache.db \
+              /var/lib/docker/buildkit/*/cache* >/dev/null 2>&1 || true
+            echo "Docker disk (after prune):"
+            sudo docker system df 2>/dev/null || true
           fi
-          sudo journalctl --vacuum-size=80M >/dev/null 2>&1 || true
+
+          # journald + package caches + crash dumps (safe reclaim).
+          sudo journalctl --vacuum-size=40M >/dev/null 2>&1 || true
+          sudo journalctl --vacuum-time=3d >/dev/null 2>&1 || true
           sudo apt-get clean >/dev/null 2>&1 || true
-          rm -rf "$HOME/.cache/pip" "$HOME/.npm" /var/tmp/ra-* 2>/dev/null || true
+          sudo rm -rf /var/cache/apt/archives/* /var/lib/apt/lists/* \
+            /var/cache/apt/*.bin >/dev/null 2>&1 || true
+          sudo apt-get autoremove -y >/dev/null 2>&1 || true
+          sudo rm -rf /var/crash/* /var/lib/systemd/coredump/* \
+            /var/tmp/ra-* >/dev/null 2>&1 || true
+          # Rotated / compressed system logs (keep current *.log).
+          sudo find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \
+            -o -name '*.log.[0-9]*' \) -delete >/dev/null 2>&1 || true
+          sudo find /var/log -type f -name '*.log' -size +20M \
+            -exec truncate -s 5M {} \; >/dev/null 2>&1 || true
+          # Old snap revisions (disabled).
+          if command -v snap >/dev/null 2>&1; then
+            sudo sh -c 'snap list --all 2>/dev/null | awk "/disabled/{print \$1, \$3}" | while read -r n r; do snap remove "$n" --revision="$r" 2>/dev/null || true; done' || true
+          fi
+          rm -rf "$HOME/.cache/pip" "$HOME/.npm" "$HOME/.cache/typescript" \
+            "$HOME/.local/share/Trash" 2>/dev/null || true
           # Drop unreachable git objects in the checkout if present.
           if [ -d "$HOME/resume-backend/Resume_Agent/.git" ]; then
             git -C "$HOME/resume-backend/Resume_Agent" \
               gc --prune=now --quiet 2>/dev/null || true
+            # Untracked build/cache junk under the checkout (never delete data/).
+            git -C "$HOME/resume-backend/Resume_Agent" clean -fdX \
+              -e 'ai-job-agent/data' -e 'trading/data' 2>/dev/null || true
           fi
-          echo "Disk after cleanup:"
-          df -h / /tmp 2>/dev/null || df -h /
+
+          disk_report "after cleanup"
           FREE_KB="$(free_kb)"
-          # Need ~400MB headroom for unpack + inject tarballs on this host.
-          if [ "${FREE_KB:-0}" -lt 400000 ]; then
-            echo "::error::EC2 root filesystem still low on space (${FREE_KB} KB free after cleanup)."
-            echo "Expand the EBS volume or manually remove large files, then re-run deploy."
-            du -xh --max-depth=2 /var/lib/docker 2>/dev/null | sort -h | tail -n 20 || true
-            du -xh --max-depth=2 "$HOME" 2>/dev/null | sort -h | tail -n 20 || true
+          # Need ~280MB headroom: bundles live on /tmp (tmpfs); root needs room
+          # for git objects + docker overlay writes during inject.
+          MIN_FREE_KB=280000
+          if [ "${FREE_KB:-0}" -lt "$MIN_FREE_KB" ]; then
+            echo "::error::EC2 root filesystem still low on space (${FREE_KB} KB free after cleanup; need ${MIN_FREE_KB} KB)."
+            echo "Expand the EBS volume (recommended ≥20GB) or SSH in and remove large files, then re-run Deploy."
+            echo "--- largest dirs on / (sudo) ---"
+            sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -n 25 || true
+            echo "--- /var ---"
+            sudo du -xh --max-depth=2 /var 2>/dev/null | sort -h | tail -n 25 || true
+            echo "--- /usr ---"
+            sudo du -xh --max-depth=2 /usr 2>/dev/null | sort -h | tail -n 15 || true
+            echo "--- docker root ---"
+            sudo du -xh --max-depth=2 /var/lib/docker 2>/dev/null | sort -h | tail -n 20 || true
+            echo "--- home ---"
+            sudo du -xh --max-depth=3 "$HOME" 2>/dev/null | sort -h | tail -n 20 || true
+            echo "--- largest files on / (>40M) ---"
+            sudo find / -xdev -type f -size +40M 2>/dev/null \
+              | head -n 40 \
+              | while read -r f; do sudo du -h "$f" 2>/dev/null; done \
+              | sort -h | tail -n 30 || true
             exit 1
           fi
+          echo "Disk OK: ${FREE_KB} KB free on /"
 
           echo "Step R1: enter project directory"
           cd "$HOME/resume-backend/Resume_Agent"

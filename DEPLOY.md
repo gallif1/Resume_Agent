@@ -156,21 +156,41 @@ volumes:
 
 ## EC2 — דיסק מלא (`No space left on device`)
 
-אם `Deploy via SSH` נכשל ב־`git pull` עם:
+אם `Deploy via SSH` נכשל ב־Step R0 / `git pull` עם:
+
+```text
+Error: EC2 root filesystem still low on space
+```
+
+או:
 
 ```text
 error: unable to create temporary file: No space left on device
 fatal: unpack-objects failed
 ```
 
-המכונה (root volume) התמלאה — בדרך כלל מ־Docker images ישנים / build cache / לוגים.
-ה־workflow מנקה אוטומטית לפני ה־pull (images לא בשימוש, builder cache, journal, apt).
+ה־root volume (לרוב **8GB**) התמלא — Docker layers, container JSON logs, journald, apt/snap.
+`/tmp` יכול להיות tmpfs נפרד עם מקום פנוי; הבעיה היא ב־`/` בלבד.
+
+ה־workflow מנקה אוטומטית לפני ה־pull:
+images/containers/build-cache לא בשימוש, truncate ל־`*-json.log`,
+journal vacuum, apt clean/autoremove, snap revisions ישנים, לוגי מערכת דחוסים.
 Volumes **לא** נמחקים (שם נשמרים קו״ח / DB).
 
-אחרי merge של התיקון: **Re-run** את ה־workflow (או push ל־`master`) — הסקריפט החדש עולה ב־SCP לפני ה־pull.
+אחרי merge של תיקון הניקוי: **Re-run** את ה־workflow (Actions → Deploy → Re-run)
+או `workflow_dispatch` — הסקריפט החדש עולה ב־SCP לפני ה־pull.
 
-אם עדיין אין מקום אחרי הניקוי:
+אם עדיין אין ≥~280MB פנויים אחרי הניקוי:
 
-1. SSH למכונה ובדוק: `df -h /` ו־`sudo du -xh --max-depth=1 /var/lib/docker | sort -h`
-2. הרחב את ה־EBS volume ב־AWS Console (ואז `sudo growpart` / `sudo resize2fs` לפי הצורך)
+1. SSH למכונה ובדוק את הפלט בלוג (`largest dirs on /`) או הרץ:
+   `df -h /` ו־`sudo du -xh --max-depth=1 / | sort -h`
+2. **מומלץ:** הרחב את ה־EBS ל־**≥20GB** ב־AWS Console → Volumes → Modify,
+   ואז על המכונה: `sudo growpart /dev/nvme0n1 1` ו־`sudo resize2fs /dev/nvme0n1p1`
+   (התאם את שם ההתקן ל־`lsblk`)
 3. אל תמחק volumes של Docker ידנית בלי גיבוי — שם יושבים נתוני המשתמשים
+
+### FINNHUB_API_KEY
+
+אם בלוג מופיע `WARN: FINNHUB_API_KEY GitHub secret is empty` — מחירי מניות
+(AAPL/NVDA) ב־`/trading` לא יהיו זמינים. הוסף את הסוד ב־
+GitHub → Settings → Secrets → Actions → `FINNHUB_API_KEY`.
