@@ -60,11 +60,28 @@ jobs:
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
         run: |
           set -euo pipefail
-          SSH=(ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=15
+          SSH=(ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=20
+            -o ConnectionAttempts=3
             -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes
             -o ServerAliveInterval=30 -o ServerAliveCountMax=80)
-          SCP=(scp -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=15
+          SCP=(scp -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=20
+            -o ConnectionAttempts=3
             -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+
+          echo "=== wait for SSH ==="
+          ok=0
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            echo "SSH probe $attempt/12..."
+            if "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" 'echo SSH_OK; uptime; df -h / | head -2'; then
+              ok=1
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::EC2 SSH unreachable — reboot the instance in AWS Console, then re-run."
+            exit 1
+          fi
 
           echo "=== free disk on EC2 (keep trading + named volumes) ==="
           "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE'
