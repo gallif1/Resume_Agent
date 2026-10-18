@@ -1,0 +1,113 @@
+name: Verify AI Trading Separation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+
+      - name: Verify independence
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          TRADING_AUTH_USER: ${{ secrets.TRADING_AUTH_USER }}
+          TRADING_AUTH_PASSWORD: ${{ secrets.TRADING_AUTH_PASSWORD }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12 \
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes \
+            "${EC2_USERNAME}@${EC2_HOST}" \
+            "TRADING_AUTH_USER=${TRADING_AUTH_USER}" \
+            "TRADING_AUTH_PASSWORD=${TRADING_AUTH_PASSWORD}" \
+            "FINNHUB_API_KEY=${FINNHUB_API_KEY:-}" \
+            "OPENAI_API_KEY=${OPENAI_API_KEY:-}" \
+            bash -s <<'REMOTE'
+          set -eu
+          echo "=== containers ==="
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+          echo "=== inject market keys if missing ==="
+          if [ -f "$HOME/ai-trading-system/.env" ]; then
+            if [ -n "${FINNHUB_API_KEY:-}" ]; then
+              grep -v '^FINNHUB_API_KEY=' "$HOME/ai-trading-system/.env" > /tmp/te.env || true
+              printf 'FINNHUB_API_KEY=%s\n' "$FINNHUB_API_KEY" >> /tmp/te.env
+              mv /tmp/te.env "$HOME/ai-trading-system/.env"
+            fi
+            if [ -n "${OPENAI_API_KEY:-}" ]; then
+              grep -v '^OPENAI_API_KEY=' "$HOME/ai-trading-system/.env" > /tmp/te.env || true
+              printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" >> /tmp/te.env
+              mv /tmp/te.env "$HOME/ai-trading-system/.env"
+            fi
+            # Also copy from Resume container .env if GH secrets empty
+            CID=$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')
+            if [ -n "${CID:-}" ]; then
+              sudo docker exec "$CID" sh -c 'test -f /app/ai-job-agent/.env && cat /app/ai-job-agent/.env' > /tmp/ra.env 2>/dev/null || true
+              if [ -f /tmp/ra.env ]; then
+                if ! grep -q '^OPENAI_API_KEY=.' "$HOME/ai-trading-system/.env" 2>/dev/null; then
+                  grep '^OPENAI_API_KEY=.' /tmp/ra.env >> "$HOME/ai-trading-system/.env" || true
+                fi
+                if ! grep -q '^FINNHUB_API_KEY=.' "$HOME/ai-trading-system/.env" 2>/dev/null; then
+                  grep '^FINNHUB_API_KEY=.' /tmp/ra.env >> "$HOME/ai-trading-system/.env" || true
+                fi
+              fi
+            fi
+            chmod 600 "$HOME/ai-trading-system/.env"
+            cd "$HOME/ai-trading-system"
+            sudo docker compose -p ai-trading-system up -d --no-build || true
+          fi
+
+          echo "=== trading health ==="
+          curl -sf -u "$TRADING_AUTH_USER:$TRADING_AUTH_PASSWORD" http://127.0.0.1:8100/api/health | tee /tmp/th.json
+          echo
+          echo "=== resume health ==="
+          curl -sf http://127.0.0.1:8001/api/health | tee /tmp/rh.json
+          echo
+
+          echo "=== restart trading; resume must stay up ==="
+          sudo docker restart ai-trading-system
+          sleep 8
+          curl -sf http://127.0.0.1:8001/api/health >/tmp/rh2.json
+          curl -sf -u "$TRADING_AUTH_USER:$TRADING_AUTH_PASSWORD" http://127.0.0.1:8100/api/health >/tmp/th2.json
+          echo "resume_ok=$(grep -c '"ok"' /tmp/rh2.json || true)"
+          echo "trading_ok=$(grep -c '"ok":true\|"ok": true' /tmp/th2.json || true)"
+          cat /tmp/th2.json; echo
+
+          echo "=== restart resume; trading must stay up ==="
+          CID=$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')
+          sudo docker restart "$CID"
+          sleep 15
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8001/api/health >/tmp/rh3.json && break
+            sleep 3
+          done
+          curl -sf -u "$TRADING_AUTH_USER:$TRADING_AUTH_PASSWORD" http://127.0.0.1:8100/api/health >/tmp/th3.json
+          echo "=== after resume restart ==="
+          cat /tmp/rh3.json; echo
+          cat /tmp/th3.json; echo
+
+          echo "=== unauth must 401 ==="
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/api/health || true)
+          echo "unauth_http=$code"
+          test "$code" = "401"
+
+          echo "=== portfolio file ==="
+          sudo docker exec ai-trading-system sh -c 'ls -la /app/data; if [ -f /app/data/runtime_state.json ]; then cat /app/data/runtime_state.json; fi' || true
+
+          echo "=== ss 8100 ==="
+          ss -tlnp | grep 8100 || true
+          echo "VERIFY_OK"
+          REMOTE
