@@ -1,0 +1,117 @@
+# Build Resume Agent image on GitHub Actions (EC2 cannot safely docker build).
+name: Rebuild Resume Image on EC2
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: rebuild-resume-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          set -euo pipefail
+          docker build -t resume_agent-resume-backend:latest .
+          docker save resume_agent-resume-backend:latest | gzip -1 > /tmp/resume-agent.tar.gz
+          ls -lh /tmp/resume-agent.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resume-agent-image
+          path: /tmp/resume-agent.tar.gz
+          retention-days: 1
+
+  load:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: resume-agent-image
+          path: /tmp/image
+
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+
+      - name: Load image and start container
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          SSH=(ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=60)
+          SCP=(scp -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
+
+          echo "Upload image (large)..."
+          "${SCP[@]}" /tmp/image/resume-agent.tar.gz \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/resume-agent.tar.gz"
+
+          "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE'
+          set -eu
+          echo "=== before ==="
+          sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+          df -h / | head -3
+          # Keep trading up
+          sudo docker ps --format '{{.Names}}' | grep -q ai-trading-system
+
+          echo "Loading Resume image..."
+          gunzip -c /tmp/resume-agent.tar.gz | sudo docker load
+          rm -f /tmp/resume-agent.tar.gz
+          sudo docker images | head -20
+
+          cd "$HOME/resume-backend/Resume_Agent"
+          if docker compose version >/dev/null 2>&1; then
+            sudo docker compose up -d --no-build
+          else
+            sudo docker-compose up -d --no-build
+          fi
+
+          # Fallback docker run if compose service name differs
+          if ! sudo docker ps --format '{{.Names}}' | grep -qiE 'resume|backend'; then
+            sudo docker rm -f resume_agent_backend 2>/dev/null || true
+            MOUNT="-v $HOME/resume-backend/Resume_Agent/data:/app/ai-job-agent/data"
+            if [ -d "$HOME/resume-backend/Resume_Agent/ai-job-agent/data" ]; then
+              MOUNT="-v $HOME/resume-backend/Resume_Agent/ai-job-agent/data:/app/ai-job-agent/data"
+            fi
+            sudo docker run -d --name resume_agent_backend --restart unless-stopped \
+              -p 8001:8000 $MOUNT resume_agent-resume-backend:latest
+          fi
+
+          ok=0
+          for i in $(seq 1 50); do
+            if curl -sf --max-time 8 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json"; then
+              ok=1; break
+            fi
+            sleep 4
+          done
+          echo "=== containers ==="
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+          cat "$HOME/ra-health.json" 2>/dev/null || true
+          echo
+          # Trading still healthy?
+          if [ -f "$HOME/ai-trading-system/.env" ]; then
+            set -a; . "$HOME/ai-trading-system/.env"; set +a
+            curl -sf -u "$TRADING_AUTH_USER:$TRADING_AUTH_PASSWORD" http://127.0.0.1:8100/api/health | head -c 180 || true
+            echo
+          fi
+          test "$ok" = "1"
+          echo "RESUME_IMAGE_LOAD_OK"
+          REMOTE
