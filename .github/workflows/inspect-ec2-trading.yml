@@ -40,9 +40,18 @@ jobs:
           echo "=== PORTS ==="
           ss -tlnp | head -50 || true
           echo "=== PROXY ==="
-          command -v nginx; command -v caddy; command -v traefik; command -v cloudflared; command -v certbot
-          sudo ls /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true
-          sudo grep -RIn 'server_name\|proxy_pass\|listen ' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -80 || true
+          command -v nginx || true
+          command -v caddy || true
+          command -v traefik || true
+          command -v cloudflared || true
+          command -v certbot || true
+          sudo ls -la /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true
+          sudo grep -RIn 'server_name\|proxy_pass\|listen ' /etc/nginx/sites-enabled /etc/nginx/conf.d /etc/nginx/nginx.conf 2>/dev/null | head -120 || true
+          for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*; do
+            [ -f "$f" ] || continue
+            echo "----- $f -----"
+            sudo sed -n '1,120p' "$f" || true
+          done
           sudo cat /etc/caddy/Caddyfile 2>/dev/null | head -100 || true
           systemctl is-active cloudflared 2>/dev/null || true
           sudo ls /etc/cloudflared 2>/dev/null || true
