@@ -1,0 +1,71 @@
+# One-shot remote inspect for AI Trading separation (uses existing EC2 secrets).
+name: Inspect EC2 for Trading Separation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+
+      - name: Inspect server
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12 \
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=20 \
+            "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE'
+          set -eu
+          echo "=== HOST ==="
+          hostname; whoami; date -u
+          echo "=== DOCKER ==="
+          sudo docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          echo "=== COMPOSE FILES ==="
+          ls -la "$HOME/resume-backend/Resume_Agent" 2>/dev/null | head -40 || true
+          find "$HOME/resume-backend" -maxdepth 3 \( -iname '*compose*' -o -iname 'Caddyfile' -o -iname 'nginx.conf' \) 2>/dev/null | head -40 || true
+          echo "=== PORTS ==="
+          ss -tlnp | head -50 || true
+          echo "=== PROXY ==="
+          command -v nginx; command -v caddy; command -v traefik; command -v cloudflared; command -v certbot
+          sudo ls /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null || true
+          sudo grep -RIn 'server_name\|proxy_pass\|listen ' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -80 || true
+          sudo cat /etc/caddy/Caddyfile 2>/dev/null | head -100 || true
+          systemctl is-active cloudflared 2>/dev/null || true
+          sudo ls /etc/cloudflared 2>/dev/null || true
+          echo "=== RESOURCES ==="
+          df -h / | head -5; free -h; nproc
+          echo "=== RESUME HEALTH ==="
+          curl -sf --max-time 5 http://127.0.0.1:8001/api/health || curl -sf --max-time 5 http://127.0.0.1:8000/api/health || true
+          echo
+          echo "=== OLD TRADING HEALTH ==="
+          curl -sS -m 5 -o /tmp/th.json -w 'HTTP %{http_code}\n' http://127.0.0.1:8001/trading/api/health \
+            || curl -sS -m 5 -o /tmp/th.json -w 'HTTP %{http_code}\n' http://127.0.0.1:8000/trading/api/health || true
+          cat /tmp/th.json 2>/dev/null || true
+          echo
+          CID=$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')
+          echo "RESUME_CID=$CID"
+          if [ -n "${CID:-}" ]; then
+            echo "=== TRADING DATA ==="
+            sudo docker exec "$CID" sh -c 'ls -la /app/trading/data; echo ---; if [ -f /app/trading/data/runtime_state.json ]; then wc -c /app/trading/data/runtime_state.json; python3 -c "import json; d=json.load(open(\"/app/trading/data/runtime_state.json\")); print({k:d.get(k) for k in (\"cash\",\"realized_pnl\",\"saved_at\") if k in d}); print(\"positions\", list((d.get(\"positions\") or {}).keys()))"; fi; if [ -f /app/trading/data/ai_decisions.jsonl ]; then wc -l /app/trading/data/ai_decisions.jsonl; fi' || true
+            echo "=== CONTAINER ENV (keys only) ==="
+            sudo docker exec "$CID" sh -c 'env | sed -n "s/=.*//p" | sort' | grep -iE 'TRADING|FINNHUB|OPENAI|AI_|DOMAIN|URL' || true
+          fi
+          echo "=== PUBLIC IP ==="
+          curl -sf --max-time 5 https://checkip.amazonaws.com || true
+          echo
+          echo "INSPECT_DONE"
+          REMOTE
