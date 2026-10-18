@@ -63,37 +63,6 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
-  build-trading-frontend:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Install and build trading UI
-        working-directory: trading/frontend
-        run: |
-          set -euo pipefail
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
-          npm run build
-          test -f dist/index.html
-          echo "Trading frontend dist ready:"
-          du -sh dist
-          find dist -maxdepth 2 -type f | head -30
-
-      - name: Upload trading frontend dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: trading-frontend-dist
-          path: trading/frontend/dist
-          if-no-files-found: error
-          retention-days: 2
-
   build-whatsapp-frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -166,7 +135,7 @@ jobs:
           retention-days: 2
 
   deploy:
-    needs: [build-frontend, build-trading-frontend, build-whatsapp-frontend, build-whatsapp-backend-deps]
+    needs: [build-frontend, build-whatsapp-frontend, build-whatsapp-backend-deps]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -177,11 +146,9 @@ jobs:
           name: frontend-dist
           path: frontend-dist
 
-      - name: Download trading frontend dist
-        uses: actions/download-artifact@v4
-        with:
-          name: trading-frontend-dist
-          path: trading-frontend-dist
+      - name: Download trading frontend dist (removed — standalone repo)
+        if: false
+        run: 'true'
 
       - name: Download WhatsApp Monitor frontend dist
         uses: actions/download-artifact@v4
@@ -266,26 +233,9 @@ jobs:
             "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-frontend-dist.tgz"
           echo "Step 3 done: frontend uploaded"
 
-      - name: Upload trading frontend bundle to EC2
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
-        run: |
-          set -euo pipefail
-          echo "Step 3b: upload trading frontend dist"
-          test -f trading-frontend-dist/index.html
-          tar -C trading-frontend-dist -czf /tmp/ra-trading-frontend-dist.tgz .
-          timeout 60s scp \
-            -i ~/.ssh/ec2.key \
-            -o BatchMode=yes \
-            -o ConnectTimeout=8 \
-            -o ConnectionAttempts=1 \
-            -o StrictHostKeyChecking=accept-new \
-            -o UserKnownHostsFile=~/.ssh/known_hosts \
-            -o IdentitiesOnly=yes \
-            /tmp/ra-trading-frontend-dist.tgz \
-            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-trading-frontend-dist.tgz"
-          echo "Step 3b done: trading frontend uploaded"
+      - name: Upload trading frontend bundle to EC2 (skipped — standalone)
+        if: false
+        run: 'true'
 
       - name: Upload WhatsApp Monitor frontend bundle to EC2
         env:
@@ -606,13 +556,7 @@ jobs:
             else
               echo "WARN: job-apply-automation/src/job_apply missing on host" >&2
             fi
-            if [ -d trading/backend/trading_system ]; then
-              rm -rf /tmp/ra-backend-bundle/src/trading_system
-              cp -a trading/backend/trading_system /tmp/ra-backend-bundle/src/trading_system
-              echo "Bundled trading_system into backend inject tarball"
-            else
-              echo "WARN: trading/backend/trading_system missing on host" >&2
-            fi
+            echo "SKIP bundling trading_system — standalone ai-trading-system repo"
             tar -C /tmp/ra-backend-bundle -czf /tmp/ra-backend-src.tgz src requirements.txt
             sudo docker cp /tmp/ra-backend-src.tgz "$cid:/tmp/ra-backend-src.tgz"
             # Snapshot the code that is currently serving so a broken injection
@@ -637,28 +581,10 @@ jobs:
               'rm -rf /app/job-apply-automation && tar -C /app -xzf /tmp/ra-job-apply.tgz && rm -f /tmp/ra-job-apply.tgz && find /app/job-apply-automation -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
           }
 
-          inject_trading_sidecar() {
-            local cid="$1"
-            if [ ! -d trading/backend/trading_system ]; then
-              echo "WARN: skip trading sidecar inject — package missing on host" >&2
-              return 0
-            fi
-            echo "Injecting trading package sidecar into $cid"
-            tar -C . -czf /tmp/ra-trading.tgz trading
-            sudo docker cp /tmp/ra-trading.tgz "$cid:/tmp/ra-trading.tgz"
-            sudo docker exec "$cid" sh -c \
-              'rm -rf /app/trading && tar -C /app -xzf /tmp/ra-trading.tgz && rm -f /tmp/ra-trading.tgz && mkdir -p /app/trading/data /app/trading/frontend/dist && find /app/trading -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true'
-          }
+          inject_trading_sidecar() { echo 'SKIP trading sidecar (standalone)'; return 0; }
 
-          inject_trading_frontend() {
-            local cid="$1"
-            echo "Injecting trading frontend bundle into $cid"
-            sudo docker exec "$cid" mkdir -p /app/trading/frontend/dist
-            sudo docker exec "$cid" sh -c 'rm -rf /app/trading/frontend/dist/*'
-            sudo docker cp /tmp/ra-trading-frontend-dist.tgz "$cid:/tmp/ra-trading-frontend-dist.tgz"
-            sudo docker exec "$cid" sh -c \
-              'mkdir -p /app/trading/frontend/dist && tar -C /app/trading/frontend/dist -xzf /tmp/ra-trading-frontend-dist.tgz && rm -f /tmp/ra-trading-frontend-dist.tgz'
-          }
+          inject_trading_frontend() { echo 'SKIP trading frontend (standalone)'; return 0; }
+
 
           ensure_node_in_container() {
             local cid="$1"
@@ -898,34 +824,7 @@ jobs:
           # Lightweight trading deps (tzdata/requests/openai) — avoid full requirements
           # sync on every deploy. Missing tzdata breaks ZoneInfo("America/New_York")
           # and previously left only a broken /trading/api/health stub (HTTP 500).
-          ensure_trading_runtime() {
-            local cid="$1"
-            echo "Ensuring trading runtime deps (tzdata/requests/openai) in $cid"
-            if timeout 90s sudo docker exec "$cid" python -c \
-              'import importlib.util,sys; missing=[n for n in ("tzdata","requests","openai") if importlib.util.find_spec(n) is None]; print("trading_deps_missing="+(",".join(missing) if missing else "none"), flush=True); sys.exit(0 if not missing else 1)' \
-              >"$HOME/ra-trading-deps-check.log" 2>&1; then
-              echo "Trading deps already present"
-              cat "$HOME/ra-trading-deps-check.log" 2>/dev/null || true
-              return 0
-            fi
-            cat "$HOME/ra-trading-deps-check.log" 2>/dev/null || true
-            echo "Installing missing trading deps"
-            if sudo docker exec "$cid" test -f /app/trading/backend/requirements.txt; then
-              timeout 120s sudo docker exec "$cid" pip install --no-input \
-                --disable-pip-version-check -r /app/trading/backend/requirements.txt \
-                >"$HOME/ra-trading-pip.log" 2>&1 \
-                || timeout 120s sudo docker exec "$cid" pip install --no-input \
-                  --disable-pip-version-check 'tzdata>=2024.1' 'requests>=2.31' 'openai>=1.40' \
-                  >"$HOME/ra-trading-pip.log" 2>&1 \
-                || echo "WARN: trading deps pip install failed/timed out" >&2
-            else
-              timeout 120s sudo docker exec "$cid" pip install --no-input \
-                --disable-pip-version-check 'tzdata>=2024.1' 'requests>=2.31' 'openai>=1.40' \
-                >"$HOME/ra-trading-pip.log" 2>&1 \
-                || echo "WARN: trading deps pip install failed/timed out" >&2
-            fi
-            tail -n 30 "$HOME/ra-trading-pip.log" 2>/dev/null || true
-          }
+          ensure_trading_runtime() { echo 'SKIP trading runtime deps (standalone)'; return 0; }
 
           # Plain `uvicorn` (no websockets/wsproto) accepts the TCP connection but
           # logs "Unsupported upgrade request" and answers the WebSocket handshake
@@ -954,35 +853,7 @@ jobs:
             cat "$HOME/ra-ws-runtime-check.log" 2>/dev/null || true
           }
 
-          inject_trading_secrets() {
-            local cid="$1"
-            if [ ! -f /tmp/ra-trading-secrets.env ]; then
-              echo "WARN: /tmp/ra-trading-secrets.env missing — skip trading secret inject"
-              return 0
-            fi
-            if ! grep -q '^FINNHUB_API_KEY=.' /tmp/ra-trading-secrets.env; then
-              echo "WARN: FINNHUB_API_KEY not in secrets file — stock quotes unavailable"
-              return 0
-            fi
-            echo "Injecting trading API secrets into $cid (.env) — values not logged"
-            sudo docker cp /tmp/ra-trading-secrets.env "$cid:/tmp/ra-trading-secrets.env"
-            sudo docker exec "$cid" sh -c '
-              set -eu
-              mkdir -p /app/ai-job-agent
-              touch /app/ai-job-agent/.env
-              grep -v "^FINNHUB_API_KEY=" /app/ai-job-agent/.env > /tmp/ra-env-merged.env || true
-              grep "^FINNHUB_API_KEY=" /tmp/ra-trading-secrets.env >> /tmp/ra-env-merged.env
-              mv /tmp/ra-env-merged.env /app/ai-job-agent/.env
-              rm -f /tmp/ra-trading-secrets.env
-              # Ensure AI trading can reuse Resume Agent OpenAI key if already present.
-              if grep -q "^OPENAI_API_KEY=." /app/ai-job-agent/.env; then
-                echo "OPENAI_API_KEY already present in container .env"
-              else
-                echo "WARN: OPENAI_API_KEY missing in container .env — AI Market Analyst will skip"
-              fi
-            '
-            rm -f /tmp/ra-trading-secrets.env
-          }
+          inject_trading_secrets() { echo 'SKIP trading secrets (standalone)'; rm -f /tmp/ra-trading-secrets.env; return 0; }
 
           restore_backend() {
             local cid="$1"
@@ -1150,7 +1021,6 @@ jobs:
           inject_trading_secrets "$CID"
 
           inject_frontend "$CID"
-          test -f /tmp/ra-trading-frontend-dist.tgz
           inject_trading_frontend "$CID"
           reclaim_container_disk "$CID"
 
@@ -1244,7 +1114,7 @@ jobs:
             echo "WARN: /api/job-apply/health unreachable (older backend?)" >&2
           fi
           echo
-          echo "Step R9c: trading system health"
+          echo "Step R9c: trading system health (informational; standalone app owns trading)"
           TRADING_HEALTH_CODE="$(curl -sS -m 8 -o "$HOME/ra-trading-health.json" -w '%{http_code}' http://127.0.0.1:8001/trading/api/health \
             || curl -sS -m 8 -o "$HOME/ra-trading-health.json" -w '%{http_code}' http://127.0.0.1:8000/trading/api/health \
             || echo 000)"

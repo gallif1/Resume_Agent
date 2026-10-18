@@ -638,13 +638,6 @@ export default function App() {
 
           <div className="header-actions">
             <a
-              href="/trading"
-              className="btn btn-secondary btn-sm trading-entry-btn"
-              title="Open AI Trading System"
-            >
-              AI Trading System
-            </a>
-            <a
               href="/whatsapp-monitor"
               className="btn btn-secondary btn-sm"
               title="Open WhatsApp Monitor"
