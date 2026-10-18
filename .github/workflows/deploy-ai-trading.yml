@@ -2,6 +2,8 @@
 # Image is built on GitHub Actions — the EC2 host is too small to docker build safely.
 name: Deploy AI Trading System
 
+# Prefer auto-deploy from gallif1/ai-trading-system (push to main).
+# This workflow remains as a manual backup from Resume_Agent.
 on:
   workflow_dispatch:
     inputs:
