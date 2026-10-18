@@ -72,45 +72,39 @@ jobs:
           df -h / | head -3
           sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
           # Clear leftover upload fragments
-          sudo rm -f /tmp/resume-agent.tar.gz /tmp/resume-agent.part.* /tmp/ra-*.tgz /tmp/ai-trading*.tgz 2>/dev/null || true
+          # /tmp is often tmpfs (~half RAM) — too small for a 1.2G image. Use $HOME.
+          UPLOAD_DIR="$HOME/resume-image-upload"
+          sudo rm -f /tmp/resume-agent.tar.gz /tmp/resume-agent.part.* 2>/dev/null || true
+          rm -rf "$UPLOAD_DIR"
+          mkdir -p "$UPLOAD_DIR/parts"
           # Remove dangling images only; never prune volumes
           sudo docker image prune -f || true
-          # Drop unused images except trading + currently running
-          sudo docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' | while read -r line; do
-            repo=${line%% *}; id=${line##* }
-            case "$repo" in
-              ai-trading-system:*|tribe-api:*|*/tribe-api:*) echo "keep $repo";;
-              *resume*|*<none>*) echo "consider remove $repo ($id)";;
-            esac
-          done
-          # Remove stopped containers (not running trading)
           sudo docker container prune -f || true
-          # If still tight, remove dangling build cache
           sudo docker builder prune -f || true
-          df -h / | head -3
+          df -h / /tmp 2>/dev/null | head -10
           free -h
-          mkdir -p /tmp/resume-parts
-          rm -rf /tmp/resume-parts/*
+          echo "UPLOAD_DIR=$UPLOAD_DIR"
           REMOTE
 
-          echo "=== upload parts ==="
+          echo "=== upload parts to \$HOME (not /tmp) ==="
           ls -lh /tmp/parts
-          "${SCP[@]}" /tmp/parts/* "${EC2_USERNAME}@${EC2_HOST}:/tmp/resume-parts/"
+          "${SCP[@]}" /tmp/parts/* "${EC2_USERNAME}@${EC2_HOST}:~/resume-image-upload/parts/"
 
           "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE'
           set -eu
-          df -h / | head -3
-          echo "Assembling tarball..."
-          cat /tmp/resume-parts/resume-agent.part.* > /tmp/resume-agent.tar.gz
-          rm -rf /tmp/resume-parts
-          ls -lh /tmp/resume-agent.tar.gz
+          UPLOAD_DIR="$HOME/resume-image-upload"
+          df -h / /tmp 2>/dev/null | head -10
+          echo "Assembling tarball on root filesystem..."
+          cat "$UPLOAD_DIR/parts"/resume-agent.part.* > "$UPLOAD_DIR/resume-agent.tar.gz"
+          rm -rf "$UPLOAD_DIR/parts"
+          ls -lh "$UPLOAD_DIR/resume-agent.tar.gz"
 
           # Keep trading up
           sudo docker ps --format '{{.Names}}' | grep -q ai-trading-system
 
           echo "Loading Resume image..."
-          gunzip -c /tmp/resume-agent.tar.gz | sudo docker load
-          rm -f /tmp/resume-agent.tar.gz
+          gunzip -c "$UPLOAD_DIR/resume-agent.tar.gz" | sudo docker load
+          rm -rf "$UPLOAD_DIR"
           sudo docker images | head -20
           df -h / | head -3
 
