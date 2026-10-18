@@ -1,4 +1,5 @@
 # Deploy standalone AI Trading System beside Resume Agent (same EC2).
+# Image is built on GitHub Actions — the EC2 host is too small to docker build safely.
 name: Deploy AI Trading System
 
 on:
@@ -10,10 +11,10 @@ on:
         default: "false"
         type: choice
         options: ["false", "true"]
-      configure_nginx:
-        description: "Install temporary Nginx site on trading.<host> if Nginx exists (best-effort)."
+      publish_port:
+        description: "Bind host port 8100 (0.0.0.0). Keep false for localhost-only + SSH tunnel."
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options: ["false", "true"]
 
@@ -22,16 +23,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
+    if: ${{ github.event.inputs.inspect_only != 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - name: Checkout trading repo
         uses: actions/checkout@v4
         with:
           repository: gallif1/ai-trading-system
           token: ${{ secrets.GH_PAT }}
+
+      - name: Build image
+        run: |
+          set -euo pipefail
+          docker build -t ai-trading-system:latest .
+          docker save ai-trading-system:latest | gzip -1 > /tmp/ai-trading-system.tar.gz
+          ls -lh /tmp/ai-trading-system.tar.gz
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-trading-image
+          path: /tmp/ai-trading-system.tar.gz
+          retention-days: 1
+
+  deploy:
+    needs: [build]
+    if: ${{ always() && (github.event.inputs.inspect_only == 'true' || needs.build.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout trading repo (compose + scripts)
+        if: ${{ github.event.inputs.inspect_only != 'true' }}
+        uses: actions/checkout@v4
+        with:
+          repository: gallif1/ai-trading-system
+          token: ${{ secrets.GH_PAT }}
           path: ai-trading-system
+
+      - name: Download image
+        if: ${{ github.event.inputs.inspect_only != 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-trading-image
+          path: /tmp/image
 
       - name: Prepare SSH key
         env:
@@ -43,12 +79,12 @@ jobs:
           chmod 600 ~/.ssh/ec2.key
           ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
 
-      - name: Inspect and deploy
+      - name: Inspect / deploy
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           INSPECT_ONLY: ${{ github.event.inputs.inspect_only }}
-          CONFIGURE_NGINX: ${{ github.event.inputs.configure_nginx }}
+          PUBLISH_PORT: ${{ github.event.inputs.publish_port }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TRADING_AUTH_USER: ${{ secrets.TRADING_AUTH_USER }}
@@ -61,21 +97,91 @@ jobs:
           SCP=(scp -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12
             -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes)
 
-          echo "=== SERVER INSPECT ==="
-          "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" 'hostname; whoami; date -u; sudo docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"; ss -tlnp | head -40; command -v nginx; command -v caddy; command -v cloudflared; command -v certbot; sudo grep -RIn "server_name" /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null | head -40 || true; curl -sf --max-time 5 http://127.0.0.1:8001/api/health || curl -sf --max-time 5 http://127.0.0.1:8000/api/health || true; echo; curl -sf --max-time 5 https://checkip.amazonaws.com || true; echo'
+          echo "=== SERVER SNAPSHOT ==="
+          "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE'
+          set -eu
+          hostname; date -u
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+          df -h / | head -3
+          free -h
+          command -v nginx || true
+          sudo grep -RIn 'server_name' /etc/nginx/conf.d /etc/nginx/sites-enabled 2>/dev/null || true
+          curl -sf --max-time 8 http://127.0.0.1:8001/api/health || echo 'resume_health=DOWN'
+          echo
+          curl -sf --max-time 5 https://checkip.amazonaws.com || true
+          echo
+          REMOTE
 
           if [ "${INSPECT_ONLY}" = "true" ]; then
-            echo "Inspect-only — exit"
+            echo "Inspect-only complete"
             exit 0
           fi
 
           test -n "${TRADING_AUTH_USER:-}"
           test -n "${TRADING_AUTH_PASSWORD:-}"
+          test -f /tmp/image/ai-trading-system.tar.gz
 
-          tar -C ai-trading-system --exclude='.git' --exclude='frontend/node_modules' \
-            --exclude='frontend/dist' --exclude='data/*.json' --exclude='data/*.jsonl' \
-            --exclude='.env' -czf /tmp/ai-trading-src.tgz .
-          "${SCP[@]}" /tmp/ai-trading-src.tgz "${EC2_USERNAME}@${EC2_HOST}:/tmp/ai-trading-src.tgz"
+          echo "=== UPLOAD IMAGE + COMPOSE ==="
+          "${SCP[@]}" /tmp/image/ai-trading-system.tar.gz \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ai-trading-system.tar.gz"
+
+          # Compose with optional public bind
+          if [ "${PUBLISH_PORT}" = "true" ]; then
+            PORTS_LINE='      - "8100:8100"'
+          else
+            PORTS_LINE='      - "127.0.0.1:8100:8100"'
+          fi
+          cat > /tmp/compose.override.yaml <<EOF
+          services:
+            trading:
+              image: ai-trading-system:latest
+              pull_policy: never
+              ports: []
+          EOF
+          # Write a host compose that does not build
+          cat > /tmp/ai-trading.compose.yaml <<EOF
+          name: ai-trading-system
+          services:
+            trading:
+              image: ai-trading-system:latest
+              container_name: ai-trading-system
+              restart: unless-stopped
+              env_file:
+                - .env
+              environment:
+                TRADING_HOST: "0.0.0.0"
+                TRADING_PORT: "8100"
+                TRADING_BASE_PATH: ""
+                TRADING_DATA_DIR: /app/data
+                TRADING_REQUIRE_AUTH: "true"
+                PYTHONUNBUFFERED: "1"
+              ports:
+          ${PORTS_LINE}
+              volumes:
+                - trading_data:/app/data
+              networks:
+                - trading_net
+              healthcheck:
+                test: ["CMD-SHELL", "curl -sf -u \"\$\$TRADING_AUTH_USER:\$\$TRADING_AUTH_PASSWORD\" http://127.0.0.1:8100/api/health || exit 1"]
+                interval: 30s
+                timeout: 8s
+                retries: 3
+                start_period: 45s
+              logging:
+                driver: json-file
+                options:
+                  max-size: "20m"
+                  max-file: "5"
+          volumes:
+            trading_data:
+              name: ai-trading-system-data
+          networks:
+            trading_net:
+              name: ai-trading-system-net
+              driver: bridge
+          EOF
+          "${SCP[@]}" /tmp/ai-trading.compose.yaml \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ai-trading.compose.yaml"
 
           {
             printf 'TRADING_AUTH_USER=%s\n' "$TRADING_AUTH_USER"
@@ -92,36 +198,52 @@ jobs:
           "${SCP[@]}" /tmp/ai-trading.env "${EC2_USERNAME}@${EC2_HOST}:/tmp/ai-trading.env"
           rm -f /tmp/ai-trading.env
 
-          "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" "CONFIGURE_NGINX=${CONFIGURE_NGINX}" bash -s <<'REMOTE'
+          echo "=== REMOTE LOAD + START ==="
+          "${SSH[@]}" "${EC2_USERNAME}@${EC2_HOST}" "PUBLISH_PORT=${PUBLISH_PORT}" bash -s <<'REMOTE'
           set -eu
           DEST="$HOME/ai-trading-system"
           mkdir -p "$DEST"
-          tar -C "$DEST" -xzf /tmp/ai-trading-src.tgz
+          mv /tmp/ai-trading.compose.yaml "$DEST/compose.yaml"
           mv /tmp/ai-trading.env "$DEST/.env"
           chmod 600 "$DEST/.env"
+
+          echo "Freeing disk before image load..."
+          sudo docker image prune -f || true
+          sudo docker builder prune -f || true
+          df -h / | head -3
+
+          echo "Loading image (may take a minute)..."
+          gunzip -c /tmp/ai-trading-system.tar.gz | sudo docker load
+          rm -f /tmp/ai-trading-system.tar.gz
+          sudo docker image ls ai-trading-system
+
+          # Wait for Resume to be healthy before touching trading data
+          echo "Waiting for Resume Agent..."
+          for i in $(seq 1 40); do
+            if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >/tmp/ra.json; then
+              echo "Resume healthy"; cat /tmp/ra.json; echo; break
+            fi
+            sleep 3
+          done
 
           STAMP=$(date -u +%Y%m%dT%H%M%SZ)
           BACKUP="$HOME/trading-data-backup-$STAMP"
           mkdir -p "$BACKUP"
           CID=$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk '/resume|backend|agent/ {print $1; exit}')
           if [ -n "${CID:-}" ]; then
-            echo "Pausing old /trading runtime"
-            curl -sf -X POST --max-time 8 http://127.0.0.1:8001/trading/api/pause \
-              || curl -sf -X POST --max-time 8 http://127.0.0.1:8000/trading/api/pause \
-              || true
+            echo "Pausing old /trading"
+            curl -sf -X POST --max-time 8 http://127.0.0.1:8001/trading/api/pause || true
             sudo docker cp "$CID:/app/trading/data/." "$BACKUP/" 2>/dev/null || true
-            echo "Backup: $BACKUP"; ls -la "$BACKUP" || true
+            echo "Backup $BACKUP"; ls -la "$BACKUP" || true
           fi
 
           cd "$DEST"
           if docker compose version >/dev/null 2>&1; then
-            COMPOSE="docker compose -p ai-trading-system"
+            COMPOSE="docker compose -p ai-trading-system -f compose.yaml"
           else
-            COMPOSE="docker-compose -p ai-trading-system"
+            COMPOSE="docker-compose -p ai-trading-system -f compose.yaml"
           fi
-          echo "Building (may take several minutes on small EC2)..."
-          sudo $COMPOSE build
-          sudo $COMPOSE up -d --remove-orphans
+          sudo $COMPOSE up -d --remove-orphans --no-build
 
           if [ -f "$BACKUP/runtime_state.json" ]; then
             echo "Seeding volume from backup"
@@ -136,70 +258,27 @@ jobs:
               >"$HOME/ai-trading-health.json" 2>/dev/null; then
               ok=1; break
             fi
-            sleep 4
+            sleep 3
           done
           echo "=== TRADING HEALTH ==="
           cat "$HOME/ai-trading-health.json" 2>/dev/null || true
           echo
           sudo $COMPOSE ps
+          curl -sf --max-time 8 http://127.0.0.1:8001/api/health >/tmp/ra2.json || true
+          echo "=== RESUME AFTER ==="; cat /tmp/ra2.json 2>/dev/null || true; echo
+
+          PUB_IP=$(curl -sf --max-time 5 https://checkip.amazonaws.com || true)
+          if [ "${PUBLISH_PORT}" = "true" ]; then
+            echo "INTENDED_URL=http://${PUB_IP}:8100"
+            echo "NOTE: No dedicated HTTPS subdomain on this host (Nginx serves tribe on :80)."
+            echo "Basic Auth is required. Restrict SG/ufw to your IP ASAP."
+          else
+            echo "INTENDED_URL=http://127.0.0.1:8100 (SSH tunnel: ssh -L 8100:127.0.0.1:8100 user@host)"
+          fi
+
           if [ "$ok" != "1" ]; then
             sudo $COMPOSE logs --tail=150
             exit 1
           fi
-
-          # Resume still healthy?
-          curl -sf --max-time 8 http://127.0.0.1:8001/api/health >/tmp/ra.json \
-            || curl -sf --max-time 8 http://127.0.0.1:8000/api/health >/tmp/ra.json
-          echo "=== RESUME STILL OK ==="; cat /tmp/ra.json; echo
-
-          if [ "${CONFIGURE_NGINX:-false}" = "true" ] && command -v nginx >/dev/null 2>&1; then
-            DOMAIN=$(sudo grep -RhoE 'server_name[[:space:]]+[^;]+' /etc/nginx/sites-enabled /etc/nginx/conf.d 2>/dev/null \
-              | awk '{print $2}' | tr -d ';' | grep -vE '^_|localhost' | head -1 || true)
-            if [ -n "${DOMAIN:-}" ]; then
-              TRADE_HOST="trading.${DOMAIN#*.}"
-              # If DOMAIN is already apex like example.com, trading.example.com
-              case "$DOMAIN" in
-                *.*) TRADE_HOST="trading.${DOMAIN#*.}";;
-                *) TRADE_HOST="trading.$DOMAIN";;
-              esac
-              # Prefer trading.<same FQDN parent>
-              PARENT="$DOMAIN"
-              if echo "$DOMAIN" | grep -q '\.'; then
-                # resume.example.com -> trading.example.com
-                PARENT=$(echo "$DOMAIN" | sed 's/^[^.]*\.//')
-                TRADE_HOST="trading.$PARENT"
-              fi
-              echo "Configuring nginx for $TRADE_HOST -> 127.0.0.1:8100"
-              sudo tee /etc/nginx/sites-available/ai-trading >/dev/null <<EOF
-          server {
-              listen 80;
-              server_name $TRADE_HOST;
-              location / {
-                  proxy_pass http://127.0.0.1:8100;
-                  proxy_http_version 1.1;
-                  proxy_set_header Host \$host;
-                  proxy_set_header X-Real-IP \$remote_addr;
-                  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto \$scheme;
-                  proxy_set_header Upgrade \$http_upgrade;
-                  proxy_set_header Connection "upgrade";
-                  proxy_read_timeout 3600s;
-              }
-          }
-          EOF
-              sudo ln -sf /etc/nginx/sites-available/ai-trading /etc/nginx/sites-enabled/ai-trading
-              sudo nginx -t && sudo systemctl reload nginx || true
-              if command -v certbot >/dev/null 2>&1; then
-                sudo certbot --nginx -d "$TRADE_HOST" --non-interactive --agree-tos -m admin@$PARENT --redirect || true
-              fi
-              echo "INTENDED_URL=https://$TRADE_HOST"
-            else
-              echo "No server_name found — skip nginx trading site"
-              echo "INTENDED_URL=http://127.0.0.1:8100 (SSH tunnel / IP-restricted)"
-            fi
-          else
-            echo "INTENDED_URL=http://127.0.0.1:8100 (localhost bind; use SSH tunnel or add reverse proxy)"
-          fi
-
           echo "DEPLOY_OK"
           REMOTE
