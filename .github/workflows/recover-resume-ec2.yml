@@ -1,0 +1,83 @@
+name: Recover Resume Agent on EC2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+
+      - name: Recover compose stack
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12 \
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
+            "${EC2_USERNAME}@${EC2_HOST}" bash -s <<'REMOTE'
+          set -eu
+          echo "=== before ==="
+          sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+          df -h / | head -3
+          free -h
+
+          # Do not touch ai-trading-system
+          echo "Trading still up?"
+          sudo docker ps --format '{{.Names}} {{.Status}}' | grep ai-trading || echo 'trading missing'
+
+          cd "$HOME/resume-backend/Resume_Agent"
+          cat docker-compose.yml || true
+
+          if docker compose version >/dev/null 2>&1; then
+            UP='docker compose up -d --no-build --remove-orphans'
+          else
+            UP='docker-compose up -d --no-build --remove-orphans'
+          fi
+
+          # Free a little space if needed (never prune volumes)
+          sudo docker container prune -f || true
+          sudo docker image prune -f || true
+
+          echo "Starting Resume Agent compose..."
+          timeout 120s sudo sh -c "$UP" </dev/null || {
+            echo "compose up failed; trying existing image name resume_agent-resume-backend"
+            sudo docker start resume_agent_backend || true
+            sudo docker ps -a | head -20
+          }
+
+          echo "=== after up ==="
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+          ok=0
+          for i in $(seq 1 40); do
+            if curl -sf --max-time 5 http://127.0.0.1:8001/api/health >"$HOME/ra-health.json"; then
+              ok=1
+              break
+            fi
+            echo "wait health $i"
+            sleep 3
+          done
+          cat "$HOME/ra-health.json" 2>/dev/null || true
+          echo
+          curl -sf -u "$(grep TRADING_AUTH_USER "$HOME/ai-trading-system/.env" | cut -d= -f2-):$(grep TRADING_AUTH_PASSWORD "$HOME/ai-trading-system/.env" | cut -d= -f2-)" \
+            http://127.0.0.1:8100/api/health | head -c 200 || echo 'trading_check_failed'
+          echo
+          if [ "$ok" != "1" ]; then
+            sudo docker logs --tail 80 resume_agent_backend || true
+            exit 1
+          fi
+          echo "RECOVER_OK"
+          REMOTE
