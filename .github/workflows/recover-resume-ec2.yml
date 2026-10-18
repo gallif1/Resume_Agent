@@ -39,24 +39,70 @@ jobs:
           sudo docker ps --format '{{.Names}} {{.Status}}' | grep ai-trading || echo 'trading missing'
 
           cd "$HOME/resume-backend/Resume_Agent"
+          echo "=== compose file ==="
           cat docker-compose.yml || true
+          echo "=== images ==="
+          sudo docker images --format 'table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}' | head -40
+          echo "=== all containers ==="
+          sudo docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | head -40
+
+          # NEVER prune — a previous recover deleted the stopped Resume container.
+          IMG=""
+          for cand in resume_agent-resume-backend resume_agent_backend resume-agent resume-backend; do
+            if sudo docker image inspect "$cand" >/dev/null 2>&1; then
+              IMG="$cand"
+              break
+            fi
+          done
+          # Also match by repository substring
+          if [ -z "$IMG" ]; then
+            IMG=$(sudo docker images --format '{{.Repository}}:{{.Tag}}' | awk '/resume/ {print; exit}')
+          fi
+          echo "Selected image: ${IMG:-NONE}"
 
           if docker compose version >/dev/null 2>&1; then
-            UP='docker compose up -d --no-build --remove-orphans'
+            COMPOSE='docker compose'
           else
-            UP='docker-compose up -d --no-build --remove-orphans'
+            COMPOSE='docker-compose'
           fi
 
-          # Free a little space if needed (never prune volumes)
-          sudo docker container prune -f || true
-          sudo docker image prune -f || true
-
           echo "Starting Resume Agent compose..."
-          timeout 120s sudo sh -c "$UP" </dev/null || {
-            echo "compose up failed; trying existing image name resume_agent-resume-backend"
-            sudo docker start resume_agent_backend || true
-            sudo docker ps -a | head -20
-          }
+          set +e
+          timeout 120s sudo $COMPOSE up -d --no-build </dev/null
+          UP_RC=$?
+          set -e
+          echo "compose_exit=$UP_RC"
+
+          if ! sudo docker ps --format '{{.Names}}' | grep -qE 'resume|backend|agent'; then
+            echo "Compose did not start a resume container — falling back to docker run"
+            if [ -n "$IMG" ]; then
+              sudo docker rm -f resume_agent_backend 2>/dev/null || true
+              # Match historical deploy ports + persistent data volume if present
+              DATA_VOL=""
+              if sudo docker volume ls --format '{{.Name}}' | grep -q 'resume'; then
+                DATA_VOL=$(sudo docker volume ls --format '{{.Name}}' | awk '/resume|data/ {print; exit}')
+              fi
+              # Prefer host bind used historically
+              if [ -d "$HOME/resume-backend/Resume_Agent/ai-job-agent/data" ]; then
+                MOUNT="-v $HOME/resume-backend/Resume_Agent/ai-job-agent/data:/app/ai-job-agent/data"
+              elif [ -d "$HOME/resume-backend/Resume_Agent/data" ]; then
+                MOUNT="-v $HOME/resume-backend/Resume_Agent/data:/app/ai-job-agent/data"
+              elif [ -n "${DATA_VOL:-}" ]; then
+                MOUNT="-v ${DATA_VOL}:/app/ai-job-agent/data"
+              else
+                MOUNT="-v resume-agent-data:/app/ai-job-agent/data"
+              fi
+              echo "docker run with $MOUNT"
+              sudo docker run -d --name resume_agent_backend --restart unless-stopped \
+                -p 8001:8000 \
+                $MOUNT \
+                "$IMG"
+            else
+              echo "ERROR: no resume image on host. Need rebuild_image=true deploy."
+              sudo docker images
+              exit 1
+            fi
+          fi
 
           echo "=== after up ==="
           sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
