@@ -1,0 +1,82 @@
+# Open host firewall for trading :8100 and verify local health.
+# AWS Security Group must still allow TCP 8100 (or use Nginx on :80).
+name: Open Trading Port 8100
+
+on:
+  workflow_dispatch:
+    inputs:
+      my_ip:
+        description: "Optional: restrict ufw to this IP/CIDR (e.g. 1.2.3.4/32). Empty = allow anywhere on host firewall."
+        required: false
+        default: ""
+
+jobs:
+  open:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Prepare SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2.key
+          chmod 600 ~/.ssh/ec2.key
+          ssh-keygen -y -f ~/.ssh/ec2.key >/dev/null
+
+      - name: Open firewall + verify
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          MY_IP: ${{ github.event.inputs.my_ip }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes \
+            "${EC2_USERNAME}@${EC2_HOST}" \
+            "MY_IP=${MY_IP}" bash -s <<'REMOTE'
+          set -eu
+          echo "=== local trading health ==="
+          if [ -f "$HOME/ai-trading-system/.env" ]; then
+            set -a; . "$HOME/ai-trading-system/.env"; set +a
+            curl -sf -u "$TRADING_AUTH_USER:$TRADING_AUTH_PASSWORD" http://127.0.0.1:8100/api/health | head -c 250
+            echo
+          else
+            curl -sf http://127.0.0.1:8100/api/health | head -c 250 || true
+            echo
+          fi
+          sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -10
+          ss -tlnp | grep 8100 || true
+
+          echo "=== ufw ==="
+          if command -v ufw >/dev/null 2>&1; then
+            sudo ufw status || true
+            if [ -n "${MY_IP:-}" ]; then
+              sudo ufw allow from "$MY_IP" to any port 8100 proto tcp comment 'ai-trading-system' || true
+            else
+              sudo ufw allow 8100/tcp comment 'ai-trading-system' || true
+            fi
+            sudo ufw status numbered || true
+          else
+            echo "ufw not installed"
+          fi
+
+          echo "=== iptables (filter INPUT) ==="
+          sudo iptables -S INPUT 2>/dev/null | head -40 || true
+
+          # Also add a dedicated Nginx vhost on an ALREADY-PUBLIC pattern:
+          # Resume is on 8001; Tribe owns :80. Add trading path on port 80
+          # only if we can insert a higher-priority location — use separate
+          # listen on 8100 is already bound by docker.
+          #
+          # Fallback public URL via Nginx on :80 path /ats/ requires app base path.
+          # Prefer AWS SG open for 8100.
+
+          PUB=$(curl -sf --max-time 5 https://checkip.amazonaws.com || true)
+          echo "PUBLIC_IP=$PUB"
+          echo "ACTION_REQUIRED: In AWS Console → EC2 → Security Groups → inbound rules,"
+          echo "add TCP 8100 from your IP (/32) or 0.0.0.0/0 (less safe)."
+          echo "Then open: http://${PUB}:8100/  (HTTP Basic Auth)"
+          echo "DONE"
+          REMOTE
