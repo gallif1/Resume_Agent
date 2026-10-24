@@ -1,0 +1,902 @@
+
+Running 80 tests using 1 worker
+
+(node:10734) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:10734) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘   1 [chromium-desktop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (1.3s)
+(node:10826) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:10826) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘   2 [chromium-desktop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (retry #1) (1.5s)
+(node:10916) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:10916) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓   3 [chromium-desktop] › tests/accessibility.spec.ts:131:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe (23.7s)
+  ✓   4 [chromium-desktop] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password (1.5s)
+  ✓   5 [chromium-desktop] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh (14.5s)
+  ✓   6 [chromium-desktop] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out (850ms)
+  ✓   7 [chromium-desktop] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note (1ms)
+  ✓   8 [chromium-desktop] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls (23.4s)
+  ✓   9 [chromium-desktop] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop (23.5s)
+  -  10 [chromium-desktop] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✓  11 [chromium-desktop] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (22.8s)
+  ✓  12 [chromium-desktop] › tests/responsive-rtl.spec.ts:91:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth (21.8s)
+  ✓  13 [chromium-desktop] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup (31.9s)
+  ✓  14 [chromium-desktop] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior (26.3s)
+  ✓  15 [chromium-desktop] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (756ms)
+  ✓  16 [chromium-desktop] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave (1.8s)
+  ✓  17 [chromium-desktop] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load (2.1s)
+(node:11304) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:11304) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  18 [chromium-laptop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe
+  -  19 [chromium-laptop] › tests/accessibility.spec.ts:131:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  -  20 [chromium-laptop] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password
+  -  21 [chromium-laptop] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh
+  -  22 [chromium-laptop] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out
+  -  23 [chromium-laptop] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note
+  -  24 [chromium-laptop] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls
+  -  25 [chromium-laptop] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop
+  -  26 [chromium-laptop] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✓  27 [chromium-laptop] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (23.4s)
+  -  28 [chromium-laptop] › tests/responsive-rtl.spec.ts:91:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+  -  29 [chromium-laptop] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup
+  -  30 [chromium-laptop] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior
+  ✓  31 [chromium-laptop] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (598ms)
+  -  32 [chromium-laptop] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave
+  -  33 [chromium-laptop] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load
+(node:11508) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:11508) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  34 [chromium-tablet] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe
+  -  35 [chromium-tablet] › tests/accessibility.spec.ts:131:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  -  36 [chromium-tablet] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password
+  -  37 [chromium-tablet] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh
+  -  38 [chromium-tablet] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out
+  -  39 [chromium-tablet] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note
+  -  40 [chromium-tablet] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls
+  -  41 [chromium-tablet] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop
+  -  42 [chromium-tablet] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✓  43 [chromium-tablet] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (23.2s)
+  -  44 [chromium-tablet] › tests/responsive-rtl.spec.ts:91:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+  -  45 [chromium-tablet] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup
+  -  46 [chromium-tablet] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior
+  ✓  47 [chromium-tablet] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (723ms)
+  -  48 [chromium-tablet] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave
+  -  49 [chromium-tablet] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load
+(node:11673) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:11673) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  50 [chromium-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (1.2s)
+(node:11762) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:11762) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  51 [chromium-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe (retry #1) (1.4s)
+(node:11853) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:11853) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  52 [chromium-mobile] › tests/accessibility.spec.ts:131:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  ✓  53 [chromium-mobile] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password (1.7s)
+  ✓  54 [chromium-mobile] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh (16.1s)
+  ✓  55 [chromium-mobile] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out (809ms)
+  ✓  56 [chromium-mobile] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note (1ms)
+  -  57 [chromium-mobile] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls
+  -  58 [chromium-mobile] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop
+  -  59 [chromium-mobile] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✘  60 [chromium-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (1.4m)
+(node:12004) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:12004) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  61 [chromium-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (retry #1) (1.4m)
+(node:12079) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:12079) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  62 [chromium-mobile] › tests/responsive-rtl.spec.ts:91:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+  -  63 [chromium-mobile] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup
+  -  64 [chromium-mobile] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior
+  ✓  65 [chromium-mobile] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (991ms)
+  ✓  66 [chromium-mobile] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave (1.8s)
+  -  67 [chromium-mobile] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load
+(node:12214) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:12214) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  68 [chromium-small-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe
+  -  69 [chromium-small-mobile] › tests/accessibility.spec.ts:131:7 › Phase 11 — Accessibility › authenticated: headings, modal escape, axe
+  -  70 [chromium-small-mobile] › tests/auth.spec.ts:31:7 › Phase 3 — Authentication › registration validation: empty fields, invalid email, weak password
+  -  71 [chromium-small-mobile] › tests/auth.spec.ts:88:7 › Phase 3 — Authentication › register valid account, duplicate blocked, login / logout / refresh
+  -  72 [chromium-small-mobile] › tests/auth.spec.ts:198:7 › Phase 3 — Authentication › protected workspace not reachable while logged out
+  -  73 [chromium-small-mobile] › tests/auth.spec.ts:216:7 › Phase 3 — Authentication › credentials availability note
+  -  74 [chromium-small-mobile] › tests/discovery.spec.ts:21:7 › Phase 1 — Application discovery › map public auth surface, routes, and authenticated controls
+  -  75 [chromium-small-mobile] › tests/job-flow.spec.ts:31:7 › Phase 6–8 — Job flow › scan controls, minimal scan, results UI, apply confirm stop
+  -  76 [chromium-small-mobile] › tests/job-flow.spec.ts:277:7 › Phase 6–8 — Job flow › scan button disabled states without sites
+  ✘  77 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (1.4m)
+(node:12306) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:12306) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✘  78 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport (retry #1) (1.4m)
+(node:12382) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:12382) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  -  79 [chromium-small-mobile] › tests/responsive-rtl.spec.ts:91:7 › Phase 10 — Hebrew RTL › RTL direction, alignment, mixed content, no raw i18n keys on auth
+  -  80 [chromium-small-mobile] › tests/resume-management.spec.ts:38:7 › Phase 4 — Resume management › upload variants, list, select, delete confirm/cancel, cleanup
+  -  81 [chromium-small-mobile] › tests/resume-management.spec.ts:169:7 › Phase 5 — Resume-specific data separation › two resumes: picker switch + workspace aggregation behavior
+  ✓  82 [chromium-small-mobile] › tests/smoke.spec.ts:14:7 › Phase 2 — Smoke › website loads with primary UI and no blank screen (675ms)
+  -  83 [chromium-small-mobile] › tests/smoke.spec.ts:66:7 › Phase 2 — Smoke › navigation tabs, refresh, and history behave
+  -  84 [chromium-small-mobile] › tests/smoke.spec.ts:127:7 › Phase 2 — Smoke › no critical console exceptions on initial load
+
+
+  1) [chromium-desktop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe › axe-core scan on auth view 
+
+    Error: color-contrast: Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -   1
+    + Received  + 128
+
+    - Array []
+    + Array [
+    +   Object {
+    +     "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+    +     "help": "Elements must meet minimum color contrast ratio thresholds",
+    +     "helpUrl": "https://dequeuniversity.com/rules/axe/4.12/color-contrast?application=playwright",
+    +     "id": "color-contrast",
+    +     "impact": "serious",
+    +     "nodes": Array [
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 4.3,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#6c7b91",
+    +               "fontSize": "11.0pt (14.72px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 4.3 (foreground color: #6c7b91, background color: #ffffff, font size: 11.0pt (14.72px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<div class=\"auth-tabs\" role=\"tablist\"><button type=\"button\" role=\"tab\" aria-selected=\"true\" class=\"auth-tab active\">התחברות</button><button type=\"button\" role=\"tab\" aria-selected=\"false\" class=\"auth-tab \">הרשמה</button></div>",
+    +                 "target": Array [
+    +                   ".auth-tabs",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 4.3 (foreground color: #6c7b91, background color: #ffffff, font size: 11.0pt (14.72px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<button type=\"button\" role=\"tab\" aria-selected=\"false\" class=\"auth-tab \">הרשמה</button>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           ".auth-tab[type=\"button\"][role=\"tab\"]:nth-child(2)",
+    +         ],
+    +       },
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>Resume Agent</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "footer > span:nth-child(1)",
+    +         ],
+    +       },
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>סוכן חיפוש עבודה חכם</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "span:nth-child(3)",
+    +         ],
+    +       },
+    +     ],
+    +     "tags": Array [
+    +       "cat.color",
+    +       "wcag2aa",
+    +       "wcag143",
+    +       "TTv5",
+    +       "TT13.c",
+    +       "EN-301-549",
+    +       "EN-9.1.4.3",
+    +       "ACT",
+    +       "RGAAv4",
+    +       "RGAA-3.2.1",
+    +     ],
+    +   },
+    + ]
+
+      116 |         critical,
+      117 |         critical.map((v) => `${v.id}: ${v.description}`).join("\n")
+    > 118 |       ).toEqual([]);
+          |         ^
+      119 |     });
+      120 |
+      121 |     await test.step("Error not only by color — alert role on bad login", async () => {
+        at /workspace/e2e/tests/accessibility.spec.ts:118:9
+        at /workspace/e2e/tests/accessibility.spec.ts:96:5
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop/video-1.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: color-contrast: Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  1
+    + Received  + 93
+
+    - Array []
+    + Array [
+    +   Object {
+    +     "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+    +     "help": "Elements must meet minimum color contrast ratio thresholds",
+    +     "helpUrl": "https://dequeuniversity.com/rules/axe/4.12/color-contrast?application=playwright",
+    +     "id": "color-contrast",
+    +     "impact": "serious",
+    +     "nodes": Array [
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>Resume Agent</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "footer > span:nth-child(1)",
+    +         ],
+    +       },
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>סוכן חיפוש עבודה חכם</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "span:nth-child(3)",
+    +         ],
+    +       },
+    +     ],
+    +     "tags": Array [
+    +       "cat.color",
+    +       "wcag2aa",
+    +       "wcag143",
+    +       "TTv5",
+    +       "TT13.c",
+    +       "EN-301-549",
+    +       "EN-9.1.4.3",
+    +       "ACT",
+    +       "RGAAv4",
+    +       "RGAA-3.2.1",
+    +     ],
+    +   },
+    + ]
+
+      116 |         critical,
+      117 |         critical.map((v) => `${v.id}: ${v.description}`).join("\n")
+    > 118 |       ).toEqual([]);
+          |         ^
+      119 |     });
+      120 |
+      121 |     await test.step("Error not only by color — alert role on bad login", async () => {
+        at /workspace/e2e/tests/accessibility.spec.ts:118:9
+        at /workspace/e2e/tests/accessibility.spec.ts:96:5
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop-retry1/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop-retry1/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop-retry1/video-1.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop-retry1/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-desktop-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  2) [chromium-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe › axe-core scan on auth view 
+
+    Error: color-contrast: Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -   1
+    + Received  + 128
+
+    - Array []
+    + Array [
+    +   Object {
+    +     "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+    +     "help": "Elements must meet minimum color contrast ratio thresholds",
+    +     "helpUrl": "https://dequeuniversity.com/rules/axe/4.12/color-contrast?application=playwright",
+    +     "id": "color-contrast",
+    +     "impact": "serious",
+    +     "nodes": Array [
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#fefeff",
+    +               "contrastRatio": 3.72,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#778599",
+    +               "fontSize": "11.0pt (14.72px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 3.72 (foreground color: #778599, background color: #fefeff, font size: 11.0pt (14.72px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<div class=\"auth-tabs\" role=\"tablist\"><button type=\"button\" role=\"tab\" aria-selected=\"true\" class=\"auth-tab active\">התחברות</button><button type=\"button\" role=\"tab\" aria-selected=\"false\" class=\"auth-tab \">הרשמה</button></div>",
+    +                 "target": Array [
+    +                   ".auth-tabs",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 3.72 (foreground color: #778599, background color: #fefeff, font size: 11.0pt (14.72px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<button type=\"button\" role=\"tab\" aria-selected=\"false\" class=\"auth-tab \">הרשמה</button>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           ".auth-tab[type=\"button\"][role=\"tab\"]:nth-child(2)",
+    +         ],
+    +       },
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>Resume Agent</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "footer > span:nth-child(1)",
+    +         ],
+    +       },
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>סוכן חיפוש עבודה חכם</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "span:nth-child(3)",
+    +         ],
+    +       },
+    +     ],
+    +     "tags": Array [
+    +       "cat.color",
+    +       "wcag2aa",
+    +       "wcag143",
+    +       "TTv5",
+    +       "TT13.c",
+    +       "EN-301-549",
+    +       "EN-9.1.4.3",
+    +       "ACT",
+    +       "RGAAv4",
+    +       "RGAA-3.2.1",
+    +     ],
+    +   },
+    + ]
+
+      116 |         critical,
+      117 |         critical.map((v) => `${v.id}: ${v.description}`).join("\n")
+    > 118 |       ).toEqual([]);
+          |         ^
+      119 |     });
+      120 |
+      121 |     await test.step("Error not only by color — alert role on bad login", async () => {
+        at /workspace/e2e/tests/accessibility.spec.ts:118:9
+        at /workspace/e2e/tests/accessibility.spec.ts:96:5
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile/video-1.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: color-contrast: Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  -  1
+    + Received  + 93
+
+    - Array []
+    + Array [
+    +   Object {
+    +     "description": "Ensure the contrast between foreground and background colors meets WCAG 2 AA minimum contrast ratio thresholds",
+    +     "help": "Elements must meet minimum color contrast ratio thresholds",
+    +     "helpUrl": "https://dequeuniversity.com/rules/axe/4.12/color-contrast?application=playwright",
+    +     "id": "color-contrast",
+    +     "impact": "serious",
+    +     "nodes": Array [
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>Resume Agent</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "footer > span:nth-child(1)",
+    +         ],
+    +       },
+    +       Object {
+    +         "all": Array [],
+    +         "any": Array [
+    +           Object {
+    +             "data": Object {
+    +               "bgColor": "#ffffff",
+    +               "contrastRatio": 2.56,
+    +               "expectedContrastRatio": "4.5:1",
+    +               "fgColor": "#94a3b8",
+    +               "fontSize": "9.8pt (13.12px)",
+    +               "fontWeight": "normal",
+    +               "messageKey": null,
+    +             },
+    +             "id": "color-contrast",
+    +             "impact": "serious",
+    +             "message": "Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +             "relatedNodes": Array [
+    +               Object {
+    +                 "html": "<footer class=\"footer\"><span>Resume Agent</span><span class=\"footer-sep\">·</span><span>סוכן חיפוש עבודה חכם</span></footer>",
+    +                 "target": Array [
+    +                   "footer",
+    +                 ],
+    +               },
+    +             ],
+    +           },
+    +         ],
+    +         "failureSummary": "Fix any of the following:
+    +   Element has insufficient color contrast of 2.56 (foreground color: #94a3b8, background color: #ffffff, font size: 9.8pt (13.12px), font weight: normal). Expected contrast ratio of 4.5:1",
+    +         "html": "<span>סוכן חיפוש עבודה חכם</span>",
+    +         "impact": "serious",
+    +         "none": Array [],
+    +         "target": Array [
+    +           "span:nth-child(3)",
+    +         ],
+    +       },
+    +     ],
+    +     "tags": Array [
+    +       "cat.color",
+    +       "wcag2aa",
+    +       "wcag143",
+    +       "TTv5",
+    +       "TT13.c",
+    +       "EN-301-549",
+    +       "EN-9.1.4.3",
+    +       "ACT",
+    +       "RGAAv4",
+    +       "RGAA-3.2.1",
+    +     ],
+    +   },
+    + ]
+
+      116 |         critical,
+      117 |         critical.map((v) => `${v.id}: ${v.description}`).join("\n")
+    > 118 |       ).toEqual([]);
+          |         ^
+      119 |     });
+      120 |
+      121 |     await test.step("Error not only by color — alert role on bad login", async () => {
+        at /workspace/e2e/tests/accessibility.spec.ts:118:9
+        at /workspace/e2e/tests/accessibility.spec.ts:96:5
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile-retry1/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile-retry1/video-1.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #3: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile-retry1/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile-retry1/error-context.md
+
+    attachment #5: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts/test-results/accessibility-Phase-11-—-A-f6517-h-labels-roles-keyboard-axe-chromium-mobile-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  3) [chromium-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator:  getByText('סוכן מחובר')
+    Expected: visible
+    Received: hidden
+    Timeout:  60000ms
+
+    Call log:
+      - Expect "toBeVisible" with timeout 60000ms
+      - waiting for getByText('סוכן מחובר')
+        123 × locator resolved to <span class="server-status-text">סוכן מחובר</span>
+            - unexpected value "hidden"
+
+
+      41 |     const auth = await ensureAuthenticated(page);
+      42 |     if (auth.ok) {
+    > 43 |       await expect(page.getByText("סוכן מחובר")).toBeVisible({
+         |                                                  ^
+      44 |         timeout: 60_000,
+      45 |       });
+      46 |       await screenshotViewport(page, `responsive-app-${project}`);
+        at /workspace/e2e/tests/responsive-rtl.spec.ts:43:50
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator:  getByText('סוכן מחובר')
+    Expected: visible
+    Received: hidden
+    Timeout:  60000ms
+
+    Call log:
+      - Expect "toBeVisible" with timeout 60000ms
+      - waiting for getByText('סוכן מחובר')
+        123 × locator resolved to <span class="server-status-text">סוכן מחובר</span>
+            - unexpected value "hidden"
+
+
+      41 |     const auth = await ensureAuthenticated(page);
+      42 |     if (auth.ok) {
+    > 43 |       await expect(page.getByText("סוכן מחובר")).toBeVisible({
+         |                                                  ^
+      44 |         timeout: 60_000,
+      45 |       });
+      46 |       await screenshotViewport(page, `responsive-app-${project}`);
+        at /workspace/e2e/tests/responsive-rtl.spec.ts:43:50
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile-retry1/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile-retry1/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile-retry1/error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-mobile-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  4) [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator:  getByText('סוכן מחובר')
+    Expected: visible
+    Received: hidden
+    Timeout:  60000ms
+
+    Call log:
+      - Expect "toBeVisible" with timeout 60000ms
+      - waiting for getByText('סוכן מחובר')
+        123 × locator resolved to <span class="server-status-text">סוכן מחובר</span>
+            - unexpected value "hidden"
+
+
+      41 |     const auth = await ensureAuthenticated(page);
+      42 |     if (auth.ok) {
+    > 43 |       await expect(page.getByText("סוכן מחובר")).toBeVisible({
+         |                                                  ^
+      44 |         timeout: 60_000,
+      45 |       });
+      46 |       await screenshotViewport(page, `responsive-app-${project}`);
+        at /workspace/e2e/tests/responsive-rtl.spec.ts:43:50
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator:  getByText('סוכן מחובר')
+    Expected: visible
+    Received: hidden
+    Timeout:  60000ms
+
+    Call log:
+      - Expect "toBeVisible" with timeout 60000ms
+      - waiting for getByText('סוכן מחובר')
+        123 × locator resolved to <span class="server-status-text">סוכן מחובר</span>
+            - unexpected value "hidden"
+
+
+      41 |     const auth = await ensureAuthenticated(page);
+      42 |     if (auth.ok) {
+    > 43 |       await expect(page.getByText("סוכן מחובר")).toBeVisible({
+         |                                                  ^
+      44 |         timeout: 60_000,
+      45 |       });
+      46 |       await screenshotViewport(page, `responsive-app-${project}`);
+        at /workspace/e2e/tests/responsive-rtl.spec.ts:43:50
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace artifacts/test-results/responsive-rtl-Phase-9-—-R-437cf--layout-at-current-viewport-chromium-small-mobile-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  4 failed
+    [chromium-desktop] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe 
+    [chromium-mobile] › tests/accessibility.spec.ts:29:7 › Phase 11 — Accessibility › auth: labels, roles, keyboard, axe 
+    [chromium-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport 
+    [chromium-small-mobile] › tests/responsive-rtl.spec.ts:20:7 › Phase 9 — Responsive UI › auth + workspace layout at current viewport 
+  51 skipped
+  25 passed (10.5m)

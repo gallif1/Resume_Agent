@@ -1,0 +1,26 @@
+{
+  "name": "resume-agent-e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Playwright E2E QA suite for Resume Agent (live deployed app)",
+  "scripts": {
+    "test": "playwright test",
+    "test:desktop": "playwright test --project=chromium-desktop",
+    "test:mobile": "playwright test --project=chromium-mobile",
+    "test:smoke": "playwright test tests/smoke.spec.ts",
+    "test:auth": "playwright test tests/auth.spec.ts",
+    "test:resume": "playwright test tests/resume-management.spec.ts",
+    "test:jobs": "playwright test tests/job-flow.spec.ts",
+    "test:responsive": "playwright test tests/responsive-rtl.spec.ts",
+    "test:a11y": "playwright test tests/accessibility.spec.ts",
+    "test:discovery": "playwright test tests/discovery.spec.ts --project=chromium-desktop",
+    "report": "playwright show-report artifacts/html-report",
+    "codegen": "playwright codegen https://resume-agent-u8n6.onrender.com"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.53.0",
+    "@types/node": "^26.1.1",
+    "pdf-lib": "^1.17.1"
+  }
+}
