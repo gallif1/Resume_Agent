@@ -3454,6 +3454,8 @@ def _data_dir_looks_persistent() -> bool:
 
 @app.get("/api/health")
 async def health():
+    from ai_client import is_ai_available
+
     browser_ok, browser_error = _playwright_browser_ready()
     data_persistent = _data_dir_looks_persistent()
     database_ok = True
@@ -3468,6 +3470,7 @@ async def health():
     return {
         "ok": True,
         **build_info(),
+        "openai_configured": is_ai_available(),
         "cv_tailor_model": OPENAI_CV_TAILOR_MODEL,
         "cv_tailor_reasoning_effort": OPENAI_CV_TAILOR_REASONING_EFFORT or None,
         "cv_tailor_verbosity": OPENAI_CV_TAILOR_VERBOSITY or None,

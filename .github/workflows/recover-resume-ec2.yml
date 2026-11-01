@@ -22,8 +22,22 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
+          : > /tmp/ra-resume-secrets.env
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" >> /tmp/ra-resume-secrets.env
+            echo "OPENAI_API_KEY secret present for recover inject"
+          else
+            echo "WARN: OPENAI_API_KEY GitHub secret is empty"
+          fi
+          scp -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12 \
+            -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes \
+            /tmp/ra-resume-secrets.env \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-resume-secrets.env" \
+            || echo "WARN: could not upload resume secrets"
+          rm -f /tmp/ra-resume-secrets.env
           ssh -i ~/.ssh/ec2.key -o BatchMode=yes -o ConnectTimeout=12 \
             -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
@@ -106,6 +120,33 @@ jobs:
 
           echo "=== after up ==="
           sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+          CID=$(sudo docker ps --format '{{.ID}} {{.Names}}' | awk 'tolower($0) ~ /resume|backend|agent/ {print $1; exit}')
+          if [ -f /tmp/ra-resume-secrets.env ] && grep -q '^OPENAI_API_KEY=.' /tmp/ra-resume-secrets.env; then
+            echo "Injecting OPENAI_API_KEY into host + container .env"
+            touch .env
+            grep -v '^OPENAI_API_KEY=' .env > /tmp/ra-host-env-merged.env || true
+            grep '^OPENAI_API_KEY=' /tmp/ra-resume-secrets.env >> /tmp/ra-host-env-merged.env
+            mv /tmp/ra-host-env-merged.env .env
+            chmod 600 .env
+            if [ -n "${CID:-}" ]; then
+              sudo docker cp /tmp/ra-resume-secrets.env "$CID:/tmp/ra-openai-only.env"
+              sudo docker exec "$CID" sh -c '
+                set -eu
+                mkdir -p /app/ai-job-agent
+                touch /app/ai-job-agent/.env
+                grep -v "^OPENAI_API_KEY=" /app/ai-job-agent/.env > /tmp/ra-env-merged.env || true
+                grep "^OPENAI_API_KEY=" /tmp/ra-openai-only.env >> /tmp/ra-env-merged.env
+                mv /tmp/ra-env-merged.env /app/ai-job-agent/.env
+                chmod 600 /app/ai-job-agent/.env
+                rm -f /tmp/ra-openai-only.env
+              '
+              sudo docker restart "$CID" >/dev/null 2>&1 || true
+            fi
+            rm -f /tmp/ra-resume-secrets.env
+          else
+            echo "WARN: no OPENAI_API_KEY to inject — CV Tailor may stay broken"
+          fi
 
           ok=0
           for i in $(seq 1 40); do
