@@ -284,18 +284,20 @@ jobs:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USERNAME: ${{ secrets.EC2_USERNAME }}
           REBUILD_IMAGE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.rebuild_image || 'false' }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
           echo "Step 4: run remote deploy (REBUILD_IMAGE=${REBUILD_IMAGE})"
 
-          # Ship trading secrets to the host without echoing values into logs.
-          : > /tmp/ra-trading-secrets.env
-          if [ -n "${FINNHUB_API_KEY:-}" ]; then
-            printf 'FINNHUB_API_KEY=%s\n' "$FINNHUB_API_KEY" >> /tmp/ra-trading-secrets.env
-            echo "FINNHUB_API_KEY secret is present (will inject into container .env)"
+          # Ship Resume Agent secrets to the host without echoing values into logs.
+          # After trading was split into its own repo, OPENAI_API_KEY must be
+          # injected here again — CV Tailor /cv-tailor depends on it.
+          : > /tmp/ra-resume-secrets.env
+          if [ -n "${OPENAI_API_KEY:-}" ]; then
+            printf 'OPENAI_API_KEY=%s\n' "$OPENAI_API_KEY" >> /tmp/ra-resume-secrets.env
+            echo "OPENAI_API_KEY secret is present (will inject into container .env)"
           else
-            echo "WARN: FINNHUB_API_KEY GitHub secret is empty — stock quotes will be unavailable"
+            echo "WARN: OPENAI_API_KEY GitHub secret is empty — CV Tailor / AI analysis will fail"
           fi
           timeout 30s scp \
             -i ~/.ssh/ec2.key \
@@ -305,9 +307,10 @@ jobs:
             -o StrictHostKeyChecking=accept-new \
             -o UserKnownHostsFile=~/.ssh/known_hosts \
             -o IdentitiesOnly=yes \
-            /tmp/ra-trading-secrets.env \
-            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-trading-secrets.env" \
-            || echo "WARN: could not upload trading secrets file"
+            /tmp/ra-resume-secrets.env \
+            "${EC2_USERNAME}@${EC2_HOST}:/tmp/ra-resume-secrets.env" \
+            || echo "WARN: could not upload resume secrets file"
+          rm -f /tmp/ra-resume-secrets.env
 
           cat > /tmp/ra-remote-deploy.sh <<'REMOTE'
           #!/bin/bash
@@ -325,7 +328,7 @@ jobs:
             df -i / 2>/dev/null || true
           }
           disk_report "before cleanup"
-          KEEP_TMP_RE='ra-frontend-dist\.tgz|ra-trading-frontend-dist\.tgz|ra-whatsapp-frontend-dist\.tgz|ra-whatsapp-node-modules\.tgz|ra-trading-secrets\.env|ra-remote-deploy\.sh'
+          KEEP_TMP_RE='ra-frontend-dist\.tgz|ra-trading-frontend-dist\.tgz|ra-whatsapp-frontend-dist\.tgz|ra-whatsapp-node-modules\.tgz|ra-resume-secrets\.env|ra-remote-deploy\.sh'
           # Drop leftover deploy scratch — keep freshly SCP'd bundles + secrets.
           rm -rf /tmp/ra-backend-bundle /tmp/ra-backend-src.tgz \
             /tmp/ra-job-apply.tgz /tmp/ra-trading.tgz /tmp/ra-whatsapp-bundle \
@@ -853,7 +856,47 @@ jobs:
             cat "$HOME/ra-ws-runtime-check.log" 2>/dev/null || true
           }
 
-          inject_trading_secrets() { echo 'SKIP trading secrets (standalone)'; rm -f /tmp/ra-trading-secrets.env; return 0; }
+          inject_openai_api_key() {
+            local cid="$1"
+            # Prefer freshly uploaded GitHub secret; fall back to host .env
+            # (so we can re-inject after a compose recreate/rollback).
+            if [ -f /tmp/ra-resume-secrets.env ] && grep -q '^OPENAI_API_KEY=.' /tmp/ra-resume-secrets.env; then
+              echo "Merging OPENAI_API_KEY from GitHub secret into host .env — value not logged"
+              touch .env
+              grep -v '^OPENAI_API_KEY=' .env > /tmp/ra-host-env-merged.env || true
+              grep '^OPENAI_API_KEY=' /tmp/ra-resume-secrets.env >> /tmp/ra-host-env-merged.env
+              mv /tmp/ra-host-env-merged.env .env
+              chmod 600 .env
+              rm -f /tmp/ra-resume-secrets.env
+            fi
+            if ! grep -q '^OPENAI_API_KEY=.' .env 2>/dev/null; then
+              echo "WARN: OPENAI_API_KEY missing in host .env — CV Tailor / AI analysis unavailable"
+              return 0
+            fi
+            if [ -z "${cid:-}" ]; then
+              echo "WARN: no container id for OPENAI_API_KEY inject"
+              return 0
+            fi
+            echo "Injecting OPENAI_API_KEY into container .env — value not logged"
+            grep '^OPENAI_API_KEY=' .env > /tmp/ra-openai-only.env
+            sudo docker cp /tmp/ra-openai-only.env "$cid:/tmp/ra-openai-only.env"
+            rm -f /tmp/ra-openai-only.env
+            sudo docker exec "$cid" sh -c '
+              set -eu
+              mkdir -p /app/ai-job-agent
+              touch /app/ai-job-agent/.env
+              grep -v "^OPENAI_API_KEY=" /app/ai-job-agent/.env > /tmp/ra-env-merged.env || true
+              grep "^OPENAI_API_KEY=" /tmp/ra-openai-only.env >> /tmp/ra-env-merged.env
+              mv /tmp/ra-env-merged.env /app/ai-job-agent/.env
+              chmod 600 /app/ai-job-agent/.env
+              rm -f /tmp/ra-openai-only.env
+              if grep -q "^OPENAI_API_KEY=." /app/ai-job-agent/.env; then
+                echo "OPENAI_API_KEY present in container .env"
+              else
+                echo "WARN: OPENAI_API_KEY still missing after inject" >&2
+              fi
+            '
+          }
 
           restore_backend() {
             local cid="$1"
@@ -896,8 +939,8 @@ jobs:
           echo "Step R5: ensure containers are running (detached, FDs closed, no build)"
           # Host docker-compose.yml references env_file: .env (gitignored).
           # An earlier aggressive `git clean -fdX` deleted it and broke compose.
-          # An empty file is enough for compose to start; real secrets are
-          # injected into the container later (FINNHUB / OPENAI).
+          # An empty file is enough for compose to start; real secrets
+          # (OPENAI_API_KEY) are injected into host + container .env later.
           ensure_host_dotenv() {
             if [ ! -f .env ]; then
               echo "WARN: host .env missing — creating empty stub for compose env_file"
@@ -1017,8 +1060,8 @@ jobs:
           echo "Step R7c: ensure WebSocket runtime deps for /trading"
           ensure_websocket_runtime "$CID"
 
-          echo "Step R7d: inject trading market secrets (FINNHUB)"
-          inject_trading_secrets "$CID"
+          echo "Step R7d: inject OPENAI_API_KEY for CV Tailor"
+          inject_openai_api_key "$CID"
 
           inject_frontend "$CID"
           inject_trading_frontend "$CID"
@@ -1040,6 +1083,7 @@ jobs:
             tail -n 40 "$HOME/ra-compose-recover.log" 2>/dev/null || true
             CID="$(find_container_id)"
             if [ -n "${CID:-}" ]; then
+              inject_openai_api_key "$CID"
               inject_frontend "$CID"
               if [ -f /tmp/ra-trading-frontend-dist.tgz ]; then
                 inject_trading_frontend "$CID"
@@ -1059,6 +1103,14 @@ jobs:
             tail -n 120 "$HOME/ra-compose-logs.log" || true
             sudo docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' </dev/null || true
             exit 1
+          fi
+
+          if grep -q '"openai_configured"[[:space:]]*:[[:space:]]*true' "$HOME/ra-health.json" 2>/dev/null; then
+            echo "OPENAI_API_KEY is configured (CV Tailor ready)"
+          elif grep -q '"openai_configured"[[:space:]]*:[[:space:]]*false' "$HOME/ra-health.json" 2>/dev/null; then
+            echo "::warning::openai_configured=false — set OPENAI_API_KEY in GitHub Actions secrets and re-run Deploy"
+          else
+            echo "NOTE: health payload has no openai_configured field yet (older backend still booting?)"
           fi
 
           echo "Step R8a: WhatsApp Monitor inject (optional; skipped when disk is tight)"

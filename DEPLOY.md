@@ -69,8 +69,8 @@ PR ממוזג ל-master → בדיקות → פריסה אוטומטית ל-Rend
 
 | משתנה | תיאור |
 |--------|--------|
-| `OPENAI_API_KEY` | ניתוח חכם של קו"ח והתאמות + AI Market Analyst במסחר |
-| `FINNHUB_API_KEY` | מחירי מניות אמיתיים ל־`/trading` (AAPL/NVDA) |
+| `OPENAI_API_KEY` | ניתוח חכם של קו״ח, CV Tailor (`/cv-tailor`) והתאמות — מוזרק ל־EC2 בכל Deploy |
+| `FINNHUB_API_KEY` | למסחר בלבד (repo נפרד `ai-trading-system`) |
 | `JWT_SECRET` | מפתח לחתימת JWT (מומלץ חזק בפרודקשן) |
 | `DRUSHIM_EMAIL` | התחברות לדרושים |
 | `DRUSHIM_PASSWORD` | סיסמת דרושים |
@@ -205,8 +205,12 @@ Volumes **לא** נמחקים (שם נשמרים קו״ח / DB).
   והאתר הראשי עדיין נחשב לפריסה מוצלחת.
 - בלוג יופיעו גם `docker logs` / `df` לפני ה־rollback (לא רק אחרי).
 
-### FINNHUB_API_KEY
+### OPENAI_API_KEY (CV Tailor)
 
-אם בלוג מופיע `WARN: FINNHUB_API_KEY GitHub secret is empty` — מחירי מניות
-(AAPL/NVDA) ב־`/trading` לא יהיו זמינים. הוסף את הסוד ב־
-GitHub → Settings → Secrets → Actions → `FINNHUB_API_KEY`.
+אחרי הפרדת ה־trading ל־repo נפרד, דיפלוי Resume Agent מזריק את
+`OPENAI_API_KEY` מ־GitHub Actions Secrets אל host `.env` ואל
+`/app/ai-job-agent/.env` בקונטיינר (שלב R7d). בלי הסוד, דף
+`/cv-tailor` וניתוח AI ייכשלו עם "OPENAI_API_KEY is not configured".
+
+אם בלוג מופיע `WARN: OPENAI_API_KEY GitHub secret is empty` — הוסף את הסוד ב־
+GitHub → Settings → Secrets → Actions → `OPENAI_API_KEY`, ואז Re-run Deploy.

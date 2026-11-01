@@ -118,3 +118,5 @@ def test_health_reports_what_code_is_running(monkeypatch: pytest.MonkeyPatch, db
 
     assert payload["backend_revision"] == "deadbeef"
     assert payload["tailor_prompt_version"] == build_info.MATCH_TAILOR_PROMPT_VERSION
+    assert "openai_configured" in payload
+    assert isinstance(payload["openai_configured"], bool)
